@@ -228,6 +228,37 @@ configured callback URL. Self-hosted instances continue using the request URL.
 Preserve gateway observations in dedicated diagnostic headers when another
 provider proxy replaces standard forwarded headers before reaching the tenant.
 
+## Communication through the connection
+
+Medium-specific communication is initial prompt guidance for the agent. Slack
+guidance asks for conversational replies, an answer or outcome first, and compact
+paragraphs or short lists. Small answers belong in the message; substantial
+deliverables use the normal document/artifact tools with a useful summary and
+accessible links or supported attachments. Explicit requests for detail or exact
+output override default brevity. Shared channels and direct conversations get
+appropriate audience guidance.
+
+Slack Settings offers one optional field: **Additional communication
+instructions** (up to 4,000 characters). Explain that it guides communication
+and applies when new tasks start. Reply detail and progress visibility are
+built-in behavior, not settings. Keep the existing factual runtime progress
+signals, cadence, and deduplication; never publish private reasoning or add a
+model call to write progress updates.
+
+The server snapshots built-in and additional instructions from the verified
+endpoint when the conversation creates its task. Ordinary follow-ups add no
+guidance or reminders. A fresh model session restores that original snapshot
+through initial context restoration. Editing endpoint instructions affects new
+tasks only. Message text cannot set trusted endpoint configuration. Instructions
+do not grant permissions, tools, or exemptions from approval rules.
+
+Keep the provider-guidance registry separate from transport and agent identity.
+Slack is the first enabled profile; qualify each additional provider before
+enabling guidance or exposing the field. Questions, approvals, task creation,
+assignment, delegation, and origin-thread completion use normal Paperclip
+workflows. Identify missing workflow capabilities separately rather than adding
+a connector-specific task lifecycle.
+
 ## Apply and verify
 
 For a requested redesign, identify the relevant principles and fix the concrete

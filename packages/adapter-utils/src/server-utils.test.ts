@@ -3053,6 +3053,21 @@ describe("selectPaperclipTaskMarkdown", () => {
     ).toBe(compactMarkdown);
   });
 
+  it("adds saved communication guidance only to a fresh session, including after recovery", () => {
+    const context = {
+      paperclipTaskMarkdown: fullMarkdown,
+      paperclipTaskMarkdownCompact: compactMarkdown,
+      paperclipTaskCommunicationGuidance: "## Communication in Slack\nSaved initial guidance",
+      paperclipWake: wake("issue_commented"),
+    };
+    expect(selectPaperclipTaskMarkdown(context)).toContain("Saved initial guidance");
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(compactMarkdown);
+    expect(selectPaperclipTaskMarkdown(context, { includeCommunicationGuidance: false })).toBe(fullMarkdown);
+    context.paperclipWake = { ...wake("issue_monitor_recovery"), recovery: { cause: "process_lost" } } as typeof context.paperclipWake;
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(fullMarkdown);
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: false }).match(/Saved initial guidance/g)).toHaveLength(1);
+  });
+
   it("falls back to the full markdown when no compact variant exists", () => {
     expect(
       selectPaperclipTaskMarkdown(

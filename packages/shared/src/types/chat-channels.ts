@@ -217,6 +217,8 @@ export type ChannelPublicationMode = "automatic" | "explicit";
 export type ExternalMessageExecutionPolicy = "restricted" | "agent";
 
 export interface ChatEndpoint {
+  /** Additional presentation instructions captured only for newly created tasks. */
+  communicationInstructions?: string;
   id: string;
   companyId: string;
   connectionId: string;
@@ -474,6 +476,7 @@ export interface CreateChatEndpointInput {
 
 export interface UpdateChatEndpointInput {
   slackApp?: SlackAppConfiguration;
+  communicationInstructions?: string;
   allowDirectMessages?: boolean;
   allowGroupChats?: boolean;
   allowUnlinkedPeople?: boolean;

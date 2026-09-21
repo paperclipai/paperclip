@@ -1,9 +1,13 @@
+import { useState } from "react";
+import { ChatCommunicationInstructions } from "@/pages/apps/chat/ChatCommunicationInstructions";
 import { Copy, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SlackAvatarSettings } from "@/pages/apps/chat/SlackAvatarStep";
 import avatar from "./ceo-cliptoon.png";
 
-export function SlackAvatarSettingsPreview() {
+export function SlackAvatarSettingsPreview({ initialInstructions = "", failFirstSave = false }: { initialInstructions?: string; failFirstSave?: boolean }) {
+  const [instructions, setInstructions] = useState(initialInstructions);
+  const [failSave, setFailSave] = useState(failFirstSave);
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="flex gap-3 border-b border-border px-6 py-4 text-sm">
@@ -48,6 +52,10 @@ export function SlackAvatarSettingsPreview() {
               appName="ceo-paperclip"
               avatarUrl={avatar}
             />
+            <ChatCommunicationInstructions value={instructions} onSave={async (next) => {
+              if (failSave) { setFailSave(false); throw new Error("Couldn’t save instructions. Try again."); }
+              setInstructions(next);
+            }} />
             <section className="space-y-4">
               <h2 className="text-lg font-semibold">
                 Where this agent can work

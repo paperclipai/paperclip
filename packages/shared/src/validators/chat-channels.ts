@@ -84,6 +84,7 @@ export const slackAppConfigurationSchema = z.object({
 
 export const updateChatEndpointSchema = z
   .object({
+    communicationInstructions: multilineTextSchema.pipe(z.string().trim().max(4000)).optional(),
     slackApp: slackAppConfigurationSchema.optional(),
     allowDirectMessages: z.boolean().optional(),
     allowGroupChats: z.boolean().optional(),

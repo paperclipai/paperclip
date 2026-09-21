@@ -10594,6 +10594,8 @@ export function heartbeatService(
   async function getIssueExecutionContext(companyId: string, issueId: string) {
     return db
       .select({
+        chatCommunicationGuidance: chatConversations.communicationGuidance,
+        chatAssignedAgentId: chatEndpoints.assignedAgentId,
         conversationAgentId: issues.conversationAgentId,
         conversationUserId: issues.conversationUserId,
         conversationState: issues.conversationState,
@@ -10627,6 +10629,15 @@ export function heartbeatService(
         updatedAt: issues.updatedAt,
       })
       .from(issues)
+      .leftJoin(chatConversations, and(
+        eq(chatConversations.companyId, issues.companyId),
+        eq(chatConversations.issueId, issues.id),
+      ))
+      .leftJoin(chatEndpoints, and(
+        eq(chatEndpoints.companyId, chatConversations.companyId),
+        eq(chatEndpoints.id, chatConversations.endpointId),
+        eq(chatEndpoints.provider, "slack"),
+      ))
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
   }
@@ -20707,6 +20718,12 @@ export function heartbeatService(
               ]
             : [],
       );
+      // Always replace caller-supplied context with the immutable, company-scoped
+      // conversation snapshot. It belongs only to the endpoint's assigned agent.
+      context.paperclipTaskCommunicationGuidance =
+        issueContext?.chatAssignedAgentId === agent.id
+          ? issueContext.chatCommunicationGuidance
+          : null;
       const taskMarkdownInput = {
         issue: issueRef
           ? {
@@ -20806,10 +20823,12 @@ export function heartbeatService(
         ).redactForIssue(agent.companyId, issueRef.id, {
           paperclipIssue: context.paperclipIssue,
           paperclipWakeComment: context.paperclipWakeComment,
+          paperclipTaskCommunicationGuidance: context.paperclipTaskCommunicationGuidance,
           paperclipTaskMarkdown: context.paperclipTaskMarkdown,
           paperclipTaskMarkdownCompact: context.paperclipTaskMarkdownCompact,
         });
         context.paperclipIssue = redactedWakeContext.paperclipIssue;
+        context.paperclipTaskCommunicationGuidance = redactedWakeContext.paperclipTaskCommunicationGuidance;
         if (redactedWakeContext.paperclipWakeComment) {
           context.paperclipWakeComment =
             redactedWakeContext.paperclipWakeComment;
@@ -23360,6 +23379,7 @@ export function heartbeatService(
                       nativeReviewRequest ?? readNonEmptyString(
                         selectPaperclipTaskMarkdown(context, {
                           resumedSession: false,
+                          includeCommunicationGuidance: false,
                         }),
                       ) ??
                       `# ${issueRef.identifier ?? issueRef.id}: ${issueRef.title}`,
@@ -23367,6 +23387,7 @@ export function heartbeatService(
                         ? `## Project repositories\nThe task workspace also contains these editable Git repositories:\n${projectRepositoryPaths.map((repo) => `- ${repo}`).join("\n")}`
                         : null,
                     ].filter(Boolean).join("\n\n"),
+                    initialCommunicationGuidance: nativeReviewRequest ? null : readNonEmptyString(context.paperclipTaskCommunicationGuidance),
                     wakePayload: context.paperclipWake,
                     resumedSession,
                     previousTurn: (() => {

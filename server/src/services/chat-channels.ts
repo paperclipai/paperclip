@@ -1,3 +1,4 @@
+import { buildChatCommunicationGuidance } from "./chat-communication-guidance.js";
 import { runtimeCanonicalOrigin } from "./cloud-runtime-identity.js";
 import { takePhotonCompanion } from "./photon/attachments.js";
 import { writePhotonCheckpoint } from "./photon/receiver.js";
@@ -5854,6 +5855,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       botUsername: endpoint.botUsername,
       botLabel: endpoint.botDisplayName ?? row.assignedAgentName,
       botAvatarUrl: endpoint.botAvatarUrl,
+      communicationInstructions: endpoint.communicationInstructions,
       ...(endpoint.provider === "imessage-photon" && endpoint.botExternalId ? { photonAllocation: endpoint.botExternalId.startsWith("photon-project:") ? "shared" as const : "dedicated" as const } : {}),
       allowDirectMessages: endpoint.allowDirectMessages,
       allowGroupChats: endpoint.allowGroupChats,
@@ -6077,6 +6079,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         const values: Partial<typeof chatEndpoints.$inferInsert> = {
           updatedAt: new Date(),
         };
+        if (input.communicationInstructions !== undefined) {
+          if (existing.endpoint.provider !== "slack") {
+            throw unprocessable("Communication instructions are currently supported for Slack connections");
+          }
+          values.communicationInstructions = input.communicationInstructions;
+        }
         if (input.slackApp) {
           if (existing.endpoint.provider !== "slack") {
             throw unprocessable("Slack app details only apply to Slack connections");
@@ -16028,6 +16036,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               externalLabel: resource.label,
               providerUrl,
               isDirectMessage: thread.isDM,
+              communicationGuidance: buildChatCommunicationGuidance({
+                provider: taskEndpoint.provider,
+                isDirectMessage: thread.isDM,
+                communicationInstructions: taskEndpoint.communicationInstructions,
+              }),
               state: "active",
               lastActivityAt: new Date(),
             })

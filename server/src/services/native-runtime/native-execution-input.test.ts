@@ -61,6 +61,7 @@ describe("native execution input external-chat framing", () => {
         },
         taskPrompt:
           "Continue the user's original request with their selected answer.",
+        initialCommunicationGuidance: "Initial Slack communication preferences.",
         wakePayload,
         resumedSession,
         workspace: {
@@ -102,6 +103,9 @@ describe("native execution input external-chat framing", () => {
         ],
       };
       const input = buildNativeExecutionInput(args);
+      expect(input.initialCommunicationGuidance).toBe("Initial Slack communication preferences.");
+      // The runtime adds this only after deciding whether provider recovery succeeded.
+      expect(input.task.prompt).not.toContain("Initial Slack communication preferences.");
       expect(input.task.title).toBe("External chat follow-up");
       expect(input.task.prompt).toContain("Amber");
       expect(input.task.prompt).not.toContain("## Questions that need a user response");

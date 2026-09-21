@@ -196,6 +196,8 @@ export interface NativeExecutionInputV4 extends Omit<NativeExecutionInputV3, "sc
   provider: NativeProviderConfigV4;
   /** Used only after the runtime proves provider-session recovery succeeded. */
   continuationPrompt?: string | null;
+  /** Restored only when starting a fresh provider session, never on a resume. */
+  initialCommunicationGuidance?: string | null;
 }
 
 export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4;
@@ -292,7 +294,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     "credentialBindings",
     ...(isV2 ? ["executionMode", "planningContext"] : []),
     ...(isV3 ? ["runtimeContext"] : []),
-    ...(isV4 ? ["continuationPrompt"] : []),
+    ...(isV4 ? ["continuationPrompt", "initialCommunicationGuidance"] : []),
   ], "input");
   if (!isV2 && input.schema !== NATIVE_EXECUTION_INPUT_SCHEMA_V1) {
     throw new NativeExecutionInputError(
@@ -717,6 +719,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     ...withRuntimeContext,
     schema: NATIVE_EXECUTION_INPUT_SCHEMA,
     ...(input.continuationPrompt !== undefined ? { continuationPrompt: nullableText(input.continuationPrompt, "input.continuationPrompt") } : {}),
+    ...(input.initialCommunicationGuidance !== undefined ? { initialCommunicationGuidance: nullableText(input.initialCommunicationGuidance, "input.initialCommunicationGuidance") } : {}),
     provider: parsedProvider as NativeProviderConfigV4,
   };
 }
@@ -753,7 +756,12 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
   }
   return {
     schema: NATIVE_MODEL_ENVELOPE_SCHEMA,
-    task: structuredClone(input.task),
+    task: {
+      ...structuredClone(input.task),
+      prompt: !options?.resumedSession && "initialCommunicationGuidance" in input && input.initialCommunicationGuidance
+        ? `${input.initialCommunicationGuidance}\n\n${input.task.prompt}`
+        : input.task.prompt,
+    },
     executionMode: input.executionMode,
     planningContext: structuredClone(input.planningContext),
     workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"

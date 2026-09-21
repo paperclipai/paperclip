@@ -1,4 +1,5 @@
 import { defaultSlackAppName } from "./slack-app-name";
+import { ChatCommunicationInstructions } from "./ChatCommunicationInstructions";
 import { SlackAvatarSettings } from "./SlackAvatarStep";
 import { agentsApi } from "@/api/agents";
 import { agentAvatarUrl } from "@/lib/agent-avatar-url";
@@ -418,6 +419,14 @@ function Settings({
               avatarUrl={agentAvatarUrl(resolveAgentAppearance(avatarAgent.data?.appearance, endpoint.assignedAgentId), 512, 1, "rest")}
             />
       )}
+      {endpoint.provider === "slack" && <ChatCommunicationInstructions
+        key={endpoint.id}
+        value={endpoint.communicationInstructions ?? ""}
+        onSave={async (communicationInstructions) => {
+          const next = await chatEndpointsApi.update(endpointId, { communicationInstructions });
+          queryClient.setQueryData(queryKeys.chatEndpoints.detail(endpointId), next);
+        }}
+      />}
       {endpoint.provider === "telegram" && (
         <div className="space-y-2">
           <h2 className="text-lg font-semibold">Telegram group command</h2>

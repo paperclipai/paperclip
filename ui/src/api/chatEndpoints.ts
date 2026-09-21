@@ -92,6 +92,7 @@ export interface ChatIdentityLinkPreview {
 }
 
 export interface ChatEndpoint {
+  communicationInstructions?: string;
   publicationMode?: "automatic" | "explicit";
   externalExecutionPolicy?: "restricted" | "agent";
   id: string;

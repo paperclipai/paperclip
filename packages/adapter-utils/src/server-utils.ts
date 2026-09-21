@@ -2157,11 +2157,15 @@ export function isAssignmentShapedPaperclipWakeReason(
 // issue up. Falls back to the full variant when no compact one was provided.
 export function selectPaperclipTaskMarkdown(
   context: Record<string, unknown> | null | undefined,
-  options: { resumedSession?: boolean } = {},
+  options: { resumedSession?: boolean; includeCommunicationGuidance?: boolean } = {},
 ): string {
   const full = asString(context?.paperclipTaskMarkdown, "").trim();
   if (!full) return "";
-  if (options.resumedSession !== true) return full;
+  if (options.resumedSession !== true) {
+    const guidance = options.includeCommunicationGuidance === false
+      ? "" : asString(context?.paperclipTaskCommunicationGuidance, "").trim();
+    return joinPromptSections([guidance, full]);
+  }
   const wake = normalizePaperclipWakePayload(context?.paperclipWake);
   if (!wake) return full;
   if (
