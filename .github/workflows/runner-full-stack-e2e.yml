@@ -1235,6 +1235,11 @@ jobs:
         with:
           version: 9.15.4
 
+      # Resolve the trusted publication checkout's lockfile without lifecycle
+      # scripts, then install the exact result. This matches the report job's
+      # frozen-install preparation while keeping target-controlled code out of
+      # the AWS credentialed publisher.
+      - run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
       - run: pnpm install --frozen-lockfile
 
       - name: Install publisher-only Chromium

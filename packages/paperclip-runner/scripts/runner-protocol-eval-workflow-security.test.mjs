@@ -51,6 +51,19 @@ test("pull request CI builds the canonical Evalbook viewer", async () => {
 
 test("resolves both repositories immutably and bounds total matrix concurrency", async () => {
   const workflow = await readFile(workflowPath, "utf8");
+  const targetLock = workflow.slice(
+    workflow.indexOf("  target_lock:"),
+    workflow.indexOf("  catalog:"),
+  );
+  assert.match(targetLock, /ref: \$\{\{ needs\.authorize\.outputs\.target_sha \}\}/u);
+  assert.match(targetLock, /pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only/u);
+  assert.match(targetLock, /Upload resolved target lockfile/u);
+  const build = workflow.slice(
+    workflow.indexOf("  build_runner:"),
+    workflow.indexOf("  eval_shard_0:"),
+  );
+  assert.match(build, /Download resolved target lockfile/u);
+  assert.match(build, /Restore resolved target lockfile/u);
   const authorize = workflow.slice(
     workflow.indexOf("  authorize:"),
     workflow.indexOf("  catalog:"),
@@ -163,4 +176,55 @@ test("publishes only the separately sanitized Evalbook through trusted OIDC code
   assert.doesNotMatch(publisher, /(?:OPENAI|ANTHROPIC|OPENROUTER)_API_KEY/u);
   assert.doesNotMatch(publisher, /paperclipai\/paperclip-evals/u);
   assert.doesNotMatch(publisher, /downloaded-runner-protocol-evals/u);
+});
+
+test("provisions the Codex userns profile before any provider credentials", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  const direct = workflow.slice(
+    workflow.indexOf("    steps: &direct_eval_steps"),
+    workflow.indexOf("  eval_shard_1:"),
+  );
+  const profile = direct.indexOf("Provision Codex sandbox on the disposable trusted runner");
+  const credentials = direct.indexOf("Prepare short-lived AgentCore web identity");
+  assert.ok(profile >= 0 && credentials >= 0 && profile < credentials);
+  assert.match(direct, /apparmor_restrict_unprivileged_userns/u);
+  assert.match(direct, /apparmor_parser/u);
+  assert.match(direct, /userns,/u);
+  assert.match(direct, /runner-protocol-build\/extracted\/portable/u);
+  assert.match(direct, /matrix\.provider == 'codex'/u);
+  assert.match(direct, /matrix\.rosterId == 'protocol-live-acpx-codex-control'/u);
+  assert.doesNotMatch(direct, /matrix\.profileId/u);
+  const build = workflow.slice(
+    workflow.indexOf("  build_runner:"),
+    workflow.indexOf("  eval_shard_0:"),
+  );
+  assert.match(build, /Materialize the pinned OpenCode executable before packaging/u);
+  assert.match(build, /materialize-opencode-binary\.mjs/u);
+});
+
+test("report preparation stays on the trusted lock and install mode", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  const report = workflow.slice(
+    workflow.indexOf("  report:"),
+    workflow.indexOf("  publish_history:"),
+  );
+  assert.match(report, /ref: \$\{\{ github\.sha \}\}/u);
+  assert.doesNotMatch(report, /Download resolved target lockfile/u);
+  assert.doesNotMatch(report, /Restore resolved target lockfile/u);
+  assert.match(report, /Resolve trusted report lockfile without lifecycle scripts/u);
+  assert.match(report, /pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only/u);
+  assert.match(report, /pnpm install --frozen-lockfile --ignore-scripts\n/u);
+});
+
+test("trusted catalog, direct eval, and report orchestration stay on workflow revision", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  for (const [job, next] of [
+    ["  catalog:", "  build_runner:"],
+    ["  eval_shard_0:", "  eval_shard_1:"],
+    ["  report:", "  publish_history:"],
+  ]) {
+    const section = workflow.slice(workflow.indexOf(job), workflow.indexOf(next));
+    assert.match(section, /ref: \$\{\{ github\.sha \}\}/u, `${job} must use the trusted workflow revision`);
+    assert.doesNotMatch(section, /ref: \$\{\{ needs\.authorize\.outputs\.target_sha \}\}/u, `${job} must not execute target orchestration code`);
+  }
 });

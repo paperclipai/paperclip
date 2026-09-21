@@ -154,6 +154,57 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
+  target_lock:
+    name: Resolve target pnpm lockfile
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      lock_sha256: ${{ steps.lock.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      - name: Resolve target lockfile without lifecycle scripts
+        id: lock
+        run: |
+          set -euo pipefail
+          pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only
+          test -s pnpm-lock.yaml
+          unexpected="$(git status --short | awk '$2 != "pnpm-lock.yaml" { print }')"
+          if [ -n "$unexpected" ]; then
+            echo "Lockfile resolution changed files other than pnpm-lock.yaml:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+          echo "sha256=$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload resolved target lockfile
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-protocol-target-pnpm-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: pnpm-lock.yaml
+          retention-days: 30
+          if-no-files-found: error
+
   catalog:
     name: Pin and fan out the direct Evalbook roster
     needs: authorize
@@ -228,7 +279,7 @@ jobs:
 
   build_runner:
     name: Build portable direct-eval runner once
-    needs: [authorize, catalog]
+    needs: [authorize, target_lock, catalog]
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 30
     permissions:
@@ -251,12 +302,35 @@ jobs:
         with:
           version: 9.15.4
 
+      - name: Download resolved target lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-protocol-target-lock
+
+      - name: Restore resolved target lockfile
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          lock="$RUNNER_TEMP/runner-protocol-target-lock/pnpm-lock.yaml"
+          test -f "$lock"
+          test "$(find "$(dirname "$lock")" -type f | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Materialize the pinned OpenCode executable before packaging
+        run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
       - name: Build runner CLI, daemon, and canonical attempt viewer
         run: |
@@ -381,6 +455,40 @@ jobs:
           mkdir extracted
           tar --extract --gzip --file runner-protocol-build.tar.gz --directory extracted
           test -x extracted/paperclip-runnerd
+
+      # Keep the host policy aligned with runner-full-stack-e2e.yml. This is
+      # deliberately before any provider credential or web-identity step.
+      - name: Provision Codex sandbox on the disposable trusted runner
+        if: matrix.provider == 'codex' || matrix.rosterId == 'protocol-live-acpx-codex-control'
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { createHash } from "node:crypto";
+          import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+          import { createRequire } from "node:module";
+          import path from "node:path";
+          if (process.platform !== "linux") process.exit(0);
+          let restricted = "0";
+          try { restricted = readFileSync("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "utf8").trim(); } catch {}
+          if (restricted !== "1") process.exit(0);
+          const root = realpathSync(path.join(process.env.GITHUB_WORKSPACE, "runner-protocol-build/extracted/portable"));
+          const runnerRequire = createRequire(path.join(root, "package.json"));
+          const acpRequire = createRequire(runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json"));
+          const codexRequire = createRequire(acpRequire.resolve("@openai/codex/package.json"));
+          const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : null;
+          if (!arch) throw new Error("Unsupported Codex CI architecture");
+          const platformPackage = codexRequire.resolve(`@openai/codex-linux-${arch}/package.json`);
+          const triple = arch === "x64" ? "x86_64-unknown-linux-musl" : "aarch64-unknown-linux-musl";
+          const suffix = `/vendor/${triple}/bin/codex`;
+          const binary = realpathSync(path.join(path.dirname(platformPackage), suffix));
+          if (!binary.startsWith(root + "/node_modules/.pnpm/") || !binary.endsWith(suffix) || !/^[/A-Za-z0-9_.@+\-]+$/.test(binary)) {
+            throw new Error("Codex executable is outside the resolved dependency tree");
+          }
+          const name = `paperclip-e2e-codex-${createHash("sha256").update(binary).digest("hex").slice(0,16)}`;
+          const profilePath = path.join(process.env.RUNNER_TEMP, "paperclip-codex-userns.apparmor");
+          writeFileSync(profilePath, `abi <abi/4.0>,\ninclude <tunables/global>\nprofile ${name} "${binary}" flags=(unconfined) {\n  userns,\n}\n`, {mode:0o600, flag:"wx"});
+          execFileSync("sudo", ["-n", "apparmor_parser", "-r", profilePath], {timeout:15000, stdio:"pipe"});
+          NODE
 
       - name: Prepare short-lived AgentCore web identity
         if: matrix.credentialName == 'AWS_AGENTCORE_OIDC'
@@ -536,6 +644,25 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      - name: Resolve trusted report lockfile without lifecycle scripts
+        run: |
+          set -euo pipefail
+          pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only
+          test -s pnpm-lock.yaml
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
 
       - name: Download immutable campaign catalog
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
