@@ -4352,13 +4352,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     await heartbeat.resumeQueuedRuns();
 
+    // The real manager waits up to five seconds for worker readiness before
+    // lease acquisition fails and the heartbeat can schedule its retry.
     const runs = await waitForValue(async () => {
       const rows = await db
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
       return rows.length >= 2 ? rows : null;
-    });
+    }, 10_000);
     expect(runs).toHaveLength(2);
 
     const failedRun = runs?.find((row) => row.id === runId);
