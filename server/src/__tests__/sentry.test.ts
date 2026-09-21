@@ -546,6 +546,7 @@ describe("buildSentryInitOptions serverName", () => {
 
 describe("buildSentryInitOptions release", () => {
   const commit = "0123456789abcdef0123456789abcdef01234567";
+  const readBuildCommit = vi.fn<() => string | null>();
   const integrations = {
     httpIntegration: () => ({ name: "Http" }),
     onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
@@ -553,12 +554,14 @@ describe("buildSentryInitOptions release", () => {
 
   beforeEach(() => {
     vi.stubEnv("SENTRY_RELEASE", "");
-    vi.doMock("../build-commit.js", () => ({ readBuildCommit: () => commit }));
+    readBuildCommit.mockReturnValue(commit);
+    vi.doMock("../build-commit.js", () => ({ readBuildCommit }));
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.doUnmock("../build-commit.js");
+    readBuildCommit.mockReset();
   });
 
   it("uses the server build commit", async () => {
@@ -573,9 +576,12 @@ describe("buildSentryInitOptions release", () => {
   });
 
   it("leaves an unknown build unattributed", async () => {
-    vi.doMock("../build-commit.js", () => ({ readBuildCommit: () => null }));
+    // Keep one module factory and change its return value explicitly for this
+    // case, rather than depending on a second factory replacing the first.
+    readBuildCommit.mockReturnValue(null);
     const { buildSentryInitOptions } = await importFreshSentry();
     expect(buildSentryInitOptions("test-dsn", integrations).release).toBeUndefined();
+    expect(readBuildCommit).toHaveBeenCalled();
   });
 });
 
