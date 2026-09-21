@@ -2175,10 +2175,74 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
-  it.each(["active execution", "pending decision", "recovery hold"] as const)(
-    "does not promise legacy Retry during %s and restores it when the gate clears",
-    (gate) => {
+  it.each(["failed", "timed_out"] as const)(
+    "retries the latest legacy %s attempt even when it has a transcript and final comment",
+    async (status) => {
       const onRetryFailedRun = vi.fn();
+      transcriptState.transcriptByRun.set("latest-attempt", [{
+        kind: "assistant",
+        ts: "2026-08-25T18:01:01.000Z",
+        text: "Starting the requested revision.",
+      }]);
+      const run = {
+        runtimeMode: "legacy" as const,
+        adapterType: "claude_local",
+        agentId: "agent-1",
+        agentName: "Direct agent",
+        startedAt: null,
+      };
+      render(
+        <TaskChatThread
+          comments={[{
+            id: "failure-comment",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: "agent-1",
+            authorUserId: null,
+            authorType: "agent",
+            presentation: null,
+            metadata: null,
+            body: "The startup handshake timed out.",
+            runId: "latest-attempt",
+            createdAt: new Date("2026-08-25T18:01:02.000Z"),
+            updatedAt: new Date("2026-08-25T18:01:02.000Z"),
+          }]}
+          onAdd={async () => {}}
+          issueStatus="todo"
+          onRetryFailedRun={onRetryFailedRun}
+          linkedRuns={[
+            { ...run, runId: "original-failure", status: "failed",
+              createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z",
+              finishedAt: "2026-08-25T18:00:02.000Z" },
+            { ...run, runId: "latest-attempt", status, errorCode: "acpx_handshake_timeout",
+              createdAt: "2026-08-25T18:01:00.000Z", startedAt: "2026-08-25T18:01:00.000Z",
+              finishedAt: "2026-08-25T18:01:02.000Z",
+              resultJson: { presentationDecision: { commentId: "failure-comment" } } },
+            { ...run, runId: "cancelled-automatic-retry", status: "cancelled",
+              errorCode: "execution_reconciliation_required",
+              createdAt: "2026-08-25T18:02:00.000Z", finishedAt: "2026-08-25T18:02:02.000Z" },
+          ]}
+        />,
+      );
+
+      expect(container.textContent).toContain("The startup handshake timed out.");
+      const buttons = container.querySelectorAll<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+      expect(buttons).toHaveLength(1);
+      flushSync(() => buttons[0]!.click());
+      await Promise.resolve();
+      expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("latest-attempt");
+    },
+  );
+
+  it.each(["active execution", "pending decision", "recovery hold"].flatMap(
+    (gate) => [false, true].map((hasTranscript) => ({ gate, hasTranscript })),
+  ))(
+    "does not promise legacy Retry during $gate (transcript: $hasTranscript) and restores it when the gate clears",
+    ({ gate, hasTranscript }) => {
+      const onRetryFailedRun = vi.fn();
+      if (hasTranscript) transcriptState.transcriptByRun.set("legacy-failed", [{
+        kind: "assistant", ts: "2026-08-25T18:00:01.000Z", text: "Starting the task.",
+      }]);
       const failedRun = {
         runId: "legacy-failed",
         runtimeMode: "legacy" as const,

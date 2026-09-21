@@ -1562,6 +1562,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           tone: "success",
         });
       }
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.issues.runs(issueId),
       });
