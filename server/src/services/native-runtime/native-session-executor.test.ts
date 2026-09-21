@@ -6570,6 +6570,25 @@ describe("native session bounded recovery", () => {
     expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
   });
 
+  it.each(["pending", "acknowledged"])("preserves a %s Stop when cancellation wins before the first turn", async (dispatchState) => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const stop: Record<string, unknown> = {};
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      Object.assign(stop, { nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", ...execution.binding,
+        scope: "run", reasonCode: "cancellation_run_only", dispatchState,
+        dispatched: true, intentAuditId: "intent", acknowledgementAuditId: "ack",
+      } });
+      throw new Error("native_session_cancelled");
+    });
+    state.upsertRecoveryAction.mockClear();
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "stop-before-first-turn",
+    })).rejects.toThrow("native_cancellation_pending_recovery");
+    expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+    expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+  });
+
   it("keeps typed integrity failure permanent even if a wrapper changes its message", () => {
     const failure = new NativeSessionProtocolIntegrityError(
       "semantic_input_digest_mismatch",

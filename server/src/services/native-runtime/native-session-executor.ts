@@ -8299,14 +8299,28 @@ async function executePaperclipNativeSessionWithinScope(
       // Stop before paperclip_finish is normal. Bounded provider teardown has
       // finished; a missing result must not overwrite cancellation or trigger
       // another turn to perform completion bookkeeping.
-      if (protocolIntegrityFailure === null && error instanceof Error && error.message === "native_finalization_missing: session returned no semantic result") {
+      const stoppedBeforeFirstTurn = error instanceof Error && error.message === "native_session_cancelled";
+      if (protocolIntegrityFailure === null && error instanceof Error &&
+          (stoppedBeforeFirstTurn || error.message === "native_finalization_missing: session returned no semantic result")) {
         const [stoppedRun] = await input.db.select().from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, input.execution.binding.runId),
           eq(heartbeatRuns.companyId, input.execution.binding.companyId),
           eq(heartbeatRuns.agentId, input.execution.binding.agentId),
           eq(heartbeatRuns.nativeIssueId, input.execution.binding.issueId),
         )).limit(1);
-        if (stoppedRun && (hasAcknowledgedNativeStopIntent(stoppedRun) || hasAcknowledgedNativeReassignmentStopIntent(stoppedRun))) {
+        const stopIntent = record(stoppedRun?.resultJson?.nativeCancellation);
+        // The backend can reject the first turn while the Stop API is still
+        // recording its acknowledgement. Preserve that audited, exactly bound
+        // cancellation instead of racing it with a generic provider failure.
+        const pendingStartupStop = stoppedBeforeFirstTurn &&
+          stopIntent.schema === "paperclip.native-cancellation.v1" &&
+          stopIntent.companyId === input.execution.binding.companyId &&
+          stopIntent.runId === input.execution.binding.runId &&
+          stopIntent.issueId === input.execution.binding.issueId &&
+          stopIntent.scope === "run" &&
+          typeof stopIntent.intentAuditId === "string" && stopIntent.intentAuditId.length > 0 &&
+          ["pending", "acknowledged"].includes(String(stopIntent.dispatchState));
+        if (stoppedRun && (pendingStartupStop || hasAcknowledgedNativeStopIntent(stoppedRun) || hasAcknowledgedNativeReassignmentStopIntent(stoppedRun))) {
           const [settled] = await input.db.update(nativeRunFinalizations).set({
             phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null,
             leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null, recoveryState: null,
