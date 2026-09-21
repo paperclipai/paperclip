@@ -90,6 +90,20 @@ describe("buildSandboxCrManifest", () => {
     ).toBe(true);
   });
 
+  it("declares the workspace mount as a git safe directory, so the export step can read the repository", () => {
+    const cr = buildSandboxCrManifest(baseInput);
+    const container = cr.spec.podTemplate.spec.containers[0];
+    const byName = Object.fromEntries(
+      (container.env as Array<{ name: string; value: string }>).map((entry) => [entry.name, entry.value]),
+    );
+    expect(byName.GIT_CONFIG_COUNT).toBe("1");
+    expect(byName.GIT_CONFIG_KEY_0).toBe("safe.directory");
+    expect(byName.GIT_CONFIG_VALUE_0).toBe("/workspace");
+    expect(byName.GIT_CONFIG_VALUE_0).toBe(
+      container.volumeMounts.find((mount: { name: string }) => mount.name === "workspace").mountPath,
+    );
+  });
+
   it("envFrom references the per-run secret", () => {
     const cr = buildSandboxCrManifest(baseInput);
     const envFrom = cr.spec.podTemplate.spec.containers[0].envFrom;

@@ -1,3 +1,10 @@
+/**
+ * Where the agent workspace is mounted in the pod. The value is also declared
+ * to git as a safe directory, because the mount root belongs to root while the
+ * container runs as uid 1000.
+ */
+const WORKSPACE_MOUNT_PATH = "/workspace";
+
 export interface BuildJobManifestInput {
   namespace: string;
   jobName: string;
@@ -64,7 +71,18 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
               // HOME is inside the readOnly root filesystem. Agent runtimes
               // can silently exit with code 0 and no output when HOME is
               // unwritable, so set this explicitly.
-              env: [{ name: "HOME", value: "/home/paperclip" }],
+              env: [
+                { name: "HOME", value: "/home/paperclip" },
+                // The workspace mount root belongs to root, because `fsGroup`
+                // sets the group and leaves the owner. Git refuses to work in a
+                // repository whose worktree belongs to another user, so the
+                // export step of a run fails with "detected dubious ownership".
+                // Declare the mount as safe through the environment, which needs
+                // no write to a git config file.
+                { name: "GIT_CONFIG_COUNT", value: "1" },
+                { name: "GIT_CONFIG_KEY_0", value: "safe.directory" },
+                { name: "GIT_CONFIG_VALUE_0", value: WORKSPACE_MOUNT_PATH },
+              ],
               envFrom: [{ secretRef: { name: input.envSecretName } }],
               securityContext: {
                 runAsNonRoot: true,
@@ -79,7 +97,7 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
                 limits: input.resources.limits ?? { cpu: "2", memory: "4Gi" },
               },
               volumeMounts: [
-                { name: "workspace", mountPath: "/workspace" },
+                { name: "workspace", mountPath: WORKSPACE_MOUNT_PATH },
                 { name: "home", mountPath: "/home/paperclip" },
                 { name: "cache", mountPath: "/home/paperclip/.cache" },
                 { name: "tmp", mountPath: "/tmp" },

@@ -44,6 +44,20 @@ describe("buildJobManifest", () => {
     expect(container.securityContext.capabilities.drop).toEqual(["ALL"]);
   });
 
+  it("declares the workspace mount as a git safe directory, so the export step can read the repository", () => {
+    const job = buildJobManifest(baseInput);
+    const env = job.spec.template.spec.containers[0].env as Array<{ name: string; value: string }>;
+    const byName = Object.fromEntries(env.map((entry) => [entry.name, entry.value]));
+    expect(byName.GIT_CONFIG_COUNT).toBe("1");
+    expect(byName.GIT_CONFIG_KEY_0).toBe("safe.directory");
+    expect(byName.GIT_CONFIG_VALUE_0).toBe("/workspace");
+    expect(byName.GIT_CONFIG_VALUE_0).toBe(
+      job.spec.template.spec.containers[0].volumeMounts.find(
+        (mount: { name: string }) => mount.name === "workspace",
+      ).mountPath,
+    );
+  });
+
   it("wraps the entrypoint in tini for PID 1", () => {
     const job = buildJobManifest(baseInput);
     const container = job.spec.template.spec.containers[0];
