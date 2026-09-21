@@ -234,9 +234,7 @@ export async function runEverydayFlow(input: Input) {
     `/${prefix}/issues/${issue.identifier ?? issue.id}`;
   async function openTask(issue: StoryIssue) {
     await page.goto(taskUrl(issue), { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("issue-detail-header")).toBeVisible({
-      timeout: 30_000,
-    });
+    await waitForTaskChatRendered(page, String(issue.title));
   }
   async function openParent() {
     await openTask(parent!);
