@@ -1,3 +1,4 @@
+import { defaultSlackAppName, slackBotNameForAgent } from "./slack-app-name";
 import { SetupWizardFooter } from "@/components/SetupWizard";
 import { ChatSetupNavigation } from "@/components/chat/ChatSetupNavigation";
 import { SlackAvatarStep } from "./SlackAvatarStep";
@@ -60,16 +61,6 @@ const knownProviders = new Set(Object.keys(providerNames));
 
 function isProvider(value: string | null): value is ChatProvider {
   return value !== null && knownProviders.has(value);
-}
-
-function slackBotNameForAgent(agentName: string): string {
-  const safeName = agentName
-    .normalize("NFKD")
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 24);
-  return safeName || "paperclip-agent";
 }
 
 function publicOrigin(value: string | null | undefined): string | null {
@@ -550,7 +541,7 @@ function ChatSdkEndpointSetup() {
               : avatarAgent.isError ? <p role="alert" className="text-sm text-destructive">Couldn’t load the agent’s avatar. <button className="underline" onClick={() => void avatarAgent.refetch()}>Try again</button></p>
               : <SlackAvatarStep
                   agentName={avatarAgent.data?.name ?? endpoint.assignedAgentName}
-                  appName={endpoint.setup?.slackApp?.appName ?? endpoint.botLabel ?? endpoint.assignedAgentName}
+                  appName={endpoint.setup?.slackApp?.appName ?? defaultSlackAppName(avatarAgent.data?.name ?? endpoint.assignedAgentName)}
                   avatarUrl={agentAvatarUrl(resolveAgentAppearance(avatarAgent.data?.appearance, endpoint.assignedAgentId), 512, 1, "rest")}
                   uploaded={avatarProgress.progress === "uploaded"}
                   onUploaded={() => { avatarProgress.save("uploaded"); setViewedStep(5); }}
@@ -769,7 +760,7 @@ function ProviderConnectStep({
   const defaultSlackBotName = slackBotNameForAgent(agentName);
   const [slackApp, setSlackApp] = useState<SlackAppConfiguration>(() =>
     endpoint.setup?.slackApp ?? {
-      appName: `${defaultSlackBotName.slice(0, 25)}-paperclip`,
+      appName: defaultSlackAppName(agentName),
       botName: defaultSlackBotName,
       command: defaultSlackCommand,
     },

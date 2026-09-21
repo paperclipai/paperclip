@@ -444,7 +444,14 @@ describe("chat setup and identity-link clipboard actions", () => {
     await click("5Add avatar");
     const download = container.querySelector<HTMLAnchorElement>('a[download]')!;
     expect(download.getAttribute("href")).toBe("/api/agent-avatars/cap-v1/cherry-pop/rest.png?size=512&scale=1");
-    expect(download.download).toBe("Maya-avatar.png");
+    expect(download.download).toBe("maya-paperclip-avatar.png");
+    const endpoint = client.getQueryData<ChatEndpoint>(["chat-endpoint-setup-resume", "endpoint-a"])!;
+    flushSync(() => client.setQueryData(["chat-endpoint-setup-resume", "endpoint-a"], {
+      ...endpoint, setup: { ...endpoint.setup, slackApp: { appName: "Custom Slack App", botName: "custom", command: "/custom" } },
+    }));
+    await settle();
+    expect(container.querySelector<HTMLAnchorElement>('a[download]')!.download).toBe("Custom-Slack-App-avatar.png");
+    expect(container.textContent).toContain("Custom Slack App");
     await click("I’ve uploaded the avatar");
     expect(container.querySelector('aside button[aria-current="step"]')?.textContent).toBe("6Connect your Slack account");
     await click("5Add avatar");
