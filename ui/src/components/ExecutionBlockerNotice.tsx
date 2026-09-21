@@ -19,7 +19,8 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
   });
   const failedRun = runs?.find(run => run.runId === blocker.runId &&
     ["failed", "timed_out"].includes(run.status));
-  const requiresInspection = blocker.cause === "native_continuation_requires_reconciliation";
+  const requiresInspection = blocker.cause === "native_continuation_requires_reconciliation" ||
+    blocker.cause === "native_session_cleanup_quarantined";
   const retry = useMutation({
     mutationFn: () => agentsApi.retryFailedRun(failedRun!.agentId, failedRun!.runId, companyId),
     onSuccess: () => {

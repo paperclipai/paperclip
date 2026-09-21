@@ -151,7 +151,14 @@ export async function runWorkerCrash(context: Context) {
     await input.evidence("chat-worker-fault-delivered.json", fault);
     context.expectedStops.set(boundary.id, "failed");
     await expect.poll(async () => (await input.api.get<ChatRun>(`/api/heartbeat-runs/${boundary.id}`)).status, { timeout: 120_000 }).toBe("failed");
-    const failed = await input.api.get<Row>(`/api/heartbeat-runs/${boundary.id}`);
+    // A failed transport may still have a scheduled same-run retry. Wait for
+    // recovery classification before treating it as available for a user Retry.
+    let failed: Row = {};
+    await expect.poll(async () => {
+      failed = await input.api.get<Row>(`/api/heartbeat-runs/${boundary.id}`);
+      return ["failed", "recovery_needed"].includes(failed.execution?.phase);
+    }, { timeout: 120_000 }).toBe(true);
+    await input.evidence("chat-worker-settled-failure.json", failed);
     await input.capture("worker-failed", "Worker loss before user Retry", "worker-failed.png");
     await writeFile(wait.gate, reference);
     if (failed.errorCode === "native_session_cleanup_quarantined") {
@@ -159,6 +166,7 @@ export async function runWorkerCrash(context: Context) {
       // the UI/API must not offer an attempt which cannot pass cleanup admission.
       await input.page.reload({ waitUntil: "domcontentloaded" });
       await expect(input.page.getByTestId("task-chat-composer-input")).toBeVisible();
+      await expect(input.page.getByRole("status", { name: "Task recovery" }).getByRole("link", { name: "Inspect run" })).toBeVisible();
       await expect(input.page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
       const refused = await input.api.request.post(`/api/agents/${input.fixtures.agent.id}/wakeup`, {
         data: { failedRunId: failed.id, reason: "retry_failed_run" },
@@ -173,7 +181,13 @@ export async function runWorkerCrash(context: Context) {
     }
     const retry = input.page.getByRole("button", { name: "Retry", exact: true });
     await expect(retry).toHaveCount(1, { timeout: 60_000 });
-    await retry.click();
+    const [retryResponse] = await Promise.all([
+      input.page.waitForResponse(response => response.request().method() === "POST" &&
+        new URL(response.url()).pathname === `/api/agents/${input.fixtures.agent.id}/wakeup`),
+      retry.click(),
+    ]);
+    await input.evidence("chat-worker-retry-response.json", { status: retryResponse.status(), body: await retryResponse.json() });
+    expect(retryResponse.ok(), "The visible Retry must admit an attempt before waiting for its result").toBe(true);
     await context.idle(2);
     const e = { boundary, failed, runs: await context.allRuns(), issueId: context.issue().id,
       prompt, comments: await context.comments(), reference, marker, planBefore,

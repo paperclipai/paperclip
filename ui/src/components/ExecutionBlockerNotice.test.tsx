@@ -49,11 +49,11 @@ describe("stopped task recovery notice", () => {
     expect(container.textContent).toContain("Verify the external action outcome before continuing.");
     expect(container.textContent).not.toContain("Automatic recovery of this task stopped.");
   });
-  it("links to the source run instead of offering a retry rejected by native reconciliation", async () => {
+  it.each(["native_continuation_requires_reconciliation", "native_session_cleanup_quarantined"])("links to the source run instead of offering a retry rejected by %s", async (cause) => {
     await act(async () => root.render(<QueryClientProvider client={client}>
       <ExecutionBlockerNotice companyId="company" issueId="task" onRetried={onRetried} blocker={{
         recoveryActionId: "recovery", runId: "failed-run", agentId: "agent",
-        cause: "native_continuation_requires_reconciliation",
+        cause,
         nextAction: "Inspect the original failure and reconcile the previous execution before continuing.",
       }} />
     </QueryClientProvider>));

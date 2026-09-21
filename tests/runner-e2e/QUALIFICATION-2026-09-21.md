@@ -115,3 +115,66 @@ This qualifies these two-turn grounding stories, not general answer quality,
 statistical reliability, multilingual behavior, or arbitrary long conversations.
 The five review dimensions remain factual grounding, stale-premise correction,
 honest uncertainty, useful next step, and clear prose. No production prompt changed.
+
+## Active reassignment: corrected live proof
+
+[Campaign 35659014397](https://github.com/paperclipai/paperclip/actions/runs/35659014397)
+on `cf6d4ae3a8576d822861bc916e7f536d0a0b7bc7`: **2/2 passed**, both
+cleanup passes, using `gpt-5.6-sol` and `claude-sonnet-5`.
+
+The boundary snapshot proves the original worker was running with a saved draft.
+Chat then reassigns the existing task to a second agent. The original stops with
+`issue_reassigned` before the successor starts; exactly one successor completes
+the same task. The plan, scope, and original draft revision survive. The successor
+may revise the canonical document, and its final contribution must be attributed
+to that successor. The audit records the native reassignment tool.
+
+The preceding [campaign 35657945095](https://github.com/paperclipai/paperclip/actions/runs/35657945095)
+on `6039b02ed` remains failed: both handoffs actually completed, but the draft
+oracle incorrectly required the latest document to remain frozen. Both successors
+legitimately revised that document. The new oracle requires the exact original
+revision to remain retrievable through the history API while allowing progress.
+Negative calibration rejects deletion or alteration of that revision. Both crash
+cases in the preceding campaign independently reproduced cleanup quarantine.
+
+## Measurement limits
+
+All selected environments here are local Linux GitHub Actions workers, not
+Daytona-hosted execution or the user's staging company. The result JSON retains
+source SHA, suite definition hash, profile/model, attempt, timing, token usage,
+and billing coverage; initial failures are never regraded as passes.
+
+Onboarding reports complete billing for only 4/26 results; active handoff reports
+incomplete billing for both interrupted workers; the two answer-quality results
+report complete coverage. Provider-reported monetary cost is zero while billing
+type is unknown, and local runtime is not metered. This does **not** establish
+zero actual spend. Recorded total tokens (including cached input) are 9,812,045
+for onboarding, 825,131 for final handoffs, and 1,273,098 for grounded answers.
+
+Public campaign viewers use the standard
+[Product E2E history](https://d1p6rlowie26tp.cloudfront.net/runner-e2e/)
+with the `gha-<workflow-run-id>-<attempt>` campaign identifier. These are bounded
+story qualifications, not a claim that all native-runner reliability is solved.
+
+## Crash guard follow-up
+
+[Campaign 35658772755](https://github.com/paperclipai/paperclip/actions/runs/35658772755)
+did not reach provider cases: GitHub artifact finalization returned HTTP 403.
+A replacement [campaign 35659580100](https://github.com/paperclipai/paperclip/actions/runs/35659580100)
+on `a11bd236e33833dc081cc3702baa3d3f98d8d12f` retained two failed recovery
+attempts, both with successful disposable cleanup. The API correctly refused
+Retry with 409 and created no second run, but the eval then waited for a run
+that had never been admitted.
+
+Retained network evidence explains the transition: `provider_transport_failed`
+first schedules a same-run retry; that attempt then reaches cleanup quarantine.
+The fixture now waits for this recovery classification before requesting a user
+retry. Screenshots also exposed a separate Retry button in the task-recovery
+banner. That banner previously recognized only native continuation reconciliation;
+it now also recognizes cleanup quarantine and links to Inspect run. Its regression
+test failed before the fix and passes afterward. The live guard must verify this
+link is rendered, no Retry remains, the API refuses retry, and saved work survives.
+
+These corrections do not supply a successful post-crash continuation. Worker-crash
+recovery remains unqualified until an agreed recovery policy is implemented and
+its successful outcome passes the eval.
