@@ -19826,17 +19826,24 @@ export function heartbeatService(
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
+      // The snapshot above cannot see a bound run claimed earlier in this same
+      // pass, and with two free slots one pass can claim a bound run and then a
+      // taskless run behind it — the same two-processes-one-tree hazard. Track
+      // what this pass has already claimed, not just what was running when it
+      // started.
+      let hasIssueBoundLiveRun = hasIssueBoundRunningRun;
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        if (
-          hasIssueBoundRunningRun &&
-          !readNonEmptyString(parseObject(queuedRun.contextSnapshot).issueId)
-        ) {
-          continue;
-        }
+        const queuedIssueId = readNonEmptyString(
+          parseObject(queuedRun.contextSnapshot).issueId,
+        );
+        if (hasIssueBoundLiveRun && !queuedIssueId) continue;
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
-        if (claimed) claimedRuns.push(claimed);
+        if (claimed) {
+          claimedRuns.push(claimed);
+          if (queuedIssueId) hasIssueBoundLiveRun = true;
+        }
       }
       if (claimedRuns.length === 0) return [];
 

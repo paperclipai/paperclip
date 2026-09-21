@@ -179,6 +179,25 @@ describeEmbeddedPostgres("heartbeat taskless run admission", () => {
     return runId;
   }
 
+  async function insertQueuedBoundRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+  }) {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      responsibleUserId: "responsible-user",
+      contextSnapshot: { issueId: input.issueId, wakeReason: "issue_assigned" },
+    });
+    return runId;
+  }
+
   async function readRun(runId: string) {
     return db
       .select({
@@ -252,6 +271,28 @@ describeEmbeddedPostgres("heartbeat taskless run admission", () => {
     const tasklessRun = await waitForRunToLeaveQueued(tasklessRunId);
     expect(tasklessRun?.status).not.toBe("queued");
   }, 10_000);
+
+  it("leaves a taskless queued run queued when the bound run is claimed in the same pass", async () => {
+    // Two free slots and no running run: the pass itself claims the bound run
+    // and must then defer the taskless run behind it. A guard that only looks at
+    // the runs active before the loop admits both, and the second one writes the
+    // same workspace the first one just claimed.
+    const { companyId, agentId, issueId } = await insertAgentAndIssue();
+    const boundRunId = await insertQueuedBoundRun({ companyId, agentId, issueId });
+    const tasklessRunId = await insertQueuedTasklessRun({ companyId, agentId });
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    await heartbeat.resumeQueuedRuns();
+
+    // Read straight after the pass, before the claimed run's process has had a
+    // chance to finish and re-enter admission through the drain path.
+    expect((await readRun(boundRunId))?.status).toBe("running");
+    expect(await readRun(tasklessRunId)).toMatchObject({
+      status: "queued",
+      startedAt: null,
+    });
+    expect(await countRunning()).toBe(1);
+  }, 15_000);
 
   it("still admits an issue-bound run while an issue-bound run is live", async () => {
     const { companyId, agentId, issueId } = await insertAgentAndIssue();
