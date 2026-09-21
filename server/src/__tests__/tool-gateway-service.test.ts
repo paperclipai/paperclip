@@ -381,8 +381,17 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(nativeResponses).toMatchObject([{ interactionId: interaction.id, response: { status: "accepted", result: { toolAction: { status: "executed", resultSummary: expect.stringContaining("bodyLength") } } } }]);
     expect(wakeup).not.toHaveBeenCalled();
     expect((await db.select().from(toolActionDeliveries))[0].deliveredAt).toBeNull();
+    await deliveries.deliverForRun({ companyId: company.id, runId: run.id });
+    expect(wakeup).not.toHaveBeenCalled();
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
     const restarted = toolActionDeliveryService(db, { wakeup });
+    await deliveries.deliverForRun({ companyId: randomUUID(), runId: run.id });
+    await deliveries.deliverForRun({ companyId: company.id, runId: randomUUID() });
+    expect(wakeup).not.toHaveBeenCalled();
+    // The original executor's terminal cleanup must deliver a review that was
+    // approved while it was running, without waiting for the scheduler sweep.
+    await deliveries.deliverForRun({ companyId: company.id, runId: run.id });
+    expect(wakeup).toHaveBeenCalledTimes(1);
     await Promise.all([restarted.sweepPending(), deliveries.sweepPending()]);
     await gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor: { userId: "second-reviewer" } });
     await restarted.sweepPending();

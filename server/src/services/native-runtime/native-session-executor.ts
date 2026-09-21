@@ -233,6 +233,25 @@ async function waitForNativeStartupForRestart(runId: string) {
   }
 }
 
+async function waitForNativeStartupForCancellation(runId: string) {
+  const startup = nativeSessionStartups.get(runId);
+  if (!startup) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      startup.promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new NativeCancellationPendingRecoveryError()),
+          NATIVE_SESSION_CANCELLATION_STARTUP_GRACE_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function detachNativeSessionsForRestart(
   runIds: readonly string[],
 ): Promise<{
@@ -298,6 +317,7 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
 const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
 const NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
 const NATIVE_SESSION_CANCELLATION_CLEANUP_GRACE_MS = 2_000;
+const NATIVE_SESSION_CANCELLATION_STARTUP_GRACE_MS = 30_000;
 const NATIVE_RUNTIME_REQUEST_RESOLUTION_CACHE_MAX = 256;
 type NativeRuntimeRequestResolution = {
   runId: string;
@@ -6562,6 +6582,13 @@ export async function cancelNativeSession(
         auditId,
       };
     }
+  }
+  // Runner startup publishes the provider handle asynchronously. A stop that
+  // arrives in that window must wait for publication (or definitive startup
+  // failure) before acknowledging cancellation; otherwise the late provider
+  // session can begin work after the stop receipt was committed.
+  if (!activeNativeSessions.has(runId) && nativeSessionStartups.has(runId)) {
+    await waitForNativeStartupForCancellation(runId);
   }
   const active = activeNativeSessions.get(runId);
   let dispatched = false;

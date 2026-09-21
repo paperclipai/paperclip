@@ -4748,6 +4748,78 @@ describe("native startup restart detachment", () => {
     }
   });
 
+  it("waits for delayed runner startup before acknowledging cancellation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "native-cancel-startup-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    let releaseProvider: (() => void) | undefined;
+    try {
+      state.cancel.mockReset().mockReturnValue({ cleanup: Promise.resolve() });
+      const cancelling = structuredClone(execution);
+      cancelling.binding.runId = "cancel-during-session-open";
+      let releaseStartup!: () => void;
+      let startupAdmitted!: () => void;
+      let providerWorkAccepted = false;
+      const opening = new Promise<void>(resolve => {
+        releaseStartup = resolve;
+      });
+      const admitted = new Promise<void>(resolve => {
+        startupAdmitted = resolve;
+      });
+      const providerStarted = new Promise<void>(resolve => {
+        releaseProvider = resolve;
+      });
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        startupAdmitted();
+        await opening;
+        await options.onSession?.({ cancel: state.cancel });
+        await providerStarted;
+        providerWorkAccepted = true;
+        await options.onSession?.(null);
+        return {
+          result: { summary: "cancelled" },
+          terminal: { runTerminalState: "cancelled" },
+          turnId: "turn",
+          normalizedSessionId: "session",
+          providerSessionId: null,
+          driverKind: "test",
+          driverVersion: "1",
+          nativeEventCount: 1,
+          highestContiguousSourceSeq: 1,
+        };
+      });
+      const running = executePaperclipNativeSession({
+        db: leaseDb(cancelling),
+        execution: cancelling,
+        runnerInstanceId: "runner",
+        useRunnerd: true,
+      });
+      await admitted;
+      let settled = false;
+      const cancellation = cancelNativeSession(
+        cancelling.binding.runId,
+        "user stop",
+      ).then(() => {
+        settled = true;
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(state.cancel).not.toHaveBeenCalled();
+
+      releaseStartup();
+      await cancellation;
+      expect(state.cancel).toHaveBeenCalledOnce();
+      expect(providerWorkAccepted).toBe(false);
+      releaseProvider();
+      await running;
+    } finally {
+      releaseProvider?.();
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("remembers shutdown while the session is still opening and detaches its late publication", async () => {
     const restarting = structuredClone(execution);
     restarting.binding.runId = "restart-during-session-open";

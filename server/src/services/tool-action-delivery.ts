@@ -337,6 +337,29 @@ export function toolActionDeliveryService(
   }
   return {
     deliver,
+    async deliverForRun(input: { companyId: string; runId: string }) {
+      // A review can settle before its source run yields. Retry that run's
+      // receipts as soon as execution cleanup finishes; the periodic sweep
+      // remains the recovery path if this callback is interrupted.
+      const pending = await db
+        .select({ id: toolActionDeliveries.actionRequestId })
+        .from(toolActionDeliveries)
+        .innerJoin(toolActionRequests, and(
+          eq(toolActionRequests.id, toolActionDeliveries.actionRequestId),
+          eq(toolActionRequests.companyId, input.companyId),
+        ))
+        .innerJoin(toolInvocations, and(
+          eq(toolInvocations.id, toolActionRequests.invocationId),
+          eq(toolInvocations.companyId, input.companyId),
+          eq(toolInvocations.runId, input.runId),
+        ))
+        .where(and(
+          eq(toolActionDeliveries.companyId, input.companyId),
+          isNull(toolActionDeliveries.deliveredAt),
+          inArray(toolActionRequests.status, terminalStatuses),
+        ));
+      for (const row of pending) await deliver(row.id);
+    },
     async sweepPending() {
       let cursor: string | undefined;
       let scanned = 0;
