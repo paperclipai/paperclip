@@ -4753,11 +4753,11 @@ describe("native startup restart detachment", () => {
     const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
     let releaseProvider: (() => void) | undefined;
+    let releaseStartup: (() => void) | undefined;
     try {
       state.cancel.mockReset().mockReturnValue({ cleanup: Promise.resolve() });
       const cancelling = structuredClone(execution);
       cancelling.binding.runId = "cancel-during-session-open";
-      let releaseStartup!: () => void;
       let startupAdmitted!: () => void;
       let providerWorkAccepted = false;
       const opening = new Promise<void>(resolve => {
@@ -4806,13 +4806,14 @@ describe("native startup restart detachment", () => {
       expect(settled).toBe(false);
       expect(state.cancel).not.toHaveBeenCalled();
 
-      releaseStartup();
+      releaseStartup!();
       await cancellation;
       expect(state.cancel).toHaveBeenCalledOnce();
       expect(providerWorkAccepted).toBe(false);
-      releaseProvider();
+      releaseProvider!();
       await running;
     } finally {
+      releaseStartup?.();
       releaseProvider?.();
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
       else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
