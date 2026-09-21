@@ -43,6 +43,8 @@ describe("Slack avatar download", () => {
     expect(downloaded).toEqual(["Maya-App-avatar.png"]);
     expect(createObjectURL).toHaveBeenCalledOnce();
     expect(node.querySelector('[role="alert"]')).toBeNull();
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:avatar");
   });
   it("does not download a successful HTML login response as an image", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, headers: new Headers({ "content-type": "text/html" }) }));
