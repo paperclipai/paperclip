@@ -1,5 +1,9 @@
 import { SetupWizardFooter } from "@/components/SetupWizard";
 import { ChatSetupNavigation } from "@/components/chat/ChatSetupNavigation";
+import { SlackAvatarStep } from "./SlackAvatarStep";
+import { useSlackAvatarProgress } from "./slack-avatar-progress";
+import { agentAvatarUrl } from "@/lib/agent-avatar-url";
+import { resolveAgentAppearance } from "@paperclipai/shared";
 import { SlackIdentityStep } from "./SlackIdentityStep";
 import { PhotonConnectStep } from "./PhotonConnectStep";
 import { EmailEndpointSetup } from "./EmailEndpointSetup";
@@ -358,11 +362,14 @@ function ChatSdkEndpointSetup() {
     reconnectRequested,
   );
   const isSlack = provider === "slack";
-  const tryStep = isSlack ? 5 : 2;
+  const avatarProgress = useSlackAvatarProgress(selectedCompanyId, endpoint?.id);
+  const tryStep = isSlack ? 6 : 2;
   const availableStep = endpoint
     ? !repairing &&
       (endpoint.setup?.step === "test" || endpoint.setup?.step === "complete")
-      ? isSlack && !slackIdentityReady && endpoint.setup?.step !== "complete" ? 4 : tryStep
+      ? isSlack && endpoint.setup?.step !== "complete"
+        ? !avatarProgress.progress ? 4 : !slackIdentityReady ? 5 : tryStep
+        : tryStep
       : isSlack && endpoint.providerAccountId && !repairing ? 3
       : isSlack && (slackCredentialsReady || repairing) ? 2 : 1
     : 0;
@@ -407,7 +414,7 @@ function ChatSdkEndpointSetup() {
   if (purpose === "choice") {
     return (
       <div className="max-w-2xl space-y-6">
-        <ChatSetupNavigation labels={provider === "slack" ? ["Choose agent", "Create Slack app", "Add credentials", "Verify Slack connection", "Connect your Slack account", "Try it"] : undefined} step={0} availableStep={0} onSelect={() => setPurpose("chat")} />
+        <ChatSetupNavigation labels={provider === "slack" ? ["Choose agent", "Create Slack app", "Add credentials", "Verify Slack connection", "Add avatar", "Connect your Slack account", "Try it"] : undefined} step={0} availableStep={0} onSelect={() => setPurpose("chat")} />
         <div>
           <h1 className="text-xl font-bold">Choose how to connect</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -446,11 +453,11 @@ function ChatSdkEndpointSetup() {
     );
   }
 
-  const selectedAgent = activeAgents.find((agent) => agent.id === agentId);
+  const selectedAgent = agentsQuery.data?.find((agent) => agent.id === agentId);
   return (
     <div className="max-w-2xl space-y-6">
       <ChatSetupNavigation
-        labels={isSlack ? ["Choose agent", "Create Slack app", "Add credentials", "Verify Slack connection", "Connect your Slack account", "Try it"] : undefined}
+        labels={isSlack ? ["Choose agent", "Create Slack app", "Add credentials", "Verify Slack connection", "Add avatar", "Connect your Slack account", "Try it"] : undefined}
         step={step}
         availableStep={availableStep}
         disabled={createEndpoint.isPending || setupAction.isPending || generateSetupSecret.isPending || testConnection.isPending}
@@ -533,6 +540,22 @@ function ChatSdkEndpointSetup() {
           </div>
         )}
         {endpoint && isSlack && step === 4 && (
+          <div className="space-y-4">
+            {agentsQuery.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading agent avatar…</p>
+              : agentsQuery.isError ? <p role="alert" className="text-sm text-destructive">Couldn’t load the agent’s avatar. <button className="underline" onClick={() => void agentsQuery.refetch()}>Try again</button></p>
+              : <SlackAvatarStep
+                  agentName={selectedAgent?.name ?? endpoint.assignedAgentName}
+                  appName={endpoint.setup?.slackApp?.appName ?? endpoint.botLabel ?? endpoint.assignedAgentName}
+                  avatarUrl={agentAvatarUrl(resolveAgentAppearance(selectedAgent?.appearance, endpoint.assignedAgentId), 512, 1, "rest")}
+                  uploaded={avatarProgress.progress === "uploaded"}
+                  onUploaded={() => { avatarProgress.save("uploaded"); setViewedStep(5); }}
+                  onSkip={() => { if (!avatarProgress.progress) avatarProgress.save("skipped"); setViewedStep(5); }}
+                  onSaveExit={() => navigate("/apps")}
+                />}
+            {(agentsQuery.isPending || agentsQuery.isError) && <SetupWizardFooter onSaveExit={() => navigate("/apps")}><Button onClick={() => { avatarProgress.save("skipped"); setViewedStep(5); }}>Skip for now</Button></SetupWizardFooter>}
+          </div>
+        )}
+        {endpoint && isSlack && step === 5 && (
           <SlackIdentityStep
             endpointId={endpoint.id}
             command={endpoint.setup?.slackApp?.command ?? endpoint.setup?.command ?? "/paperclip"}
@@ -540,7 +563,7 @@ function ChatSdkEndpointSetup() {
             onSaveExit={() => navigate("/apps")}
             onConnected={() => {
               setSlackIdentityReady(true);
-              setViewedStep(5);
+              setViewedStep(6);
             }}
           />
         )}
@@ -569,7 +592,7 @@ function ChatSdkEndpointSetup() {
             onSaveExit={() => navigate("/apps")}
           />
         )}
-        {step !== 0 && !(isSlack && (step === 1 || step === 2 || step === 3 || step === 4 || step === 5)) && <div className="flex justify-start">
+        {step !== 0 && !(isSlack && (step === 1 || step === 2 || step === 3 || step === 4 || step === 5 || step === 6)) && <div className="flex justify-start">
           <Button className="text-muted-foreground" variant="ghost" onClick={() => navigate("/apps")}>
             Save &amp; exit
           </Button>

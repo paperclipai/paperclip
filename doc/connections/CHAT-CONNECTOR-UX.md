@@ -300,3 +300,18 @@ email integration's actual mechanisms.
 
 The intended result is consistent interaction and permission semantics across
 providers, with instructions and step count tailored to each real workflow.
+
+## Agent avatars in provider setup
+
+Offer the selected agent's existing avatar as a downloadable image when the
+provider supports a custom bot image. Keep manual upload instructions next to
+the download, use the saved provider app name, and distinguish user confirmation
+from provider verification. Keep a download in connector Settings so skipping
+the optional setup step does not hide it permanently.
+
+Slack uses a 512 × 512 PNG from the existing avatar renderer. Its optional step
+comes after connection verification and before personal account linking. Upload
+the file through Basic Information → Display Information → App icon & Preview,
+confirm the crop, then save in Slack. Confirmation/skipping is browser-local,
+scoped to the company and endpoint; it is not proof of a Slack configuration
+change. No new Slack scope or API mutation is needed.
