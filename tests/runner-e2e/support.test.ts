@@ -705,6 +705,16 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it("classifies sandbox file-transfer RPC deadlines without hiding other RPC defects", () => {
+    for (const method of ["environmentSyncIn", "environmentSyncOut"]) {
+      expect(classifyFailure(new Error(
+        `Stopped waiting for everyday recover-controller settled: native execution failed native_session_interrupted: RPC call "${method}" timed out after 330000ms`,
+      ))).toBe("transient_infrastructure");
+    }
+    expect(classifyFailure(new Error('RPC call "run.attach" timed out after 330000ms')))
+      .toBe("candidate_failure");
+  });
+
   it.each([
     "native_session_close_unrecoverable: provider transport failed",
     "Provider connection closed: runner did not durably suspend before checkpoint",
