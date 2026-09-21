@@ -1311,26 +1311,26 @@ describe("runner E2E macOS shared-memory cleanup", () => {
   });
 });
 
+
 describe("persisted final response selection", () => {
   const comments = [
-    { id: "attachment", body: "Prepared file.", createdByRunId: "run-1" },
+    { id: "attachment-comment", body: "Prepared file for this response.", createdByRunId: "run-1" },
     { id: "reply", body: "FINAL", createdByRunId: "run-1" },
-    { id: "other", body: "other run", createdByRunId: "run-2" },
+    { id: "other-run", body: "unrelated", createdByRunId: "run-2" },
   ];
-  it("uses the persisted presentation comment for final response grading", () => {
-    expect(persistedFinalRunMessage(comments, {
-      id: "run-1",
-      resultJson: { presentationDecision: { commentId: "reply" } },
-    })).toBe("FINAL");
+  const run = { id: "run-1", resultJson: { presentationDecision: { commentId: "reply" } } };
+  it("grades the real final comment independently from an attachment's preparation comment", () => {
+    expect(persistedFinalRunMessage(comments, run)).toBe("FINAL");
   });
-  it("fails closed when the selected response is absent", () => {
-    expect(persistedFinalRunMessage(comments, {
-      id: "run-1",
-      resultJson: { presentationDecision: { commentId: "other" } },
-    })).toBe("");
+  it("fails closed when the selected final comment is missing or belongs to another run", () => {
+    expect(persistedFinalRunMessage(comments.slice(0, 1), run)).toBe("");
+    expect(persistedFinalRunMessage(comments, { ...run, resultJson: { presentationDecision: { commentId: "other-run" } } })).toBe("");
+  });
+  it("keeps legacy fallback and does not replace absent visible text with a summary", () => {
+    expect(persistedFinalRunMessage(comments, { id: "run-1" })).toBe("Prepared file for this response.\nFINAL");
+    expect(persistedFinalRunMessage([], { id: "run-1", resultJson: { summary: "FINAL" } })).toBe("");
   });
 });
-
 
 describe("warm continuity grading scope", () => {
   it("checks workspace bytes and lifecycle without grading exact response formatting", () => {

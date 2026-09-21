@@ -840,9 +840,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut delayed_interrupt_terminal_scheduled = false;
     let mut answered_questions = 0u8;
     let mut replayed_completed_tool_calls = 0_u64;
+    let mut rejected_helper_requests = 0_u8;
 
     for line in io::stdin().lock().lines() {
         let message: Value = serde_json::from_str(&line?)?;
+        if message.get("method").is_none()
+            && message
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("helper-request-"))
+        {
+            if message.pointer("/result/success") != Some(&json!(false))
+                && message.get("error").is_none()
+            {
+                return Err("helper request was granted root authority".into());
+            }
+            rejected_helper_requests += 1;
+            log_call(call_log.as_deref(), "helper-request:rejected")?;
+            if rejected_helper_requests == 3 {
+                send(
+                    json!({"id":"tool-request-1", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"root-after-helper", "tool":"get_task_context", "arguments":{}
+                    }}),
+                )?;
+            }
+            continue;
+        }
         if message.get("method").is_none()
             && message
                 .get("id")
@@ -1447,6 +1471,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if args.iter().any(|value| value == "--helper-tool-requests") {
+                    if !args.iter().any(|value| value == "--foreign-helper-tool") {
+                        send(json!({"method":"item/completed", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "item":{"id":"spawn-helper", "type":"collabAgentToolCall",
+                                "tool":"spawnAgent", "status":"completed",
+                                "senderThreadId":state.thread_id, "receiverThreadIds":["helper-thread"]}
+                        }}))?;
+                    }
+                    for (index, tool) in ["get_task_context", "paperclip_finish"].iter().enumerate()
+                    {
+                        send(
+                            json!({"id":format!("helper-request-{index}"), "method":"item/tool/call", "params":{
+                                "threadId":"helper-thread", "turnId":"helper-turn",
+                                "callId":format!("helper-call-{index}"), "tool":tool, "arguments":{}
+                            }}),
+                        )?;
+                    }
+                    send(
+                        json!({"id":"helper-request-question", "method":"item/tool/requestUserInput", "params":{
+                            "threadId":"helper-thread", "turnId":"helper-turn", "itemId":"helper-question",
+                            "questions":[]
+                        }}),
+                    )?;
+                    continue;
+                }
                 if descendant_notifications {
                     // Real Codex announces a child's MCP startup before its
                     // thread/started notification establishes parent lineage.

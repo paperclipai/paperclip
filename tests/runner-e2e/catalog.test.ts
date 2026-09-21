@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normalizePrpResultSignals } from "../../packages/paperclip-runner/src/protocol/result-normalization.js";
 import {
   connectionReviewSuite,
   runnerEnvironments,
@@ -25,6 +26,19 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("supplies an actionable human review in native warm completion examples", () => {
+    const prompts = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
+    for (const [index, prompt] of prompts.entries()) {
+      const match = prompt.match(/attentionRequests:(\[.*?\]),evidence:/);
+      expect(match).not.toBeNull();
+      const signals = normalizePrpResultSignals({ attentionRequests: JSON.parse(match![1]) });
+      expect(signals.ignoredAttentionRequests).toEqual([]);
+      expect(signals.actionableAttentionRequests).toHaveLength(index === 2 ? 0 : 1);
+      if (index < 2) expect(signals.actionableAttentionRequests[0]).toMatchObject({kind:"review", ownerClass:"human"});
+      expect(prompt).not.toContain("call request_human_input");
+    }
+  });
+
   it("defines sixteen local connection-review journeys without expanding the default matrix", () => {
     expect(connectionReviewSuite.expectedMatrixSize).toBe(16);
     expect(new Set(connectionReviewSuite.profiles.map(profile => profile.id))).toEqual(new Set(["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"]));
