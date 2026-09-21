@@ -28,8 +28,7 @@ vi.mock("@/api/tools", () => ({
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     archiveConnection: (
       connectionId: string,
-      options?: { confirmComposioChildren?: boolean },
-    ) => archiveConnectionMock(connectionId, options),
+    ) => archiveConnectionMock(connectionId),
   },
 }));
 
@@ -190,7 +189,7 @@ describe("Connectors landing page", () => {
     return client;
   }
 
-  it("hides cached MCP aggregators until enabled and preserves existing legacy connections", async () => {
+  it("hides cached MCP aggregators until enabled and preserves saved MCP connections", async () => {
     const providers = ["zapier", "arcade", "composio", "executor"];
     listGalleryMock.mockResolvedValue({ apps: [...providers, "notion"].map(getAppStoreDefinition) });
     const client = await renderBrowse();
@@ -200,8 +199,8 @@ describe("Connectors landing page", () => {
     await flushReact();
     for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
     await act(() => {
-      client.setQueryData(queryKeys.tools.connections("company-1"), { connections: [connection({ id: "legacy", applicationId: "legacy-app", config: { sourceTemplateKey: "composio", connectionMethodKey: "api-key" }, transport: "rest_api" })] });
-      client.setQueryData(queryKeys.tools.applications("company-1"), { applications: [application({ id: "legacy-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
+      client.setQueryData(queryKeys.tools.connections("company-1"), { connections: [connection({ id: "saved", applicationId: "saved-app", config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp" }, transport: "mcp_remote" })] });
+      client.setQueryData(queryKeys.tools.applications("company-1"), { applications: [application({ id: "saved-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
       client.setQueryData(queryKeys.instance.experimentalSettings, { enableMcpAggregators: false });
     });
     await flushReact();
@@ -451,9 +450,7 @@ describe("Connectors landing page", () => {
     });
     await flushReact();
 
-    expect(archiveConnectionMock).toHaveBeenCalledWith("conn-notion", {
-      confirmComposioChildren: false,
-    });
+    expect(archiveConnectionMock).toHaveBeenCalledWith("conn-notion");
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Connection removed",

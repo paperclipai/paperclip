@@ -59,7 +59,6 @@ const GOOGLE_CALENDAR = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "
 const GOOGLE_DRIVE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
 const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
 const PAGERDUTY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "pagerduty")!;
-const COMPOSIO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "composio")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -636,8 +635,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
    * methods must still let the operator deliberately choose a personal identity.
    */
   it("defaults flexible methods to company identity and keeps personal credentials submittable", async () => {
-    mockSearch.value = "source=composio&method=api-key";
-    listGalleryMock.mockResolvedValue({ apps: [{ ...COMPOSIO, methods: COMPOSIO.methods.filter((method) => method.key === "api-key") }, POSTHOG] });
+    mockSearch.value = "source=posthog&method=mcp-api-key";
+    listGalleryMock.mockResolvedValue({ apps: [{ ...POSTHOG, methods: POSTHOG.methods.filter((method) => method.key === "mcp-api-key") }] });
 
     const identityChoices = () => {
       const radios = Array.from(
@@ -652,7 +651,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     // --- API-key-only method: shared by default, personal still offered ------
     let root = await render();
     await act(async () => {
-      buttonContaining("Composio")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonContaining("PostHog")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -682,7 +681,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
-    await act(async () => setInputValue(keyField!, "composio-personal-token"));
+    await act(async () => setInputValue(keyField!, "posthog-personal-token"));
     await flushReact();
     await act(async () => {
       buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -693,7 +692,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     // a personal grant. A disabled "Just me" would make this unreachable.
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
-      galleryKey: "composio",
+      galleryKey: "posthog",
       grantKind: "user",
     });
 

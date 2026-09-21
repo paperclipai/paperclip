@@ -707,31 +707,7 @@ const apps = [
     "productivity",
     "composio.dev",
     ["https://backend.composio.dev/*", "https://connect.composio.dev/*", "https://mcp.composio.dev/*", "https://*.composio.dev/*"],
-    [method("mcp", "mcp_remote", "none", { serverUrl: "https://connect.composio.dev/mcp" }, "S3", "Sign in to Composio Connect, or paste an externally configured MCP session URL and headers.", { label: "Composio Connect", ownershipModes: ["dcr", "customer"] }), method(
-      "api-key",
-      "rest_api",
-      "api_key",
-      { serviceHost: "backend.composio.dev" },
-      "S3",
-      "Create a scoped project API key in Composio. It needs read access to toolkits and auth configs; later service-connection phases also need connected-account and session access.",
-      {
-        whenToUse:
-          "Use a project API key from the Composio project that owns the toolkits and connected accounts.",
-        credentialFields: [
-          field(
-            "apiKey",
-            "Composio project API key",
-            "Paste the Composio API key",
-          ),
-        ],
-        keyPlacement: { location: "header", name: "x-api-key" },
-        consoleLinks: {
-          keys: "https://app.composio.dev/",
-          settings: "https://app.composio.dev/",
-          docs: "https://docs.composio.dev/reference/authenticating-to-composio/project-api-key-permissions",
-        },
-      },
-    )],
+    [method("mcp", "mcp_remote", "none", { serverUrl: "https://connect.composio.dev/mcp" }, "S3", "Sign in to Composio Connect, or paste an externally configured MCP session URL and headers.", { label: "Composio Connect", ownershipModes: ["dcr", "customer"] })],
     { featured: true, docsUrl: "https://docs.composio.dev/docs/composio-connect" },
   ],
   [

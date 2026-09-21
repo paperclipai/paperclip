@@ -6,7 +6,7 @@ Test environment: an isolated development worktree with a fresh database and org
 
 ## Experimental rollout
 
-Setup is behind **Settings → Experimental → MCP aggregators** (`enableMcpAggregators`). It defaults off on self-hosted and managed instances. When off, all four fresh catalog entries are hidden and direct setup, reconnect setup, and OAuth-start requests are rejected server-side. Existing connections keep running and remain available for management. Legacy Composio API-key/child connections are unchanged. An in-progress OAuth callback may complete; the flag does not revoke already issued credentials or grants.
+Setup is behind **Settings → Experimental → MCP aggregators** (`enableMcpAggregators`). It defaults off on self-hosted and managed instances. When off, all four fresh catalog entries are hidden and direct setup, reconnect setup, and OAuth-start requests are rejected server-side. Existing connections keep running and remain available for management. The legacy Composio API-key broker and child connections have since been retired; see [Composio broker retirement](COMPOSIO-BROKER-RETIREMENT.md). An in-progress OAuth callback may complete; the flag does not revoke already issued credentials or grants.
 
 Focused regression tests cover flag defaults, persistence, managed metadata, cached catalog visibility, all four direct setup routes, and server-side rejection before network/credential writes.
 
@@ -66,7 +66,7 @@ Storybook links: `apps-connections-zapier--complete-setup-journey`, `apps-connec
 
 PR review regressions: expired MCP sessions now trigger one safe discovery handshake; action calls fail visibly and wait for an explicit retry. Provider handoff detection recognizes protocol/provider envelopes rather than arbitrary app-data statuses. Buffered transports preserve response-ID matching, size limits, and distinct error codes. Dedicated regression checks and selected existing connector/gateway cases pass. Ordinary connector resume/reconnect continues through its existing controller.
 
-Aggregator action risk is conservative: an unfamiliar or renamed tool defaults to write risk even if the provider advertises it as read-only. Only an explicit reviewed allowlist receives read risk; annotations can still escalate it. This affects risk labels and risk-based governance, not the approved default-enabled behavior or saved Off/Ask first choices. Legacy Composio child connections retain their existing classification path.
+Aggregator action risk is conservative: an unfamiliar or renamed tool defaults to write risk even if the provider advertises it as read-only. Only an explicit reviewed allowlist receives read risk; annotations can still escalate it. This affects risk labels and risk-based governance, not the approved default-enabled behavior or saved Off/Ask first choices.
 
 - Paste Zapier's generated Full URL into the already-open local Zapier setup field (not chat), then complete its browser Test, agent, governance, refresh, and lifecycle acceptance. Do not rotate the displayed credential unnecessarily.
 - Optional Composio GitHub account authorization awaits the user's GitHub verification. The no-auth DeepWiki app path is proven; GitHub app execution is not claimed.

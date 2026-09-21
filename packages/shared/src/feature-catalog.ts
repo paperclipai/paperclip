@@ -119,7 +119,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableMcpAggregators: {
     title: "MCP aggregators",
     description:
-      "Show experimental Zapier, Arcade, Composio Connect, and Executor setup. Existing connections keep running when hidden; legacy Composio connections are unchanged.",
+      "Show experimental Zapier, Arcade, Composio Connect, and Executor setup. Existing MCP connections keep running when hidden.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

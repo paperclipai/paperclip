@@ -75,9 +75,12 @@ describe("remote connector lifecycle", () => {
       await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
     }
   });
-  it("vaults generated URLs, paginates discovery, preserves Off/Ask during refresh and reconnect, and isolates companies", async () => {
+  it.each([
+    ["zapier", "generated-url", "https://mcp.zapier.com/api/v1/connect?token=fixture-secret"],
+    ["composio", "mcp", "https://mcp.composio.dev/session/fixture?token=fixture-secret"],
+  ])("%s vaults session URLs, paginates discovery, preserves Off/Ask during refresh and reconnect, and isolates companies", async (galleryKey, connectionMethodKey, link) => {
     const org = await company(); const other = await company(); const remote = remoteFixture();
-    const input = { galleryKey: "zapier", connectionMethodKey: "generated-url", link: "https://mcp.zapier.com/api/v1/connect?token=fixture-secret", authMode: "none" as const };
+    const input = { galleryKey, connectionMethodKey, link, authMode: "none" as const };
     const connected = await remote.service.connectGalleryApp(org.id, input, actor);
     expect(connected.catalog).toHaveLength(3);
     expect(JSON.stringify(connected)).not.toContain("fixture-secret");

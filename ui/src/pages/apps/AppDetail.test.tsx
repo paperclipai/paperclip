@@ -457,7 +457,6 @@ describe("AppDetail", () => {
   it("uses Permissions as the primary connection page and has no Setup tab", () => {
     expect(APP_TABS.map((tab) => tab.key)).toEqual([
       "permissions",
-      "services",
       "review",
     ]);
   });

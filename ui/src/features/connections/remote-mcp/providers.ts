@@ -44,7 +44,7 @@ export const remoteMcpProviders: Record<RemoteMcpProviderId, RemoteMcpProvider> 
     dashboardUrl: "https://dashboard.composio.dev",
     defaultUrl: "https://connect.composio.dev/mcp", placeholder: "https://connect.composio.dev/mcp",
     urlHelp: "Composio Connect is prefilled. For an externally configured session, replace this with its MCP URL and add its supplied headers under Advanced authentication.",
-    authHelp: "Session URLs and headers come from your external Composio setup. Direct-tools sessions expose individual actions. Existing project API-key connections are managed separately.",
+    authHelp: "Session URLs and headers come from your external Composio setup. Direct-tools sessions expose individual actions.",
   },
   executor: {
     id: "executor", name: "Executor", supportsBrowserAuth: true,

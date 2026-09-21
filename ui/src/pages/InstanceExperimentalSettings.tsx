@@ -341,7 +341,7 @@ export function InstanceExperimentalSettings() {
         <ExperimentalToggleCard
           title="MCP aggregators"
           description="Connect Zapier, Arcade, Composio Connect, and Executor through their MCP servers."
-          footnote="Turning this off hides setup for these connectors. Existing connections keep running, and legacy Composio connections are unchanged."
+          footnote="Turning this off hides setup for these connectors. Existing MCP connections keep running."
           checked={experimentalQuery.data?.enableMcpAggregators === true}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableMcpAggregators: checked })}
           disabled={toggleMutation.isPending}

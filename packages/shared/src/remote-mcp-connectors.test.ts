@@ -22,9 +22,9 @@ describe("independent remote MCP connectors", () => {
       expect(connectToolAppSchema.safeParse({ galleryKey: provider, connectionMethodKey: methodKey, link: "https://example.com/mcp", authMode: "bearer", credentialValues: { "credentials.authorization": "test-secret", "headers.X-User-ID": "test-user" } }).success).toBe(true);
     });
   }
-  it("keeps the legacy Composio API-key broker distinct", () => {
+  it("removes the legacy Composio API-key method", () => {
     expect(isRemoteMcpConnectorMethod("composio", "api-key")).toBe(false);
-    expect(getConnectableAppDefinition("composio")?.methods.find((method) => method.key === "api-key")?.transport).toBe("rest_api");
+    expect(getConnectableAppDefinition("composio")?.methods.find((method) => method.key === "api-key")).toBeUndefined();
     expect(connectToolAppSchema.safeParse({ galleryKey: "composio", connectionMethodKey: "api-key", authMode: "bearer" }).success).toBe(false);
   });
   it("allows removing all agent access without changing the tool choices", () => {

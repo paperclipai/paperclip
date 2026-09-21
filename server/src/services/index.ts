@@ -98,7 +98,6 @@ export {
   VercelConnectClientError,
   type VercelConnectClient,
 } from "./vercel-connect.js";
-export { createComposioClient, ComposioApiError, type ComposioClient } from "./composio.js";
 export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";

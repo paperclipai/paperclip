@@ -47,8 +47,7 @@ import {
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
-import { ServicesPanel } from "./app-detail/ServicesPanel";
-import { ConnectionProvenanceChip } from "./ComposioProvenanceChip";
+import { ConnectionProvenanceChip } from "./ConnectionProvenanceChip";
 import { IdentitiesSection } from "./app-detail/IdentitiesSection";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
 import { RailwayAccessPanel } from "./app-detail/RailwayAccessPanel";
@@ -569,9 +568,6 @@ export function AppDetail({ renderActions, onReconnect }: {
         />
       )}
 
-      {activeTab === "services" && (
-        <ServicesPanel connectionId={connectionId} appName={appName} />
-      )}
       {activeTab === "review" && (
         reviewFailed
           ? <ToolsLoadError onRetry={() => {

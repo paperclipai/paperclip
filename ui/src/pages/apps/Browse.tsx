@@ -74,7 +74,6 @@ import {
   appSourceResumeHref,
   appSupportsToolCatalogSetup,
 } from "./app-connect-policy";
-import { composioChildParentConnectionId } from "./composio-services";
 import {
   ConnectionOwnerIdentity,
   connectionDisplayNameForOwner,
@@ -107,7 +106,7 @@ type ConnectionRemovalTarget = {
   accountName: string;
   providerName: string;
   remainingConnectionCount: number;
-  childConnectionCount: number;
+
 };
 
 function chatProviderForSlug(slug: string): ChatProvider | null {
@@ -318,9 +317,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   });
   const removeConnection = useMutation({
     mutationFn: (target: ConnectionRemovalTarget) =>
-      toolsApi.archiveConnection(target.id, {
-        confirmComposioChildren: target.childConnectionCount > 0,
-      }),
+      toolsApi.archiveConnection(target.id),
     onSuccess: (_connection, target) => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.tools.connections(selectedCompanyId!),
@@ -685,7 +682,6 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               renderAccountDetails={renderAccountDetails}
               key={row.key}
               row={row}
-              allConnections={connectionsQuery.data?.connections ?? []}
               userProfileById={userProfileById}
               onNavigate={navigate}
               onRequestRemove={setConnectionToRemove}
@@ -711,9 +707,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               Remove {connectionToRemove?.accountName ?? "this"} connection?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {connectionToRemove && connectionToRemove.childConnectionCount > 0
-                ? `This also removes ${connectionToRemove.childConnectionCount} connected ${connectionToRemove.childConnectionCount === 1 ? "service" : "services"} and takes agent access away immediately. The Composio key and child session credentials are deleted.`
-                : connectionToRemove &&
+              {connectionToRemove &&
                     connectionToRemove.remainingConnectionCount > 0
                   ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
                   : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
@@ -749,7 +743,6 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
 export function ConnectorCard({
   renderAccountDetails,
   row,
-  allConnections,
   userProfileById,
   onNavigate,
   onRequestRemove,
@@ -758,7 +751,6 @@ export function ConnectorCard({
 }: {
   renderAccountDetails?: (connection: ToolConnection) => ReactNode;
   row: ConnectorRowModel;
-  allConnections: ToolConnection[];
   userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
   onNavigate: (href: string) => void;
   onRequestRemove: (target: ConnectionRemovalTarget) => void;
@@ -835,11 +827,6 @@ export function ConnectorCard({
                       candidate.id !== connection.id &&
                       candidate.status === "active" &&
                       candidate.enabled,
-                  ).length,
-                  childConnectionCount: allConnections.filter(
-                    (candidate) =>
-                      composioChildParentConnectionId(candidate) ===
-                      connection.id,
                   ).length,
                 });
               }}

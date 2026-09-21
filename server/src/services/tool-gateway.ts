@@ -122,11 +122,7 @@ import {
   type ToolRuntimeSlotView,
 } from "./tool-runtime-supervisor.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
-import {
-  composioChildConfig,
-  createComposioSessionManager,
-} from "./composio-session-manager.js";
-import type { ComposioClient } from "./composio.js";
+import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "./retired-composio.js";
 import {
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
@@ -1021,8 +1017,6 @@ export function createToolGatewayService(
     onToolActionSettled?: (actionRequestId: string) => Promise<unknown>;
     /** Test seam for deterministic remote MCP protocol fixtures. */
     remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
-    /** Test seam for Composio session creation without vendor traffic. */
-    composioClientFactory?: (apiKey: string) => ComposioClient;
     /** Test seam for refreshing personal Gmail grants. */
     paperclipCloudConnector?: PaperclipCloudConnector | null;
     /** @deprecated Use paperclipCloudConnector. */
@@ -1119,10 +1113,6 @@ export function createToolGatewayService(
     options.vercelConnectClient === undefined
       ? createVercelConnectClient()
       : options.vercelConnectClient;
-  const composioSessions = createComposioSessionManager(db, {
-    composioClientFactory: options.composioClientFactory,
-    now: options.now ? () => new Date(options.now!()) : undefined,
-  });
   const protocolLimits = mcpGatewayProtocolLimits(
     options.mcpGatewayProtocolLimits,
   );
@@ -1249,6 +1239,7 @@ export function createToolGatewayService(
 
     const eligibleRows = rows.filter(
       ({ catalogEntry, connection, application }) =>
+        !isRetiredComposioConnection(connection) &&
         !(isRailwayEndpoint(connection.config.url) && (isRailwayToolBlocked(catalogEntry.toolName) || (normalizeRailwayToolName(catalogEntry.toolName).startsWith(RAILWAY_TOOL_PREFIX) && connection.config.railwayApiStatus !== "available"))) &&
         ((connection.transport === "mcp_remote" &&
           application.type === "mcp_http") ||
@@ -4693,6 +4684,9 @@ export function createToolGatewayService(
         "tool_not_found",
       );
     }
+    if (isRetiredComposioConnection(connection)) {
+      throw new ToolGatewayHttpError(422, RETIRED_COMPOSIO_MESSAGE, "composio_broker_retired");
+    }
     if (!connection.enabled || connection.status !== "active") {
       throw new ToolGatewayHttpError(
         403,
@@ -4782,6 +4776,9 @@ export function createToolGatewayService(
         `Tool "${tool.name}" not found`,
         "tool_not_found",
       );
+    }
+    if (isRetiredComposioConnection(connection)) {
+      throw new ToolGatewayHttpError(422, RETIRED_COMPOSIO_MESSAGE, "composio_broker_retired");
     }
     if (!connection.enabled || connection.status !== "active") {
       throw new ToolGatewayHttpError(
@@ -5785,21 +5782,11 @@ export function createToolGatewayService(
       ms = railwayCommandBudgetMs(parameters);
     }
     const grant = await resolveConnectionGrant(session, connection);
-    const composioScopeRevision = `${grant.id}:${grant.status}:${grant.updatedAt.toISOString()}`;
-    const composioChild = composioChildConfig(connection);
-    let composioSession = composioChild
-      ? await composioSessions.ensureSession(connection.id, {
-          tools: [entry.toolName],
-          scopeRevision: composioScopeRevision,
-        })
-      : null;
-    let endpoint =
-      composioSession?.url ??
-      (await resolvedRemoteEndpoint(session, connection, grant));
+    const endpoint = await resolvedRemoteEndpoint(session, connection, grant);
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
-    let credentialHeaders = composioSession?.headers ?? {
+    let credentialHeaders = {
       ...projectedConnectionHeaders(connection),
       ...(await resolveCredentialHeaders(session, connection, grant)),
     };
@@ -5817,9 +5804,7 @@ export function createToolGatewayService(
       request: {
         protocol: "MCP JSON-RPC 2.0",
         httpMethod: "POST",
-        endpoint: composioChild
-          ? `${new URL(endpoint).origin}/[composio-session]`
-          : auditSafeEndpoint(endpoint),
+        endpoint: auditSafeEndpoint(endpoint),
         mcpMethod: "tools/call",
         requestId,
         upstreamToolName: entry.toolName,
@@ -5905,28 +5890,6 @@ export function createToolGatewayService(
         }),
       };
       let response = await dispatchRemote(endpoint, requestInit);
-      if (response.status === 401 && composioChild) {
-        composioSession = await composioSessions.ensureSession(connection.id, {
-          tools: [entry.toolName],
-          scopeRevision: composioScopeRevision,
-          force: true,
-        });
-        endpoint = composioSession.url;
-        credentialHeaders = composioSession.headers;
-        builtHeaders = buildRemoteHeaders({
-          session,
-          connection,
-          credentialHeaders,
-          callerHeaders,
-        });
-        headers = builtHeaders.headers;
-        headerSummary = builtHeaders.summary;
-        const retryInit = {
-          ...requestInit,
-          headers: mcpHttpRequestHeaders(headers),
-        };
-        response = await dispatchRemote(endpoint, retryInit);
-      }
       const oauth = asRecord(asRecord(connection.config)?.oauth);
       if (
         response.status === 401 &&
