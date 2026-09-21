@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -181,6 +181,23 @@ describe("writeFileAtomic", () => {
       await writeFileAtomic(target, "registry=https://npm.example/\nignore-scripts=true\n");
 
       expect(fileMode(target)).toBe(0o640);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes through a symlink instead of replacing it", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-npmrc-link-"));
+    try {
+      const target = path.join(dir, "managed.npmrc");
+      const link = path.join(dir, ".npmrc");
+      writeFileSync(target, "registry=https://npm.example/\n", { mode: 0o600 });
+      symlinkSync(target, link);
+
+      await writeFileAtomic(link, "registry=https://npm.example/\nignore-scripts=true\n");
+
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readFileSync(target, "utf8")).toContain("ignore-scripts=true");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

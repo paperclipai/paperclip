@@ -7,7 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { chmod, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /** Owner-only default for new prefix `.npmrc` files that may hold registry credentials. */
@@ -147,12 +147,30 @@ async function existingFileMode(filePath: string): Promise<number | undefined> {
  * `chmod` is applied on the temp path before rename so umask cannot widen
  * the mode across the swap.
  */
+async function pathIsSymbolicLink(filePath: string): Promise<boolean> {
+  try {
+    return (await lstat(filePath)).isSymbolicLink();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") return false;
+    throw err;
+  }
+}
+
 export async function writeFileAtomic(filePath: string, contents: string): Promise<void> {
+  const mode = (await existingFileMode(filePath)) ?? DEFAULT_NPMRC_MODE;
+  // rename() would replace a symlink with a regular file and detach an
+  // operator-managed target. Write through the link instead.
+  if (await pathIsSymbolicLink(filePath)) {
+    await writeFile(filePath, contents, { encoding: "utf8" });
+    await chmod(filePath, mode);
+    return;
+  }
+
   const tempPath = path.join(
     path.dirname(filePath),
     `.${path.basename(filePath)}.tmp-${process.pid}-${randomUUID()}`,
   );
-  const mode = (await existingFileMode(filePath)) ?? DEFAULT_NPMRC_MODE;
   try {
     await writeFile(tempPath, contents, { encoding: "utf8", flag: "wx", mode });
     // writeFile creation modes are umask-masked; chmod applies the exact mode.
@@ -164,6 +182,26 @@ export async function writeFileAtomic(filePath: string, contents: string): Promi
   }
 }
 
+async function withNpmrcLock(lockPath: string, fn: () => Promise<void>): Promise<void> {
+  const started = Date.now();
+  for (;;) {
+    try {
+      await writeFile(lockPath, String(process.pid), { encoding: "utf8", flag: "wx", mode: 0o600 });
+      break;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "EEXIST") throw err;
+      if (Date.now() - started > 5_000) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    await fn();
+  } finally {
+    await rm(lockPath, { force: true });
+  }
+}
+
 /**
  * Force `ignore-scripts=true` in the plugin-prefix `.npmrc` without replacing
  * registry/auth/proxy keys. The write is atomic so a crash cannot leave an
@@ -172,16 +210,18 @@ export async function writeFileAtomic(filePath: string, contents: string): Promi
  */
 export async function ensureIgnoreScriptsNpmrc(prefixDir: string): Promise<void> {
   const npmrcPath = path.join(prefixDir, ".npmrc");
-  let existing = "";
-  try {
-    existing = await readFile(npmrcPath, "utf8");
-  } catch (err) {
-    // Only treat missing files as empty. Other read failures (EACCES,
-    // EISDIR, etc.) must not wipe registry/auth/proxy settings on write.
-    const code = (err as NodeJS.ErrnoException | undefined)?.code;
-    if (code !== "ENOENT") {
-      throw err;
+  await withNpmrcLock(npmrcPath + ".lock", async () => {
+    let existing = "";
+    try {
+      existing = await readFile(npmrcPath, "utf8");
+    } catch (err) {
+      // Only treat missing files as empty. Other read failures (EACCES,
+      // EISDIR, etc.) must not wipe registry/auth/proxy settings on write.
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "ENOENT") {
+        throw err;
+      }
     }
-  }
-  await writeFileAtomic(npmrcPath, mergeIgnoreScriptsNpmrc(existing));
+    await writeFileAtomic(npmrcPath, mergeIgnoreScriptsNpmrc(existing));
+  });
 }
