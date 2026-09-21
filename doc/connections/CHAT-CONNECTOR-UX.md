@@ -346,3 +346,9 @@ the file through Basic Information → Display Information → App icon & Previe
 confirm the crop, then save in Slack. Confirmation/skipping is browser-local,
 scoped to the company and endpoint; it is not proof of a Slack configuration
 change. No new Slack scope or API mutation is needed.
+
+Chat connections in the catalog keep **Finish setup** visible for drafts. Put
+**Manage** and **Remove connection** in a three-dot menu on every connection row,
+including drafts. Confirm removal, explain that existing tasks remain, and keep
+the dialog available for retry if removal fails. Use the existing provider lifecycle
+action; removing a Paperclip connection does not delete the provider app or bot.

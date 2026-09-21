@@ -103,6 +103,7 @@ type ConnectionState = {
 };
 
 type ConnectionRemovalTarget = {
+  kind?: "chat";
   id: string;
   accountName: string;
   providerName: string;
@@ -320,9 +321,17 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     enabled: !!selectedCompanyId,
   });
   const removeConnection = useMutation({
-    mutationFn: (target: ConnectionRemovalTarget) =>
-      toolsApi.archiveConnection(target.id),
+    mutationFn: async (target: ConnectionRemovalTarget) => {
+      if (target.kind === "chat") {
+        await chatEndpointsApi.setup(target.id, { action: "remove" });
+      } else {
+        await toolsApi.archiveConnection(target.id);
+      }
+    },
     onSuccess: (_connection, target) => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.chatEndpoints.list(selectedCompanyId!),
+      });
       queryClient.invalidateQueries({
         queryKey: queryKeys.tools.connections(selectedCompanyId!),
       });
@@ -335,7 +344,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       pushToast({
         title: "Connection removed",
         body:
-          target.remainingConnectionCount > 0
+          target.kind === "chat"
+            ? `${target.providerName} is disconnected. Existing Paperclip tasks remain available.`
+            : target.remainingConnectionCount > 0
             ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
             : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
         tone: "success",
@@ -532,6 +543,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     for (const endpoint of chatConnectorsEnabled
       ? (chatEndpointsQuery.data ?? [])
       : []) {
+      if (endpoint.status === "archived") continue;
       let target = [...rowsBySlug.values()].find(
         (row) => chatProviderForSlug(row.slug) === endpoint.provider,
       );
@@ -711,7 +723,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               Remove {connectionToRemove?.accountName ?? "this"} connection?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {connectionToRemove &&
+              {connectionToRemove?.kind === "chat"
+                ? `This connection will stop receiving new work from ${connectionToRemove.providerName}. Existing Paperclip tasks and conversation history remain available. This does not delete the app, bot, or account in ${connectionToRemove.providerName}.`
+                : connectionToRemove &&
                     connectionToRemove.remainingConnectionCount > 0
                   ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
                   : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
@@ -864,19 +878,48 @@ export function ConnectorCard({
               <span className="text-xs text-muted-foreground">
                 {endpoint.status.replace(/_/g, " ")}
               </span>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  onNavigate(
-                    endpoint.status === "draft"
-                      ? `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}`
-                      : `/apps/chat/${endpoint.id}/settings`,
-                  )
-                }
-              >
-                {endpoint.status === "draft" ? "Finish setup" : "Manage"}
-              </Button>
+              <div className="flex items-center gap-2">
+                {endpoint.status === "draft" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onNavigate(`/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}`)}
+                  >
+                    Finish setup
+                  </Button>
+                ) : null}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Manage ${endpoint.assignedAgentName} ${row.name} connection`}
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => onNavigate(`/apps/chat/${endpoint.id}/settings`)}>
+                      Manage
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onSelect={() => onRequestRemove({
+                        kind: "chat",
+                        id: endpoint.id,
+                        accountName: `${endpoint.assignedAgentName} · ${row.name}`,
+                        providerName: row.name,
+                        remainingConnectionCount: 0,
+                      })}
+                    >
+                      <Trash2 />
+                      Remove connection
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </div>
           ))}
         </div>
