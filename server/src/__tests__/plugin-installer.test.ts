@@ -228,6 +228,18 @@ describe("ensureIgnoreScriptsNpmrc", () => {
     }
   });
 
+  it("replaces a lock whose pid is no longer running", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-npmrc-stale-lock-"));
+    try {
+      writeFileSync(path.join(dir, ".npmrc.lock"), "99999999");
+      await ensureIgnoreScriptsNpmrc(dir);
+      expect(readFileSync(path.join(dir, ".npmrc"), "utf8")).toBe("ignore-scripts=true\n");
+      expect(readdirSync(dir)).not.toContain(".npmrc.lock");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("merges ignore-scripts without dropping registry or auth keys", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-npmrc-merge-"));
     try {

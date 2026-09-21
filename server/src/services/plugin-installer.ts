@@ -7,7 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { chmod, lstat, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /** Owner-only default for new prefix `.npmrc` files that may hold registry credentials. */
@@ -158,15 +158,17 @@ async function pathIsSymbolicLink(filePath: string): Promise<boolean> {
 }
 
 export async function writeFileAtomic(filePath: string, contents: string): Promise<void> {
-  const mode = (await existingFileMode(filePath)) ?? DEFAULT_NPMRC_MODE;
-  // rename() would replace a symlink with a regular file and detach an
-  // operator-managed target. Write through the link instead.
+  // rename() on the symlink path would replace the link. Promote a temp file
+  // onto the real target so a crash cannot truncate that file in place.
   if (await pathIsSymbolicLink(filePath)) {
-    await writeFile(filePath, contents, { encoding: "utf8" });
-    await chmod(filePath, mode);
-    return;
+    const real = await realpath(filePath);
+    if (real !== filePath) {
+      await writeFileAtomic(real, contents);
+      return;
+    }
   }
 
+  const mode = (await existingFileMode(filePath)) ?? DEFAULT_NPMRC_MODE;
   const tempPath = path.join(
     path.dirname(filePath),
     `.${path.basename(filePath)}.tmp-${process.pid}-${randomUUID()}`,
@@ -182,6 +184,25 @@ export async function writeFileAtomic(filePath: string, contents: string): Promi
   }
 }
 
+async function lockHolderIsDead(lockPath: string): Promise<boolean> {
+  let text = "";
+  try {
+    text = (await readFile(lockPath, "utf8")).trim();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") return true;
+    throw err;
+  }
+  const pid = Number(text);
+  if (!Number.isInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | undefined)?.code === "ESRCH";
+  }
+}
+
 async function withNpmrcLock(lockPath: string, fn: () => Promise<void>): Promise<void> {
   const started = Date.now();
   for (;;) {
@@ -191,6 +212,10 @@ async function withNpmrcLock(lockPath: string, fn: () => Promise<void>): Promise
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
       if (code !== "EEXIST") throw err;
+      if (await lockHolderIsDead(lockPath)) {
+        await rm(lockPath, { force: true });
+        continue;
+      }
       if (Date.now() - started > 5_000) throw err;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
