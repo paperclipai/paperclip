@@ -154,7 +154,8 @@ export async function buildExecutionContinuation(input: {
     string(input.context.retryOfRunId) ??
     string(input.context.previousRunId) ??
     string(input.context.interruptedRunId);
-  const sourceRunId = resumeSourceRunId ?? triggerInteraction?.sourceRunId;
+  const sourceRunId =
+    resumeSourceRunId ?? triggerInteraction?.sourceRunId ?? null;
   const sourceRun = sourceRunId
     ? (
         await db
