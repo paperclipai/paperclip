@@ -629,6 +629,7 @@ describe("shared ACPX engine runtime behavior", () => {
       taskId: "chat-1",
       paperclipTaskMarkdown: chatDirective,
       paperclipTaskMarkdownCompact: chatDirective,
+      paperclipTaskCommunicationGuidance: "Frozen Slack communication preference.",
       paperclipWake: {
         reason: "issue_commented",
         issue: { id: "chat-1", workMode: "planning", status: "in_progress" },
@@ -647,6 +648,10 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(fresh.result.sessionId);
     const reset = await runExecutor(config, { context });
     expect(reset.sessionInputs[0]?.resumeSessionId).toBeUndefined();
+    for (const run of [fresh, reset]) {
+      expect(String(run.meta[0]?.prompt).match(/Frozen Slack communication preference\./g)).toHaveLength(1);
+    }
+    expect(String(resumed.meta[0]?.prompt)).not.toContain("Frozen Slack communication preference.");
     for (const { meta } of [fresh, resumed, reset]) {
       const prompt = String(meta[0]?.prompt ?? "");
       expect(prompt).toContain(chatDirective);

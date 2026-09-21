@@ -22,6 +22,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   selectPaperclipTaskMarkdown,
+  selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
   renderTemplate,
   stringifyPaperclipWakePayload,
@@ -417,7 +418,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   const instructions = await buildInstructionsPrefix(config, onLog);
   const taskContextNote = context.conversationMode === true
-    ? selectPaperclipTaskMarkdown(context, { resumedSession: canReuseSession })
+    ? selectPaperclipTaskMarkdown(context, { resumedSession: canReuseSession, includeCommunicationGuidance: false })
     : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
     conversationMode: context.conversationMode === true,
@@ -434,6 +435,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : renderTemplate(promptTemplate, templateData).trim();
   const paperclipEnvNote = renderPaperclipEnvNote(remoteEnv);
   const prompt = joinPromptSections([
+    selectInitialCommunicationGuidance(context, { resumedSession: canReuseSession }),
     instructions.prefix,
     renderedBootstrapPrompt,
     wakePrompt,

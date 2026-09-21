@@ -45,6 +45,7 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   selectPaperclipTaskMarkdown,
+  selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -571,7 +572,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const taskContextNote = context.conversationMode === true
-    ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) })
+    ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId), includeCommunicationGuidance: false })
     : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
     conversationMode: context.conversationMode === true,
@@ -584,7 +585,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
-  const prompt = joinPromptSections([
+  const basePrompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
@@ -594,7 +595,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     renderedPrompt,
   ]);
   const promptMetrics = {
-    promptChars: prompt.length,
+    promptChars: basePrompt.length,
     instructionsChars,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
@@ -615,6 +616,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    const prompt = joinPromptSections([
+      selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
+      basePrompt,
+    ]);
     const args = buildArgs(resumeSessionId);
     if (onMeta) {
       await onMeta({
@@ -625,7 +630,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         commandArgs: args,
         env: loggedEnv,
         prompt,
-        promptMetrics,
+        promptMetrics: { ...promptMetrics, promptChars: prompt.length },
         context,
       });
     }

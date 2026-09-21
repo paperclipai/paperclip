@@ -46,6 +46,7 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   selectPaperclipTaskMarkdown,
+  selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -620,7 +621,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
     const taskContextNote = context.conversationMode === true
-      ? selectPaperclipTaskMarkdown(context, { resumedSession: canResumeSession })
+      ? selectPaperclipTaskMarkdown(context, { resumedSession: canResumeSession, includeCommunicationGuidance: false })
       : "";
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
       conversationMode: context.conversationMode === true,
@@ -632,7 +633,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? ""
       : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-    const userPrompt = joinPromptSections([
+    const baseUserPrompt = joinPromptSections([
       renderedBootstrapPrompt,
       wakePrompt,
       taskContextNote,
@@ -641,7 +642,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ]);
     const promptMetrics = {
       systemPromptChars: renderedSystemPromptExtension.length,
-      promptChars: userPrompt.length,
+      promptChars: baseUserPrompt.length,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
       taskContextChars: taskContextNote.length,
@@ -665,7 +666,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return notes;
     })();
 
-    const buildArgs = (sessionFile: string): string[] => {
+    const buildArgs = (sessionFile: string, userPrompt: string): string[] => {
       const args: string[] = [];
 
       // Use JSON mode for structured output with print mode (non-interactive)
@@ -692,7 +693,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const runAttempt = async (sessionFile: string) => {
-      const args = buildArgs(sessionFile);
+      const userPrompt = joinPromptSections([
+        selectInitialCommunicationGuidance(context, { resumedSession: canResumeSession && sessionFile === sessionPath }),
+        baseUserPrompt,
+      ]);
+      const args = buildArgs(sessionFile, userPrompt);
       if (onMeta) {
         await onMeta({
           adapterType: "pi_local",
@@ -702,7 +707,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           commandArgs: args,
           env: loggedEnv,
           prompt: userPrompt,
-          promptMetrics,
+          promptMetrics: { ...promptMetrics, promptChars: userPrompt.length },
           context,
         });
       }

@@ -26,6 +26,7 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
+  selectInitialCommunicationGuidance,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
@@ -3061,6 +3062,9 @@ describe("selectPaperclipTaskMarkdown", () => {
       paperclipWake: wake("issue_commented"),
     };
     expect(selectPaperclipTaskMarkdown(context)).toContain("Saved initial guidance");
+    expect(selectInitialCommunicationGuidance({ paperclipTaskCommunicationGuidance: "  Slack preference  " })).toBe("Slack preference");
+    expect(selectInitialCommunicationGuidance(context, { resumedSession: true })).toBe("");
+    expect(selectInitialCommunicationGuidance({})).toBe("");
     expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(compactMarkdown);
     expect(selectPaperclipTaskMarkdown(context, { includeCommunicationGuidance: false })).toBe(fullMarkdown);
     context.paperclipWake = { ...wake("issue_monitor_recovery"), recovery: { cause: "process_lost" } } as typeof context.paperclipWake;

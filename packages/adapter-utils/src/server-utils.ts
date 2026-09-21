@@ -2150,6 +2150,16 @@ export function isAssignmentShapedPaperclipWakeReason(
   );
 }
 
+// Select at the actual provider attempt boundary so a failed resume restores
+// the original snapshot once when retrying with a fresh session.
+export function selectInitialCommunicationGuidance(
+  context: Record<string, unknown> | null | undefined,
+  options: { resumedSession?: boolean } = {},
+): string {
+  return options.resumedSession === true
+    ? "" : asString(context?.paperclipTaskCommunicationGuidance, "").trim();
+}
+
 // Picks the task-context markdown variant for adapters that inject it into the
 // prompt. Fresh sessions, assignment-shaped wakes, and recovery wakes get the
 // full brief; other resume deltas get the compact variant (description
@@ -2163,7 +2173,7 @@ export function selectPaperclipTaskMarkdown(
   if (!full) return "";
   if (options.resumedSession !== true) {
     const guidance = options.includeCommunicationGuidance === false
-      ? "" : asString(context?.paperclipTaskCommunicationGuidance, "").trim();
+      ? "" : selectInitialCommunicationGuidance(context, options);
     return joinPromptSections([guidance, full]);
   }
   const wake = normalizePaperclipWakePayload(context?.paperclipWake);
