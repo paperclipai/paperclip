@@ -1,0 +1,136 @@
+import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { beforeAll, afterAll, describe, it, expect } from "vitest";
+import {
+  agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueComments, issues,
+} from "@paperclipai/db";
+import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
+import { getExecutionBlocker } from "./execution-blocker.js";
+import { heartbeatService } from "./heartbeat.js";
+
+const support = await getEmbeddedPostgresTestSupport();
+
+// A wake parked by conversation ownership carries no recovery action, so the
+// recovery-backed sweep never sees it. Once the former owner's process exits
+// the gate is gone, and the wake must re-enter ordinary admission instead of
+// staying `deferred_issue_execution` while the task sits in `todo`.
+(support.supported ? describe : describe.skip)("re-admission of unblocked execution waits", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let db: ReturnType<typeof createDb>;
+  beforeAll(async () => {
+    database = await startEmbeddedPostgresTestDatabase("execution-wait-readmit-");
+    db = createDb(database.connectionString);
+  }, 30000);
+  afterAll(async () => { await database?.cleanup(); });
+
+  async function seed() {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), sourceRunId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Readmit", defaultResponsibleUserId: "board",
+      issuePrefix: `R${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Owner", role: "engineer",
+      adapterType: "claude_local", status: "idle", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Measure demo data", status: "todo",
+      assigneeAgentId: agentId });
+    // The previous owner's run row is already cancelled, but its process is
+    // still alive: exactly the state a same-second reassignment leaves behind.
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, runtimeMode: "legacy",
+      status: "cancelled", errorCode: "issue_reassigned", processPid: process.pid,
+      runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
+      contextSnapshot: { issueId }, finishedAt: new Date("2026-09-21T10:00:00Z") });
+    // Saturate this agent's concurrency with unrelated work so an admitted
+    // wake stops at `queued` and the assertion reads admission, not dispatch.
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" });
+    // The board's reassignment comment is what makes this wake durable, which
+    // is the exact shape seen in production for a same-second reassignment.
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user",
+      authorUserId: "board", body: "Taking this over." });
+    return { companyId, agentId, issueId, sourceRunId, commentId };
+  }
+
+  async function park(f: Awaited<ReturnType<typeof seed>>) {
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({
+      cause: "execution_owner_active", recoveryActionId: null, runId: f.sourceRunId,
+    });
+    await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "system",
+      reason: "issue_assigned", requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: f.issueId, commentId: f.commentId },
+      contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
+    const [parked] = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(parked).toMatchObject({ status: "deferred_issue_execution" });
+    expect(parked.payload?.executionWait).toBeTruthy();
+    return parked;
+  }
+
+  const makeDue = (id: string) => db.update(agentWakeupRequests)
+    .set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, id));
+  const clearGate = (runId: string) => db.update(heartbeatRuns)
+    .set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, runId));
+  const queuedRuns = (companyId: string) => db.select().from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+
+  it("re-admits a wake left parked by a gate that has disappeared, exactly once", async () => {
+    const f = await seed();
+    const parked = await park(f);
+
+    // The recovery-backed sweep cannot see this wake, and the gate is still up.
+    await makeDue(parked.id);
+    await heartbeatService(db).resumeExecutionWaitComments();
+    await heartbeatService(db).readmitUnblockedExecutionWaits();
+    expect(await queuedRuns(f.companyId)).toHaveLength(0);
+    expect((await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, parked.id)))[0].status).toBe("deferred_issue_execution");
+
+    await clearGate(f.sourceRunId);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    await makeDue(parked.id);
+    await Promise.all([
+      heartbeatService(db).readmitUnblockedExecutionWaits(),
+      heartbeatService(db).readmitUnblockedExecutionWaits(),
+    ]);
+
+    const runs = await queuedRuns(f.companyId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].contextSnapshot).toMatchObject({ issueId: f.issueId });
+    const [retired] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, parked.id));
+    expect(retired.status).toBe("skipped");
+    // A second pass over the same task must not stack another run on top.
+    await heartbeatService(db).readmitUnblockedExecutionWaits();
+    expect(await queuedRuns(f.companyId)).toHaveLength(1);
+  });
+
+  it.each(["closed_issue", "reassigned_issue", "held_execution", "recovery_backed", "too_recent"])(
+    "leaves a parked wake alone: %s", async kind => {
+      const f = await seed();
+      const parked = await park(f);
+      await clearGate(f.sourceRunId);
+      if (kind === "closed_issue") {
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+      }
+      if (kind === "reassigned_issue") {
+        const other = randomUUID();
+        await db.insert(agents).values({ id: other, companyId: f.companyId, name: "Other", role: "engineer",
+          adapterType: "claude_local", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
+        await db.update(issues).set({ assigneeAgentId: other }).where(eq(issues.id, f.issueId));
+      }
+      if (kind === "held_execution") {
+        await db.update(issues).set({ executionRunId: f.sourceRunId }).where(eq(issues.id, f.issueId));
+      }
+      if (kind === "recovery_backed") {
+        // A wait behind a recorded recovery action belongs to
+        // `resumeExecutionWaitComments`; this pass must not step over it.
+        await db.update(agentWakeupRequests).set({
+          payload: { ...parked.payload, executionWait: {
+            ...(parked.payload?.executionWait ?? {}), recoveryActionId: randomUUID() } },
+        }).where(eq(agentWakeupRequests.id, parked.id));
+      }
+      if (kind !== "too_recent") await makeDue(parked.id);
+
+      await heartbeatService(db).readmitUnblockedExecutionWaits();
+      expect(await queuedRuns(f.companyId)).toHaveLength(0);
+      expect((await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, parked.id)))[0].status).toBe("deferred_issue_execution");
+    },
+  );
+});
