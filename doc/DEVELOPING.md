@@ -1534,6 +1534,105 @@ Networking behavior for this smoke script:
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `npx paperclipai allowed-hostname host.docker.internal` and restart Paperclip
 
+## Codex Run-Home Recovery
+
+Local Codex runs use a private home under
+`<company-dir>/acp-engine/agents/<agent-id>/codex-run-homes/<run-id>/home`.
+This isolation is unconditional for local Codex ACP executions: two runs never
+share writable `CODEX_HOME` state, including when a restricted runtime policy is
+enforced upstream.
+Paperclip keeps **best-effort-redacted** session JSONL after the runtime closes;
+the retained transcript is operational evidence, not a guarantee that every
+unknown credential format was removed. Retention reads each source through an
+8 MiB fixed caller-side bound and caps the source set at 32 MiB per run before
+calling the synchronous diagnostic redactor. Oversize, invalid-UTF-8, or
+unreadable input fails closed: partial retained output is removed and the raw
+home is quarantined. The redactor requires a structurally decodable JWT header
+instead of treating every dotted identifier as a credential, and covers common
+AWS, inline datastore DSN, PEM private-key, and Stripe key forms. Paperclip
+removes the raw run home only after bounded retention succeeds. Successful
+retention writes an atomic `retention-complete.json` manifest with total and
+per-file redaction-rule hit counts, including for valid zero-session runs. If
+retention or runtime close fails, Paperclip removes partial retained output,
+preserves the home, and writes a sibling `<run-id>.quarantine` marker. If raw-home
+deletion fails after retention succeeds, Paperclip preserves both the durable
+retained counterpart and whatever remains of the raw home, writes the quarantine
+marker with reason `raw_run_home_cleanup_failed`, and emits the same visible
+`INCIDENT` log signal used by the retention and close failure paths. Every
+quarantine path also emits an `acpx.codex_run_home.quarantine` runtime event at
+error level. Its version-1 payload includes `runId`, `runHome`,
+`quarantineMarker`, `quarantineMarkerWritten`, and a machine-readable `reason`
+(`sanitized_session_retention_failed`, `raw_run_home_cleanup_failed`,
+`runtime_close_unconfirmed`, `build_runtime_transport_start_failed`, or
+`build_runtime_unused_home_cleanup_failed`). A build failure before transport
+startup removes the provably unused home; cleanup failure or any attempted
+transport startup quarantines it instead. Consumers should alert on the structured event;
+the sibling marker remains the durable filesystem audit record.
+The 8 MiB limit is intentionally fail-closed rather than truncating retained
+evidence. Monitor `sanitized_session_retention_failed` events and markers to
+measure oversize frequency before proposing a higher limit or streaming design.
+Local Codex runtimes close before retention and are not saved to the warm-runtime
+cache.
+
+The orphan sweeper is dry-run only unless `--delete` is present:
+
+```sh
+npx tsx packages/adapter-utils/src/acpx-engine/run-home-sweeper.ts \
+  --company-dir /path/to/companies/<company-id>
+```
+
+Set `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` for both modes. The sweeper fails
+closed unless it can prove that the heartbeat run is terminal, the home has no
+open file handles, the home is older than the grace window, the API run ownership
+matches the company and agent directories, and a best-effort-redacted retention counterpart
+has proof of completion. New counterparts require a valid
+completion manifest. Legacy counterparts must contain a non-empty retained
+artifact for every JSONL file still present in the raw home. Partial, empty,
+unreadable, or symlinked company/ACPX/agent/run-home/retention/session paths
+fail closed. A quarantine
+marker records an incident. The producer contract is a sibling
+`<run-id>.quarantine` file; that file vetoes sweeper deletion before retention
+or orphan eligibility is evaluated. A directory with the same suffix is not a
+valid marker and also fails closed. Quarantine never permits deletion of the
+only raw copy.
+Terminal homes with no retained counterpart are explicitly classified as
+`terminal_no_retention_counterpart` in the manifest. They remain ineligible in
+both dry-run and `--delete` modes. The manifest separately reports whether a
+future operator-reviewed recovery could satisfy the stricter minimum age (at
+least seven days and at least twice the normal grace), terminal ownership, zero
+open handles, and zero raw JSONL requirements. This report never authorizes or
+performs no-counterpart deletion.
+The aggregate includes `inspectionFailures`, `noCounterpartOrphans`, and
+`bytesAtRisk`. It also includes `orphanQuarantineMarkers`,
+`orphanQuarantineMarkerBytes`, and per-marker details when a sibling marker has
+neither a raw run wrapper nor a retained counterpart. Empty marker files are
+identified explicitly. Marker-only directories, symlinks, and paths that cannot
+be inspected are reported as inspection failures. The CLI summary prints the
+aggregates so an unsafe, hard-loss, or marker-only entry cannot look like a clean
+run. Marker-only records are never removed by this sweeper. An empty per-run
+wrapper with no `home` child is reported and retained because it can be a live
+startup window; dry-run never removes it.
+
+Review the JSON manifest before you add `--delete`. Keep the default 24-hour
+grace period unless the operator has approved a different recovery window.
+
+Retained transcripts have their own bounded lifecycle: 30 days, at most 1,000
+runs, and at most 1 GiB per agent by default. Audit the proposed removals with:
+
+```sh
+npx tsx packages/adapter-utils/src/acpx-engine/session-retention-sweeper.ts \
+  --company-dir /path/to/companies/<company-id>
+```
+
+The retention sweeper preserves a retained counterpart while any raw home for
+the run remains. Once the raw home is absent, approved cleanup removes a stale
+sibling quarantine marker with the retained run. Destructive cleanup is not
+scheduled. A one-off operator-reviewed invocation must supply both `--delete`
+and `--operator-approved`; `--delete` alone fails closed. Its manifest reports
+inspection failures plus `runsStillOverCap` and `bytesStillOverCap` when
+fail-closed raw-home or marker exclusions make the configured bound impossible
+to satisfy in that pass.
+
 ### GitHub identity for shared agents
 
 See [execution GitHub identity](execution-github-identity.md) for the operation-time credential contract, continuation rules, runtime rollout, and acceptance-test requirements.

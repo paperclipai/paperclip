@@ -1,6 +1,7 @@
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import type { Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -155,9 +156,13 @@ import {
   type StartupStepMeasureOptions,
   type StartupTraceContext,
 } from "./startup-timing.js";
+import { redactDiagnosticTextWithStats } from "../command-redaction.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
+const CODEX_SESSION_RETENTION_MANIFEST = "retention-complete.json";
+const MAX_CODEX_SESSION_JSONL_BYTES = 8 * 1024 * 1024;
+const MAX_CODEX_RETAINED_BYTES_PER_RUN = 32 * 1024 * 1024;
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
 
 function routeChildStderr(state: ChildStderrState, chunk: string) {
@@ -426,6 +431,10 @@ export interface AcpxEngineExecutorOptions {
    * engine never reads it back; a test injects this hook to assert the report.
    */
   onSettlementDisposition?: (report: SettlementDispositionReport) => void;
+  /** Test seam for the destructive half of Codex run-home finalization. */
+  removeCodexRunHome?: (runHome: string) => Promise<void>;
+  /** Test seam for the provably-unused startup rollback. */
+  removeUnusedCodexRunHome?: (runHome: string) => Promise<void>;
 }
 
 interface AcpxPreparedRuntime {
@@ -492,6 +501,7 @@ interface AcpxPreparedRuntime {
   skillsIdentity: Record<string, unknown>;
   childStderrLogPath: string | null;
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
+  codexSessionRetention: CodexSessionRetentionContext | null;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
   mcpIdentity: Array<{ name: string; url: string; connectionId: string }>;
   // Per-step round-trip / provider-duration readers sourced from the sandbox
@@ -500,6 +510,11 @@ interface AcpxPreparedRuntime {
   // `acp.handshake` `measureStartupStep` call in the executor (the other six
   // boundaries live inside `buildRuntime` and read it directly).
   stepMetrics: StartupStepMeasureOptions;
+}
+
+interface CodexSessionRetentionContext {
+  runHome: string;
+  retainedSessionsDir: string;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -1000,6 +1015,553 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   await fs.copyFile(source, target);
 }
 
+function safePathSegment(value: string): string {
+  if (value.length === 0 || value.length > 128 || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value)) {
+    throw new Error("Run identifier is not a safe path segment");
+  }
+  return value;
+}
+
+function resolveContainedRunPath(root: string, runKey: string, leaf: string): string {
+  const resolvedRoot = path.resolve(root);
+  const candidate = path.resolve(resolvedRoot, runKey, leaf);
+  const relative = path.relative(resolvedRoot, candidate);
+  if (relative.length === 0 || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Run path escaped its configured root");
+  }
+  return candidate;
+}
+
+async function requireRealDirectory(target: string, label: string): Promise<string> {
+  const stat = await fs.lstat(target).catch(() => null);
+  if (!stat?.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`${label} must be a real directory`);
+  }
+  return fs.realpath(target);
+}
+
+async function ensureContainedRealDirectory(input: {
+  parent: string;
+  childName: string;
+  label: string;
+}): Promise<string> {
+  const parentReal = await requireRealDirectory(input.parent, `${input.label} parent`);
+  const child = path.join(input.parent, input.childName);
+  if (path.dirname(child) !== path.resolve(input.parent)) {
+    throw new Error(`${input.label} escaped its configured parent`);
+  }
+  const existing = await fs.lstat(child).catch((err) => {
+    if (isErrnoException(err, "ENOENT")) return null;
+    throw err;
+  });
+  if (!existing) {
+    await fs.mkdir(child, { mode: 0o700 });
+  }
+  const childStat = await fs.lstat(child);
+  if (!childStat.isDirectory() || childStat.isSymbolicLink()) {
+    throw new Error(`${input.label} must be a real directory`);
+  }
+  const childReal = await fs.realpath(child);
+  if (!childReal.startsWith(`${parentReal}${path.sep}`)) {
+    throw new Error(`${input.label} escaped its configured parent`);
+  }
+  return child;
+}
+
+async function chmodPrivateTree(root: string): Promise<void> {
+  const stat = await fs.lstat(root).catch(() => null);
+  if (!stat) return;
+  if (stat.isDirectory()) {
+    await fs.chmod(root, 0o700).catch(() => {});
+    const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+    await Promise.all(entries.map((entry) => chmodPrivateTree(path.join(root, entry.name))));
+    return;
+  }
+  if (stat.isFile()) {
+    await fs.chmod(root, 0o600).catch(() => {});
+  }
+}
+
+async function removeDirectoryContents(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir).catch(() => []);
+  await Promise.all(entries.map((entry) => fs.rm(path.join(dir, entry), { recursive: true, force: true })));
+}
+
+async function prepareRunIsolatedCodexHome(input: {
+  sourceHome: string;
+  runHome: string;
+  onLog: AdapterExecutionContext["onLog"];
+  onPrepared?: () => void;
+}): Promise<void> {
+  await fs.rm(input.runHome, { recursive: true, force: true });
+  await fs.mkdir(input.runHome, { recursive: true, mode: 0o700 });
+  // Publish ownership as soon as this call has created the run home. Every
+  // later seed/copy/chmod/log failure must reach the outer build rollback so
+  // the new directory is either removed or durably quarantined.
+  input.onPrepared?.();
+
+  const authJson = path.join(input.sourceHome, "auth.json");
+  if (await pathExists(authJson)) await ensureSymlink(path.join(input.runHome, "auth.json"), authJson);
+
+  for (const name of ["config.json", "config.toml", "instructions.md"]) {
+    const source = path.join(input.sourceHome, name);
+    if (await pathExists(source)) await ensureCopiedFile(path.join(input.runHome, name), source);
+  }
+
+  await chmodPrivateTree(input.runHome);
+  await input.onLog(
+    "stdout",
+    `[paperclip] Using run-isolated ACPX Codex home "${input.runHome}" (seeded from "${input.sourceHome}").\n`,
+  );
+}
+
+async function readBoundedCodexSessionJsonl(source: string): Promise<{ text: string; byteLength: number }> {
+  const handle = await fs.open(source, "r");
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error("Codex session JSONL is not a real file");
+    if (stat.size > MAX_CODEX_SESSION_JSONL_BYTES) {
+      throw new Error(
+        `Codex session JSONL exceeds the ${MAX_CODEX_SESSION_JSONL_BYTES}-byte per-file retention limit`,
+      );
+    }
+
+    // Never hand an unbounded string to the synchronous diagnostic redactor.
+    // Reading through a fixed-size buffer also catches a file that grows after
+    // the stat without allocating in proportion to its new size.
+    const buffer = Buffer.alloc(MAX_CODEX_SESSION_JSONL_BYTES + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const read = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    if (offset > MAX_CODEX_SESSION_JSONL_BYTES) {
+      throw new Error(
+        `Codex session JSONL exceeds the ${MAX_CODEX_SESSION_JSONL_BYTES}-byte per-file retention limit`,
+      );
+    }
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
+    return { text, byteLength: offset };
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+async function listCodexSessionJsonlFiles(input: {
+  root: string;
+  dir: string;
+  relativeDir?: string;
+}): Promise<string[]> {
+  // Fail closed. A read failure must reach the retention caller so the raw home
+  // is quarantined instead of being mistaken for a successful zero-file copy.
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(input.dir, { withFileTypes: true });
+  } catch (err) {
+    // A provider can complete before it creates the top-level sessions directory.
+    // That is a successful empty retention. A missing nested directory or any
+    // other read failure remains an incident and must reach the quarantine path.
+    if (input.relativeDir === undefined && isErrnoException(err, "ENOENT")) return [];
+    throw err;
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    const relativePath = input.relativeDir ? path.join(input.relativeDir, entry.name) : entry.name;
+    const absolutePath = path.join(input.dir, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw new Error("Codex session tree contains a symlink");
+    }
+    if (entry.isDirectory()) {
+      files.push(...await listCodexSessionJsonlFiles({
+        root: input.root,
+        dir: absolutePath,
+        relativeDir: relativePath,
+      }));
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+    const resolved = path.resolve(absolutePath);
+    const root = path.resolve(input.root) + path.sep;
+    if (!resolved.startsWith(root)) continue;
+    files.push(relativePath);
+  }
+  return files;
+}
+
+async function retainSanitizedCodexSessionJsonl(input: {
+  retention: CodexSessionRetentionContext;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const sessionsDir = path.join(input.retention.runHome, "sessions");
+  const retainedRunDir = path.dirname(input.retention.retainedSessionsDir);
+  await chmodPrivateTree(input.retention.runHome);
+  const sessionFiles = await listCodexSessionJsonlFiles({
+    root: sessionsDir,
+    dir: sessionsDir,
+  });
+
+  await fs.mkdir(retainedRunDir, { recursive: true, mode: 0o700 });
+  await removeDirectoryContents(retainedRunDir);
+  await fs.mkdir(input.retention.retainedSessionsDir, { recursive: true, mode: 0o700 });
+
+  let retainedSourceBytes = 0;
+  let totalRedactionHits = 0;
+  const redactionHitsByFile: Array<{ sessionFile: string; count: number }> = [];
+  for (const relativePath of sessionFiles) {
+    const source = path.join(sessionsDir, relativePath);
+    const target = path.join(input.retention.retainedSessionsDir, relativePath);
+    const bounded = await readBoundedCodexSessionJsonl(source);
+    retainedSourceBytes += bounded.byteLength;
+    if (retainedSourceBytes > MAX_CODEX_RETAINED_BYTES_PER_RUN) {
+      throw new Error(
+        `Codex session JSONL set exceeds the ${MAX_CODEX_RETAINED_BYTES_PER_RUN}-byte per-run retention limit`,
+      );
+    }
+    const redacted = redactDiagnosticTextWithStats(bounded.text);
+    totalRedactionHits += redacted.redactionCount;
+    redactionHitsByFile.push({
+      sessionFile: relativePath,
+      count: redacted.redactionCount,
+    });
+    await writeFileAtomically({
+      target,
+      contents: redacted.text,
+      mode: 0o600,
+    });
+  }
+
+  await chmodPrivateTree(input.retention.retainedSessionsDir);
+  await writeFileAtomically({
+    target: path.join(retainedRunDir, CODEX_SESSION_RETENTION_MANIFEST),
+    contents: `${JSON.stringify({
+      schemaVersion: 1,
+      status: "complete",
+      runId: path.basename(retainedRunDir),
+      completedAt: new Date().toISOString(),
+      sessionFileCount: sessionFiles.length,
+      sessionFiles,
+      sourceBytes: retainedSourceBytes,
+      redaction: "best_effort_diagnostic_redactor",
+      redactionHitCount: totalRedactionHits,
+      redactionHitsByFile,
+      bounds: {
+        maxFileBytes: MAX_CODEX_SESSION_JSONL_BYTES,
+        maxRunBytes: MAX_CODEX_RETAINED_BYTES_PER_RUN,
+      },
+    })}\n`,
+    mode: 0o600,
+  });
+  await chmodPrivateTree(retainedRunDir);
+  await input.onLog(
+    "stdout",
+    `[paperclip] Retained ${sessionFiles.length} best-effort-redacted ACPX Codex session JSONL file(s) in "${input.retention.retainedSessionsDir}".\n`,
+  );
+}
+
+function codexRunHomePaths(retention: CodexSessionRetentionContext): {
+  runId: string;
+  runDir: string;
+  retainedRunDir: string;
+  quarantineMarker: string;
+} {
+  const runDir = path.dirname(retention.runHome);
+  const runId = path.basename(runDir);
+  return {
+    runId,
+    runDir,
+    retainedRunDir: path.dirname(retention.retainedSessionsDir),
+    quarantineMarker: path.join(path.dirname(runDir), `${runId}.quarantine`),
+  };
+}
+
+async function quarantineCodexRunHome(input: {
+  retention: CodexSessionRetentionContext;
+  onLog: AdapterExecutionContext["onLog"];
+  onEvent?: AdapterExecutionContext["onEvent"];
+  reason: string;
+  detail: string;
+  message: string;
+}): Promise<void> {
+  const paths = codexRunHomePaths(input.retention);
+  await chmodPrivateTree(input.retention.runHome).catch(() => {});
+  let quarantineMarkerError: unknown;
+  await writeFileAtomically({
+    target: paths.quarantineMarker,
+    contents: `${JSON.stringify({
+      schemaVersion: 1,
+      runId: paths.runId,
+      runHome: input.retention.runHome,
+      createdAt: new Date().toISOString(),
+      reason: input.reason,
+      detail: input.detail,
+    })}\n`,
+    mode: 0o600,
+  }).catch((markerErr) => {
+    quarantineMarkerError = markerErr;
+  });
+  await input.onEvent?.({
+    eventType: "acpx.codex_run_home.quarantine",
+    stream: "stderr",
+    level: "error",
+    message: input.message,
+    payload: {
+      schemaVersion: 1,
+      runId: paths.runId,
+      runHome: input.retention.runHome,
+      quarantineMarker: paths.quarantineMarker,
+      quarantineMarkerWritten: quarantineMarkerError === undefined,
+      reason: input.reason,
+      detail: input.detail,
+    },
+  }).catch(() => {});
+  await input.onLog(
+    "stderr",
+    `[paperclip] INCIDENT: ${input.message.toLowerCase()} at "${input.retention.runHome}"${quarantineMarkerError ? `, but marker creation at "${paths.quarantineMarker}" also failed: ${quarantineMarkerError instanceof Error ? quarantineMarkerError.message : String(quarantineMarkerError)}` : ` with marker "${paths.quarantineMarker}"`}: ${input.detail}\n`,
+  ).catch(() => {});
+}
+
+async function settleCodexRunHomeAfterBuildFailure(input: {
+  retention: CodexSessionRetentionContext;
+  transportStartAttempted: boolean;
+  cause: unknown;
+  onLog: AdapterExecutionContext["onLog"];
+  onEvent?: AdapterExecutionContext["onEvent"];
+  removeUnusedRunHome?: (runHome: string) => Promise<void>;
+}): Promise<void> {
+  const paths = codexRunHomePaths(input.retention);
+  const detail = input.cause instanceof Error ? input.cause.message : String(input.cause);
+
+  // Once transport start was attempted, a provider process may have opened or
+  // written the home even if startup ultimately rejected. That state is
+  // ambiguous and must remain fail-closed for inspection.
+  if (input.transportStartAttempted) {
+    await fs.rm(paths.retainedRunDir, { recursive: true, force: true }).catch(() => {});
+    await quarantineCodexRunHome({
+      retention: input.retention,
+      onLog: input.onLog,
+      onEvent: input.onEvent,
+      reason: "build_runtime_transport_start_failed",
+      detail,
+      message: "Codex run home quarantined after buildRuntime transport startup failed",
+    });
+    return;
+  }
+
+  try {
+    await fs.rm(paths.retainedRunDir, { recursive: true, force: true });
+    await (input.removeUnusedRunHome ?? ((target) => fs.rm(target, { recursive: true, force: true })))(
+      input.retention.runHome,
+    );
+    await fs.rmdir(paths.runDir).catch((err) => {
+      if (!isErrnoException(err, "ENOENT") && !isErrnoException(err, "ENOTEMPTY")) throw err;
+    });
+    await input.onLog(
+      "stderr",
+      `[paperclip] Removed provably unused Codex run home "${input.retention.runHome}" after buildRuntime failed before transport startup.\n`,
+    ).catch(() => {});
+  } catch (cleanupErr) {
+    await fs.rm(paths.retainedRunDir, { recursive: true, force: true }).catch(() => {});
+    await quarantineCodexRunHome({
+      retention: input.retention,
+      onLog: input.onLog,
+      onEvent: input.onEvent,
+      reason: "build_runtime_unused_home_cleanup_failed",
+      detail: `${detail}; cleanup failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+      message: "Codex run home quarantined after unused buildRuntime rollback failed",
+    });
+    return;
+  }
+  await fs.rm(paths.quarantineMarker, { force: true }).catch(async (markerErr) => {
+    await input.onLog(
+      "stderr",
+      `[paperclip] INCIDENT: unused Codex run home was removed, but stale quarantine marker cleanup failed at "${paths.quarantineMarker}": ${markerErr instanceof Error ? markerErr.message : String(markerErr)}\n`,
+    ).catch(() => {});
+  });
+}
+
+async function retainSanitizedCodexSessionsAfterClose(input: {
+  prepared: AcpxPreparedRuntime;
+  onLog: AdapterExecutionContext["onLog"];
+  onEvent?: AdapterExecutionContext["onEvent"];
+  removeRunHome?: (runHome: string) => Promise<void>;
+}): Promise<void> {
+  if (!input.prepared.codexSessionRetention) return;
+  const { runHome, retainedSessionsDir } = input.prepared.codexSessionRetention;
+  const retainedRunDir = path.dirname(retainedSessionsDir);
+  try {
+    await retainSanitizedCodexSessionJsonl({
+      retention: input.prepared.codexSessionRetention,
+      onLog: input.onLog,
+    });
+  } catch (err) {
+    // Retention failed — leave the run home in place as an explicit quarantine so it
+    // can be inspected or swept later.  The INCIDENT prefix is the signal KEWL-3853
+    // monitoring greps for unswept quarantines.
+    await chmodPrivateTree(runHome).catch(() => {});
+    await fs.rm(retainedRunDir, { recursive: true, force: true }).catch(() => {});
+    const runHomeParent = path.dirname(runHome);
+    const quarantineMarker = path.join(
+      path.dirname(runHomeParent),
+      `${path.basename(runHomeParent)}.quarantine`,
+    );
+    let quarantineMarkerError: unknown;
+    await writeFileAtomically({
+      target: quarantineMarker,
+      contents: `${JSON.stringify({
+        schemaVersion: 1,
+        runId: path.basename(runHomeParent),
+        runHome,
+        createdAt: new Date().toISOString(),
+        reason: "sanitized_session_retention_failed",
+      })}\n`,
+      mode: 0o600,
+    }).catch((markerErr) => {
+      quarantineMarkerError = markerErr;
+    });
+    await input.onEvent?.({
+      eventType: "acpx.codex_run_home.quarantine",
+      stream: "stderr",
+      level: "error",
+      message: "Codex run home quarantined after best-effort-redacted session retention failed",
+      payload: {
+        schemaVersion: 1,
+        runId: path.basename(runHomeParent),
+        runHome,
+        quarantineMarker,
+        quarantineMarkerWritten: quarantineMarkerError === undefined,
+        reason: "sanitized_session_retention_failed",
+        error: err instanceof Error ? err.message : String(err),
+      },
+    }).catch(() => {});
+    await input.onLog(
+      "stderr",
+      `[paperclip] INCIDENT: failed to retain best-effort-redacted ACPX Codex session JSONL; raw run home quarantined at "${runHome}"${quarantineMarkerError ? `, but marker creation at "${quarantineMarker}" also failed: ${quarantineMarkerError instanceof Error ? quarantineMarkerError.message : String(quarantineMarkerError)}` : ` with marker "${quarantineMarker}"`}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return;
+  }
+
+  // Retention is now durable. Never remove it in response to a later cleanup or
+  // observability failure: it is the only safe counterpart once deletion starts.
+  try {
+    await (input.removeRunHome ?? ((target) => fs.rm(target, { recursive: true, force: true })))(runHome);
+  } catch (err) {
+    await chmodPrivateTree(runHome).catch(() => {});
+    const runHomeParent = path.dirname(runHome);
+    const quarantineMarker = path.join(
+      path.dirname(runHomeParent),
+      `${path.basename(runHomeParent)}.quarantine`,
+    );
+    let quarantineMarkerError: unknown;
+    await writeFileAtomically({
+      target: quarantineMarker,
+      contents: `${JSON.stringify({
+        schemaVersion: 1,
+        runId: path.basename(runHomeParent),
+        runHome,
+        createdAt: new Date().toISOString(),
+        reason: "raw_run_home_cleanup_failed",
+      })}\n`,
+      mode: 0o600,
+    }).catch((markerErr) => {
+      quarantineMarkerError = markerErr;
+    });
+    await input.onEvent?.({
+      eventType: "acpx.codex_run_home.quarantine",
+      stream: "stderr",
+      level: "error",
+      message: "Codex run home quarantined after raw cleanup failed",
+      payload: {
+        schemaVersion: 1,
+        runId: path.basename(runHomeParent),
+        runHome,
+        quarantineMarker,
+        quarantineMarkerWritten: quarantineMarkerError === undefined,
+        reason: "raw_run_home_cleanup_failed",
+        error: err instanceof Error ? err.message : String(err),
+      },
+    }).catch(() => {});
+    await input.onLog(
+      "stderr",
+      `[paperclip] INCIDENT: best-effort-redacted ACPX Codex session retention succeeded, but raw run-home cleanup failed at "${runHome}"${quarantineMarkerError ? ` and marker creation at "${quarantineMarker}" also failed: ${quarantineMarkerError instanceof Error ? quarantineMarkerError.message : String(quarantineMarkerError)}` : `; quarantined with marker "${quarantineMarker}"`}: ${err instanceof Error ? err.message : String(err)}\n`,
+    ).catch(() => {});
+    return;
+  }
+
+  const settledPaths = codexRunHomePaths(input.prepared.codexSessionRetention);
+  await fs.rmdir(settledPaths.runDir).catch(async (err) => {
+    if (isErrnoException(err, "ENOENT") || isErrnoException(err, "ENOTEMPTY")) return;
+    await input.onLog(
+      "stderr",
+      `[paperclip] Raw Codex home was deleted, but its empty wrapper could not be removed at "${settledPaths.runDir}": ${err instanceof Error ? err.message : String(err)}\n`,
+    ).catch(() => {});
+  });
+  await fs.rm(settledPaths.quarantineMarker, { force: true }).catch(async (err) => {
+    await input.onLog(
+      "stderr",
+      `[paperclip] INCIDENT: raw Codex run home was deleted, but stale quarantine marker cleanup failed at "${settledPaths.quarantineMarker}": ${err instanceof Error ? err.message : String(err)}\n`,
+    ).catch(() => {});
+  });
+
+  // Logging is evidence, not part of the destructive transaction. A log sink
+  // failure after deletion must never roll back the retained counterpart.
+  await input.onLog(
+    "stderr",
+    `[paperclip] Deleted raw Codex run home "${runHome}" after successful session retention.\n`,
+  ).catch(() => {});
+}
+
+async function quarantineCodexRunHomeWithoutClose(input: {
+  prepared: AcpxPreparedRuntime;
+  onLog: AdapterExecutionContext["onLog"];
+  onEvent?: AdapterExecutionContext["onEvent"];
+  reason: string;
+}): Promise<void> {
+  const retention = input.prepared.codexSessionRetention;
+  if (!retention) return;
+  await chmodPrivateTree(retention.runHome).catch(() => {});
+  await fs.rm(path.dirname(retention.retainedSessionsDir), { recursive: true, force: true }).catch(() => {});
+  const runHomeParent = path.dirname(retention.runHome);
+  const quarantineMarker = path.join(
+    path.dirname(runHomeParent),
+    `${path.basename(runHomeParent)}.quarantine`,
+  );
+  let quarantineMarkerError: unknown;
+  await writeFileAtomically({
+    target: quarantineMarker,
+    contents: `${JSON.stringify({
+      schemaVersion: 1,
+      runId: path.basename(runHomeParent),
+      runHome: retention.runHome,
+      createdAt: new Date().toISOString(),
+      reason: "runtime_close_unconfirmed",
+      detail: input.reason,
+    })}\n`,
+    mode: 0o600,
+  }).catch((markerErr) => {
+    quarantineMarkerError = markerErr;
+  });
+  await input.onEvent?.({
+    eventType: "acpx.codex_run_home.quarantine",
+    stream: "stderr",
+    level: "error",
+    message: "Codex run home quarantined because runtime close was not confirmed",
+    payload: {
+      schemaVersion: 1,
+      runId: path.basename(runHomeParent),
+      runHome: retention.runHome,
+      quarantineMarker,
+      quarantineMarkerWritten: quarantineMarkerError === undefined,
+      reason: "runtime_close_unconfirmed",
+      detail: input.reason,
+    },
+  }).catch(() => {});
+  await input.onLog(
+    "stderr",
+    `[paperclip] INCIDENT: raw ACPX Codex run home quarantined because runtime close was not confirmed at "${retention.runHome}"${quarantineMarkerError ? `, but marker creation at "${quarantineMarker}" also failed: ${quarantineMarkerError instanceof Error ? quarantineMarkerError.message : String(quarantineMarkerError)}` : ` with marker "${quarantineMarker}"`}: ${input.reason}\n`,
+  );
+}
+
 async function prepareManagedCodexHome(input: {
   companyId: string;
   sourceHome: string;
@@ -1259,7 +1821,10 @@ async function prepareCodexSkillRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
+  adapterType: string;
   moduleDir: string;
+  runId: string;
+  stateDir: string;
   onLog: AdapterExecutionContext["onLog"];
   // Step-timing seam: threaded from `buildRuntime` so the nested
   // `skills.reconcile` boundary (step 3) can emit its own `run.startup.step`
@@ -1273,7 +1838,8 @@ async function prepareCodexSkillRuntime(input: {
   // same host→sandbox counters as its siblings (0 here — skill prep is
   // host-only — which is itself the answer to "does this step exec?").
   stepMetrics?: StartupStepMeasureOptions;
-}): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
+  onRunHomePrepared?: (retention: CodexSessionRetentionContext) => void;
+}): Promise<{ identity: Record<string, unknown>; commandNotes: string[]; retention: CodexSessionRetentionContext | null }> {
   const now = input.now ?? (() => Date.now());
   const envConfig = parseObject(input.config.env);
   const configuredCodexHome =
@@ -1285,13 +1851,54 @@ async function prepareCodexSkillRuntime(input: {
       ? path.resolve(process.env.CODEX_HOME.trim())
       : path.join(os.homedir(), ".codex");
   const managedCodexHome = resolveManagedCodexHomeDir(input.companyId);
-  const effectiveCodexHome = configuredCodexHome ??
+  const seededCodexHome = configuredCodexHome ??
     await prepareManagedCodexHome({
       companyId: input.companyId,
       sourceHome: sourceCodexHome,
       targetHome: managedCodexHome,
       onLog: input.onLog,
     });
+  let effectiveCodexHome = seededCodexHome;
+  let retention: CodexSessionRetentionContext | null = null;
+  if (input.adapterType === "codex_local") {
+    const runKey = safePathSegment(input.runId);
+    await requireRealDirectory(input.stateDir, "Codex state directory");
+    const runHomesRoot = await ensureContainedRealDirectory({
+      parent: input.stateDir,
+      childName: "codex-run-homes",
+      label: "Codex run-home root",
+    });
+    const retentionRoot = await ensureContainedRealDirectory({
+      parent: input.stateDir,
+      childName: "codex-session-retention",
+      label: "Codex retention root",
+    });
+    const runDir = await ensureContainedRealDirectory({
+      parent: runHomesRoot,
+      childName: runKey,
+      label: "Codex run directory",
+    });
+    const retainedRunDir = await ensureContainedRealDirectory({
+      parent: retentionRoot,
+      childName: runKey,
+      label: "Codex retained-run directory",
+    });
+    const runHome = resolveContainedRunPath(runHomesRoot, runKey, "home");
+    retention = {
+      runHome,
+      retainedSessionsDir: path.join(retainedRunDir, "sessions"),
+    };
+    if (path.dirname(runHome) !== runDir) {
+      throw new Error("Codex run home escaped its verified run directory");
+    }
+    await prepareRunIsolatedCodexHome({
+      sourceHome: seededCodexHome,
+      runHome,
+      onLog: input.onLog,
+      onPrepared: () => input.onRunHomePrepared?.(retention!),
+    });
+    effectiveCodexHome = runHome;
+  }
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
@@ -1347,6 +1954,7 @@ async function prepareCodexSkillRuntime(input: {
       skillsHome,
     },
     commandNotes: [`Prepared ACPX Codex skill home at ${skillsHome}.`],
+    retention,
   };
 }
 
@@ -1714,7 +2322,7 @@ async function disposeFreshStagedRuntime(input: {
   }
 }
 
-async function buildRuntime(input: {
+interface BuildRuntimeInput {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
   deps: AcpxEngineExecutorOptions;
@@ -1750,12 +2358,22 @@ async function buildRuntime(input: {
   // seam. `buildRuntime` threads it into the staging seam. When it is absent, the
   // staging seam opens no `pack` span.
   stageRuntimeSpan?: RuntimeSpanRunner;
-}): Promise<AcpxPreparedRuntime> {
+}
+
+interface CodexBuildRecoveryContext {
+  retention: CodexSessionRetentionContext | null;
+  transportStartAttempted: boolean;
+}
+
+async function buildRuntimeInner(
+  input: BuildRuntimeInput & { codexBuildRecovery: CodexBuildRecoveryContext },
+): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   // Injectable monotonic clock for per-step startup timing. Hoisted above the
   // first instrumented boundary (step 1 `workspace.resolve`, below) so every
   // `measureStartupStep` call in this function shares one deterministic clock.
   const nowMs = input.deps.now ?? (() => Date.now());
+  let codexSessionRetention: CodexSessionRetentionContext | null = null;
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const secretsContext = parseObject(context.paperclipSecrets);
   const secretManifest = Array.isArray(secretsContext.manifest) ? secretsContext.manifest : [];
@@ -2052,16 +2670,24 @@ async function buildRuntime(input: {
         companyId: agent.companyId,
         config,
         env,
+        adapterType: input.engine.adapterType,
         moduleDir: input.engine.moduleDir,
+        runId,
+        stateDir,
         onLog: input.ctx.onLog,
         onEvent: input.ctx.onEvent,
         now: nowMs,
         stepMetrics,
+        onRunHomePrepared: (retention) => {
+          codexSessionRetention = retention;
+          input.codexBuildRecovery.retention = retention;
+        },
       }),
       stepMetrics,
     );
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
+    codexSessionRetention = preparedSkills.retention;
   } else if (acpxAgent === "gemini") {
     const preparedSkills = await prepareGeminiSkillRuntime({
       config,
@@ -2441,6 +3067,7 @@ async function buildRuntime(input: {
       // sequencing point, settles both starts, and returns the started handles
       // plus the finalized launch env. On a partial failure it stops nothing and
       // rethrows; the catch below stops whichever bridge the site started.
+      input.codexBuildRecovery.transportStartAttempted = true;
       const transport = await sandboxSite.startTransport({ sessionKey } as unknown as AcpRunContext);
       paperclipBridge = transport.controlBridge;
       processSessionBridge = transport.agentBridge;
@@ -2550,10 +3177,33 @@ async function buildRuntime(input: {
     },
     childStderrLogPath,
     paperclipClaudeSettings,
+    codexSessionRetention,
     mcpServers,
     mcpIdentity,
     stepMetrics,
   };
+}
+
+async function buildRuntime(input: BuildRuntimeInput): Promise<AcpxPreparedRuntime> {
+  const codexBuildRecovery: CodexBuildRecoveryContext = {
+    retention: null,
+    transportStartAttempted: false,
+  };
+  try {
+    return await buildRuntimeInner({ ...input, codexBuildRecovery });
+  } catch (err) {
+    if (codexBuildRecovery.retention) {
+      await settleCodexRunHomeAfterBuildFailure({
+        retention: codexBuildRecovery.retention,
+        transportStartAttempted: codexBuildRecovery.transportStartAttempted,
+        cause: err,
+        onLog: input.ctx.onLog,
+        onEvent: input.ctx.onEvent,
+        removeUnusedRunHome: input.deps.removeUnusedCodexRunHome,
+      });
+    }
+    throw err;
+  }
 }
 
 function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: string; value: string }> {
@@ -5221,7 +5871,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // Host lane: save a clean persistent warm-eligible turn, but carry the
           // live run-scoped credential so the gate blocks the transfer.
           if (!slots.has("acp_runtime")) return null;
-          const permits = clean && prepared.mode === "persistent" && warmIdleMs > 0;
+          const permits =
+            clean &&
+            prepared.mode === "persistent" &&
+            warmIdleMs > 0 &&
+            !prepared.codexSessionRetention;
           if (!permits) return null;
           return { kind: "host", causePermitsSave: true, liveRunScopedCredentials: [LIVE_RUN_SCOPED_API_KEY] };
         },
@@ -5233,8 +5887,37 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // below, including the empty-slot and save early returns: a late
           // handle that already arrived must never race this step.
           const lateHandle = handshakeFence.seal();
-          if (!slots.has("acp_runtime")) return;
-          if (decision.kind === "save" && decision.savedId === "acp_runtime") return;
+          if (!slots.has("acp_runtime")) {
+            // A runtime-construction failure can leave remote bridges alive
+            // until the later stopTransport settlement step. Without a runtime
+            // handle there is no close proof yet, so preserve the raw home
+            // instead of deleting it one step before transport teardown.
+            if (prepared.processSessionBridge || prepared.paperclipBridge) {
+              await quarantineCodexRunHomeWithoutClose({
+                prepared,
+                onLog: ctx.onLog,
+                onEvent: ctx.onEvent,
+                reason: "runtime construction failed while transport was still active",
+              });
+              return;
+            }
+            await retainSanitizedCodexSessionsAfterClose({
+              prepared,
+              onLog: ctx.onLog,
+              onEvent: ctx.onEvent,
+              removeRunHome: deps.removeCodexRunHome,
+            });
+            return;
+          }
+          if (decision.kind === "save" && decision.savedId === "acp_runtime") {
+            await quarantineCodexRunHomeWithoutClose({
+              prepared,
+              onLog: ctx.onLog,
+              onEvent: ctx.onEvent,
+              reason: "the runtime was transferred to the warm-session store",
+            });
+            return;
+          }
           const baseSettlement: RuntimeSettlementPlan = runtimeSettlement ?? {
             mode: "direct",
             handle: syntheticCloseHandle(),
@@ -5275,6 +5958,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               warmHandles.delete(prepared.sessionKey);
               flushChildStderr(existing.childStderrState);
             }
+            await quarantineCodexRunHomeWithoutClose({
+              prepared,
+              onLog: ctx.onLog,
+              onEvent: ctx.onEvent,
+              reason: "the runtime close was skipped after duplex channel loss",
+            });
             return;
           }
           // The handshake guard abandoned this `ensureSession` call and no late
@@ -5284,7 +5973,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // hook (armed at the `ensureSession` call site) closes it once,
           // whenever it shows up. A guarded call only ever runs on a cold
           // start, so there is no matching warm entry here to drop.
-          if (handshakeAbandoned && !lateHandle) return;
+          if (handshakeAbandoned && !lateHandle) {
+            await quarantineCodexRunHomeWithoutClose({
+              prepared,
+              onLog: ctx.onLog,
+              onEvent: ctx.onEvent,
+              reason: "the abandoned session handshake had not returned a closeable handle",
+            });
+            return;
+          }
           if (
             settlement.mode === "warm_or_close" &&
             warmHandleMatches(existing, runtime, settlement.handle) &&
@@ -5292,12 +5989,28 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ) {
             // A matching warm entry closes through the warm store, which also
             // clears its idle timer and flushes its child stderr.
-            await closeWarmHandle({
-              handles: warmHandles,
-              key: prepared.sessionKey,
-              entry: existing,
-              reason: settlement.reason,
-              discardPersistentState: settlement.discardPersistentState,
+            try {
+              await closeWarmHandle({
+                handles: warmHandles,
+                key: prepared.sessionKey,
+                entry: existing,
+                reason: settlement.reason,
+                discardPersistentState: settlement.discardPersistentState,
+              });
+            } catch (closeErr) {
+              await quarantineCodexRunHomeWithoutClose({
+                prepared,
+                onLog: ctx.onLog,
+                onEvent: ctx.onEvent,
+                reason: `warm runtime close failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+              });
+              throw closeErr;
+            }
+            await retainSanitizedCodexSessionsAfterClose({
+              prepared,
+              onLog: ctx.onLog,
+              onEvent: ctx.onEvent,
+              removeRunHome: deps.removeCodexRunHome,
             });
             return;
           }
@@ -5310,11 +6023,28 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               reason: settlement.reason,
               discardPersistentState: settlement.discardPersistentState,
             })
-            .then(() => { runtimeStopConfirmed = true; })
+            .then(() => {
+              runtimeStopConfirmed = true;
+            })
             .catch(onCloseError);
           if (settlement.dropWarmEntry && warmHandleMatches(existing, runtime, settlement.handle) && existing) {
             clearWarmHandleTimer(existing);
             warmHandles.delete(prepared.sessionKey);
+          }
+          if (runtimeStopConfirmed) {
+            await retainSanitizedCodexSessionsAfterClose({
+              prepared,
+              onLog: ctx.onLog,
+              onEvent: ctx.onEvent,
+              removeRunHome: deps.removeCodexRunHome,
+            });
+          } else {
+            await quarantineCodexRunHomeWithoutClose({
+              prepared,
+              onLog: ctx.onLog,
+              onEvent: ctx.onEvent,
+              reason: "runtime.close did not complete successfully",
+            });
           }
         }),
         // Perform the reuse decision. A save transfers the staged files to the site
