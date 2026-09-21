@@ -164,7 +164,28 @@ export async function buildExecutionContinuation(input: {
           )
       )[0]
     : null;
-  if (sourceRunId && !sourceRun)
+  // A resume source (`retryOfRunId`, `previousRunId`, `interruptedRunId`, or an
+  // explicit user continuation) supplies the run history this continuation picks
+  // up, so it must belong to this issue. An interaction's producing run is only
+  // provenance: the interaction row is already scoped to the issue, so a
+  // producer bound to a different issue — or to none at all, as in a taskless
+  // timer heartbeat or an agent-scoped wakeup — must not void an answer the
+  // board already recorded. Such a producer qualifies as provenance only when no
+  // resume field names the same run, because those fields still require a run
+  // that belongs to this issue. Cross-issue content still cannot enter: the
+  // `originCommentIds` check below refuses any comment id that is not on this
+  // issue, and `sourceRun` stays null, so its comments are never merged.
+  const interactionSourceRunId = triggerInteraction?.sourceRunId ?? null;
+  const sourceRunIsProvenanceOnly =
+    explicitUserSource === null &&
+    interactionSourceRunId !== null &&
+    interactionSourceRunId === sourceRunId &&
+    ![
+      string(input.context.retryOfRunId),
+      string(input.context.previousRunId),
+      string(input.context.interruptedRunId),
+    ].includes(interactionSourceRunId);
+  if (sourceRunId && !sourceRun && !sourceRunIsProvenanceOnly)
     throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
   const originCommentIds = [
     ...new Set([
