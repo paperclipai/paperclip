@@ -13405,7 +13405,19 @@ export function issueRoutes(
           agentId: existing.assigneeAgentId,
         });
         const runToStopForReassignment = await resolveActiveIssueRun(existing);
-        if (runToStopForReassignment) {
+        // A run that hands its own issue on must survive the handoff.
+        // Cancelling here kills the caller in the middle of its turn and
+        // loses the work it does after this request. Only a run-scoped agent
+        // JWT proves the caller is that run. The run id in an agent-key
+        // request comes from an unverified header, so it keeps the cancel.
+        const isSelfHandoff =
+          !!runToStopForReassignment &&
+          req.actor.type === "agent" &&
+          req.actor.source === "agent_jwt" &&
+          !!req.actor.runId &&
+          req.actor.runId === runToStopForReassignment.id &&
+          req.actor.agentId === existing.assigneeAgentId;
+        if (runToStopForReassignment && !isSelfHandoff) {
           const cancelled = await heartbeat.cancelRun(
             runToStopForReassignment.id,
             "Cancelled before issue reassignment",

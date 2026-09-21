@@ -2525,6 +2525,87 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  describe("reassignment run cancel", () => {
+    const runningRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    };
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(
+        makeIssue({ assigneeAgentId: ownerAgentId, executionRunId: ownerRunId }),
+      );
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue({ assigneeAgentId: ownerAgentId, executionRunId: ownerRunId }),
+        ...patch,
+      }));
+      mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+      mockHeartbeatService.getRun.mockResolvedValue(runningRun);
+    });
+
+    it("keeps the calling run alive when an agent hands its own issue to another agent", async () => {
+      const app = await createApp({ ...ownerActor(), source: "agent_jwt" });
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ assigneeAgentId: peerAgentId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({ assigneeAgentId: peerAgentId }),
+      );
+    });
+
+    it("cancels the assignee run when another actor reassigns the issue", async () => {
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...runningRun, status: "cancelled" });
+
+      const app = await createApp(boardActor());
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ assigneeAgentId: peerAgentId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+        ownerRunId,
+        "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }),
+      );
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({ assigneeAgentId: peerAgentId }),
+      );
+    });
+
+    // Only a run-scoped JWT proves the caller is the run it names. An agent
+    // key carries an unverified run id header, and a JWT for another run of
+    // the same agent is not the run that holds the issue.
+    it.each([
+      ["an agent key names the running run", { ...ownerActor(), source: "agent_key" }],
+      [
+        "an agent JWT names a different run",
+        { ...ownerActor(), source: "agent_jwt", runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      ],
+    ])("still cancels the assignee run when %s", async (_name, actor) => {
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...runningRun, status: "cancelled" });
+
+      const app = await createApp(actor);
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ assigneeAgentId: peerAgentId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+        ownerRunId,
+        "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }),
+      );
+    });
+  });
+
   describe("task watchdog scope grants", () => {
     const watchdogRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
     const watchdogReportIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccd";
