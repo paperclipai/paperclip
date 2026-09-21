@@ -5,6 +5,10 @@ review threads enter ordinary Paperclip tasks; the agent's runs, permissions,
 budget, and activity remain visible there. The Reviews page is a projection of
 assessments attached to those tasks, not a separate execution system.
 
+For a step-by-step explanation of mentions, automatic reviews, scores, and
+required GitHub checks, read
+[Understanding GitHub PR review bots](UNDERSTANDING-GITHUB-PR-REVIEW-BOTS.md).
+
 ## Set up a bot
 
 1. Choose the permanent agent assignment. Prefer a
