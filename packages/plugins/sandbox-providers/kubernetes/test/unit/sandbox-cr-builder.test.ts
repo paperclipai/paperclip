@@ -42,13 +42,8 @@ describe("buildSandboxCrManifest", () => {
   it("uses sleep-infinity entrypoint via Tini for multi-command exec", () => {
     const cr = buildSandboxCrManifest(baseInput);
     const container = cr.spec.podTemplate.spec.containers[0];
-    expect(container.command).toEqual([
-      "/usr/bin/tini",
-      "--",
-      "/bin/sh",
-      "-c",
-      "sleep infinity",
-    ]);
+    expect(container.command.slice(0, 4)).toEqual(["/usr/bin/tini", "--", "/bin/sh", "-c"]);
+    expect(container.command[4]).toMatch(/exec sleep infinity$/);
   });
 
   it("applies the same security baseline as Job backend (non-root, drop ALL, RO rootFS, seccomp)", () => {
@@ -90,28 +85,21 @@ describe("buildSandboxCrManifest", () => {
     ).toBe(true);
   });
 
-  it("declares the workspace mount as a git safe directory, so the export step can read the repository", () => {
+  it("marks the workspace as a git safe directory in the pod's own config, before it idles", () => {
     const cr = buildSandboxCrManifest(baseInput);
     const container = cr.spec.podTemplate.spec.containers[0];
-    const byName = Object.fromEntries(
-      (container.env as Array<{ name: string; value: string }>).map((entry) => [entry.name, entry.value]),
-    );
-    expect(byName.GIT_CONFIG_PARAMETERS).toBe("'safe.directory=/workspace'");
-    expect(byName.GIT_CONFIG_PARAMETERS).toBe(
-      `'safe.directory=${
-        container.volumeMounts.find((mount: { name: string }) => mount.name === "workspace").mountPath
-      }'`,
-    );
+    const script = container.command[container.command.length - 1];
+    expect(script).toContain("git config --global --add safe.directory /workspace");
+    expect(script).toContain("|| true");
+    expect(script).toContain("exec sleep infinity");
   });
 
-  it("adds to the git configuration instead of replacing an adapter's own GIT_CONFIG entries", () => {
+  it("leaves the git environment alone, so an adapter keeps its own GIT_CONFIG entries", () => {
     const cr = buildSandboxCrManifest(baseInput);
     const names = (cr.spec.podTemplate.spec.containers[0].env as Array<{ name: string }>).map(
       (entry) => entry.name,
     );
-    expect(names).not.toContain("GIT_CONFIG_COUNT");
-    expect(names).not.toContain("GIT_CONFIG_KEY_0");
-    expect(names).not.toContain("GIT_CONFIG_VALUE_0");
+    expect(names).toEqual(["HOME"]);
   });
 
   it("envFrom references the per-run secret", () => {

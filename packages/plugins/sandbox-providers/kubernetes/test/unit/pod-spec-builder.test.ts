@@ -44,33 +44,30 @@ describe("buildJobManifest", () => {
     expect(container.securityContext.capabilities.drop).toEqual(["ALL"]);
   });
 
-  it("declares the workspace mount as a git safe directory, so the export step can read the repository", () => {
+  it("marks the workspace as a git safe directory in the pod's own config, before the agent starts", () => {
     const job = buildJobManifest(baseInput);
-    const env = job.spec.template.spec.containers[0].env as Array<{ name: string; value: string }>;
-    const byName = Object.fromEntries(env.map((entry) => [entry.name, entry.value]));
-    expect(byName.GIT_CONFIG_PARAMETERS).toBe("'safe.directory=/workspace'");
-    expect(byName.GIT_CONFIG_PARAMETERS).toBe(
-      `'safe.directory=${
-        job.spec.template.spec.containers[0].volumeMounts.find(
-          (mount: { name: string }) => mount.name === "workspace",
-        ).mountPath
-      }'`,
-    );
+    const container = job.spec.template.spec.containers[0];
+    const script = container.command[container.command.length - 1];
+    expect(container.command.slice(0, 4)).toEqual(["/usr/bin/tini", "--", "/bin/sh", "-c"]);
+    expect(script).toContain("git config --global --add safe.directory /workspace");
+    // The agent still becomes the process, and a failed git config never blocks it.
+    expect(script).toContain("|| true");
+    expect(script).toContain("exec /usr/local/bin/paperclip-agent-shim");
   });
 
-  it("adds to the git configuration instead of replacing an adapter's own GIT_CONFIG entries", () => {
+  it("leaves the git environment alone, so an adapter keeps its own GIT_CONFIG entries", () => {
     const job = buildJobManifest(baseInput);
-    const env = job.spec.template.spec.containers[0].env as Array<{ name: string; value: string }>;
-    const names = env.map((entry) => entry.name);
-    expect(names).not.toContain("GIT_CONFIG_COUNT");
-    expect(names).not.toContain("GIT_CONFIG_KEY_0");
-    expect(names).not.toContain("GIT_CONFIG_VALUE_0");
+    const names = (job.spec.template.spec.containers[0].env as Array<{ name: string }>).map(
+      (entry) => entry.name,
+    );
+    expect(names).toEqual(["HOME"]);
   });
 
   it("wraps the entrypoint in tini for PID 1", () => {
     const job = buildJobManifest(baseInput);
     const container = job.spec.template.spec.containers[0];
-    expect(container.command).toEqual(["/usr/bin/tini", "--", "/usr/local/bin/paperclip-agent-shim"]);
+    expect(container.command.slice(0, 4)).toEqual(["/usr/bin/tini", "--", "/bin/sh", "-c"]);
+    expect(container.command[4]).toMatch(/exec \/usr\/local\/bin\/paperclip-agent-shim$/);
   });
 
   it("declares explicit writable emptyDir mounts for the standard agent paths", () => {

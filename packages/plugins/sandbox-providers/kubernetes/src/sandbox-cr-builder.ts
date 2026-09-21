@@ -23,6 +23,22 @@
  */
 const WORKSPACE_MOUNT_PATH = "/workspace";
 
+/**
+ * Marks the workspace mount as a git safe directory, in the pod's own HOME.
+ *
+ * The mount root belongs to root, because `fsGroup` sets the group and leaves
+ * the owner, while the container runs as uid 1000. Git refuses to work in a
+ * repository whose worktree belongs to another user, so the export step of a
+ * run fails with "detected dubious ownership".
+ *
+ * The setting is written to the config file rather than passed through
+ * `GIT_CONFIG_*`: those variables replace or interfere with the configuration
+ * an adapter supplies for credentials or URL rewriting. `--add` appends, so an
+ * adapter that declares its own safe directories keeps them. A failure here
+ * never blocks the container, which is why the command tolerates it.
+ */
+const GIT_SAFE_DIRECTORY_COMMAND = `git config --global --add safe.directory ${WORKSPACE_MOUNT_PATH} || true`;
+
 export interface BuildSandboxCrManifestInput {
   namespace: string;
   sandboxName: string;
@@ -101,30 +117,13 @@ export function buildSandboxCrManifest(
                 "--",
                 "/bin/sh",
                 "-c",
-                "sleep infinity",
+                `${GIT_SAFE_DIRECTORY_COMMAND}; exec sleep infinity`,
               ],
               // HOME must point at a writable mount; the image's default
                // HOME=/home/node is inside the readOnly root filesystem.
                // Claude (and most agent runtimes) silently exit with code 0
                // and no output when HOME is unwritable, so set this explicitly.
-              env: [
-                { name: "HOME", value: "/home/paperclip" },
-                // The workspace mount root belongs to root, because `fsGroup`
-                // sets the group and leaves the owner. Git refuses to work in a
-                // repository whose worktree belongs to another user, so the
-                // export step of a run fails with "detected dubious ownership".
-                // Declare the mount as safe through the environment, which needs
-                // no write to a git config file.
-                //
-                // `GIT_CONFIG_PARAMETERS` adds to the configuration git reads,
-                // so an adapter that supplies its own `GIT_CONFIG_COUNT` entries
-                // for credentials or URL rewriting keeps them. A fixed
-                // `GIT_CONFIG_COUNT` here would replace that whole set instead.
-                {
-                  name: "GIT_CONFIG_PARAMETERS",
-                  value: `'safe.directory=${WORKSPACE_MOUNT_PATH}'`,
-                },
-              ],
+              env: [{ name: "HOME", value: "/home/paperclip" }],
               envFrom: [{ secretRef: { name: input.envSecretName } }],
               securityContext: {
                 runAsNonRoot: true,
