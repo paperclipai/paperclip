@@ -21,6 +21,12 @@
       "darkAsset": "/brands/apps/anthropic-dark.svg"
     },
     {
+      "slug": "arcade",
+      "provider": "Arcade",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/arcade.png"
+    },
+    {
       "slug": "asana",
       "provider": "Asana",
       "catalogVisible": true,
@@ -86,7 +92,7 @@
     {
       "slug": "composio",
       "provider": "Composio",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/composio.svg",
       "darkAsset": "/brands/apps/composio-dark.svg"
     },
@@ -115,6 +121,12 @@
       "provider": "Embat",
       "catalogVisible": false,
       "localAsset": "/brands/apps/embat.svg"
+    },
+    {
+      "slug": "executor",
+      "provider": "Executor",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/executor.png"
     },
     {
       "slug": "github",

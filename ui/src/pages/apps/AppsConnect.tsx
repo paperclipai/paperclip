@@ -1,4 +1,9 @@
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
+import { useQuery } from "@tanstack/react-query";
+import { toolsApi } from "@/api/tools";
+import { RemoteMcpProductionSetup } from "@/features/connections/remote-mcp/RemoteMcpProductionSetup";
+import { isRemoteMcpConnectorId, isRemoteMcpConnectorMethod } from "@paperclipai/shared";
+import { useParams } from "@/lib/router";
 import { useSearchParams } from "@/lib/router";
 import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
 
@@ -18,6 +23,17 @@ export function AppsConnect({
 } = {}) {
   const [searchParams] = useSearchParams();
   const interactionId = searchParams.get("intent")?.trim() || undefined;
+  const params = useParams<{ appKey?: string }>();
+  const existingId = searchParams.get("resume") || searchParams.get("reconnect");
+  const existing = useQuery({ queryKey: ["tools", "connection", existingId], queryFn: () => toolsApi.getConnection(existingId!), enabled: !!existingId });
+  const source = searchParams.get("source") || params.appKey || searchParams.get("appKey") || existing.data?.config?.sourceTemplateKey;
+  const method = searchParams.get("method") || existing.data?.config?.connectionMethodKey;
+  if (existingId && existing.isPending) return <p className="p-8 text-sm text-muted-foreground">Loading connection…</p>;
+  if (existingId && existing.isError) return <div role="alert" className="space-y-3 p-8"><p>Could not load this connection. Your saved access and credentials have not changed.</p><button type="button" className="text-primary underline" onClick={() => void existing.refetch()}>Try again</button></div>;
+  if (!byoOnly && !interactionId && credentialSource === "paperclip_vault" && isRemoteMcpConnectorId(source)
+    && (!method || isRemoteMcpConnectorMethod(source, method))) {
+    return <RemoteMcpProductionSetup key={existingId || source} providerId={source} connection={existing.data} />;
+  }
   return (
     <ConnectionSetupFlow
       byoOnly={byoOnly}

@@ -6,6 +6,20 @@ Run scope: `ui/src/components/` and `ui/src/pages/` on branch `design/token-extr
 
 ## Counts
 
+### Independent MCP connection setup — 2026-09-21
+
+`ui/src/features/connections/remote-mcp/RemoteMcpConnectionSetup.tsx` is the controlled
+Access → Connect and management composition for Zapier, Arcade,
+Composio and Executor. It reuses Gmail’s StepHeader and AccessStepContent, plus SetupWizardFooter,
+AppLogo, InlineBanner and existing form/dialog primitives. Saved connections reuse
+the canonical PermissionsPanel ActionsSection and its ActionTestDialog; there is
+no separate setup test or permission list. Each
+provider has an independent state and controller. It does not initiate network
+authentication requests or persist credentials. The shared Test dialog uses normal
+API calls, intercepted by scoped in-memory Storybook fixtures. The first milestone is design review; production
+routes do not use it yet. See `/design-guide` and Storybook **Apps / Connections**
+for the provider variants and complete interactive state matrix.
+
 Execution recovery reuses the existing transcript header and task status. Routine phases add no list badges, status cards, or reconciliation dialogs. Only a transient reconnection changes the header text. Automatic recovery decisions remain in the local run log. Storybook **Tasks / Execution recovery** demonstrates quiet task lists, native and legacy transcript headers, and dashboard composition.
 
 | Area | Count |

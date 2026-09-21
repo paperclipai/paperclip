@@ -193,7 +193,7 @@ function AgentAccessSection({
   );
 }
 
-function ActionsSection({
+export function ActionsSection({
   connectionId,
   appName,
   readOnly,

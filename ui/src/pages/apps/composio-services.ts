@@ -196,7 +196,7 @@ export function isComposioBrokerConnection(
 ): boolean {
   if (!connection) return false;
   const config = configOf(connection);
-  return config.sourceTemplateKey === "composio" && config.provider !== "composio";
+  return config.sourceTemplateKey === "composio" && config.connectionMethodKey !== "mcp" && config.provider !== "composio";
 }
 
 /**

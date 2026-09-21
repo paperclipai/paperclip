@@ -1,4 +1,4 @@
-import { connectionPurposeTransportSchema } from "@paperclipai/shared";
+import { isRemoteMcpConnectorMethod, connectionPurposeTransportSchema } from "@paperclipai/shared";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
@@ -186,6 +186,10 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import {
   initializeMcpHttpSession,
+  McpHttpInitializationError,
+  getMcpHttpSession,
+  forgetMcpHttpSessions,
+  readMcpHttpResponse,
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
 } from "./mcp-http.js";
@@ -2324,6 +2328,10 @@ export function classifyRisk(
   if (annotations.destructiveHint === true || annotations.destructive === true)
     return "destructive";
   const normalizedToolName = normalizedProviderToolName(tool.name);
+  // These tools can execute arbitrary underlying actions. A read-looking name
+  // or missing annotation must not describe that entire capability as read-only.
+  if (sourceTemplateKey === "executor" && ["execute", "resume", "edit-artifact"].includes(tool.name)) return "write";
+  if (sourceTemplateKey === "composio" && /COMPOSIO_(MULTI_EXECUTE_TOOL|REMOTE_WORKBENCH|REMOTE_BASH_TOOL|MANAGE_CONNECTIONS)/.test(tool.name)) return "write";
   if (sourceTemplateKey === "railway") {
     const reviewed = railwayRisk(normalizedToolName);
     return reviewed === "read" && (annotations.readOnlyHint === false || annotations.writeHint === true) ? "write" : reviewed;
@@ -6068,6 +6076,7 @@ export function toolAccessService(
     removalOptions: { confirmComposioChildren?: boolean } = {},
   ): Promise<ToolConnectionRemovalResult> {
     const connection = await getConnectionRow(connectionId, companyId);
+    forgetMcpHttpSessions(connection.id);
     const now = new Date();
     const binding = actorBinding(actor);
 
@@ -6765,31 +6774,26 @@ export function toolAccessService(
     // Pinned to the address the guard approved: `config.url` is operator-supplied,
     // so a second DNS resolution here would reopen the rebinding window that
     // PAP-17098 closed for the OAuth endpoints.
-    const listRequestBody = JSON.stringify({
-      jsonrpc: "2.0",
-      id: "paperclip-catalog-refresh",
-      method: "tools/list",
-      params: {},
-    });
-    const sendRemote = (init: RequestInit) =>
-      requestRemoteHttpEndpoint(new URL(endpoint), init);
-    const sendToolsList = (requestHeaders: Record<string, string>) =>
-      sendRemote({
-        method: "POST",
-        // MCP Streamable HTTP requires advertising that we accept both a JSON body
-        // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
-        headers: mcpHttpRequestHeaders(requestHeaders),
-        body: listRequestBody,
-      });
+    let listRequestId = "paperclip-catalog-refresh";
+    let sessionHeaders = headers;
+    const sendRemote = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), init);
+    const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
+      sessionHeaders = requestHeaders;
+      return sendRemote({ method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
+        body: JSON.stringify({ jsonrpc: "2.0", id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }) });
+    };
     let usedInitializedSession = connection.config.mcpSessionRequired === true;
     let response: Response;
     if (usedInitializedSession) {
-      const sessionHeaders = await initializeMcpHttpSession({
-        send: sendRemote,
-        headers,
-        requestId: "paperclip-catalog-refresh",
-      });
-      response = await sendToolsList(sessionHeaders);
+      try {
+        sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers,
+          scope: `${connection.id}:catalog:${actor?.actorType}:${actor?.actorId}:${endpoint}`,
+          requestId: listRequestId });
+        response = await sendToolsList(sessionHeaders);
+      } catch (error) {
+        if (!(error instanceof McpHttpInitializationError) || !error.response) throw error;
+        response = error.response;
+      }
     } else {
       response = await sendToolsList(headers);
       // `tools/list` is read-only, so a 400 can safely be retried after the MCP
@@ -6833,6 +6837,8 @@ export function toolAccessService(
       const refreshed = await composioSessions.ensureSession(connection.id, {
         force: true,
       });
+      listRequestId = "paperclip-catalog-refresh-retry";
+      sessionHeaders = refreshed.headers;
       response = await requestRemoteHttpEndpoint(new URL(refreshed.url), {
         method: "POST",
         headers: mcpHttpRequestHeaders(refreshed.headers),
@@ -6954,20 +6960,23 @@ export function toolAccessService(
         status: response.status,
       });
     }
-    const payload = parseMcpHttpResponseBody(
-      await response.text(),
-      response.headers.get("content-type"),
-    );
-    const result = asRecord(asRecord(payload).result);
-    const payloadTools = asRecord(payload).tools;
-    const tools: unknown[] = Array.isArray(result.tools)
-      ? result.tools
-      : Array.isArray(payloadTools)
-        ? payloadTools
-        : [];
-    const descriptors = tools
-      .map((tool) => normalizeToolDescriptor(tool))
-      .filter((tool): tool is McpToolDescriptor => Boolean(tool));
+    const descriptors: McpToolDescriptor[] = [];
+    const seenCursors = new Set<string>();
+    for (let page = 0; ; page += 1) {
+      const payload = await readMcpHttpResponse(response, listRequestId);
+      const record = asRecord(payload);
+      if (record.error) throw new HttpError(502, "Remote MCP tool discovery failed", { code: "mcp_catalog_error" });
+      const result = asRecord(record.result);
+      if (!Array.isArray(result.tools)) throw new HttpError(502, "Remote MCP returned an invalid tool catalog", { code: "mcp_catalog_invalid" });
+      descriptors.push(...result.tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool)));
+      const cursor = typeof result.nextCursor === "string" ? result.nextCursor : null;
+      if (!cursor) break;
+      if (seenCursors.has(cursor) || page >= 99 || descriptors.length > 20_000) throw new HttpError(502, "Remote MCP tool catalog pagination did not finish", { code: "mcp_catalog_pagination" });
+      seenCursors.add(cursor);
+      listRequestId = `paperclip-catalog-refresh-${page + 1}`;
+      response = await sendToolsList(sessionHeaders, cursor);
+      if (!response.ok) throw new HttpError(502, "Remote MCP catalog page could not be read", { status: response.status });
+    }
     if (!isRailwayConnection(connection)) return descriptors;
     if (descriptors.some((tool) => normalizeRailwayToolName(tool.name).startsWith(RAILWAY_TOOL_PREFIX))) {
       throw unprocessable("Railway advertised a reserved Paperclip action name. Refresh is blocked pending review.", { code: "railway_tool_name_collision" });
@@ -7015,7 +7024,7 @@ export function toolAccessService(
     connection: typeof toolConnections.$inferSelect,
   ): boolean {
     return (
-      asRecord(connection.config).sourceTemplateKey === COMPOSIO_GALLERY_KEY
+      asRecord(connection.config).sourceTemplateKey === COMPOSIO_GALLERY_KEY && connection.transport === "rest_api"
     );
   }
 
@@ -7772,6 +7781,13 @@ export function toolAccessService(
     const existingByName = new Map(
       existingRows.map((entry) => [entry.toolName, entry]),
     );
+    if (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+      const discoveredNames = new Set(descriptors.map((descriptor) => descriptor.name));
+      const removedIds = existingRows.filter((entry) => !discoveredNames.has(entry.toolName) && entry.status !== "disabled").map((entry) => entry.id);
+      if (removedIds.length) await db.update(toolCatalogEntries)
+        .set({ status: "disabled", quarantineReason: "mcp_tool_removed", updatedAt: refreshedAt })
+        .where(and(eq(toolCatalogEntries.companyId, connection.companyId), eq(toolCatalogEntries.connectionId, connection.id), inArray(toolCatalogEntries.id, removedIds)));
+    }
     // Retired native actions are absent from discovery, but old catalog rows
     // still need to show as disabled. Gateway denial also applies before refresh.
     const blockedRailwayEntryIds = isRailwayEndpoint(connection.config.url)
@@ -7835,7 +7851,7 @@ export function toolAccessService(
         ? "disabled"
         : shouldQuarantine
           ? "quarantined"
-          : existing?.status === "disabled"
+          : existing?.status === "disabled" && existing.quarantineReason !== "mcp_tool_removed"
             ? "disabled"
             : quarantineOnRefresh && existing?.status === "quarantined"
               ? "quarantined"
@@ -7950,10 +7966,12 @@ export function toolAccessService(
     const activeEntries = updatedEntries.filter(
       (entry) => entry.status === "active",
     );
-    if (!refreshOptions.skipDefaultProfileSync) {
+    const preserveMcpAccess = connection.config.mcpPreserveAccess === true
+      && isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey);
+    if (!refreshOptions.skipDefaultProfileSync || preserveMcpAccess) {
       await enableCatalogEntriesByDefault({
         connection: updatedConnection,
-        newCatalogEntryIds: refreshOptions.enableAllByDefault
+        newCatalogEntryIds: refreshOptions.enableAllByDefault && !isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)
           ? activeEntries.map((entry) => entry.id)
           : activeEntries
               .filter((entry) => {
@@ -7962,7 +7980,7 @@ export function toolAccessService(
               })
               .map((entry) => entry.id),
         activeCatalogEntryIds: activeEntries.map((entry) => entry.id),
-        restoreDraftDefaults: refreshOptions.restoreDraftDefaults,
+        restoreDraftDefaults: refreshOptions.restoreDraftDefaults || preserveMcpAccess,
         actor,
       });
     }
@@ -12377,18 +12395,19 @@ export function toolAccessService(
     const method = galleryEntry
       ? connectionMethodFor(galleryEntry, inferredMethodKey)
       : null;
+    const remoteMcpConnector = isRemoteMcpConnectorMethod(galleryEntry?.slug, method?.key);
     if (galleryEntry && input.link) {
       const acceptsProviderGeneratedUrl =
         method?.transport === "mcp_remote" &&
         method.auth === "none" &&
         !method.defaults?.serverUrl &&
         !method.defaults?.serverUrlTemplate;
-      if (!acceptsProviderGeneratedUrl) {
+      if (!acceptsProviderGeneratedUrl && !remoteMcpConnector) {
         throw badRequest(
           `${galleryEntry.name} does not accept a provider-generated connection URL`,
         );
       }
-      if (!getAppDefinitionForUrl(input.link, [galleryEntry])) {
+      if (!(remoteMcpConnector && galleryEntry.slug === "executor") && !getAppDefinitionForUrl(input.link, [galleryEntry])) {
         throw badRequest(
           `That connection URL does not belong to ${galleryEntry.name}`,
         );
@@ -12699,6 +12718,7 @@ export function toolAccessService(
       transport === "mcp_remote"
         ? {
             url:
+              (remoteMcpConnector ? remoteUrlCredential?.publicUrl : undefined) ??
               normalizedMethodConfig?.url ??
               method?.defaults?.serverUrl ??
               remoteUrlCredential?.publicUrl ??
@@ -12716,6 +12736,11 @@ export function toolAccessService(
           // the wizard projects the app's action defaults into policies at
           // finish time instead of using catalog quarantine as access state.
           quarantineNewEntries: galleryEntry.slug === "railway",
+          ...(remoteMcpConnector ? {
+            mcpSessionRequired: true,
+            mcpAuthMode: input.authMode ?? "auto",
+            mcpPreserveAccess: Boolean(retainedConnection && (retainedConnection.status === "active" || asRecord(retainedConnection.config).mcpPreserveAccess === true)),
+          } : {}),
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
         }
       : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
@@ -12734,7 +12759,7 @@ export function toolAccessService(
       config.quarantineNewEntries = true;
     }
     const acceptsCustomerOAuthClient =
-      method?.auth === "oauth" && method.ownershipModes.includes("customer");
+      remoteMcpConnector || (method?.auth === "oauth" && method.ownershipModes.includes("customer"));
     if (galleryEntry && input.oauthClient && !acceptsCustomerOAuthClient) {
       throw badRequest(
         `${galleryEntry.name} does not accept customer-owned OAuth client credentials`,
@@ -12784,7 +12809,7 @@ export function toolAccessService(
     // operator supplied and is upgraded to `oauth` when discovery proves the
     // endpoint needs sign-in (see `remoteTools` and `startOAuth`).
     const genericAuthKind: ToolConnectionAuthKind =
-      method?.auth ??
+      (remoteMcpConnector ? undefined : method?.auth) ??
       (input.authMode === "oauth" || input.oauthClient
         ? "oauth"
         : input.authMode === "bearer" || input.authMode === "custom_headers"
@@ -12834,7 +12859,8 @@ export function toolAccessService(
       previousGrantKind === requestedGrantKind &&
       galleryEntry &&
       retainedSource === galleryEntry.slug &&
-      retainedMethodKey === method?.key,
+      retainedMethodKey === method?.key &&
+      (!remoteMcpConnector || (baseConfig.url === retainedConfig.url && genericAuthKind === retainedConnection.authKind)),
     );
     const retainedCredentialSecretRefs = canRetainCredentialMaterial
       ? (retainedPersonalIdentity?.grant?.credentialSecretRefs ??
@@ -12866,9 +12892,9 @@ export function toolAccessService(
       const credentialFields =
         credentialSource === "vercel_connect"
           ? []
-          : galleryEntry
+          : galleryEntry && !remoteMcpConnector
             ? credentialFieldsFor(galleryEntry, method?.key)
-            : linkCredentialFields(credentialValues);
+            : linkCredentialFields({ ...Object.fromEntries(retainedCredentialSecretRefs.filter((ref) => ref.configPath.startsWith("headers.") || ref.configPath === "credentials.authorization").map((ref) => [ref.configPath, "retained"])), ...credentialValues });
       for (const field of credentialFields) {
         const value = credentialValues[field.configPath];
         const retainedSecretRef = retainedCredentialSecretRefs.find(
@@ -12923,6 +12949,13 @@ export function toolAccessService(
         }
       }
 
+      if (!remoteUrlCredential?.secretUrl && canRetainCredentialMaterial && baseConfig.url === retainedConfig.url) {
+        const retainedUrl = retainedCredentialSecretRefs.find((ref) => ref.configPath === REMOTE_URL_SECRET_CONFIG_PATH);
+        if (retainedUrl) {
+          credentialSecretRefs.push(retainedUrl);
+          credentialRefs.push({ name: REMOTE_URL_SECRET_CONFIG_PATH, secretId: retainedUrl.secretId, version: retainedUrl.versionSelector ?? "latest", placement: "url", key: "url", prefix: null });
+        }
+      }
       if (remoteUrlCredential?.secretUrl) {
         const secret = await secrets.create(
           companyId,
@@ -13072,6 +13105,7 @@ export function toolAccessService(
       const connectionCredentialSecretRefs =
         personalIdentityUserId || dedicatedAgentId ? [] : credentialSecretRefs;
       if (revivedConnectionPrevious) {
+        forgetMcpHttpSessions(revivedConnectionPrevious.id);
         [connectionRow] = await db
           .update(toolConnections)
           .set({
@@ -13292,6 +13326,10 @@ export function toolAccessService(
       );
       await ensureRuntimeSlot(connectionRow);
 
+      if (input.saveDraft && remoteMcpConnector) {
+        return { connectionId: connectionRow.id, application: toApplication(applicationRow), connection: toConnection(connectionRow),
+          catalog: [], actions: { readOnly: [], canMakeChanges: [] }, suggestedDefaults: { access: "all_agents", askFirstRiskLevels: [] } };
+      }
       if (galleryEntry && method?.auth === "oauth") {
         const suggestedDefaults = recommendedDefaultsForApp(
           galleryEntry,
@@ -13317,7 +13355,7 @@ export function toolAccessService(
       // empty personal grant below so later catalog refreshes use the same
       // identity policy.
       const unauthenticatedPersonalProbe = Boolean(
-        !galleryEntry &&
+        (!galleryEntry || remoteMcpConnector) &&
           genericAuthKind === "none" &&
           credentialSecretRefs.length === 0 &&
           personalIdentityUserId &&
@@ -13330,7 +13368,10 @@ export function toolAccessService(
         });
       } catch (error) {
         if (
-          !galleryEntry &&
+          (!galleryEntry || remoteMcpConnector) &&
+          input.authMode !== "none" &&
+          input.authMode !== "bearer" &&
+          input.authMode !== "custom_headers" &&
           error instanceof HttpError &&
           asRecord(error.details).code === "oauth_challenge"
         ) {
@@ -13421,7 +13462,7 @@ export function toolAccessService(
         // later fails: another retry may already be using the committed grant.
         personalPublicSetupEstablished = true;
       }
-      if (galleryEntry?.slug === COMPOSIO_GALLERY_KEY) {
+      if (galleryEntry?.slug === COMPOSIO_GALLERY_KEY && transport === "rest_api") {
         const [application] = await db
           .select()
           .from(toolApplications)
@@ -13440,7 +13481,7 @@ export function toolAccessService(
       }
       const restoreDraftDefaults = Boolean(revivedConnectionPrevious);
       const refreshOptions = {
-        enableAllByDefault: restoreDraftDefaults,
+        enableAllByDefault: restoreDraftDefaults && !remoteMcpConnector,
         restoreDraftDefaults,
       };
       const catalogConnectionId = connectionRow.id;
@@ -13802,6 +13843,23 @@ export function toolAccessService(
     const connection = await getConnectionRow(connectionId, companyId);
     if (connection.status === "archived")
       throw conflict("Archived app connections cannot be finished");
+    if (connection.config.mcpPreserveAccess === true && isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+      const [profile] = await db.select().from(toolProfiles).where(and(
+        eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${connection.id}`),
+      )).limit(1);
+      if (!profile) throw conflict("The saved connection permissions could not be found");
+      const config = { ...connection.config };
+      delete config.mcpPreserveAccess;
+      const updated = await db.transaction(async (tx) => {
+        const [row] = await tx.update(toolConnections).set({ config, transportConfig: config, status: "active", enabled: true, updatedAt: new Date() })
+          .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId))).returning();
+        await tx.update(toolApplications).set({ status: "active", updatedAt: new Date() }).where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)));
+        return row;
+      });
+      const details = await profileDetails(profile.id, companyId);
+      const policies = (await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, companyId))).filter((policy) => asRecord(policy.config).connectionId === connection.id);
+      return { connection: toConnection(updated), profile: toProfile(profile), profileEntries: details.entries, profileBindings: details.bindings, policies: policies.map(toPolicy) };
+    }
     const enabledIds = [
       ...new Set([
         ...input.enabledCatalogEntryIds,
@@ -13825,7 +13883,7 @@ export function toolAccessService(
       connection.id,
       input.askFirstCatalogEntryIds,
     );
-    if (enabledRows.some((entry) => entry.status === "disabled")) {
+    if (enabledRows.some((entry) => entry.status === "disabled" && !(entry.quarantineReason === "mcp_tool_removed" && isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)))) {
       throw badRequest("Disabled actions cannot be enabled");
     }
     if (reviewedIds.length > 0) {
@@ -14032,6 +14090,28 @@ export function toolAccessService(
       }
 
       const profileBindings: ToolProfileBinding[] = [];
+      // These connectors expose one agent-access choice. Commit installation
+      // reach and permission bindings together, including an empty selection.
+      if (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+        const existingInstalls = await tx.select().from(toolConnectionInstalls).where(and(
+          eq(toolConnectionInstalls.companyId, companyId), eq(toolConnectionInstalls.connectionId, connection.id),
+        ));
+        const desired = new Map(bindingInputs.flatMap((binding) => binding.targetType === "company" || binding.targetType === "agent"
+          ? [[`${binding.targetType}:${binding.targetId}`, { targetType: binding.targetType, targetId: binding.targetId }] as const] : []));
+        const removed = existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));
+        const added = [...desired.values()].filter((binding) => !existingInstalls.some((install) => install.targetType === binding.targetType && install.targetId === binding.targetId));
+        if (removed.length) await tx.delete(toolConnectionInstalls).where(inArray(toolConnectionInstalls.id, removed.map((install) => install.id)));
+        if (added.length) await tx.insert(toolConnectionInstalls).values(added.map((binding) => ({
+          companyId, connectionId: connection.id, targetType: binding.targetType, targetId: binding.targetId,
+          createdByAgentId: actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+          createdByUserId: actor?.actorType === "user" ? (actor.actorId ?? null) : null,
+        })));
+        if (added.length || removed.length) await tx.insert(toolAccessAuditEvents).values({
+          companyId, connectionId: connection.id, actorType: actor?.actorType ?? "system", actorId: actor?.actorId ?? null,
+          action: "connection_installs.changed", outcome: "success", reasonCode: "installs_changed",
+          details: { added: added.map(({ targetType, targetId }) => ({ targetType, targetId })), removed: removed.map(({ targetType, targetId }) => ({ targetType, targetId })) },
+        });
+      }
       for (const bindingInput of bindingInputs) {
         const [binding] = await tx
           .insert(toolProfileBindings)
@@ -14094,6 +14174,7 @@ export function toolAccessService(
               eq(toolCatalogEntries.companyId, companyId),
               inArray(toolCatalogEntries.id, enabledIds),
               ne(toolCatalogEntries.status, "quarantined"),
+              ne(toolCatalogEntries.status, "disabled"),
             ),
           );
       }
@@ -15143,10 +15224,11 @@ export function toolAccessService(
         : suggestedAgentIds.length > 0
           ? { agentIds: suggestedAgentIds }
           : "all_agents";
+    const remoteMcpAccess = isRemoteMcpConnectorMethod(input.connection.config.sourceTemplateKey, input.connection.config.connectionMethodKey);
     const access: FinishToolApp["access"] = deferTaskAccess
       ? { agentIds: [] }
       : installs.length === 0
-        ? normalizedSuggestedAccess
+        ? remoteMcpAccess ? { agentIds: [] } : normalizedSuggestedAccess
         : companyInstall
           ? "all_agents"
           : { agentIds };
@@ -15181,7 +15263,7 @@ export function toolAccessService(
       },
       input.actor,
     );
-    if (!deferTaskAccess && installs.length === 0) {
+    if (!deferTaskAccess && !remoteMcpAccess && installs.length === 0) {
       const installTargets =
         access === "all_agents"
           ? [

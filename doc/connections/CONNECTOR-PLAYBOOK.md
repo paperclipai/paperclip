@@ -438,6 +438,26 @@ Avoid separate methods for:
 The default setup screen should ask only for information required to make the
 connection work or enforce a real tenant boundary. Follow these rules:
 
+- Do not ask for a Paperclip **Connection name** during setup. Derive the display
+  name from the provider and observed account/workspace identity. A provider-required
+  app/bot name is a separate configuration requirement, not a connection label.
+- Use the traditional Gmail/Google Docs setup structure: a compact horizontal
+  progress header and **Access → Connect**, without a numbered sidebar,
+  tool-permissions step or optional Test step. Authentication and successfully
+  reading the tool catalog are enough to complete setup. Do not require a sample
+  action or add an empty-catalog onboarding detour. Reuse the existing access screen:
+  “Which humans can use this credential?” and “Which agents can use this connection?”
+- After setup, use the regular connection **Permissions** screen: reuse its
+  canonical searchable Actions list, Read/Write filters, Off / Ask first / Allowed
+  controls and per-action Test dialog. Do not build a parallel permissions list or
+  provider-specific testing page. Discovery errors stay inline on Connect; an empty
+  returned catalog belongs to the ordinary saved-connection state.
+- Enable every discovered tool automatically. Put later Allowed / Ask first / Off
+  controls in management, separate from connection access. Reconnect and refresh
+  retain existing restrictions; new tools are Allowed under the existing access rules.
+- Show browser sign-in/pending/return only for a real OAuth handoff supported by
+  the chosen authentication. Zapier's pasted MCP URL or bearer token requires no
+  Paperclip sign-in window. Advanced token/header setups need no invented OAuth step.
 - Put optional narrowing in fields marked `advanced: true`.
 - Give hidden fields a `defaultValue`; never create a hidden required field the
   server cannot fill.
@@ -841,8 +861,9 @@ At minimum, add or update tests in these layers:
   declared.
 - Finish setup resumes the exact draft using `resumeConnectionId`.
 - Optional customer OAuth details stay folded when automatic OAuth exists.
-- Setup success leads to the connection's Test page, or to Permissions when a
-  separate agent-resource assignment is the next step. Follow the
+- Successful authentication and tool discovery finish setup and lead to the
+  connection's regular Permissions screen. Testing is available there through each
+  action's Test button; it is never an onboarding step. Follow the
   [connection UX guidance](#connection-ux-and-user-journeys).
 - Interactive Storybooks cover setup and ongoing task interactions, including
   relevant failure states; the walkthrough matches the implemented journey.
