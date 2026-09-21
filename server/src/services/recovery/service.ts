@@ -3768,9 +3768,30 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
+    // Parking a stranded issue with no unresolved blocker relation leaves it with
+    // no wake path at all: nothing routes to it, and a blocked issue cannot hold a
+    // monitor. Record what clears it and who can clear it, so the blocked inbox
+    // starts carrying it. The owner is always `board` here: this write is a
+    // background recovery update, and `deliverAgentUnblockNotification` -- the
+    // only path that wakes an agent owner -- runs from the HTTP issue PATCH
+    // transition, not from this one. The blocked inbox shows `board`-owned
+    // descriptors only. An agent-owned descriptor written here would therefore
+    // name an owner that nothing notifies and nothing displays, which reads as
+    // routed while staying stranded. The action keeps its own owner on the
+    // record, and the escalation notice names it, so routing is not lost. The
+    // provider-quota case already gets a monitor and keeps its existing
+    // treatment.
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      ...(isProviderQuotaWait
+        ? {}
+        : {
+            unblockDescriptor: {
+              owner: "board" as const,
+              action: recoveryAction.nextAction,
+            },
+          }),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
