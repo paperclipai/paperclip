@@ -125,7 +125,7 @@ export async function runChatHardeningFlow(context: {
   try {
   if (execution.task.id === "hire-delegate-reuse") {
     const hireName = `Morgan Reviewer ${nonce}`;
-    await turn(`Hire exactly one teammate named ${hireName}, reporting to you, using your native runner, model, and available AI connection. Have that teammate write a concise launch checklist as a saved Paperclip document containing ${marker}. Put the work in one assigned task in ${project.name}. Link it here and let the teammate complete it.`, 2);
+    await turn(`Hire exactly one teammate named ${hireName}, reporting to you, using your native runner, model, and available AI connection. Have that teammate write a concise launch checklist as a saved Paperclip document with the line "Reference: ${marker}". Put the work in one assigned task in ${project.name}. Link it here and let the teammate complete it.`, 2);
     const first = (await tasks())[0]!;
     expect(first).toBeTruthy();
     const firstOutput = await output(first.id, marker);
@@ -133,7 +133,7 @@ export async function runChatHardeningFlow(context: {
     const hired = assertChatHire({ agents: await agents(), leadId: f.agent.id, hireName,
       connectionId: account.connectionId, binding: account.binding, taskIds: [first.id], tasks: await tasks(), runs: await allRuns() });
     expect((firstOutput as Document).createdByAgentId).toBe(hired.id);
-    await turn(`Have the existing ${hireName} review the checklist on ${first.identifier} and write a separate saved review document containing REVIEW${marker}. Create one review task in ${project.name}, assigned to that same teammate. Include the actual checklist in the handoff so they can review it. Preserve the original checklist and task.`, 4);
+    await turn(`Have the existing ${hireName} review the checklist on ${first.identifier} and write a separate saved review document with the line "Reference: REVIEW${marker}". Create one review task in ${project.name}, assigned to that same teammate. Include the actual checklist in the handoff so they can review it. Preserve the original checklist and task.`, 4);
     const observed = await tasks();
     const second = observed.find(task => task.id !== first.id)!;
     expect(second).toBeTruthy();

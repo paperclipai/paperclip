@@ -161,6 +161,11 @@ recorded separately. The suite uses production permission defaults and prompts.
 Only hiring and cross-task status/review enable the opt-in native API tools.
 Hiring uses a personal managed AI connection and verifies the hired worker's
 actual execution account. This is not an onboarding-default qualification.
+The hiring checklist and review request a `Reference: ...` line. This gives the
+fixture marker a neutral label instead of leaving the agent to choose credential
+syntax such as `Tracking token: ...`. Exact marker, authorship, worker reuse,
+and saved-output checks remain required. This case tests coordination, not
+credential-redaction policy.
 
 Stop during startup and Stop during an active response are separate boundaries.
 The native active-response case requires a recorded provider turn start; generic
