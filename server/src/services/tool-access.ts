@@ -6815,6 +6815,17 @@ export function toolAccessService(
         }
       }
     }
+    if (response.status === 404 && new Headers(sessionHeaders).has("mcp-session-id")) {
+      // MCP uses 404 for an expired server session. Discovery is read-only, so
+      // discard the stale session and retry it once with a new handshake.
+      forgetMcpHttpSessions(connection.id);
+      await response.body?.cancel().catch(() => undefined);
+      sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers,
+        scope: `${connection.id}:catalog:${actor?.actorType}:${actor?.actorId}:${endpoint}`,
+        requestId: listRequestId });
+      response = await sendToolsList(sessionHeaders);
+      if (response.status === 404) forgetMcpHttpSessions(connection.id);
+    }
     if (
       usedInitializedSession &&
       connection.config.mcpSessionRequired !== true

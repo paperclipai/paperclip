@@ -8,7 +8,7 @@ describe("remote MCP provider handoffs", () => {
     expect(extractRemoteMcpPending(result, "arcade")).toMatchObject({ kind: "authorization", links: [{ host: "github.com", url: "https://github.com/login/oauth/authorize?state=test" }] });
   });
   it("recognizes nested Composio connection links without treating ordinary results as handoffs", () => {
-    expect(extractRemoteMcpPending({ data: { results: [{ redirect_url: "https://connect.composio.dev/link/test" }] } }, "composio")?.links).toHaveLength(1);
+    expect(extractRemoteMcpPending({ data: { results: [{ redirect_url: "https://connect.composio.dev/link/test" }] } }, "composio", "COMPOSIO_MANAGE_CONNECTIONS")?.links).toHaveLength(1);
     expect(extractRemoteMcpPending({ url: "https://example.com/article", execution_id: "completed" }, "executor")).toBeNull();
     expect(extractRemoteMcpPending({ redirect_url: "https://example.com/article" }, "unrelated")).toBeNull();
   });
@@ -24,6 +24,15 @@ describe("remote MCP provider handoffs", () => {
   });
   it("keeps an Executor execution identity for manual resume, without inventing a retry", () => {
     expect(extractRemoteMcpPending({ status: "waiting_for_interaction", executionId: "run-42", interaction: { kind: "form", message: "Approve read?", requestedSchema: { type: "object", properties: {} } } }, "executor")).toMatchObject({ kind: "approval", executionId: "run-42", resumeTool: "resume" });
+  });
+  it("does not turn ordinary successful app data into an approval or authorization handoff", () => {
+    for (const provider of ["arcade", "composio", "executor"]) {
+      for (const status of ["suspended", "pending_approval", "awaiting_approval", "waiting_for_interaction"]) {
+        expect(extractRemoteMcpPending({ result: { structuredContent: { records: [{ status, executionId: "app-job", interaction: { kind: "form" }, authorization_url: "https://example.com/auth", redirect_url: "https://connect.composio.dev/link/test" }] } } }, provider, "get_records")).toBeNull();
+        expect(extractRemoteMcpPending({ result: { structuredContent: { status } } }, provider, "get_record")).toBeNull();
+      }
+      expect(extractRemoteMcpPending({ result: { structuredContent: { mode: "url", elicitationId: "app-field", url: "https://example.com" } } }, provider)).toBeNull();
+    }
   });
   it("classifies broad execution and resume as writes even without annotations", () => {
     for (const name of ["execute", "resume", "edit-artifact"]) expect(classifyRisk({ name }, "executor")).toBe("write");

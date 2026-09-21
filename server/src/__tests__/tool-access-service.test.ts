@@ -72,6 +72,7 @@ import {
   toolAccessService,
 } from "../services/tool-access.js";
 import { accessService } from "../services/access.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { secretService } from "../services/secrets.js";
 import {
@@ -361,15 +362,12 @@ function mcpSseResponse(payload: unknown): Response {
 }
 
 function mockToolsList(tools: unknown[]) {
-  return vi
-    .spyOn(globalThis, "fetch")
-    .mockResolvedValue(
-      mcpHttpResponse({
-        jsonrpc: "2.0",
-        id: "paperclip-catalog-refresh",
-        result: { tools },
-      }),
-    );
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return mcpHttpResponse({ jsonrpc: "2.0", id: body.id,
+      result: body.method === "initialize" ? { protocolVersion: "2025-06-18" } : { tools } });
+  });
 }
 
 const PUBLIC_MCP_FIXTURE_URL = "https://8.8.8.8/api/mcp";
@@ -852,12 +850,14 @@ describeEmbeddedPostgres("tool access service", () => {
       process.env.PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL?.trim();
     if (externalDatabaseUrl) {
       db = createDb(externalDatabaseUrl);
+      await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
       return;
     }
     tempDb = await startEmbeddedPostgresTestDatabase(
       "paperclip-tool-access-service-",
     );
     db = createDb(tempDb.connectionString);
+    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
   }, 20_000);
 
   afterEach(async () => {
@@ -3382,10 +3382,10 @@ describeEmbeddedPostgres("tool access service", () => {
       priority: 100,
       selectors: { connectionId: connection.id },
     });
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) =>
       mcpHttpResponse({
         jsonrpc: "2.0",
-        id: "paperclip-tool-test",
+        id: JSON.parse(String(init?.body)).id,
         result: { content: [{ type: "text", text: "sent" }] },
       }),
     );
@@ -3674,10 +3674,10 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(waiting.body.result).toBeUndefined();
 
     // 3. Approving from the review queue is what runs the parked test call.
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) =>
       mcpHttpResponse({
         jsonrpc: "2.0",
-        id: "paperclip-tool-test",
+        id: JSON.parse(String(init?.body)).id,
         result: { content: [{ type: "text", text: "sent" }] },
       }),
     );
@@ -3741,10 +3741,10 @@ describeEmbeddedPostgres("tool access service", () => {
       .send(body)
       .expect(200);
 
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) =>
       mcpHttpResponse({
         jsonrpc: "2.0",
-        id: "paperclip-tool-test",
+        id: JSON.parse(String(init?.body)).id,
         result: { content: [{ type: "text", text: "sent" }] },
       }),
     );
@@ -5101,7 +5101,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "youcom",
       ]),
     );
-    expect(res.body.apps).toHaveLength(48);
+    expect(res.body.apps).toHaveLength(51);
     expect(
       res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,

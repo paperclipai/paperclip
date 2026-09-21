@@ -33,9 +33,10 @@ describe("tool app gallery URL matching", () => {
     expect(getAppDefinitionForUrl("https://drivemcp.googleapis.com/mcp/v1")?.slug).toBe("google-drive");
   });
 
-  it("lists Composio as a connectable API-key app", () => {
+  it("lists Composio Connect alongside the legacy API-key method", () => {
     const composio = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "composio");
     expect(composio?.methods).toEqual([
+      expect.objectContaining({ key: "mcp", transport: "mcp_remote", ownershipModes: ["dcr", "customer"] }),
       expect.objectContaining({ key: "api-key", transport: "rest_api", auth: "api_key" }),
     ]);
   });

@@ -27,11 +27,15 @@ export function AppsConnect({
   const interactionId = searchParams.get("intent")?.trim() || undefined;
   const params = useParams<{ appKey?: string }>();
   const existingId = searchParams.get("resume") || searchParams.get("reconnect");
-  const existing = useQuery({ queryKey: ["tools", "connection", existingId], queryFn: () => toolsApi.getConnection(existingId!), enabled: !!existingId });
-  const source = searchParams.get("source") || params.appKey || searchParams.get("appKey") || existing.data?.config?.sourceTemplateKey;
+  const explicitSource = searchParams.get("source") || params.appKey || searchParams.get("appKey");
+  // Ordinary connectors own their existing recovery/loading path. Only load
+  // here when selecting an aggregator controller, or resolving an unknown source.
+  const lookupExisting = !!existingId && (!explicitSource || isRemoteMcpConnectorId(explicitSource));
+  const existing = useQuery({ queryKey: ["tools", "connection", existingId], queryFn: () => toolsApi.getConnection(existingId!), enabled: lookupExisting });
+  const source = explicitSource || existing.data?.config?.sourceTemplateKey;
   const method = searchParams.get("method") || existing.data?.config?.connectionMethodKey;
-  if (existingId && existing.isPending) return <p className="p-8 text-sm text-muted-foreground">Loading connection…</p>;
-  if (existingId && existing.isError) return <div role="alert" className="space-y-3 p-8"><p>Could not load this connection. Your saved access and credentials have not changed.</p><button type="button" className="text-primary underline" onClick={() => void existing.refetch()}>Try again</button></div>;
+  if (lookupExisting && existing.isPending) return <p className="p-8 text-sm text-muted-foreground">Loading connection…</p>;
+  if (lookupExisting && existing.isError) return <div role="alert" className="space-y-3 p-8"><p>Could not load this connection. Your saved access and credentials have not changed.</p><button type="button" className="text-primary underline" onClick={() => void existing.refetch()}>Try again</button></div>;
   if (isRemoteMcpConnectorId(source) && (!method || isRemoteMcpConnectorMethod(source, method))) {
     if (!aggregators.loaded) return <p className="p-8 text-sm text-muted-foreground">Loading connection settings…</p>;
     if (!aggregators.enabled) return <p role="status" className="p-8 text-sm text-muted-foreground">Enable MCP aggregators in Settings → Experimental to set up this connection.</p>;

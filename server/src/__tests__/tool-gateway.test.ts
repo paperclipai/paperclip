@@ -585,10 +585,10 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
 
   it("exposes a named gateway with scoped bearer-token auth and revocation", async () => {
     const company = await createCompany(db);
-    const remote = await startFakeRemoteMcpServer(async () => ({
+    const remote = await startFakeRemoteMcpServer(async ({ body }) => ({
       body: {
         jsonrpc: "2.0",
-        id: "test",
+        id: body?.id,
         result: { content: [{ type: "text", text: "read ok" }], structuredContent: { ok: true } },
       },
     }));
@@ -1127,10 +1127,10 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
 
   it("rate limits public named gateway session setup, discovery, and calls with redacted audits", async () => {
     const company = await createCompany(db);
-    const remote = await startFakeRemoteMcpServer(async () => ({
+    const remote = await startFakeRemoteMcpServer(async ({ body }) => ({
       body: {
         jsonrpc: "2.0",
-        id: "test",
+        id: body?.id,
         result: { content: [{ type: "text", text: "read ok" }], structuredContent: { ok: true } },
       },
     }));
@@ -1561,7 +1561,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         if (upstreamCalls === 1) return new Response("unauthorized", { status: 401 });
         return new Response(JSON.stringify({
           jsonrpc: "2.0",
-          id: "fixture",
+          id: JSON.parse(String(init.body)).id,
           result: { content: [{ type: "text", text: "repo-a" }], structuredContent: { repositories: ["repo-a"] } },
         }), { status: 200, headers: { "content-type": "application/json" } });
       },

@@ -92,7 +92,9 @@ import { RAILWAY_SSH_SECRET_PATH, runRailwaySshCommand } from "./railway-ssh.js"
 import {
   initializeMcpHttpSession,
   getMcpHttpSession,
+  forgetMcpHttpSessions,
   readMcpHttpResponse,
+  McpHttpResponseError,
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
 } from "./mcp-http.js";
@@ -6031,6 +6033,12 @@ export function createToolGatewayService(
           headers: mcpHttpRequestHeaders(headers),
         });
       }
+      const sessionExpired = response.status === 404 && new Headers(requestHeaders).has("mcp-session-id");
+      if (sessionExpired) {
+        // The next explicit call initializes again. Never replay a tools/call
+        // automatically: the failed call may have changed app data.
+        forgetMcpHttpSessions(connection.id);
+      }
       const body = response.ok
         ? JSON.stringify(await readMcpHttpResponse(response, requestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
@@ -6061,17 +6069,18 @@ export function createToolGatewayService(
           response.headers.get("traceparent"),
       };
       if (!response.ok) {
-        await markRemoteConnectionHealth(
-          connection,
-          "error",
-          "Remote MCP server returned an HTTP error.",
-        );
+        // Session expiration is recoverable on an explicit retry. Marking the
+        // connection unhealthy here would hide every tool and prevent it.
+        if (!sessionExpired) {
+          await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned an HTTP error.");
+        }
         throw new ToolGatewayHttpError(
           502,
-          "Remote MCP server returned an HTTP error",
+          sessionExpired ? "Remote MCP session expired. Retry the action explicitly to start a new session." : "Remote MCP server returned an HTTP error",
           "mcp_remote_status",
           {
             status: response.status,
+            ...(sessionExpired ? { sessionExpired: true } : {}),
             connectionId: connection.id,
             catalogEntryId: entry.id,
             execution,
@@ -6100,7 +6109,7 @@ export function createToolGatewayService(
       }
       const payloadRecord = asRecord(payload);
       if (!payloadRecord) throw malformedRemoteMcpResponse();
-      const upstreamPending = extractRemoteMcpPending(payloadRecord, String(connection.config.sourceTemplateKey ?? ""));
+      const upstreamPending = extractRemoteMcpPending(payloadRecord, String(connection.config.sourceTemplateKey ?? ""), entry.toolName);
       if (upstreamPending) {
         await retainUpstreamHandoff(invocationId, upstreamPending);
         throw new ToolGatewayHttpError(409, "Complete the provider's authorization or approval before continuing. The original call has not been replayed.", "provider_interaction_required", { upstreamPending, invocationId });
@@ -6165,6 +6174,15 @@ export function createToolGatewayService(
       );
       return { result, headerSummary, execution };
     } catch (error) {
+      if (error instanceof McpHttpResponseError) {
+        const failure = error.reason === "too_large" ? responseTooLargeError()
+          : error.reason === "malformed_response" ? malformedRemoteMcpResponse()
+          : new ToolGatewayHttpError(502, "Remote MCP server returned invalid JSON", "mcp_remote_invalid_json");
+        await markRemoteConnectionHealth(connection, "error", failure.message);
+        throw new ToolGatewayHttpError(failure.status, failure.message, failure.reasonCode, {
+          connectionId: connection.id, catalogEntryId: entry.id, execution,
+        });
+      }
       if (error instanceof RailwayError) {
         throw new ToolGatewayHttpError(error.status, error.message, error.code, { connectionId: connection.id, catalogEntryId: entry.id, execution });
       }

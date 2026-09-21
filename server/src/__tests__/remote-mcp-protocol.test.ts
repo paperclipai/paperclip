@@ -23,6 +23,13 @@ describe("remote connector Streamable HTTP", () => {
     await expect(readMcpHttpResponse(Response.json({ id: "wrong", result: {} }), "call")).rejects.toThrow("message ID");
     await expect(readMcpHttpResponse(stream([event({ id: 1, result: "too much" })]).response, 1, { maxBytes: 8 })).rejects.toThrow("size limit");
   });
+  it("applies matching, parse errors, and size limits to buffered HTTP transports", async () => {
+    const buffered = (body: string) => ({ headers: new Headers(), text: async () => body }) as Response;
+    expect(await readMcpHttpResponse(buffered('{"id":"call","result":{}}'), "call")).toMatchObject({ id: "call" });
+    await expect(readMcpHttpResponse(buffered('{"id":"other","result":{}}'), "call")).rejects.toMatchObject({ reason: "malformed_response" });
+    await expect(readMcpHttpResponse(buffered("not json"), "call")).rejects.toMatchObject({ reason: "invalid_json" });
+    await expect(readMcpHttpResponse(buffered("too large"), "call", { maxBytes: 2 })).rejects.toMatchObject({ reason: "too_large" });
+  });
   it("delivers server requests before the matching response", async () => {
     const onRequest = vi.fn(async () => {});
     const request = { jsonrpc: "2.0", id: "auth", method: "elicitation/create", params: { mode: "url", url: "https://example.com/auth", elicitationId: "consent" } };

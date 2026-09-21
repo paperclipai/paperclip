@@ -1,6 +1,6 @@
 # Independent MCP connectors — acceptance, 2026-09-21
 
-Worktree: `codex/unified-mcp-connectors`, based on `b19307758`. Local instance: [MCP Connector Lab](http://127.0.0.1:3116/MCP/apps). Fresh database/company; no production data was cloned. The API serves this worktree's compiled UI on port 3116, with browser-reachable localhost OAuth callbacks. Instance data is isolated under `~/.paperclip-worktrees/instances/unified-mcp-connectors-live`. Static UI serving avoids a local Vite watcher startup problem.
+Test environment: an isolated development worktree with a fresh database and organization. No production data was cloned. The API served the compiled UI with browser-reachable OAuth callbacks. Detailed account and local-instance evidence remains in a private acceptance report.
 
 **Overall acceptance remains incomplete: Zapier needs the generated credential pasted into its open local setup form.** Three providers have real browser and real agent proof. Simulations are recorded separately below.
 
@@ -14,18 +14,18 @@ Focused regression tests cover flag defaults, persistence, managed metadata, cac
 
 | Provider | Functional correctness | UX readiness | Observed account, catalog, and actual results |
 | --- | --- | --- | --- |
-| Arcade | Passed OAuth setup, Test, real agent, Off, Ask first, denied agent, catalog additions/removal, reconnect, disconnect, and restoration. | Ready for the tested gateway OAuth flow after the fixes below. | Dedicated “Paperclip connector lab” gateway; GitHub account `cryppadotta`. Started with 4 exposed tools, added two read actions, then removed one (5 remain). `Github.GetRepository` returned `paperclipai/paperclip`, branch `master`, repository ID `1170821064`. |
-| Composio | Passed default endpoint OAuth, Test, real agent, Off, Ask first, denied agent, refresh, reconnect, disconnect, and restoration. | Ready for Composio Connect. Optional GitHub app consent remains at GitHub's user-verification screen; this does not block the verified DeepWiki action. | Signed in as `dotta@paperclip.ing`; 11 meta tools. Search discovered `DEEPWIKI_MCP_READ_WIKI_STRUCTURE`; Multi Execute returned the real Paperclip documentation hierarchy, 1 success / 0 errors. The real agent repeated discovery and execution. |
-| Executor | Passed workspace OAuth, Test, real agent, Off, Ask first, denied agent, refresh, reconnect, disconnect, and restoration. Provider approve/resume, decline, cancel, and Paperclip approval → provider approval were exercised. | Ready for the tested hosted workspace with model-side resume. Decline/cancel copy now describes the deliberate outcome rather than suggesting a retry. | Workspace `paperclip`, signed in as `dotta@paperclip.ing`; 7 tools. Execution returned integration slugs `executor`, `context7`. A disposable Context7 read paused for approval; resuming the same execution returned real React library IDs. |
-| Zapier | Live proof blocked after provider setup; production integration and deterministic tests are implemented. | Approved setup design and Storybook checks pass. Real URL-paste workflow still needs completion. | Created a dedicated Managed-mode server with Google Sheets Find Spreadsheet / Get Spreadsheet by ID, using the existing `dotta@paperclip.ing` account. Its generated credential is masked. Copy buttons returned an empty clipboard through automation. No Paperclip credential has been entered or live tool call made. |
+| Arcade | Passed OAuth setup, Test, real agent, Off, Ask first, denied agent, catalog additions/removal, reconnect, disconnect, and restoration. | Ready for the tested gateway OAuth flow after the fixes below. | Dedicated test gateway with a verified GitHub account. Started with 4 exposed tools, added two read actions, then removed one (5 remain). `Github.GetRepository` returned `paperclipai/paperclip`, branch `master`, repository ID `1170821064`. |
+| Composio | Passed default endpoint OAuth, Test, real agent, Off, Ask first, denied agent, refresh, reconnect, disconnect, and restoration. | Ready for Composio Connect. Optional GitHub app consent remains at GitHub's user-verification screen; this does not block the verified DeepWiki action. | Verified provider account; 11 meta tools. Search discovered `DEEPWIKI_MCP_READ_WIKI_STRUCTURE`; Multi Execute returned the real Paperclip documentation hierarchy, 1 success / 0 errors. The real agent repeated discovery and execution. |
+| Executor | Passed workspace OAuth, Test, real agent, Off, Ask first, denied agent, refresh, reconnect, disconnect, and restoration. Provider approve/resume, decline, cancel, and Paperclip approval → provider approval were exercised. | Ready for the tested hosted workspace with model-side resume. Decline/cancel copy now describes the deliberate outcome rather than suggesting a retry. | Dedicated test workspace with a verified provider account; 7 tools. Execution returned integration slugs `executor`, `context7`. A disposable Context7 read paused for approval; resuming the same execution returned real React library IDs. |
+| Zapier | Live proof blocked after provider setup; production integration and deterministic tests are implemented. | Approved setup design and Storybook checks pass. Real URL-paste workflow still needs completion. | Created a dedicated Managed-mode server with Google Sheets Find Spreadsheet / Get Spreadsheet by ID, using an existing test account. Its generated credential is masked. Copy buttons returned an empty clipboard through automation. No Paperclip credential has been entered or live tool call made. |
 
-The real Paperclip agent uses a separately vaulted Anthropic API key from the user-authorized local secrets file. No secret value is stored in this report or the source tree.
+The real Paperclip agent used a vaulted model credential. No secret value is stored in this report or the source tree.
 
 ### Agent evidence
 
-- [MCP-1](http://127.0.0.1:3116/MCP/issues/MCP-1): six real gateway calls; Arcade repository read and Executor skills → search → integrations list.
-- [MCP-2](http://127.0.0.1:3116/MCP/issues/MCP-2): Composio discovery and DeepWiki execution returned actual headings including Overview, Core Concepts, Getting Started, Server Architecture, and User Interface. Arcade's Off tool was absent from callable discovery. Executor public helper paths were readable and executable.
-- [MCP-3](http://127.0.0.1:3116/MCP/issues/MCP-3): disconnected Arcade exposed no tools; ungranted Composio exposed no tools and reported that identity/access needed review. Executor remained available and returned its actual integration list. This verifies cross-connection isolation through a real agent.
+- Gateway acceptance task: six real gateway calls; Arcade repository read and Executor skills → search → integrations list.
+- Execution and disabled-tool task: Composio discovery and DeepWiki execution returned actual headings including Overview, Core Concepts, Getting Started, Server Architecture, and User Interface. Arcade's Off tool was absent from callable discovery. Executor public helper paths were readable and executable.
+- Revocation and access-denial task: disconnected Arcade exposed no tools; ungranted Composio exposed no tools and reported that identity/access needed review. Executor remained available and returned its actual integration list. This verifies cross-connection isolation through a real agent.
 
 ### Governance and lifecycle evidence
 
@@ -42,7 +42,7 @@ The real Paperclip agent uses a separately vaulted Anthropic API key from the us
 1. Enabled DCR ownership for direct MCP OAuth; Composio no longer incorrectly requires a configured client ID.
 2. Added explicit provider authorization/approval states, validated handoff links, execution identifiers, and resume controls. Executor's `resume.content` must be a JSON string; corrected it after an observed provider rejection and retested successfully.
 3. Added an object JSON editor for open-ended schemas. Composio's nested `arguments` object was otherwise impossible to enter. The real Multi Execute call passed afterward.
-4. Corrected broad execution risk classification and the false JWT redaction of three exact public Executor helper selectors. Actual secrets, bearer assignments, and arbitrary dotted values retain redaction. MCP-2 verified the selectors live.
+4. Corrected broad execution risk classification and the false JWT redaction of three exact public Executor helper selectors. Actual secrets, bearer assignments, and arbitrary dotted values retain redaction. The execution acceptance task verified the selectors live.
 5. Prevented app-generated Ask first policies from granting access to an ungranted agent. Negative fixture and live Test/agent checks pass.
 6. Allowed an empty selected-agent list and made installation reach plus permission binding updates atomic. OAuth completion no longer substitutes all agents for an empty saved selection. Real reconnects and a dedicated OAuth callback regression pass.
 7. Refreshed permission caches with the catalog so newly added tools display Allowed immediately.
@@ -60,9 +60,11 @@ All newly added isolated checks passed, with one test worker:
 - UI and server direct TypeScript checks, token gates, UI build, Storybook build, and `git diff --check` passed.
 - **No full repository test suite, recursive typecheck, or repository-wide build was run**, following the user's resource constraint. No schema migration or lockfile change is included.
 
-Storybook links: [Zapier](http://localhost:6137/?path=/story/apps-connections-zapier--complete-setup-journey), [Arcade](http://localhost:6137/?path=/story/apps-connections-arcade--complete-setup-journey), [Composio](http://localhost:6137/?path=/story/apps-connections-composio--complete-setup-journey), [Executor](http://localhost:6137/?path=/story/apps-connections-executor--complete-setup-journey). [Executor provider handoff](http://localhost:6137/?path=/story/apps-connections-executor--provider-handoff-after-setup) uses mocked responses and makes no real authorization request.
+Storybook links: `apps-connections-zapier--complete-setup-journey`, `apps-connections-arcade--complete-setup-journey`, `apps-connections-composio--complete-setup-journey`, `apps-connections-executor--complete-setup-journey`. `apps-connections-executor--provider-handoff-after-setup` uses mocked responses and makes no real authorization request.
 
 ## Remaining work and limits
+
+PR review regressions: expired MCP sessions now trigger one safe discovery handshake; action calls fail visibly and wait for an explicit retry. Provider handoff detection recognizes protocol/provider envelopes rather than arbitrary app-data statuses. Buffered transports preserve response-ID matching, size limits, and distinct error codes. Dedicated regression checks and selected existing connector/gateway cases pass. Ordinary connector resume/reconnect continues through its existing controller.
 
 - Paste Zapier's generated Full URL into the already-open local Zapier setup field (not chat), then complete its browser Test, agent, governance, refresh, and lifecycle acceptance. Do not rotate the displayed credential unnecessarily.
 - Optional Composio GitHub account authorization awaits the user's GitHub verification. The no-auth DeepWiki app path is proven; GitHub app execution is not claimed.

@@ -16,6 +16,13 @@ import { createHash } from "node:crypto";
 export const MCP_HTTP_ACCEPT = "application/json, text/event-stream";
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
+export class McpHttpResponseError extends Error {
+  constructor(readonly reason: "invalid_json" | "malformed_response" | "too_large", message: string) {
+    super(message);
+    this.name = "McpHttpResponseError";
+  }
+}
+
 /**
  * Default headers for an MCP Streamable HTTP JSON-RPC POST. Caller-supplied
  * headers (e.g. resolved credentials) are preserved, while the required
@@ -177,10 +184,22 @@ export async function readMcpHttpResponse(
   const maxBytes = options.maxBytes ?? 8 * 1024 * 1024;
   const isStream = response.headers.get("content-type")?.toLowerCase().includes("text/event-stream");
   const reader = response.body?.getReader();
-  if (!reader) throw new SyntaxError("MCP response has no body");
+  // Injected HTTP transports can expose a buffered text response rather than a
+  // Web ReadableStream. Keep the same size and message-ID checks for both forms.
+  if (!reader) {
+    const body = await response.text();
+    if (Buffer.byteLength(body, "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
+    return readMcpHttpResponse(new Response(body, {
+      headers: { "content-type": response.headers.get("content-type") ?? "application/json" },
+    }), requestId, options);
+  }
   const decoder = new TextDecoder();
   let buffer = "";
   let bytes = 0;
+  const parse = (text: string): unknown => {
+    try { return JSON.parse(text); }
+    catch { throw new McpHttpResponseError("invalid_json", "MCP response contained invalid JSON"); }
+  };
   const inspect = async (message: unknown): Promise<unknown | undefined> => {
     if (!message || typeof message !== "object") return undefined;
     const record = message as Record<string, unknown>;
@@ -191,13 +210,13 @@ export async function readMcpHttpResponse(
   const event = async (value: string) => {
     const data = value.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
     if (!data) return undefined;
-    return inspect(JSON.parse(data));
+    return inspect(parse(data));
   };
   try {
     while (true) {
       const { value, done } = await reader.read();
       bytes += value?.byteLength ?? 0;
-      if (bytes > maxBytes) throw new Error("MCP response exceeded the size limit");
+      if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       buffer += decoder.decode(value, { stream: !done });
       if (isStream) {
         // Normalize CRLF after concatenating chunks, including split CR/LF pairs.
@@ -211,9 +230,9 @@ export async function readMcpHttpResponse(
       }
       if (done) break;
     }
-    const result = isStream ? await event(buffer) : await inspect(JSON.parse(buffer));
+    const result = isStream ? await event(buffer) : await inspect(parse(buffer));
     if (result !== undefined) return result;
-    throw new SyntaxError("MCP response did not contain the requested message ID");
+    throw new McpHttpResponseError("malformed_response", "MCP response did not contain the requested message ID");
   } finally {
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();

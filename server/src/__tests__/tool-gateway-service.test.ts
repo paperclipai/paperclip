@@ -1168,9 +1168,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
       selectors: { riskLevel: "read" },
     });
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response(JSON.stringify({
+    globalThis.fetch = async (_url, init) => new Response(JSON.stringify({
       jsonrpc: "2.0",
-      id: "paperclip-tool-test",
+      id: JSON.parse(String(init?.body)).id,
       result: {
         _meta: {
           elicitation: {
@@ -1756,9 +1756,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
       selectors: { riskLevel: "read" },
     });
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response(JSON.stringify({
+    globalThis.fetch = async (_url, init) => new Response(JSON.stringify({
       jsonrpc: "2.0",
-      id: "paperclip-tool-test",
+      id: JSON.parse(String(init?.body)).id,
       result: { elicitation: { message: "Need input" }, content: [] },
     }), { status: 200, headers: { "content-type": "application/json" } });
     try {

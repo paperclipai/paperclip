@@ -1,75 +1,78 @@
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { checkOAuthEndpointUrl, type ToolUpstreamPending } from "@paperclipai/shared";
 
-/** Recognize provider handoffs before ordinary result redaction removes auth
- * URLs. These links are navigation targets, never credentials or fetch targets.
- * Keep this separate from result/audit storage; never replay the original call. */
-export function extractRemoteMcpPending(value: unknown, provider?: string | null): ToolUpstreamPending | null {
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** Recognize protocol/provider envelopes, never generic app-data statuses.
+ * Links are navigation targets kept outside durable result/audit storage. */
+export function extractRemoteMcpPending(value: unknown, provider?: string | null, toolName?: string): ToolUpstreamPending | null {
+  const root = record(value);
+  if (!root) return null;
   const links = new Map<string, { url: string; host: string; elicitationId?: string }>();
-  let expiresAt: string | undefined;
-  let message: string | undefined;
-  let requestedSchema: Record<string, unknown> | undefined;
-  let executionId: string | undefined;
-  let elicitationId: string | undefined;
-  let approval = false;
-  let pending = false;
-  let visited = 0;
-  const providerHandoffs = provider === "arcade" || provider === "composio" || provider === "executor";
+  let pending: ToolUpstreamPending | null = null;
   const addLink = (url: unknown, id?: string) => {
     const checked = checkOAuthEndpointUrl(url);
-    if (checked.ok && links.size < 8) {
-      links.set(checked.url, { url: checked.url, host: checked.host, ...(id ? { elicitationId: id } : {}) });
-      if (id && !elicitationId) elicitationId = id;
-    }
+    if (checked.ok && links.size < 8) links.set(checked.url, { url: checked.url, host: checked.host, ...(id ? { elicitationId: id } : {}) });
   };
-  const visit = (item: unknown, depth: number) => {
-    if (depth > 10 || ++visited > 500) return;
-    if (typeof item === "string") {
-      if (item.length < 512_000 && /^[\s]*[\[{]/.test(item)) {
-        try { visit(JSON.parse(item), depth + 1); } catch { /* Plain text is not a structured handoff. */ }
-      }
-      return;
+  const urlElicitation = (value: unknown) => {
+    const item = record(value);
+    if (item?.mode !== "url" || typeof item.elicitationId !== "string") return;
+    pending ??= { kind: "authorization", links: [] };
+    const id = item.elicitationId.slice(0, 512);
+    addLink(item.url, id);
+    if (links.size && !pending.elicitationId) pending.elicitationId = id;
+  };
+  if (root.method === "elicitation/create") urlElicitation(root.params);
+  const error = record(root.error);
+  const elicitations = record(error?.data)?.elicitations;
+  if (error?.code === -32042 && Array.isArray(elicitations)) elicitations.slice(0, 8).forEach(urlElicitation);
+
+  const result = record(root.result) ?? root;
+  const payloads: Record<string, unknown>[] = [result];
+  const structured = record(result.structuredContent);
+  if (structured) payloads.push(structured);
+  if (Array.isArray(result.content)) {
+    for (const item of result.content.slice(0, 100)) {
+      const content = record(item);
+      if (content?.type !== "text" || typeof content.text !== "string" || content.text.length > 512_000) continue;
+      try { const parsed = record(JSON.parse(content.text)); if (parsed) payloads.push(parsed); } catch { /* Ordinary text. */ }
     }
-    if (!item || typeof item !== "object") return;
-    if (Array.isArray(item)) { for (const child of item.slice(0, 100)) visit(child, depth + 1); return; }
-    const record = item as Record<string, unknown>;
-    if (record.mode === "url" && typeof record.elicitationId === "string") {
-      pending = true;
-      addLink(record.url, record.elicitationId.slice(0, 512));
+  }
+  for (const payload of payloads) {
+    if (provider === "executor" && payload.status === "waiting_for_interaction"
+      && typeof payload.executionId === "string" && payload.executionId) {
+      const interaction = record(payload.interaction);
+      if (interaction?.kind !== "form" && interaction?.kind !== "url") continue;
+      pending = { kind: "approval", links: [], executionId: payload.executionId.slice(0, 512), resumeTool: "resume" };
+      if (typeof payload.expiresAt === "string" && Number.isFinite(Date.parse(payload.expiresAt))) pending.expiresAt = payload.expiresAt;
+      if (typeof interaction.message === "string") pending.message = redactSensitiveText(interaction.message).slice(0, 4000);
+      const schema = record(interaction.requestedSchema);
+      if (schema) pending.requestedSchema = redactEventPayload(schema) ?? undefined;
+      if (interaction.kind === "url") addLink(interaction.url);
     }
-    if (providerHandoffs) {
-      for (const key of ["authorization_url", "redirect_url", "approval_url"]) {
-        if (typeof record[key] === "string" && record[key]) { pending = true; addLink(record[key]); }
-      }
-      const status = typeof record.status === "string" ? record.status.toLowerCase() : "";
-      if (["requires_approval", "awaiting_approval", "pending_approval", "suspended", "waiting_for_interaction"].includes(status)) { pending = true; approval = true; }
-      if (provider === "executor" && status === "waiting_for_interaction") {
-        if (typeof record.expiresAt === "string" && Number.isFinite(Date.parse(record.expiresAt))) expiresAt = record.expiresAt;
-        const interaction = record.interaction as Record<string, unknown> | undefined;
-        if (interaction && typeof interaction === "object") {
-          if (typeof interaction.message === "string") message = redactSensitiveText(interaction.message).slice(0, 4000);
-          if (interaction.requestedSchema && typeof interaction.requestedSchema === "object" && !Array.isArray(interaction.requestedSchema)) {
-            requestedSchema = redactEventPayload(interaction.requestedSchema as Record<string, unknown>) ?? undefined;
-          }
-          if (interaction.kind === "url") addLink(interaction.url);
+    if (provider === "arcade" && (result.isError === true || /(?:^|[._])ManageAuthorization$/.test(toolName ?? ""))
+      && typeof payload.authorization_url === "string") {
+      addLink(payload.authorization_url);
+      pending ??= { kind: "authorization", links: [] };
+    }
+    // This tool returns connection handoffs keyed by app. Other Composio tools
+    // may return arbitrary application data with redirect_url/status fields.
+    if (provider === "composio" && toolName === "COMPOSIO_MANAGE_CONNECTIONS") {
+      let visited = 0;
+      const visit = (item: unknown, depth: number) => {
+        if (++visited > 500 || depth > 10 || !item || typeof item !== "object") return;
+        const entry = record(item);
+        const checked = checkOAuthEndpointUrl(entry?.redirect_url);
+        if (checked.ok && checked.host === "connect.composio.dev" && new URL(checked.url).pathname.startsWith("/link/")) {
+          addLink(checked.url);
+          pending ??= { kind: "authorization", links: [] };
         }
-      }
-      const id = record.executionId ?? record.execution_id;
-      if (typeof id === "string") executionId = id.slice(0, 512);
-      if (record.approval_url) approval = true;
+        for (const child of Object.values(item).slice(0, 100)) visit(child, depth + 1);
+      };
+      visit(payload, 0);
     }
-    for (const child of Object.values(record)) visit(child, depth + 1);
-  };
-  visit(value, 0);
-  if (!pending) return null;
-  return {
-    kind: approval ? "approval" : "authorization",
-    links: [...links.values()],
-    ...(expiresAt ? { expiresAt } : {}),
-    ...(message ? { message } : {}),
-    ...(requestedSchema ? { requestedSchema } : {}),
-    ...(executionId ? { executionId } : {}),
-    ...(elicitationId ? { elicitationId } : {}),
-    ...(provider === "executor" && executionId ? { resumeTool: "resume" } : {}),
-  };
+  }
+  return pending ? { ...pending, links: [...links.values()] } : null;
 }

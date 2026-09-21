@@ -9,6 +9,9 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { instanceSettingsService, normalizeExperimentalSettings } from "../services/instance-settings.js";
+import express from "express";
+import request from "supertest";
+import { toolAccessRoutes } from "../routes/tool-access.js";
 const actor = { actorType: "user" as const, actorId: "mcp-test-user", actorSource: "local_implicit" as const };
 const tool = (name: string) => ({ name, description: name, inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } });
 describe("remote connector lifecycle", () => {
@@ -53,6 +56,13 @@ describe("remote connector lifecycle", () => {
     const org = await company(); const remote = remoteFixture();
     await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: false });
     try {
+      const app = express();
+      app.use((req, _res, next) => { req.actor = { type: "board", userId: actor.actorId, source: "local_implicit", isInstanceAdmin: true }; next(); });
+      app.use("/api", toolAccessRoutes(db, { paperclipCloudConnector: null }));
+      const gallery = await request(app).get(`/api/companies/${org.id}/tools/gallery`);
+      expect(gallery.status).toBe(200);
+      expect(gallery.body.apps.some((entry: { slug: string }) => ["zapier", "arcade", "composio", "executor"].includes(entry.slug))).toBe(false);
+      expect(gallery.body.apps.some((entry: { slug: string }) => entry.slug === "notion")).toBe(true);
       for (const [galleryKey, connectionMethodKey] of [["zapier", "generated-url"], ["arcade", "mcp"], ["composio", "mcp"], ["executor", "mcp"]]) {
         await expect(remote.service.connectGalleryApp(org.id, { galleryKey, connectionMethodKey, saveDraft: true }, actor))
           .rejects.toMatchObject({ status: 403, details: { code: "mcp_aggregators_disabled" } });
@@ -101,6 +111,40 @@ describe("remote connector lifecycle", () => {
     const [removed] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
     expect(removed.enabled).toBe(false);
     expect(removed.status).toBe("archived");
+  });
+  it("renews expired discovery sessions and requires an explicit retry after an expired execution session", async () => {
+    const org = await company();
+    const [agent] = await db.insert(agents).values({ companyId: org.id, name: "Session tester", role: "engineer", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
+    let initialized = 0;
+    const expired = new Set<string>();
+    const calls: string[] = [];
+    const send = async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") return Response.json({ id: body.id, result: { protocolVersion: "2025-06-18" } }, { headers: { "Mcp-Session-Id": `session-${++initialized}` } });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const session = new Headers(init.headers).get("mcp-session-id")!;
+      if (body.method === "tools/call") calls.push(session);
+      if (expired.has(session)) return new Response(null, { status: 404 });
+      return Response.json({ id: body.id, result: body.method === "tools/list" ? { tools: [tool("read")] } : { content: [{ type: "text", text: "ok" }] } });
+    };
+    const service = toolAccessService(db, { deploymentMode: "local_trusted", deploymentExposure: "private", remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }], remoteHttpRequest: send });
+    const connected = await service.connectGalleryApp(org.id, { galleryKey: "arcade", connectionMethodKey: "mcp", link: "https://api.arcade.dev/mcp/expiration", authMode: "none" }, actor);
+    const beforeRefresh = initialized;
+    expired.add(`session-${initialized}`);
+    expect((await service.refreshCatalog(connected.connectionId, actor)).catalog).toHaveLength(1);
+    expect(initialized).toBe(beforeRefresh + 1);
+    await service.finishGalleryAppConnection(org.id, connected.connectionId, { enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents" }, actor);
+    const gateway = createToolGatewayService(db, { deploymentMode: "local_trusted", deploymentExposure: "private", remoteHttpRequest: send });
+    const call = () => gateway.executeTestCall({ companyId: org.id, connectionId: connected.connectionId, agentId: agent.id, userId: actor.actorId, toolName: "read", parameters: {} });
+    expect(await call()).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
+    const executionSession = calls[0];
+    expired.add(executionSession);
+    const failed = await call();
+    expect(failed).toMatchObject({ error: { reasonCode: "mcp_remote_status" } });
+    expect(calls).toEqual([executionSession, executionSession]);
+    expect(await call()).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).not.toBe(executionSession);
   });
   it("saves a vaulted draft without contacting the provider and resumes with custom headers", async () => {
     const org = await company(); const remote = remoteFixture();

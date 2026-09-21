@@ -1,7 +1,7 @@
 # Four independent MCP connectors
 
-Branch: `codex/unified-mcp-connectors`  
-Worktree: `/Users/dotta/paperclipai/branches/unified-mcp-connectors`  
+Branch: `codex/unified-mcp-connectors`
+Worktree: dedicated checkout on `codex/unified-mcp-connectors`
 Base: `b19307758`
 
 Zapier, Arcade, Composio and Executor each have their own connection, credentials,
@@ -26,10 +26,10 @@ The review server uses the build from this worktree on port 6137:
 
 | Provider | Complete journey |
 | --- | --- |
-| Zapier | [Open Storybook](http://localhost:6137/?path=/story/apps-connections-zapier--complete-setup-journey) |
-| Arcade | [Open Storybook](http://localhost:6137/?path=/story/apps-connections-arcade--complete-setup-journey) |
-| Composio | [Open Storybook](http://localhost:6137/?path=/story/apps-connections-composio--complete-setup-journey) |
-| Executor | [Open Storybook](http://localhost:6137/?path=/story/apps-connections-executor--complete-setup-journey) |
+| Zapier | `apps-connections-zapier--complete-setup-journey` |
+| Arcade | `apps-connections-arcade--complete-setup-journey` |
+| Composio | `apps-connections-composio--complete-setup-journey` |
+| Executor | `apps-connections-executor--complete-setup-journey` |
 
 Choose who can use the connection, continue, then use **Use example configuration**. The separate
 **Storybook simulation** area supplies provider responses and browser sign-in or
@@ -196,7 +196,7 @@ See [REMOTE-MCP-LIVE-ACCEPTANCE.md](../connections/REMOTE-MCP-LIVE-ACCEPTANCE.md
 - Zapier: dedicated provider server configured, but its generated secret URL still needs to be pasted into the local setup form. No live execution proof is claimed.
 - Supporting checks: 27 newly added isolated Vitest checks, 18 connector-only Storybook checks, 85 stories at desktop/narrow widths, direct UI/server typechecks, token gates, UI build, and Storybook build passed. One test worker; no full repository suite or recursive build/typecheck.
 
-The isolated instance is [MCP Connector Lab](http://127.0.0.1:3116/MCP/apps), with a browser-reachable localhost OAuth callback. All three tested connections were restored after revocation checks and are available for review.
+The isolated test instance has a fresh database and a browser-reachable OAuth callback. All three tested connections were restored after revocation checks and are available for review.
 
 For **each** provider, record environment, account identity, observed catalog,
 journeys, actual results, useful screenshots, defects/fixes/retests and gaps:

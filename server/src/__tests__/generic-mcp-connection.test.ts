@@ -39,6 +39,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { ComposioApiError, type ComposioClient } from "../services/composio.js";
 import { createComposioSessionManager } from "../services/composio-session-manager.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
@@ -468,6 +469,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
   });
 
   it("keeps a generated Zapier URL attached to the curated Zapier identity", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
     const secretUrl = "https://mcp.zapier.com/api/v1/connect?token=zapier-secret";
     const publicUrl = "https://mcp.zapier.com/api/v1/connect";
     const company = await createCompany(db);
@@ -477,10 +479,12 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
       remoteHttpRequest: async (url, init) => {
         if (url === secretUrl && (init.method ?? "GET").toUpperCase() === "POST") {
+          const body = JSON.parse(String(init.body));
+          if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
           return jsonResponse({
             jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: { tools: FIXTURE_TOOLS },
+            id: body.id,
+            result: body.method === "initialize" ? { protocolVersion: "2025-06-18" } : { tools: FIXTURE_TOOLS },
           });
         }
         return jsonResponse({ error: "not_found" }, 404);
