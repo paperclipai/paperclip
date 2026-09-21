@@ -66,6 +66,8 @@ Storybook links: `apps-connections-zapier--complete-setup-journey`, `apps-connec
 
 PR review regressions: expired MCP sessions now trigger one safe discovery handshake; action calls fail visibly and wait for an explicit retry. Provider handoff detection recognizes protocol/provider envelopes rather than arbitrary app-data statuses. Buffered transports preserve response-ID matching, size limits, and distinct error codes. Dedicated regression checks and selected existing connector/gateway cases pass. Ordinary connector resume/reconnect continues through its existing controller.
 
+Aggregator action risk is conservative: an unfamiliar or renamed tool defaults to write risk even if the provider advertises it as read-only. Only an explicit reviewed allowlist receives read risk; annotations can still escalate it. This affects risk labels and risk-based governance, not the approved default-enabled behavior or saved Off/Ask first choices. Legacy Composio child connections retain their existing classification path.
+
 - Paste Zapier's generated Full URL into the already-open local Zapier setup field (not chat), then complete its browser Test, agent, governance, refresh, and lifecycle acceptance. Do not rotate the displayed credential unnecessarily.
 - Optional Composio GitHub account authorization awaits the user's GitHub verification. The no-auth DeepWiki app path is proven; GitHub app execution is not claimed.
 - Hosted OAuth paths were tested live. Custom-header/session imports, credential-bearing URLs, protocol URL elicitation, pagination edge cases, and revocation races have deterministic fixture coverage rather than separate live accounts/endpoints for every variant.

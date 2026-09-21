@@ -39,4 +39,21 @@ describe("remote MCP provider handoffs", () => {
     expect(classifyRisk({ name: "skills", annotations: { readOnlyHint: true } }, "executor")).toBe("read");
     expect(classifyRisk({ name: "COMPOSIO_MULTI_EXECUTE_TOOL", annotations: { readOnlyHint: true } }, "composio")).toBe("write");
   });
+  it("defaults unfamiliar and namespaced aggregator capabilities to writes despite read-only hints", () => {
+    for (const provider of ["executor", "composio", "arcade", "zapier"]) {
+      for (const name of ["vendor.execute", "custom_resume", "code", "workbench", "new_capability", "get_and_run_action"]) {
+        for (const annotations of [undefined, { readOnlyHint: true }, { readOnlyHint: false }]) {
+          expect(classifyRisk({ name, annotations }, provider)).toBe("write");
+        }
+      }
+      expect(classifyRisk({ name: "delete_everything", annotations: { readOnlyHint: true } }, provider)).toBe("destructive");
+    }
+    for (const [provider, name] of [["executor", "skills"], ["composio", "COMPOSIO_SEARCH_TOOLS"], ["arcade", "Github.GetRepository"]]) {
+      expect(classifyRisk({ name }, provider)).toBe("read");
+      expect(classifyRisk({ name, annotations: { readOnlyHint: false } }, provider)).toBe("write");
+      expect(classifyRisk({ name, annotations: { destructiveHint: true } }, provider)).toBe("destructive");
+      expect(classifyRisk({ name: `custom.${name}`, annotations: { readOnlyHint: true } }, provider)).toBe("write");
+    }
+    expect(classifyRisk({ name: "GITHUB_LIST_REPOSITORIES", annotations: { readOnlyHint: true } })).toBe("read");
+  });
 });

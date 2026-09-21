@@ -2321,6 +2321,17 @@ function normalizedProviderToolName(toolName: string): string {
     .replace(/[:._-]+/g, "-");
 }
 
+// Aggregators can add arbitrarily powerful tools without changing their MCP
+// endpoint. Only these reviewed, exact capabilities are read-only. Unknown or
+// renamed actions remain enabled by the usual access rules, but have write risk.
+// Legacy Composio child connections do not use these gallery template keys.
+const AGGREGATOR_READ_TOOLS = new Map<string, ReadonlySet<string>>([
+  ["executor", new Set(["skills"])],
+  ["composio", new Set(["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_GET_TOOL_SCHEMAS", "COMPOSIO_SEARCH_SKILLS", "COMPOSIO_USE_SKILL"])],
+  ["arcade", new Set(["Github.GetRepository"])],
+  ["zapier", new Set()],
+]);
+
 export function classifyRisk(
   tool: McpToolDescriptor,
   sourceTemplateKey?: string | null,
@@ -2329,10 +2340,12 @@ export function classifyRisk(
   if (annotations.destructiveHint === true || annotations.destructive === true)
     return "destructive";
   const normalizedToolName = normalizedProviderToolName(tool.name);
-  // These tools can execute arbitrary underlying actions. A read-looking name
-  // or missing annotation must not describe that entire capability as read-only.
-  if (sourceTemplateKey === "executor" && ["execute", "resume", "edit-artifact"].includes(tool.name)) return "write";
-  if (sourceTemplateKey === "composio" && /COMPOSIO_(MULTI_EXECUTE_TOOL|REMOTE_WORKBENCH|REMOTE_BASH_TOOL|MANAGE_CONNECTIONS)/.test(tool.name)) return "write";
+  const reviewedReads = AGGREGATOR_READ_TOOLS.get(sourceTemplateKey ?? "");
+  if (reviewedReads) {
+    if (verbMatches(tool.name, "delete|remove|destroy|unpublish")) return "destructive";
+    if (annotations.readOnlyHint === false || annotations.writeHint === true) return "write";
+    return reviewedReads.has(tool.name) ? "read" : "write";
+  }
   if (sourceTemplateKey === "railway") {
     const reviewed = railwayRisk(normalizedToolName);
     return reviewed === "read" && (annotations.readOnlyHint === false || annotations.writeHint === true) ? "write" : reviewed;
