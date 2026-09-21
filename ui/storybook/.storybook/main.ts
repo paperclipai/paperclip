@@ -20,6 +20,9 @@ const config: StorybookConfig = {
   },
   viteFinal: async (baseConfig, { configType }) =>
     mergeConfig(baseConfig, {
+      define: {
+        "import.meta.env.VITE_PAPERCLIP_INSTANCE_URL": JSON.stringify(process.env.PAPERCLIP_STORYBOOK_API_URL ?? ""),
+      },
       plugins: [tailwindcss(), storybookAgentAvatarAssets()],
       server: { proxy: { "/api/agent-avatars": { target: process.env.PAPERCLIP_STORYBOOK_API_URL ?? "http://localhost:3100", changeOrigin: true } } },
       optimizeDeps: { include: ["motion/react", "react", "react-dom"] },

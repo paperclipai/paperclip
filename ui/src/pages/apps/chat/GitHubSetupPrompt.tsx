@@ -7,14 +7,14 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 export const githubSetupPrompt = `Help me set up a GitHub review bot in Paperclip. Use your embedded browser to operate the real Paperclip and GitHub interfaces. Do not use a Chrome extension. If you do not have embedded browser tools, tell me before starting.
 
 Start by asking these four short questions together, then wait for my answers. Reuse information I have already given you:
-1. What is my Paperclip URL and company, and which agent should own this bot? If I am unsure, help me choose from the agents in that company.
+1. Which company in this Paperclip instance and which agent should own this bot? If I am unsure, help me choose from the agents in that company.
 2. Which GitHub account or organization and repositories should it access? Should we create a new GitHub App, or reuse an existing bot App?
 3. Should it run only when mentioned, or also automatically for new PRs and updated commits? What should the review focus on? Should its rating be advisory, or must its check pass before merging (default threshold: 5/5)?
 4. Who should be allowed to start work: linked Paperclip members only, or also explicitly sponsored GitHub users? Which member should be responsible for automatic events? May we create a disposable test PR in one of the selected repositories?
 
 Explain the three independent choices before configuring them: installing the App grants access; Paperclip trigger settings decide when the agent runs; GitHub branch protection or rulesets decide whether its result is required before merging. Installation alone does not enable automatic reviews or block merges. A failing check only blocks merging when GitHub requires that check.
 
-Use the following workflow. Work through normal UI controls, inspect the result after each step, and resume saved progress if a connection already exists. Avoid duplicate Apps, connections, installations, and test PRs. A Storybook preview is only a design demonstration: ask for the real Paperclip URL and never use its fixture company, agents, or repositories as setup values.
+Use the following workflow. Work through normal UI controls, inspect the result after each step, and resume saved progress if a connection already exists. Avoid duplicate Apps, connections, installations, and test PRs. A Storybook preview is only a design demonstration: use the Paperclip instance URL supplied above (ask for it only if unavailable), and never use the preview’s fixture company, agents, or repositories as setup values.
 
 1. Open Paperclip and select the company. Go to Apps and start the GitHub chat bot setup, or resume the saved connection. Ask me to take over for login, two-factor authentication, or a permission decision that needs my account. Never ask me to paste passwords, recovery codes, private keys, or access tokens into chat.
 
@@ -42,8 +42,23 @@ Use the following workflow. Work through normal UI controls, inspect the result 
 
 Finish with links to the Paperclip connection, assigned agent, any test task/run and PR/check, plus a concise summary of enabled repositories, permitted requesters, responsible-user policy, automatic triggers, rating threshold, formal-review permissions, and whether GitHub actually requires the check. Distinguish verified outcomes from anything still awaiting a user action. Leave the setup resumable if a step is blocked.`;
 
-export function GitHubSetupPrompt() {
+export function buildGitHubSetupPrompt(instanceUrl: string) {
+  let instanceOrigin: string | null = null;
+  try {
+    const url = new URL(instanceUrl);
+    if (url.protocol === "http:" || url.protocol === "https:") instanceOrigin = url.origin;
+  } catch {
+    // A preview can have no configured instance. Do not substitute its own URL.
+  }
+  const context = instanceOrigin
+    ? `Paperclip instance URL: ${instanceOrigin}\nUse this instance for setup. Do not ask me for its URL again unless it is unavailable or I ask to use a different instance.`
+    : "Paperclip instance URL is unavailable. Ask me for it before starting setup.";
+  return `${context}\n\n${githubSetupPrompt}`;
+}
+
+export function GitHubSetupPrompt({ instanceUrl = window.location.origin }: { instanceUrl?: string }) {
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const prompt = buildGitHubSetupPrompt(instanceUrl);
   return (
     <div className="space-y-2">
       <Button
@@ -52,7 +67,7 @@ export function GitHubSetupPrompt() {
         className="gap-2 border-dashed text-muted-foreground"
         onClick={async () => {
           try {
-            await copyTextToClipboard(githubSetupPrompt);
+            await copyTextToClipboard(prompt);
             setStatus("copied");
           } catch {
             setStatus("failed");
@@ -70,7 +85,7 @@ export function GitHubSetupPrompt() {
       {status === "failed" && (
         <div className="space-y-2">
           <p role="alert" className="text-sm text-muted-foreground">Could not copy automatically. Select and copy the setup prompt below.</p>
-          <Textarea aria-label="Setup prompt" readOnly value={githubSetupPrompt} onFocus={(event) => event.currentTarget.select()} rows={8} />
+          <Textarea aria-label="Setup prompt" readOnly value={prompt} onFocus={(event) => event.currentTarget.select()} rows={8} />
         </div>
       )}
     </div>

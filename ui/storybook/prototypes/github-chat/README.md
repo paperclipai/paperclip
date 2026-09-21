@@ -11,6 +11,11 @@ The interactive start story supports Save & exit and refresh/resume through
 sessionStorage; only non-secret settings are stored. Reset preview clears it.
 Individual state stories start independently and do not persist settings.
 
+The real setup's **Copy setup prompt** includes the current Paperclip origin.
+For this preview, start Storybook with `PAPERCLIP_STORYBOOK_API_URL` set to the
+real instance URL. The copied prompt then includes that instance instead of the
+Storybook address. Without that setting, it asks for the instance URL.
+
 ## Review path
 
 1. Walk the eight setup steps. GitHub dialogs explicitly simulate leaving and
