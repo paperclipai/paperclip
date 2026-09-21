@@ -6987,16 +6987,27 @@ export async function executePaperclipNativeSession(input: {
     },
   ) => Promise<unknown>;
 }): Promise<AdapterExecutionResult> {
-  if (!input.useRunnerd) {
-    return executePaperclipNativeSessionWithinScope(input);
+  const runId = input.execution.binding.runId;
+  if (nativeSessionStartups.has(runId)) {
+    throw new Error("native_session_supervisor_busy");
   }
+  // Register before the first asynchronous operation on either backend path.
+  // A duplicate execution must not replace the original startup handoff.
+  let resolveStartup!: (session: ActiveNativeSession | null) => void;
+  const startup: NativeSessionStartup = {
+    promise: new Promise<ActiveNativeSession | null>(resolve => { resolveStartup = resolve; }),
+    resolve: session => resolveStartup(session),
+  };
+  nativeSessionStartups.set(runId, startup);
   let preparedInput: typeof input = input;
   let cleanupStagedAttachments: () => Promise<void> = async () => undefined;
   let sessionScopeId: string | null = null;
   let ownsSessionScope = false;
   let executionFailure: unknown;
-  let startup: NativeSessionStartup | undefined;
   try {
+    if (!input.useRunnerd) {
+      return await executePaperclipNativeSessionWithinScope(input);
+    }
     // The session scope is unaffected by appending server-staged attachment
     // descriptors. Claim it before any workspace scrub/write so a duplicate
     // execution cannot truncate or replace the active turn's staging inode.
@@ -7009,11 +7020,6 @@ export async function executePaperclipNativeSession(input: {
       input.execution.binding.runId,
     );
     ownsSessionScope = true;
-    let resolveStartup!: (session: ActiveNativeSession | null) => void;
-    const startupPromise = new Promise<ActiveNativeSession | null>(resolve => { resolveStartup = resolve; });
-    startup = { promise: startupPromise, resolve: resolveStartup };
-    nativeSessionStartups.set(input.execution.binding.runId, startup);
-
     // The shutdown sweep can have removed an idle owner while its remote
     // checkpoint is still being saved. The scope reservation also prevents
     // a later sweep from closing an owner this turn is about to acquire.
@@ -7068,9 +7074,9 @@ export async function executePaperclipNativeSession(input: {
     executionFailure = error;
     throw error;
   } finally {
-    startup?.resolve(null);
-    if (startup && nativeSessionStartups.get(input.execution.binding.runId) === startup) {
-      nativeSessionStartups.delete(input.execution.binding.runId);
+    startup.resolve(null);
+    if (nativeSessionStartups.get(runId) === startup) {
+      nativeSessionStartups.delete(runId);
     }
     if (
       ownsSessionScope &&

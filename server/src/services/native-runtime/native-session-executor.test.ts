@@ -4748,7 +4748,7 @@ describe("native startup restart detachment", () => {
     }
   });
 
-  it("waits for delayed runner startup before acknowledging cancellation", async () => {
+  it.each([true, false])("waits for delayed native startup before acknowledging cancellation (runnerd=%s)", async (useRunnerd) => {
     const root = await mkdtemp(join(tmpdir(), "native-cancel-startup-"));
     const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
@@ -4792,9 +4792,15 @@ describe("native startup restart detachment", () => {
         db: leaseDb(cancelling),
         execution: cancelling,
         runnerInstanceId: "runner",
-        useRunnerd: true,
+        useRunnerd,
       });
       await admitted;
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(cancelling),
+        execution: cancelling,
+        runnerInstanceId: "duplicate-runner",
+        useRunnerd,
+      })).rejects.toThrow("native_session_supervisor_busy");
       let settled = false;
       const cancellation = cancelNativeSession(
         cancelling.binding.runId,
