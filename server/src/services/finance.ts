@@ -2,6 +2,7 @@ import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, costEvents, financeEvents, goals, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { estimatedMeteredCostCentsSql } from "./model-cost-estimates.js";
 
 export interface FinanceDateRange {
   from?: Date;
@@ -31,6 +32,13 @@ function rangeConditions(companyId: string, range?: FinanceDateRange) {
   const conditions: ReturnType<typeof eq>[] = [eq(financeEvents.companyId, companyId)];
   if (range?.from) conditions.push(gte(financeEvents.occurredAt, range.from));
   if (range?.to) conditions.push(lte(financeEvents.occurredAt, range.to));
+  return conditions;
+}
+
+function costRangeConditions(companyId: string, range?: FinanceDateRange) {
+  const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+  if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+  if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
   return conditions;
 }
 
@@ -65,22 +73,31 @@ export function financeService(db: Db) {
 
     summary: async (companyId: string, range?: FinanceDateRange) => {
       const conditions = rangeConditions(companyId, range);
-      const [row] = await db
-        .select({
-          debitCents: debitExpr,
-          creditCents: creditExpr,
-          estimatedDebitCents: estimatedDebitExpr,
-          eventCount: sql<number>`count(*)::int`,
-        })
-        .from(financeEvents)
-        .where(and(...conditions));
+      const costConditions = costRangeConditions(companyId, range);
+      const [[row], [estimatedModelCost]] = await Promise.all([
+        db
+          .select({
+            debitCents: debitExpr,
+            creditCents: creditExpr,
+            estimatedDebitCents: estimatedDebitExpr,
+            eventCount: sql<number>`count(*)::int`,
+          })
+          .from(financeEvents)
+          .where(and(...conditions)),
+        db
+          .select({ estimatedCents: estimatedMeteredCostCentsSql() })
+          .from(costEvents)
+          .where(and(...costConditions)),
+      ]);
 
       return {
         companyId,
         debitCents: Number(row?.debitCents ?? 0),
         creditCents: Number(row?.creditCents ?? 0),
         netCents: Number(row?.debitCents ?? 0) - Number(row?.creditCents ?? 0),
-        estimatedDebitCents: Number(row?.estimatedDebitCents ?? 0),
+        estimatedDebitCents:
+          Number(row?.estimatedDebitCents ?? 0) +
+          Number(estimatedModelCost?.estimatedCents ?? 0),
         eventCount: Number(row?.eventCount ?? 0),
       };
     },
