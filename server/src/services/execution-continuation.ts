@@ -150,21 +150,30 @@ export async function buildExecutionContinuation(input: {
     string(input.context.retryOfRunId) ??
     string(input.context.previousRunId) ??
     string(input.context.interruptedRunId);
-  const sourceRun = sourceRunId
-    ? (
-        await db
-          .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.companyId, companyId),
-              eq(heartbeatRuns.id, sourceRunId),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            ),
-          )
-      )[0]
-    : null;
-  if (sourceRunId && !sourceRun)
+  const [sourceRunRow] = sourceRunId
+    ? await db
+        .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.id, sourceRunId),
+          ),
+        )
+    : [];
+  const sourceRunIssueId = string(object(sourceRunRow?.context).issueId);
+  const sourceRun = sourceRunIssueId === issueId ? sourceRunRow : null;
+  // A run that never claimed this task cannot have lost its context. An
+  // agent-scoped wake records no issueId on its snapshot, yet that run can still
+  // open an interaction on a task; rejecting it leaves the interaction
+  // permanently unanswerable. Treat it as no source context instead. A run
+  // scoped to a different task, or no run at all, stays a hard failure, and the
+  // origin-comment proof below is unchanged either way.
+  if (
+    sourceRunId &&
+    !sourceRun &&
+    (explicitUserSource || !sourceRunRow || sourceRunIssueId !== null)
+  )
     throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
   const originCommentIds = [
     ...new Set([
