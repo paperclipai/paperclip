@@ -828,18 +828,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       if (seen.has(`${wake.agentId}:${issueId}`)) continue;
       seen.add(`${wake.agentId}:${issueId}`);
       if (await getExecutionBlocker(db, wake.companyId, issueId)) continue;
-      // Retire the receipt first so two concurrent passes cannot promote the
-      // same parked wake twice. Admission may park a fresh receipt of its own,
-      // which a later pass reconsiders under exactly these conditions.
-      const [claimed] = await db.update(agentWakeupRequests).set({
-        status: "skipped", finishedAt: new Date(), updatedAt: new Date(),
-        payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
-          coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb) || ${JSON.stringify({
-            reason: "readmitted", message: "The execution gate cleared; this wake re-entered admission.",
-          })}::jsonb)`,
-      }).where(and(
+      // Claim the receipt by its own age, exactly as `resumeExecutionWaitComments`
+      // does, so a concurrent pass cannot promote the same wake. The receipt
+      // stays held until admission answers: an interrupted server leaves the
+      // wake queued for a later pass, never silently retired.
+      const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
         eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
         eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        lte(agentWakeupRequests.updatedAt, new Date(Date.now() - READMIT_EXECUTION_WAIT_AFTER_MS)),
       )).returning({ id: agentWakeupRequests.id });
       if (!claimed) continue;
       const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
@@ -853,17 +849,29 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           payload: wakePayload, contextSnapshot: context,
           requestedByActorType: (wake.requestedByActorType ?? undefined) as WakeupOptions["requestedByActorType"],
           requestedByActorId: wake.requestedByActorId,
+          // Selection read the task outside the admission lock. Admission must
+          // refuse a task that closed or changed hands in between.
+          issueStateGuard: { assigneeAgentId: wake.agentId,
+            statuses: ["todo", "in_progress", "in_review", "blocked"] },
           idempotencyKey: `execution-wait-readmit:${wake.id}`,
         });
       } catch (err) {
-        // Return the receipt to the queue: a failed re-admission must not be
-        // the reason a task goes silent, which is the very defect fixed here.
-        await db.update(agentWakeupRequests).set({
-          status: "deferred_issue_execution", finishedAt: null, updatedAt: new Date(),
-        }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
-          eq(agentWakeupRequests.status, "skipped")));
+        // The receipt is still held, so a later pass reconsiders this wake.
         logger.warn({ err, wakeId: wake.id }, "failed to re-admit an unblocked execution wait");
+        continue;
       }
+      // Admission has answered, with a run, a skip, or a fresh receipt of its
+      // own. Retire this one so the next pass reads the new answer.
+      await db.update(agentWakeupRequests).set({
+        status: "skipped", finishedAt: new Date(), updatedAt: new Date(),
+        payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
+          coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb) || ${JSON.stringify({
+            reason: "readmitted", message: "The execution gate cleared; this wake re-entered admission.",
+          })}::jsonb)`,
+      }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ));
     }
   }
 

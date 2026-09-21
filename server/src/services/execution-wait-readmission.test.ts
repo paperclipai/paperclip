@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, afterAll, describe, it, expect } from "vitest";
 import {
   agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueComments, issues,
@@ -98,6 +98,58 @@ const support = await getEmbeddedPostgresTestSupport();
     // A second pass over the same task must not stack another run on top.
     await heartbeatService(db).readmitUnblockedExecutionWaits();
     expect(await queuedRuns(f.companyId)).toHaveLength(1);
+  });
+
+  it("keeps the receipt held when admission fails, and re-admits it on a later pass", async () => {
+    const f = await seed();
+    const parked = await park(f);
+    await clearGate(f.sourceRunId);
+    await makeDue(parked.id);
+    // Stand in for a server that dies during admission: the run insert fails
+    // after the receipt was claimed.
+    await db.execute(sql`create or replace function readmit_block_run() returns trigger as $$
+      begin raise exception 'admission interrupted'; end; $$ language plpgsql`);
+    await db.execute(sql`create trigger readmit_block_run before insert on heartbeat_runs
+      for each row execute function readmit_block_run()`);
+    await heartbeatService(db).readmitUnblockedExecutionWaits();
+    await db.execute(sql`drop trigger readmit_block_run on heartbeat_runs`);
+
+    // The wake is still queued for a later pass. It is never silently retired,
+    // which is the very defect this pass exists to prevent.
+    expect((await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, parked.id)))[0].status).toBe("deferred_issue_execution");
+    expect(await queuedRuns(f.companyId)).toHaveLength(0);
+
+    await makeDue(parked.id);
+    await heartbeatService(db).readmitUnblockedExecutionWaits();
+    expect(await queuedRuns(f.companyId)).toHaveLength(1);
+  });
+
+  it("refuses a task that changed hands between selection and admission", async () => {
+    const f = await seed();
+    const parked = await park(f);
+    const nextAgentId = randomUUID();
+    await db.insert(agents).values({ id: nextAgentId, companyId: f.companyId, name: "Next", role: "engineer",
+      adapterType: "claude_local", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
+    await clearGate(f.sourceRunId);
+    await makeDue(parked.id);
+    // Selection reads the task outside the admission lock. Move the task to
+    // another agent in that exact window, when the receipt is claimed.
+    // A parameter placeholder is a literal inside a dollar-quoted body, so the
+    // generated ids are inlined here.
+    await db.execute(sql.raw(`create or replace function readmit_reassign() returns trigger as $$
+      begin update issues set assignee_agent_id = '${nextAgentId}'::uuid where id = '${f.issueId}'::uuid;
+      return null; end; $$ language plpgsql`));
+    await db.execute(sql.raw(`create trigger readmit_reassign after update on agent_wakeup_requests
+      for each row when (new.id = '${parked.id}'::uuid) execute function readmit_reassign()`));
+    await heartbeatService(db).readmitUnblockedExecutionWaits();
+    await db.execute(sql`drop trigger readmit_reassign on agent_wakeup_requests`);
+
+    expect(await queuedRuns(f.companyId)).toHaveLength(0);
+    const guarded = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, f.companyId),
+      eq(agentWakeupRequests.reason, "issue_state_guard_mismatch")));
+    expect(guarded).toHaveLength(1);
   });
 
   it.each(["closed_issue", "reassigned_issue", "held_execution", "recovery_backed", "too_recent"])(
