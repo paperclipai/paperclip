@@ -1238,7 +1238,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => {
       mountedRoot?.render(
         <QueryClientProvider client={coldLoadClient}>
-          <AppsConnect />
+          <TooltipProvider><AppsConnect /></TooltipProvider>
         </QueryClientProvider>,
       );
     });

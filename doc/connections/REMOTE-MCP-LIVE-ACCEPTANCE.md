@@ -2,7 +2,7 @@
 
 Test environment: an isolated development worktree with a fresh database and organization. No production data was cloned. The API served the compiled UI with browser-reachable OAuth callbacks. Detailed account and local-instance evidence remains in a private acceptance report.
 
-**Overall acceptance remains incomplete: Zapier needs the generated credential pasted into its open local setup form.** Three providers have real browser and real agent proof. Simulations are recorded separately below.
+**This PR delivers default-off experimental support at the maintainer's request. General provider acceptance remains incomplete: Zapier needs its generated credential entered before live validation can finish.** Three providers have real browser and real agent proof. Simulations are recorded separately below. The maintainer's subsequent delivery instruction was to put these connectors behind an experimental MCP aggregators flag and open a PR with passing checks. The Zapier gap is an explicit limitation of that experimental scope, not a claim that the connector playbook's full provider acceptance is complete. Complete that acceptance before promoting the feature out of experimental status.
 
 ## Experimental rollout
 
@@ -58,7 +58,7 @@ All newly added isolated checks passed, with one test worker:
 - 18 connector-only Storybook browser checks: four complete setup journeys, four draft/auth journeys, desktop/narrow state matrices, keyboard recovery, Zapier's absence of OAuth, normal Test states, and Executor approve/decline/cancel.
 - All 85 connector stories rendered at 1280px/dark and 390px/light without page errors or horizontal overflow. Inspected generated setup and Test screenshots. Evidence is under `tests/storybook-visual/test-results/remote-mcp/` (ignored local test output).
 - UI and server direct TypeScript checks, token gates, UI build, Storybook build, and `git diff --check` passed.
-- **No full repository test suite, recursive typecheck, or repository-wide build was run**, following the user's resource constraint. No schema migration or lockfile change is included.
+- **No full repository test suite, recursive typecheck, or repository-wide build was run locally**, following the maintainer's explicit resource constraint. The PR's CI runs the required broad typecheck, test shards, and build; those gates must pass before handoff. Narrow local verification is not a waiver of CI. No schema migration or lockfile change is included.
 
 Storybook links: `apps-connections-zapier--complete-setup-journey`, `apps-connections-arcade--complete-setup-journey`, `apps-connections-composio--complete-setup-journey`, `apps-connections-executor--complete-setup-journey`. `apps-connections-executor--provider-handoff-after-setup` uses mocked responses and makes no real authorization request.
 
