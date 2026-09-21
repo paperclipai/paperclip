@@ -841,8 +841,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
       // The wait itself is a receipt of the old gate, never wake input.
       const { executionWait: _retiredWait, ...wakePayload } = payload;
+      // An interrupted server can leave the replacement wake committed and this
+      // receipt still held. The replacement carries this key, so a later pass
+      // recognises the work as already admitted and only retires the receipt.
+      // Without this read, a second run could start for the same wake.
+      const readmitKey = `execution-wait-readmit:${wake.id}`;
+      const [alreadyAdmitted] = await db.select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, wake.companyId),
+          eq(agentWakeupRequests.agentId, wake.agentId),
+          eq(agentWakeupRequests.idempotencyKey, readmitKey),
+        )).limit(1);
       try {
-        await enqueueWakeup(wake.agentId, {
+        if (!alreadyAdmitted) await enqueueWakeup(wake.agentId, {
           source: (wake.source ?? "automation") as WakeupOptions["source"],
           triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
           reason: readNonEmptyString(context.wakeReason) ?? wake.reason,
@@ -853,7 +864,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           // refuse a task that closed or changed hands in between.
           issueStateGuard: { assigneeAgentId: wake.agentId,
             statuses: ["todo", "in_progress", "in_review", "blocked"] },
-          idempotencyKey: `execution-wait-readmit:${wake.id}`,
+          idempotencyKey: readmitKey,
         });
       } catch (err) {
         // The receipt is still held, so a later pass reconsiders this wake.
