@@ -23,6 +23,7 @@ import {
 } from "@/api/githubChat";
 import { AgentSelect } from "@/components/AgentMultiSelect";
 import { GitHubAgentTrustWarning } from "@/components/GitHubAgentTrustWarning";
+import { GitHubSetupPrompt } from "./GitHubSetupPrompt";
 import {
   SetupWizardNavigation,
   SetupWizardFooter,
@@ -255,6 +256,7 @@ export function GitHubChatSetup() {
       )}
       {step === 0 && (
         <>
+          <GitHubSetupPrompt />
           <p className="text-sm">
             This assignment is permanent. The agent works through its existing
             permissions, budgets, and tools.

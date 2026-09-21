@@ -1,4 +1,5 @@
 import { GitHubAgentTrustWarning } from "@/components/GitHubAgentTrustWarning";
+import { GitHubSetupPrompt } from "@/pages/apps/chat/GitHubSetupPrompt";
 import { AccessEditor } from "./AccessEditor";
 import { useState, type ReactNode } from "react";
 import {
@@ -945,6 +946,7 @@ export function GitHubChatPreview({
                       conversation. PR events can ask the same agent to review
                       changes.
                     </Heading>
+                    <GitHubSetupPrompt />
                     <Select
                       disabled={draft.connected}
                       label="Paperclip agent"
