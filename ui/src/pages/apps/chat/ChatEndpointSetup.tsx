@@ -374,6 +374,11 @@ function ChatSdkEndpointSetup() {
       : isSlack && (slackCredentialsReady || repairing) ? 2 : 1
     : 0;
   const step = Math.min(viewedStep ?? availableStep, availableStep);
+  const avatarAgent = useQuery({
+    queryKey: queryKeys.agents.detail(endpoint?.assignedAgentId ?? ""),
+    queryFn: () => agentsApi.get(endpoint!.assignedAgentId, endpoint!.companyId),
+    enabled: Boolean(isSlack && endpoint && step === 4),
+  });
   const slackVerificationQuery = useQuery({
     queryKey: ["chat-endpoint-slack-webhook-verification", endpoint?.id],
     queryFn: () => chatEndpointsApi.get(endpoint!.id),
@@ -541,18 +546,18 @@ function ChatSdkEndpointSetup() {
         )}
         {endpoint && isSlack && step === 4 && (
           <div className="space-y-4">
-            {agentsQuery.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading agent avatar…</p>
-              : agentsQuery.isError ? <p role="alert" className="text-sm text-destructive">Couldn’t load the agent’s avatar. <button className="underline" onClick={() => void agentsQuery.refetch()}>Try again</button></p>
+            {avatarAgent.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading agent avatar…</p>
+              : avatarAgent.isError ? <p role="alert" className="text-sm text-destructive">Couldn’t load the agent’s avatar. <button className="underline" onClick={() => void avatarAgent.refetch()}>Try again</button></p>
               : <SlackAvatarStep
-                  agentName={selectedAgent?.name ?? endpoint.assignedAgentName}
+                  agentName={avatarAgent.data?.name ?? endpoint.assignedAgentName}
                   appName={endpoint.setup?.slackApp?.appName ?? endpoint.botLabel ?? endpoint.assignedAgentName}
-                  avatarUrl={agentAvatarUrl(resolveAgentAppearance(selectedAgent?.appearance, endpoint.assignedAgentId), 512, 1, "rest")}
+                  avatarUrl={agentAvatarUrl(resolveAgentAppearance(avatarAgent.data?.appearance, endpoint.assignedAgentId), 512, 1, "rest")}
                   uploaded={avatarProgress.progress === "uploaded"}
                   onUploaded={() => { avatarProgress.save("uploaded"); setViewedStep(5); }}
                   onSkip={() => { if (!avatarProgress.progress) avatarProgress.save("skipped"); setViewedStep(5); }}
                   onSaveExit={() => navigate("/apps")}
                 />}
-            {(agentsQuery.isPending || agentsQuery.isError) && <SetupWizardFooter onSaveExit={() => navigate("/apps")}><Button onClick={() => { avatarProgress.save("skipped"); setViewedStep(5); }}>Skip for now</Button></SetupWizardFooter>}
+            {(avatarAgent.isPending || avatarAgent.isError) && <SetupWizardFooter onSaveExit={() => navigate("/apps")}><Button onClick={() => { avatarProgress.save("skipped"); setViewedStep(5); }}>Skip for now</Button></SetupWizardFooter>}
           </div>
         )}
         {endpoint && isSlack && step === 5 && (

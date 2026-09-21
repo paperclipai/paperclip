@@ -15,6 +15,7 @@ import { ChatEndpointDetail } from "./ChatEndpointDetail";
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   getAgent: vi.fn(),
+  listAgents: vi.fn(),
   listResources: vi.fn(),
   tab: "access",
   listActivityPage: vi.fn(),
@@ -35,7 +36,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: mocks }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: "owner-user", name: "Owner" } }) } }));
 vi.mock("@/api/health", () => ({ healthApi: { get: async () => ({ deploymentMode: "authenticated" }) } }));
-vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [{ id: "agent-a", name: "Maya", status: "idle", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "cherry-pop" } }], get: mocks.getAgent } }));
+vi.mock("@/api/agents", () => ({ agentsApi: { list: mocks.listAgents, get: mocks.getAgent } }));
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableIsolatedWorkspaces: true }) } }));
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-a" }),
@@ -70,6 +71,7 @@ describe("chat setup and identity-link clipboard actions", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    mocks.listAgents.mockResolvedValue([{ id: "agent-a", name: "Maya", status: "idle" }]);
     mocks.getAgent.mockResolvedValue({ id: "agent-a", name: "Maya", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "cherry-pop" } });
     mocks.listResources.mockResolvedValue([]);
     mocks.tab = "access";
@@ -455,6 +457,15 @@ describe("chat setup and identity-link clipboard actions", () => {
     flushSync(() => root.render(<QueryClientProvider client={client}><TooltipProvider><ChatSetupSidebarProvider><ChatSetupSidebar /><ChatEndpointSetup /></ChatSetupSidebarProvider></TooltipProvider></QueryClientProvider>));
     await settle();
     expect(container.querySelector('aside button[aria-current="step"]')?.textContent).toBe("6Connect your Slack account");
+  });
+
+  it("keeps a terminated agent’s saved avatar when the company list omits it", async () => {
+    mocks.listAgents.mockResolvedValue([]);
+    mocks.getAgent.mockResolvedValue({ id: "agent-a", name: "Maya", status: "terminated", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "orchid-peach" } });
+    await renderSlackIdentityStep();
+    await click("5Add avatar");
+    expect(container.querySelector('a[download]')?.getAttribute("href")).toBe("/api/agent-avatars/cap-v1/orchid-peach/rest.png?size=512&scale=1");
+    expect(mocks.getAgent).toHaveBeenCalledWith("agent-a", "company-a");
   });
 
   it("keeps avatar download available in connector settings", async () => {
