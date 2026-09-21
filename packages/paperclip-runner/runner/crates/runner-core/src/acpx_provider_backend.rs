@@ -799,7 +799,32 @@ impl AcpxCommandExecutor {
         .map_err(|error| {
             DurableRunnerError::invalid(format!("run.attach ACPX provider is invalid: {error}"))
         })?;
-        descriptor.validate(&self.context)?;
+        let mut attachment_context = self.context.clone();
+        if let Some(boundary) = payload.get("paperclipNextAuthority") {
+            // The durable runner validates this authority's immutable bindings
+            // and PRP v2 handoff capability before dispatching run.attach. Its
+            // activation follows our command result, so self.context must keep
+            // correlating audit events with the old run until rotate_authority.
+            let identity = boundary.get("identity").ok_or_else(|| {
+                DurableRunnerError::invalid("run.attach authority identity is required")
+            })?;
+            let run_id = identity
+                .get("runId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid("run.attach authority runId is required")
+                })?;
+            if run_id == self.context.run_id
+                || identity.get("normalizedSessionId").and_then(Value::as_str)
+                    != Some(self.context.normalized_session_id.as_str())
+            {
+                return Err(DurableRunnerError::invalid(
+                    "run.attach authority changed an immutable session binding",
+                ));
+            }
+            attachment_context.run_id = run_id.to_owned();
+        }
+        descriptor.validate(&attachment_context)?;
         let tool_set = authorized_tool_set(payload)?;
         let state = self
             .state
@@ -1260,6 +1285,27 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+        // The shared transport waits for an explicit readiness contract before
+        // rotating run authority. ACPX checkpoints its process during attach,
+        // but must first settle the same durable guards enforced by attach_run.
+        // Do not consume events here: the durable runner commits and ACKs the
+        // old authority's retained prefix before a later probe can report ready.
+        let mut warm_attach_blockers = Vec::new();
+        if state.lifecycle == "closed" {
+            warm_attach_blockers.push("durable_closed");
+        }
+        if state.provider_exit_unconfirmed {
+            warm_attach_blockers.push("provider_exit_unconfirmed");
+        }
+        if state.identity.is_none() {
+            warm_attach_blockers.push("provider_identity_unavailable");
+        }
+        if state.active_turn_id.is_some() {
+            warm_attach_blockers.push("durable_active_turn");
+        }
+        if !state.pending_events.is_empty() {
+            warm_attach_blockers.push("durable_pending_events");
+        }
         Ok(CommandExecution::result(json!({
             "status": state.lifecycle,
             "provider": "acpx",
@@ -1270,6 +1316,8 @@ impl AcpxCommandExecutor {
             "providerAccountSessionId": state.identity.as_ref().map(|value| value.agent_session_id.as_str()),
             "providerIdentity": state.identity,
             "activeProviderTurnId": state.active_turn_id,
+            "warmAttachReady": warm_attach_blockers.is_empty(),
+            "warmAttachBlockers": warm_attach_blockers,
         })))
     }
 
@@ -2099,6 +2147,61 @@ mod tests {
         let original_config = test_config(&directory, Some(launch_profile.clone()));
         let mut original = AcpxCommandExecutor::with_runner_config(&directory, &original_config);
         original.state = Some(state);
+        let settled = original.state.clone().unwrap();
+        let ready = original.snapshot().unwrap().result;
+        assert_eq!(ready["warmAttachReady"], true);
+        assert_eq!(ready["warmAttachBlockers"], json!([]));
+        let blocked_states: [(&str, fn(&mut AcpxDurableState)); 4] = [
+            ("durable_closed", |state| {
+                state.lifecycle = "closed".to_owned()
+            }),
+            ("provider_exit_unconfirmed", |state| {
+                state.lifecycle = "prepared".to_owned();
+                state.provider_exit_unconfirmed = true;
+            }),
+            ("provider_identity_unavailable", |state| {
+                state.lifecycle = "prepared".to_owned();
+                state.identity = None;
+            }),
+            ("durable_active_turn", |state| {
+                state.lifecycle = "turn_active".to_owned();
+                state.active_turn_id = Some("turn-1".to_owned());
+            }),
+        ];
+        for (blocker, mutate) in blocked_states {
+            original.state = Some(settled.clone());
+            mutate(original.state.as_mut().unwrap());
+            let snapshot = original.snapshot().unwrap().result;
+            assert_eq!(snapshot["warmAttachReady"], false, "{blocker}");
+            assert_eq!(snapshot["warmAttachBlockers"], json!([blocker]));
+        }
+        // A readiness probe must retain the old authority's audit events until
+        // the durable runner commits and acknowledges them, including recovery
+        // notices that run.attach itself is allowed to consume.
+        for event_type in ["session.resumed", "harness.diagnostic"] {
+            original.state = Some(settled.clone());
+            original
+                .state
+                .as_mut()
+                .unwrap()
+                .push(NormalizedProviderEvent {
+                    event_type: event_type.to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({}),
+                })
+                .unwrap();
+            let snapshot = original.snapshot().unwrap().result;
+            assert_eq!(snapshot["warmAttachReady"], false);
+            assert_eq!(
+                snapshot["warmAttachBlockers"],
+                json!(["durable_pending_events"])
+            );
+            assert_eq!(original.retained_events().unwrap().len(), 1);
+            original.acknowledge_events(1).unwrap();
+            assert_eq!(original.snapshot().unwrap().result["warmAttachReady"], true);
+        }
+        original.state = Some(settled);
+        assert!(!marker.exists(), "readiness must not start a provider");
         original.save_state().unwrap();
 
         let mut wrong_session_config = original_config.clone();
@@ -2134,6 +2237,43 @@ mod tests {
             .attach_run(&json!({"provider": descriptor_value}))
             .unwrap();
         assert_eq!(attached.state.as_ref().unwrap().descriptor.run_id, "run-2");
+        assert!(!marker.exists());
+
+        // In-place warm handoff executes under the old authority. Only the
+        // authenticated next-authority boundary may admit the new descriptor;
+        // event correlation stays on run-1 until durable activation completes.
+        assert!(original
+            .attach_run(&json!({"provider": descriptor_value}))
+            .is_err());
+        let warm_payload = json!({
+            "provider": descriptor_value,
+            "paperclipNextAuthority": {
+                "identity": {
+                    "runnerInstanceId": original_config.runner_instance_id,
+                    "environmentLeaseId": original_config.environment_lease_id,
+                    "runId": "run-2",
+                    "normalizedSessionId": original_config.normalized_session_id,
+                    "turnId": "turn-2",
+                    "itemId": "item-2",
+                },
+                "connection": {"mode": "connect", "connectUrl": original_config.connect_url},
+            },
+        });
+        let mut wrong_run = warm_payload.clone();
+        wrong_run["paperclipNextAuthority"]["identity"]["runId"] = json!("run-3");
+        assert!(original.attach_run(&wrong_run).is_err());
+        let mut wrong_session = warm_payload.clone();
+        wrong_session["paperclipNextAuthority"]["identity"]["normalizedSessionId"] =
+            json!("other-session");
+        assert!(original.attach_run(&wrong_session).is_err());
+        let mut changed_profile = warm_payload.clone();
+        changed_profile["provider"]["instructions"] = json!("different profile");
+        assert!(original.attach_run(&changed_profile).is_err());
+        original.attach_run(&warm_payload).unwrap();
+        assert_eq!(original.state.as_ref().unwrap().descriptor.run_id, "run-2");
+        assert_eq!(original.context.run_id, "run-1");
+        original.rotate_authority(&attached_config);
+        assert_eq!(original.context.run_id, "run-2");
         assert!(!marker.exists());
         fs::remove_dir_all(directory).unwrap();
     }

@@ -1093,6 +1093,15 @@ controller lease in the same transaction that creates the native coordinator.
 The native executor rechecks cancellation and terminal status when claiming the
 coordinator, before starting or attaching a provider.
 
+Run-only Stop also covers the interval after the coordinator claim and before
+the provider session publishes its handle. Stop retains its pending audited
+intent and waits up to 30 seconds for that startup to settle. A published
+session receives cancellation before prompt submission; only real dispatch
+sets `dispatched: true`. A deadline leaves the intent pending and the late
+session remains fenced and is closed. Stop acknowledgement alone does not
+certify cleanup: the existing process and environment receipts still govern
+admission of the next message.
+
 A cancelled startup can continue from a newer authenticated user message after
 cleanup. The server requires either its explicit before-selection fence or an
 unclaimed native coordinator (zero attempts and controller generations, no
@@ -1211,6 +1220,21 @@ and project. Follow-ups can therefore reuse the same sandbox and provider
 session. A staged provider package is reused only after the complete expected
 manifest and artifact hashes verify. A missing, changed, or incompatible package
 must be replaced and verified before launch.
+
+Warm attachment requires two consecutive authenticated readiness snapshots.
+Blocked readiness probes back off within the reconnect deadline so they do not
+fill the durable command journal while waiting. The fast ready path keeps its
+short second barrier. If readiness never arrives, attachment fails closed with
+the last observed blocker; a full journal is not a substitute for that diagnosis.
+Both native providers publish this readiness contract. ACPX reports its durable
+session identity, active turn, pending audit events, closed state, and unproven
+provider exit as blockers. Explicit readiness probes let the durable runner
+commit and acknowledge retained events under the old run authority; snapshotting
+alone never discards them. ACPX checkpoints its process during the subsequent
+attachment before resuming the same provider session under the new run.
+During an in-place handoff, the ACPX descriptor binds to the validated next run
+while event correlation stays on the old run until durable authority activation.
+A changed session identity or a descriptor that names any other run is rejected.
 
 Safe native replacement may clear a Blocked status only with a durable receipt
 that the same failed run projected that exact status version. Explicitly

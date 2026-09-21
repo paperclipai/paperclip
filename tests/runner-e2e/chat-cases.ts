@@ -20,7 +20,15 @@ export const CHAT_CASES = [
   ["multi-repository", "Create a project with multiple repository URLs", 2],
 ] as const;
 export type ChatCase = (typeof CHAT_CASES)[number][0];
-export const chatTasks: readonly RunnerTaskFixture[] = CHAT_CASES.map(
+const HARDENING_CASES = [
+  ["stop-startup-new-resume", "Stop during startup, reset, and resume", 3],
+  ["hire-delegate-reuse", "Hire through chat, delegate, and reuse the same teammate", 5],
+  ["blocked-status-review", "Read the actual blocker and hand source material to a reviewer", 4],
+  ["committed-send-retry", "Recover a lost send acknowledgement without repeating committed work", 2],
+  ...CHAT_CASES.filter(([id]) => ["stop-new-resume", "continuity-restart"].includes(id)),
+] as const;
+function buildChatTasks(definitions: readonly (readonly [string, string, number])[]): readonly RunnerTaskFixture[] {
+  return definitions.map(
   ([id, label, expectedRunCount]) => ({
     id,
     label,
@@ -35,4 +43,15 @@ export const chatTasks: readonly RunnerTaskFixture[] = CHAT_CASES.map(
     buildVisibleMarker: (nonce) => chatMarker("CHAT", nonce),
     buildMatchers: () => [{ kind: "issue_status", expected: "in_review" }],
   }),
-);
+  );
+}
+export const chatTasks = buildChatTasks(CHAT_CASES);
+export const chatHardeningTasks = buildChatTasks(HARDENING_CASES);
+
+export function chatNeedsApiTools(suiteId: string, caseId: string): boolean {
+  return suiteId === "agent-chat-hardening" && ["hire-delegate-reuse", "blocked-status-review"].includes(caseId);
+}
+export function isManagedHiringCase(suiteId: string, caseId: string): boolean {
+  return (suiteId === "everyday-workflows" && caseId === "hire-reuse") ||
+    (suiteId === "agent-chat-hardening" && caseId === "hire-delegate-reuse");
+}

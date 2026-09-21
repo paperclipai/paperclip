@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
 import type { RunnerApi } from "./api.js";
 import type {
@@ -212,9 +213,7 @@ export async function setupLiveFixtures(input: {
     },
   });
 
-  const managedHiring =
-    execution.suite.id === "everyday-workflows" &&
-    execution.task.id === "hire-reuse";
+  const managedHiring = isManagedHiringCase(execution.suite.id, execution.task.id);
   if (managedHiring) {
     registry.register<ManagedAccountFixture>({
       id: "ai-connection",

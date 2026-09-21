@@ -131,15 +131,15 @@ runner instance, PID, and process-start identity. Each turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
 sandbox rather than waiting for Daytona's idle timeout.
 
-`agent-chat` (**Persistent Agent Chat**) adds six workflows on `legacy-codex`,
-`legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **26 local cells**.
+`agent-chat` (**Persistent Agent Chat**) has eight workflows on `legacy-codex`,
+`legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **28 local cells**.
 They cover continuity across server restart, fresh context after `/new`,
 Stop/reset/resume, draft/revise/approve/plan handoff, clarification with existing
 project reuse, and a new project with two repository URLs. Each cell opens the
 production chat surface and resolves the backing issue through the chat API.
 The source conversation must settle to `in_review` / `waiting`; handed-off
 execution tasks must finish with their initial Plan and output documents.
-Reset runs are retained separately from the 72 expected provider turns in this
+Reset runs are retained separately from the 76 expected run attempts in this
 suite. Cancelled turns and execution-task runs remain included in billing and
 cleanup. The production chat directive is injected normally; fixtures do not
 replace it with completion instructions. Daytona is excluded.
@@ -150,6 +150,48 @@ The native Codex and Claude profiles also cover reassignment of existing ready
 and backlog tasks. The oracle verifies stable task IDs, preserved descriptions,
 assignment audit evidence, exactly one successful successor run and its output
 document, no backlog execution, and a usable source conversation after reload.
+
+`agent-chat-hardening` is an explicit-only native Codex/Claude suite with
+**18 cells: 12 local and six warm Daytona**. It adds startup Stop/reset,
+hire/delegate/reuse, grounded blocker reporting with source-document review,
+and committed-send retry. It also runs active Stop/reset and restart continuity.
+Daytona selects active Stop/reset, restart continuity, and committed-send retry.
+The 56 expected run attempts include cancelled attempts; synthetic resets are
+recorded separately. The suite uses production permission defaults and prompts.
+Only hiring and cross-task status/review enable the opt-in native API tools.
+Hiring uses a personal managed AI connection and verifies the hired worker's
+actual execution account. This is not an onboarding-default qualification.
+
+Stop during startup and Stop during an active response are separate boundaries.
+The native active-response case requires a recorded provider turn start; generic
+lifecycle/performance events are insufficient. The startup case must stop after
+a process launch request but before a provider turn starts. Missing the boundary
+fails the case instead of silently testing another phase.
+
+Restart continuity requires the agent to recall a phrase after the server
+restarts. The final prompt does not reveal that phrase. A generic successful
+reply after restart cannot pass this check.
+
+The blocker query requests a JSON status snapshot. It must name the current
+recorded blocker and report zero active runs independently of the task's blocked
+status. Mentioning the right blocker only as resolved history cannot pass.
+
+The committed-send case drops the browser's acknowledgement after the server
+saves its comment. It waits for the agent to save one backlog task, restarts
+Paperclip, and replays the exact public request with the original client request ID. It
+requires the original comment, task, plan, and single consuming run. This proves
+HTTP request idempotency across restart, not replay safety for an ambiguous
+provider tool response. Existing native tool-receipt tests cover that boundary.
+
+```sh
+pnpm test:e2e:runner -- --list --suite agent-chat-hardening
+pnpm test:e2e:runner -- --id agent-chat-hardening.runner-codex.local.stop-startup-new-resume
+```
+
+Each hardening oracle has positive and plausible-negative calibration tests.
+The review grader parses the worker's saved JSON and compares both source values
+and the consistency verdict. Hiring requires one identity, correct reporting
+line, managed credentials, and real task execution; chat claims cannot pass it.
 
 ```bash
 # Run these after deterministic checks, with the required provider keys set.
@@ -176,8 +218,9 @@ throwaway instance; never point the authenticated suite at the running demo.
 Missing provider credentials fail paid preflight and are not passing coverage.
 
 The default `--all` selection is 171 cells (148 local and 23 Daytona) and 371
-expected paid agent turns. The explicit-only everyday suite adds 35 catalog cells
-and is excluded from `--all`. Follow-up steps remain ordered within their cell; all other
+expected paid agent turns. The explicit-only everyday suite adds 38 catalog cells
+and chat hardening adds 18. Both are excluded from `--all`. The full catalog has 227 cells.
+Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
 developing fixtures.
 

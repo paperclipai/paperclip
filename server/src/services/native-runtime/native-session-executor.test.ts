@@ -4748,85 +4748,6 @@ describe("native startup restart detachment", () => {
     }
   });
 
-  it.each([true, false])("waits for delayed native startup before acknowledging cancellation (runnerd=%s)", async (useRunnerd) => {
-    const root = await mkdtemp(join(tmpdir(), "native-cancel-startup-"));
-    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
-    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
-    let releaseProvider: (() => void) | undefined;
-    let releaseStartup: (() => void) | undefined;
-    try {
-      state.cancel.mockReset().mockReturnValue({ cleanup: Promise.resolve() });
-      const cancelling = structuredClone(execution);
-      cancelling.binding.runId = "cancel-during-session-open";
-      let startupAdmitted!: () => void;
-      let providerWorkAccepted = false;
-      const opening = new Promise<void>(resolve => {
-        releaseStartup = resolve;
-      });
-      const admitted = new Promise<void>(resolve => {
-        startupAdmitted = resolve;
-      });
-      const providerStarted = new Promise<void>(resolve => {
-        releaseProvider = resolve;
-      });
-      state.execute.mockReset().mockImplementationOnce(async options => {
-        startupAdmitted();
-        await opening;
-        await options.onSession?.({ cancel: state.cancel });
-        await providerStarted;
-        providerWorkAccepted = true;
-        await options.onSession?.(null);
-        return {
-          result: { summary: "cancelled" },
-          terminal: { runTerminalState: "cancelled" },
-          turnId: "turn",
-          normalizedSessionId: "session",
-          providerSessionId: null,
-          driverKind: "test",
-          driverVersion: "1",
-          nativeEventCount: 1,
-          highestContiguousSourceSeq: 1,
-        };
-      });
-      const running = executePaperclipNativeSession({
-        db: leaseDb(cancelling),
-        execution: cancelling,
-        runnerInstanceId: "runner",
-        useRunnerd,
-      });
-      await admitted;
-      await expect(executePaperclipNativeSession({
-        db: leaseDb(cancelling),
-        execution: cancelling,
-        runnerInstanceId: "duplicate-runner",
-        useRunnerd,
-      })).rejects.toThrow("native_session_supervisor_busy");
-      let settled = false;
-      const cancellation = cancelNativeSession(
-        cancelling.binding.runId,
-        "user stop",
-      ).then(() => {
-        settled = true;
-      });
-      await new Promise(resolve => setImmediate(resolve));
-      expect(settled).toBe(false);
-      expect(state.cancel).not.toHaveBeenCalled();
-
-      releaseStartup!();
-      await cancellation;
-      expect(state.cancel).toHaveBeenCalledOnce();
-      expect(providerWorkAccepted).toBe(false);
-      releaseProvider!();
-      await running;
-    } finally {
-      releaseStartup?.();
-      releaseProvider?.();
-      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
-      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   it("remembers shutdown while the session is still opening and detaches its late publication", async () => {
     const restarting = structuredClone(execution);
     restarting.binding.runId = "restart-during-session-open";
@@ -4980,6 +4901,104 @@ describe("native session cancellation", () => {
         highestContiguousSourceSeq: 1,
       };
     });
+  });
+
+  it.each([true, false])("waits for an in-flight startup handle before acknowledging Stop (runnerd=%s)", async (useRunnerd) => {
+    const root = await mkdtemp(join(tmpdir(), "native-startup-stop-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    let open!: () => void, started!: () => void, finish!: () => void;
+    const opening = new Promise<void>(resolve => { open = resolve; });
+    const admitted = new Promise<void>(resolve => { started = resolve; });
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    const submitTurn = vi.fn();
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      started();
+      await opening;
+      await options.onSession({ cancel: state.cancel });
+      submitTurn();
+      await finished;
+      await options.onSession(null);
+      return {
+        result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" },
+        turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 0,
+        highestContiguousSourceSeq: 0,
+      };
+    });
+    const running = executePaperclipNativeSession({
+      db: leaseDb(), execution, runnerInstanceId: "runner", useRunnerd,
+    });
+    const outcome = running.catch(error => error);
+    const persistence = cancellationDb();
+    let stopping: ReturnType<typeof cancelNativeSession> | undefined;
+    let acknowledged = false;
+    try {
+      await admitted;
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(), execution, runnerInstanceId: "duplicate-runner", useRunnerd,
+      })).rejects.toThrow("native_session_supervisor_busy");
+      stopping = cancelNativeSession(execution.binding.runId, "operator Stop during startup", {
+        db: persistence.db, scope: "run",
+      });
+      void stopping.then(() => { acknowledged = true; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(acknowledged).toBe(false);
+      expect(persistence.getResultJson().nativeCancellation).toMatchObject({ dispatchState: "pending" });
+      open();
+      await expect(stopping).resolves.toMatchObject({ dispatched: true });
+      expect(state.cancel).toHaveBeenCalledOnce();
+      expect(persistence.getResultJson().nativeCancellation).toMatchObject({
+        dispatchState: "acknowledged", dispatched: true,
+      });
+      finish();
+      await outcome;
+      expect(submitTurn).not.toHaveBeenCalled();
+    } finally {
+      open(); finish();
+      await outcome;
+      await stopping;
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([true, false])("fences a late startup even when Stop reaches its acknowledgement deadline (runnerd=%s)", async (useRunnerd) => {
+    const root = await mkdtemp(join(tmpdir(), "native-late-startup-stop-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    let open!: () => void, started!: () => void;
+    const opening = new Promise<void>(resolve => { open = resolve; });
+    const admitted = new Promise<void>(resolve => { started = resolve; });
+    const submitTurn = vi.fn();
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      started(); await opening;
+      await options.onSession({ cancel: state.cancel });
+      submitTurn();
+      throw new Error("a stopped startup must not reach prompt submission");
+    });
+    const outcome = executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner", useRunnerd }).catch(error => error);
+    const persistence = cancellationDb();
+    try {
+      await admitted;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const stopping = cancelNativeSession(execution.binding.runId, "operator Stop", { db: persistence.db, scope: "run" }).catch(error => error);
+      // Let the durable intent commit before advancing the startup deadline.
+      await new Promise(resolve => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await stopping).toMatchObject({ name: "NativeCancellationPendingRecoveryError" });
+      expect(persistence.getResultJson().nativeCancellation).toMatchObject({ dispatchState: "pending" });
+      vi.useRealTimers();
+      open(); await outcome;
+      expect(state.cancel).toHaveBeenCalledOnce();
+      expect(submitTurn).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers(); open(); await outcome;
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("routes control-plane cancellation to the active normalized session and removes the handle", async () => {

@@ -3,7 +3,7 @@ import { defineConfig } from "@playwright/test";
 /** Browser-only harness regressions: no Paperclip instance or provider credentials. */
 export default defineConfig({
   testDir: ".",
-  testMatch: "screenshot-readiness.spec.ts",
+  testMatch: ["screenshot-readiness.spec.ts", "lost-send.spec.ts"],
   workers: 1,
   retries: 0,
   timeout: 10_000,

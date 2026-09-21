@@ -2,7 +2,7 @@ import { continuationTasks } from "./continuation-cases.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
-import { chatTasks } from "./chat-cases.js";
+import { chatTasks, chatHardeningTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
@@ -946,7 +946,18 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(defaultPermissionProfile),
     environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 28,
     excludedExecutionIds: ["legacy-codex", "legacy-claude"].flatMap(profile => ["reassign-task", "create-backlog"].map(task => `agent-chat.${profile}.local.${task}`)),
-    definitionMetadata: { version: 4, resetRunsCountedSeparately: true, permissions: "production-defaults" },
+    definitionMetadata: { version: 6, resetRunsCountedSeparately: true, permissions: "production-defaults", stopBoundary: "provider-turn-started", restartMemory: "required-after-restart" },
+  },
+  {
+    id: "agent-chat-hardening", label: "Agent Chat Recovery and Coordination", manualOnly: true,
+    description: "Native chat startup cancellation, committed sends, hiring, grounded status, and remote continuity.",
+    groups: ["chat", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
+    environments: [localEnvironment, daytonaWarmEnvironment], tasks: chatHardeningTasks, expectedMatrixSize: 18,
+    excludedExecutionIds: ["runner-codex", "runner-acpx-claude"].flatMap(profile =>
+      ["stop-startup-new-resume", "hire-delegate-reuse", "blocked-status-review"].map(task => `agent-chat-hardening.${profile}.daytona.${task}`)),
+    definitionMetadata: { version: 4, permissions: "production-defaults", instructions: "production", grading: "durable-state-and-source-evidence", scheduling: "explicit-only", restartMemory: "required-after-restart", statusEvidence: "structured-current-blocker-and-active-run-count", readOnlyState: "public-mutation-contract-and-relations" },
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {

@@ -1,4 +1,5 @@
 import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
+import { waitForWarmAttachmentReadiness } from "./warm-attachment-readiness.js";
 import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
@@ -3670,34 +3671,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // same budget here so a transient tunnel reconnect cannot trip the shorter
     // generic command timeout and replace an otherwise healthy warm runner.
     const reconnectGraceMs = this.options.runnerReconnectGraceMs ?? 5_000;
-    const deadline = Date.now() + reconnectGraceMs;
-    let consecutiveReadyProbes = 0;
-    let lastBlockers: unknown = null;
-    while (Date.now() < deadline) {
-      await this.#awaitWarmRunnerConnection(deadline);
-      const snapshot = await this.#commandResult(
+    await waitForWarmAttachmentReadiness({
+      graceMs: reconnectGraceMs,
+      waitForConnection: (deadline) => this.#awaitWarmRunnerConnection(deadline),
+      snapshot: (deadline) => this.#commandResult(
         "session.snapshot",
         {
           quiesceForWarmAttach: true,
         },
         deadline,
-      );
-      lastBlockers = snapshot.warmAttachBlockers;
-      if (snapshot.warmAttachReady === true) {
-        consecutiveReadyProbes += 1;
-        // A second barrier prevents a provider frame emitted immediately after
-        // its terminal notification from racing the authority rotation. Each
-        // snapshot wakes runnerd, polls the provider, and drains the preceding
-        // durable event prefix before the next probe.
-        if (consecutiveReadyProbes >= 2) return;
-      } else {
-        consecutiveReadyProbes = 0;
-      }
-      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 25));
-    }
-    throw new Error(
-      `native_runner_warm_attachment_not_quiescent: ${JSON.stringify(lastBlockers)}`,
-    );
+      ),
+      onBlocked: (blockers) => this.#diagnostic(`warm attachment awaiting quiescence: ${JSON.stringify(blockers)}`),
+    });
   }
 
   async #awaitWarmRunnerConnection(deadline: number): Promise<void> {
