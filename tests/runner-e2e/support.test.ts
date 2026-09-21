@@ -1343,10 +1343,26 @@ describe("persisted final response selection", () => {
 });
 
 describe("warm continuity grading scope", () => {
-  it("checks workspace bytes and lifecycle without grading exact response formatting", () => {
+  it("checks workspace bytes, lifecycle, and ordered turn markers without exact response formatting", () => {
     const execution = runnerMatrix.find((cell) => cell.task.flow === "warm_three_turn")!;
     const matchers = execution.task.buildMatchers("test-nonce", execution);
-    expect(matchers.filter((matcher) => matcher.kind.startsWith("message_"))).toEqual([]);
+    expect(matchers).toContainEqual({
+      kind: "message_occurrences", expected: "PAPERCLIP_E2E_WARM_T1_test-nonce", count: 1,
+    });
+    expect(matchers).toContainEqual({
+      kind: "message_occurrences", expected: "PAPERCLIP_E2E_WARM_T2_test-nonce", count: 1,
+    });
+    expect(matchers).toContainEqual({
+      kind: "message_occurrences", expected: "PAPERCLIP_E2E_WARM_T3_test-nonce", count: 1,
+    });
+    expect(matchers).toContainEqual({
+      kind: "message_ordered",
+      expected: [
+        "PAPERCLIP_E2E_WARM_T1_test-nonce",
+        "PAPERCLIP_E2E_WARM_T2_test-nonce",
+        "PAPERCLIP_E2E_WARM_T3_test-nonce",
+      ],
+    });
     expect(matchers).toContainEqual({
       kind: "file_exact", path: "daytona-warm-test-nonce.txt",
       expected: "T1-test-nonce\nT2-test-nonce\nT3-test-nonce\n",
@@ -1354,5 +1370,29 @@ describe("warm continuity grading scope", () => {
     expect(matchers).toContainEqual({ kind: "issue_status", expected: "done" });
     const hello = runnerMatrix.find((cell) => cell.task.id === "hello-complete")!;
     expect(hello.task.buildMatchers("test-nonce", hello).some((matcher) => matcher.kind === "message_exact")).toBe(true);
+  });
+
+  it("accepts warm-turn prose while rejecting missing, duplicate, or out-of-order markers", async () => {
+    const execution = runnerMatrix.find((cell) => cell.task.flow === "warm_three_turn")!;
+    const matchers = execution.task.buildMatchers("test-nonce", execution)
+      .filter((matcher) => matcher.kind.startsWith("message_"));
+    const passing = await evaluateMatchers(matchers, {
+      message: [
+        "Turn one is complete: PAPERCLIP_E2E_WARM_T1_test-nonce.",
+        "Turn two is complete: PAPERCLIP_E2E_WARM_T2_test-nonce.",
+        "Turn three is complete: PAPERCLIP_E2E_WARM_T3_test-nonce.",
+      ].join("\n"),
+    });
+    expect(passing.every((result) => result.passed)).toBe(true);
+
+    const invalidMessages = [
+      "PAPERCLIP_E2E_WARM_T1_test-nonce PAPERCLIP_E2E_WARM_T1_test-nonce PAPERCLIP_E2E_WARM_T2_test-nonce PAPERCLIP_E2E_WARM_T3_test-nonce",
+      "PAPERCLIP_E2E_WARM_T1_test-nonce PAPERCLIP_E2E_WARM_T3_test-nonce",
+      "PAPERCLIP_E2E_WARM_T3_test-nonce PAPERCLIP_E2E_WARM_T2_test-nonce PAPERCLIP_E2E_WARM_T1_test-nonce",
+    ];
+    for (const message of invalidMessages) {
+      const results = await evaluateMatchers(matchers, { message });
+      expect(results.some((result) => !result.passed)).toBe(true);
+    }
   });
 });

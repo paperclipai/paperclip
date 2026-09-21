@@ -850,8 +850,13 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
   ],
   buildMatchers(nonce, execution) {
     // Workspace persistence is the oracle for this story. Exact response text
-    // is tested by hello/continuation cases and must not mask a valid workspace.
+    // formatting must not mask a valid workspace, but every warm turn still
+    // needs one visible marker in chronological order. Surrounding provider
+    // prose is allowed; the occurrence and order matchers grade only markers.
+    const markers = ([1, 2, 3] as const).map((turn) => warmTurnMarker(turn, nonce));
     return [
+      ...markers.map((marker) => ({ kind: "message_occurrences" as const, expected: marker, count: 1 })),
+      { kind: "message_ordered" as const, expected: markers },
       {
         kind: "file_exact",
         path: `daytona-warm-${nonce}.txt`,
