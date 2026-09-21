@@ -189,6 +189,15 @@ describe("Connectors landing page", () => {
     return client;
   }
 
+  it("shows retirement guidance before paused state for an obsolete Composio account", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "old-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "old-app", enabled: false, healthStatus: "error", transport: "rest_api", config: { sourceTemplateKey: "composio", connectionMethodKey: "api-key" } })] });
+    await renderBrowse();
+    expect(container.textContent).toContain("Retired");
+    expect(container.textContent).toContain("Add a new Composio MCP connection");
+    expect(container.textContent).not.toContain("Paused");
+  });
+
   it("hides cached MCP aggregators until enabled and preserves saved MCP connections", async () => {
     const providers = ["zapier", "arcade", "composio", "executor"];
     listGalleryMock.mockResolvedValue({ apps: [...providers, "notion"].map(getAppStoreDefinition) });

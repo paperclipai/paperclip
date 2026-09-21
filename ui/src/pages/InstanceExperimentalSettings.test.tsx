@@ -214,7 +214,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await renderPage();
     const selector = 'button[aria-label="Toggle MCP aggregators experimental setting"]';
     expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).toContain("legacy Composio connections are unchanged");
+    expect(container.textContent).toContain("Existing MCP connections keep running.");
     for (const enabled of [true, false]) {
       await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
       await flushReact();

@@ -1,3 +1,4 @@
+import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppWindow, Cloud, Loader2, ShieldAlert, ShieldCheck, ShieldQuestion, Trash2 } from "lucide-react";
@@ -56,7 +57,7 @@ const BROWSE_HREF = "/apps";
 type StatusFilter = "all" | "attention";
 
 type AppStatus = {
-  label: "Healthy" | "Needs attention" | "Paused" | "Not connected";
+  label: "Healthy" | "Needs attention" | "Paused" | "Not connected" | "Retired";
   tone: "connected" | "attention" | "paused" | "not_connected";
 };
 
@@ -80,6 +81,7 @@ type AppRow = {
  * pill's `attention` tone and the row highlight are now the *same* predicate.
  */
 function statusFor(application: ToolApplication, connections: ToolConnection[]): AppStatus {
+  if (connections.some(isRetiredComposioConnection)) return { label: "Retired", tone: "attention" };
   if (connections.length === 0) {
     return { label: "Not connected", tone: "not_connected" };
   }
@@ -410,6 +412,7 @@ export function Connections() {
                   const { application, connection, status } = row;
                   const attention = rowNeedsAttention(row);
                   const hint =
+                    connection && isRetiredComposioConnection(connection) ? RETIRED_COMPOSIO_MESSAGE :
                     status.tone === "attention"
                       ? connection?.authKind === "oauth"
                         ? "Reconnect required — sign in again to restore access."
@@ -426,6 +429,7 @@ export function Connections() {
                     : `/apps/app/${application.id}/permissions`;
                   const actionLabel = !connection
                     ? "Connect"
+                    : connection && isRetiredComposioConnection(connection) ? "Review"
                     : status.tone === "attention"
                       ? "Reconnect"
                       : "Permissions";

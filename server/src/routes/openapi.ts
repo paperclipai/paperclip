@@ -10352,13 +10352,6 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
-  method: "get",
-  path: "/api/tool-connections/{connectionId}/services",
-  tags: ["tool-access"],
-  summary: "List the broker services behind a tool connection",
-});
-
-registerCurrentRoute({
   method: "post",
   path: "/api/tool-connections/{connectionId}/railway/ssh",
   tags: ["tool-access"],
@@ -10373,27 +10366,6 @@ registerCurrentRoute({
     409: r.conflict,
     422: r.unprocessable,
   },
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/tool-connections/{connectionId}/services/{toolkitSlug}/connect",
-  tags: ["tool-access"],
-  summary: "Start a broker service connection for a toolkit",
-});
-
-registerCurrentRoute({
-  method: "get",
-  path: "/api/tool-connections/{connectionId}/services/{toolkitSlug}/status",
-  tags: ["tool-access"],
-  summary: "Poll the connection status of a broker service",
-});
-
-registerCurrentRoute({
-  method: "delete",
-  path: "/api/tool-connections/{connectionId}/services/{toolkitSlug}",
-  tags: ["tool-access"],
-  summary: "Disconnect a broker service from a tool connection",
 });
 
 registerCurrentRoute({

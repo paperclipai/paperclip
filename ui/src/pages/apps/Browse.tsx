@@ -1,3 +1,4 @@
+import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
 import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -162,6 +163,9 @@ function additionalConnectionHref(
 }
 
 function connectionState(connection: ToolConnection): ConnectionState {
+  if (isRetiredComposioConnection(connection)) {
+    return { kind: "attention", label: "Retired", message: RETIRED_COMPOSIO_MESSAGE };
+  }
   if (connection.status === "draft") {
     return {
       kind: "draft",

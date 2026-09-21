@@ -232,7 +232,7 @@ import {
   ToolRuntimeSupervisorError,
 } from "./tool-runtime-supervisor.js";
 import { listConnectionLifecycleEvents } from "./tool-connection-activity.js";
-import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "./retired-composio.js";
+import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
 import {
   appWithPaperclipCloudConnectorAvailability,
   paperclipCloudConnectorCapabilitiesFromEnv,

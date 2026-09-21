@@ -1,4 +1,4 @@
-import { isRemoteMcpConnectorId, isRemoteMcpConnectorMethod } from "@paperclipai/shared";
+import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE, isRemoteMcpConnectorId, isRemoteMcpConnectorMethod } from "@paperclipai/shared";
 import { RemoteMcpManagement } from "@/features/connections/remote-mcp/RemoteMcpManagement";
 import { remoteMcpProviders } from "@/features/connections/remote-mcp/providers";
 import { ManagedAiConnectionDetails } from "@/components/ai-connections/ManagedAiConnectionDetails";
@@ -54,6 +54,7 @@ import { RailwayAccessPanel } from "./app-detail/RailwayAccessPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import {
   ReconnectCard,
+  DangerZone,
   connectionAddress,
   connectionTransportLabel,
 } from "./app-detail/AdvancedPanel";
@@ -502,6 +503,23 @@ export function AppDetail({ renderActions, onReconnect }: {
         </Button>
       </div>
     );
+  }
+
+  if (isRetiredComposioConnection(connection)) {
+    return <div className="max-w-4xl space-y-6 pb-12">
+      <h1 className="text-xl font-semibold">{appName}</h1>
+      <section role="status" className="space-y-3 rounded-lg border border-border bg-muted p-4">
+        <h2 className="text-sm font-semibold">Connection retired</h2>
+        <p className="text-sm text-muted-foreground">{RETIRED_COMPOSIO_MESSAGE}</p>
+        <p className="text-sm text-muted-foreground">Remove each obsolete connection separately. Removing this one does not remove other connections.</p>
+        <Button variant="outline" onClick={() => navigate("/apps/connect?source=composio")}>Add Composio MCP connection</Button>
+      </section>
+      {grantsQuery.data?.capabilities.canConfigure === true && <DangerZone
+        appName={appName}
+        removing={disconnectRemote.isPending}
+        onRemove={() => disconnectRemote.mutate()}
+      />}
+    </div>;
   }
 
   const aiGrantRevoked = connection.connectionPurpose === "ai"

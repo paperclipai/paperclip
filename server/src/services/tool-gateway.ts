@@ -122,7 +122,7 @@ import {
   type ToolRuntimeSlotView,
 } from "./tool-runtime-supervisor.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
-import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "./retired-composio.js";
+import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
 import {
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
