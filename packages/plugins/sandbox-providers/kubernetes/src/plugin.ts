@@ -28,7 +28,11 @@ import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./ad
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
-import { resolveSandboxApiVersion, SANDBOX_GROUP } from "./sandbox-api-version.js";
+import {
+  isSandboxApiVersion,
+  resolveSandboxApiVersion,
+  SANDBOX_GROUP,
+} from "./sandbox-api-version.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
@@ -372,9 +376,8 @@ const plugin = definePlugin({
     // The Sandbox API version this cluster serves. Resolved once here so the
     // manifest and every ownerReference that points at it agree, and so an
     // unsupported cluster fails with a clear message before anything is created.
-    const sandboxApiVersion = isSandboxCrBackend
-      ? `${SANDBOX_GROUP}/${await resolveSandboxApiVersion(clients)}`
-      : "batch/v1";
+    const sandboxVersion = isSandboxCrBackend ? await resolveSandboxApiVersion(clients) : null;
+    const sandboxApiVersion = sandboxVersion ? `${SANDBOX_GROUP}/${sandboxVersion}` : "batch/v1";
 
     const manifest = isSandboxCrBackend
       ? buildSandboxCrManifest({
@@ -462,6 +465,9 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+      // Recorded so release and destroy delete the Sandbox with the version
+      // this lease was created with, even when discovery is unreachable then.
+      sandboxApiVersion: sandboxVersion,
       scopedNetworkPolicyName,
       scopedNetworkEgress,
       // Native file sync streams over a pod exec; only the sandbox-cr backend
@@ -537,6 +543,9 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
+      sandboxApiVersion: isSandboxApiVersion(params.leaseMetadata?.sandboxApiVersion)
+        ? params.leaseMetadata.sandboxApiVersion
+        : null,
       scopedNetworkPolicyName:
         typeof params.leaseMetadata?.scopedNetworkPolicyName === "string"
           ? params.leaseMetadata.scopedNetworkPolicyName
@@ -607,7 +616,9 @@ const plugin = definePlugin({
     readySandboxesByLease.delete(params.providerLeaseId);
 
     try {
-      await releaseOrchestrator.release(clients, namespace, params.providerLeaseId);
+      await releaseOrchestrator.release(clients, namespace, params.providerLeaseId, {
+        apiVersion: params.leaseMetadata?.sandboxApiVersion,
+      });
     } catch (err) {
       // If the resource is already gone (404), that's fine.
       const code = (err as { code?: number; statusCode?: number }).code
@@ -658,6 +669,7 @@ const plugin = definePlugin({
       backend: leaseBackend,
       podName,
       secretName,
+      apiVersion: params.leaseMetadata?.sandboxApiVersion,
     });
   },
 

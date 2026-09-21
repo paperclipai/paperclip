@@ -25,6 +25,7 @@ import type { KubeClients } from "./kube-client.js";
 import type { SandboxOrchestrator, SandboxStatus } from "./sandbox-orchestrator.js";
 import {
   resolveSandboxApiVersion,
+  resolveSandboxApiVersionsForCleanup,
   SANDBOX_GROUP,
   SANDBOX_PLURAL,
 } from "./sandbox-api-version.js";
@@ -38,6 +39,16 @@ export class SandboxCrTimeoutError extends Error {
     );
     this.name = "SandboxCrTimeoutError";
   }
+}
+
+/**
+ * True when a Kubernetes API error means "not found" (HTTP 404). Declared here
+ * rather than imported from the lease-lifecycle module, which imports this one.
+ */
+function isNotFoundError(err: unknown): boolean {
+  const code = (err as { code?: number; statusCode?: number }).code
+    ?? (err as { code?: number; statusCode?: number }).statusCode;
+  return code === 404;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -227,15 +238,32 @@ export async function deleteSandboxCr(
   clients: KubeClients,
   namespace: string,
   name: string,
+  options: { apiVersion?: unknown } = {},
 ): Promise<void> {
-  await clients.custom.deleteNamespacedCustomObject({
-    group: SANDBOX_GROUP,
-    version: await resolveSandboxApiVersion(clients),
-    namespace,
-    plural: SANDBOX_PLURAL,
-    name,
-    propagationPolicy: "Foreground",
-  });
+  const versions = await resolveSandboxApiVersionsForCleanup(clients, options.apiVersion);
+  let lastError: unknown;
+  let deleted = false;
+  for (const version of versions) {
+    try {
+      await clients.custom.deleteNamespacedCustomObject({
+        group: SANDBOX_GROUP,
+        version,
+        namespace,
+        plural: SANDBOX_PLURAL,
+        name,
+        propagationPolicy: "Foreground",
+      });
+      deleted = true;
+      break;
+    } catch (err) {
+      // A 404 means the resource is not there under this version: either it is
+      // already gone, or the cluster does not serve this version at all. Both
+      // cases are worth the next candidate rather than a failure.
+      if (isNotFoundError(err)) continue;
+      lastError = err;
+    }
+  }
+  if (!deleted && lastError) throw lastError;
 }
 
 /**

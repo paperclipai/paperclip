@@ -75,6 +75,56 @@ describe("createSandboxCr", () => {
   });
 });
 
+describe("deleteSandboxCr — cleanup must not depend on discovery", () => {
+  function failingDiscovery<T extends object>(clients: T): T {
+    return {
+      ...clients,
+      apis: { getAPIVersions: vi.fn().mockRejectedValue(new Error("discovery unavailable")) },
+    };
+  }
+
+  it("uses the version recorded on the lease and never asks discovery", async () => {
+    const del = vi.fn().mockResolvedValue({});
+    const clients = failingDiscovery({ custom: { deleteNamespacedCustomObject: del } });
+
+    await deleteSandboxCr(clients as never, "ns", "pc-abc", { apiVersion: "v1alpha1" });
+
+    expect(del).toHaveBeenCalledOnce();
+    expect(del).toHaveBeenCalledWith(expect.objectContaining({ version: "v1alpha1" }));
+    expect((clients as { apis: { getAPIVersions: ReturnType<typeof vi.fn> } }).apis.getAPIVersions)
+      .not.toHaveBeenCalled();
+  });
+
+  it("still deletes when discovery fails and the lease carries no version", async () => {
+    const del = vi.fn().mockResolvedValue({});
+    const clients = failingDiscovery({ custom: { deleteNamespacedCustomObject: del } });
+
+    await deleteSandboxCr(clients as never, "ns", "pc-abc");
+
+    expect(del).toHaveBeenCalledOnce();
+    expect(del).toHaveBeenCalledWith(expect.objectContaining({ version: "v1beta1" }));
+  });
+
+  it("tries the older version when the newer one reports the resource is not there", async () => {
+    const notFound = Object.assign(new Error("not found"), { code: 404 });
+    const del = vi.fn().mockRejectedValueOnce(notFound).mockResolvedValueOnce({});
+    const clients = failingDiscovery({ custom: { deleteNamespacedCustomObject: del } });
+
+    await deleteSandboxCr(clients as never, "ns", "pc-abc");
+
+    expect(del).toHaveBeenCalledTimes(2);
+    expect(del.mock.calls.map((call) => call[0].version)).toEqual(["v1beta1", "v1alpha1"]);
+  });
+
+  it("reports a real failure after every candidate version was tried", async () => {
+    const del = vi.fn().mockRejectedValue(Object.assign(new Error("forbidden"), { code: 403 }));
+    const clients = failingDiscovery({ custom: { deleteNamespacedCustomObject: del } });
+
+    await expect(deleteSandboxCr(clients as never, "ns", "pc-abc")).rejects.toThrow("forbidden");
+    expect(del).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("getSandboxCrStatus", () => {
   it("maps phase=Ready to SandboxStatus.phase=Running with active=1", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Ready"));
