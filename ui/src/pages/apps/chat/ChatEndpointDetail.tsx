@@ -1,3 +1,8 @@
+import { defaultSlackAppName } from "./slack-app-name";
+import { SlackAvatarSettings } from "./SlackAvatarStep";
+import { agentsApi } from "@/api/agents";
+import { agentAvatarUrl } from "@/lib/agent-avatar-url";
+import { resolveAgentAppearance } from "@paperclipai/shared";
 import { EmailEndpointSettings } from "./EmailEndpointSetup";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -343,6 +348,11 @@ function Settings({
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [messageCopied, setMessageCopied] = useState(false);
+  const avatarAgent = useQuery({
+    queryKey: queryKeys.agents.detail(endpoint.assignedAgentId),
+    queryFn: () => agentsApi.get(endpoint.assignedAgentId, endpoint.companyId),
+    enabled: endpoint.provider === "slack",
+  });
   const mentionMessage = `@${(endpoint.botUsername ?? endpoint.botLabel ?? endpoint.assignedAgentName).replace(/^@/, "")} you there?`;
   const resourcesQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.resources(endpointId),
@@ -398,6 +408,15 @@ function Settings({
             }}>{messageCopied ? <Check className="size-4" /> : <Copy className="size-4" />}</Button>
           </div>
         </div>
+      )}
+      {endpoint.provider === "slack" && (
+        avatarAgent.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading agent avatar…</p>
+          : avatarAgent.isError ? <p role="alert" className="text-sm text-destructive">Couldn’t load the agent’s avatar. <button className="underline" onClick={() => void avatarAgent.refetch()}>Try again</button></p>
+          : <SlackAvatarSettings
+              agentName={avatarAgent.data?.name ?? endpoint.assignedAgentName}
+              appName={endpoint.setup?.slackApp?.appName ?? defaultSlackAppName(avatarAgent.data?.name ?? endpoint.assignedAgentName)}
+              avatarUrl={agentAvatarUrl(resolveAgentAppearance(avatarAgent.data?.appearance, endpoint.assignedAgentId), 512, 1, "rest")}
+            />
       )}
       {endpoint.provider === "telegram" && (
         <div className="space-y-2">

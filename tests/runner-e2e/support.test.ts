@@ -18,7 +18,7 @@ import {
 } from "./harness-env.js";
 import { runnerExecutionById, runnerMatrix } from "./catalog.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
-import { evaluateMatchers } from "./matchers.js";
+import { evaluateMatchers, persistedFinalRunMessage } from "./matchers.js";
 import {
   assertSecretFree,
   findSecretLeak,
@@ -1308,5 +1308,26 @@ describe("runner E2E macOS shared-memory cleanup", () => {
         creatorPid: 52172,
       },
     ]);
+  });
+});
+
+
+describe("persisted final response selection", () => {
+  const comments = [
+    { id: "attachment-comment", body: "Prepared file for this response.", createdByRunId: "run-1" },
+    { id: "reply", body: "FINAL", createdByRunId: "run-1" },
+    { id: "other-run", body: "unrelated", createdByRunId: "run-2" },
+  ];
+  const run = { id: "run-1", resultJson: { presentationDecision: { commentId: "reply" } } };
+  it("grades the real final comment independently from an attachment's preparation comment", () => {
+    expect(persistedFinalRunMessage(comments, run)).toBe("FINAL");
+  });
+  it("fails closed when the selected final comment is missing or belongs to another run", () => {
+    expect(persistedFinalRunMessage(comments.slice(0, 1), run)).toBe("");
+    expect(persistedFinalRunMessage(comments, { ...run, resultJson: { presentationDecision: { commentId: "other-run" } } })).toBe("");
+  });
+  it("keeps legacy fallback and does not replace absent visible text with a summary", () => {
+    expect(persistedFinalRunMessage(comments, { id: "run-1" })).toBe("Prepared file for this response.\nFINAL");
+    expect(persistedFinalRunMessage([], { id: "run-1", resultJson: { summary: "FINAL" } })).toBe("");
   });
 });

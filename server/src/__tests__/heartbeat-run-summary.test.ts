@@ -902,6 +902,35 @@ describe("projectHistoricalHeartbeatRunComment", () => {
 });
 
 describe("findHeartbeatRunCompletionComment", () => {
+  it.each(["applied", "duplicate"])("does not let a %s file-preparation receipt hide the final reply", (disposition) => {
+    const prepared = { id: "prepared-comment", body: "Prepared Continuity file for this response." };
+    const explicit = { id: "explicit-comment", body: "An intentional agent reply." };
+    const resultJson = {
+      semanticToolReceipts: {
+        file: {
+          operationId: "register_deliverable",
+          result: {
+            commandId: "deliverable-prepared:attachment-1",
+            disposition,
+            attachmentId: "attachment-1",
+            entityRefs: ["attachment-1", "work-product-1", prepared.id],
+          },
+        },
+      },
+    };
+    const existingComment = findHeartbeatRunCompletionComment([prepared], resultJson);
+    expect(existingComment).toBeNull();
+    expect(resolveHeartbeatRunResponse({
+      resultJson,
+      existingComment,
+      finalAgentMessage: { text: "PAPERCLIP_E2E_WARM_T3", sourceEventId: "final-event", channel: "final" },
+    })).toMatchObject({ text: "PAPERCLIP_E2E_WARM_T3", decision: { commentAction: "create" } });
+    // A final reply already materialized on a retry keeps precedence.
+    expect(findHeartbeatRunCompletionComment([prepared, explicit], resultJson)).toEqual(explicit);
+    // The body alone does not mark an ordinary agent comment as generated.
+    expect(findHeartbeatRunCompletionComment([prepared], {})).toEqual(prepared);
+  });
+
   it("does not let semantic progress satisfy the final comment", () => {
     const progress = { id: "progress-comment" };
     const final = { id: "final-comment" };

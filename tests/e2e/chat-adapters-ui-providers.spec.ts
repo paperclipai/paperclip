@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 
 import {
@@ -237,6 +238,16 @@ test.describe.serial("native chat adapter UI", () => {
         await expect(page.getByRole("heading", { name: "Verify Slack connection" })).toBeVisible();
         await expect(page.getByText("Slack needs to confirm that it can reach your Paperclip instance.")).toBeVisible();
         mock.setWebhookVerified();
+        await expect(page.getByRole("heading", { name: "Give Maya a face in Slack" })).toBeVisible();
+        const downloadEvent = page.waitForEvent("download");
+        await page.getByRole("link", { name: "Download avatar" }).click();
+        const download = await downloadEvent;
+        expect(download.suggestedFilename()).toBe("maya-paperclip-avatar.png");
+        const png = await readFile((await download.path())!);
+        expect(png.subarray(1, 4).toString()).toBe("PNG");
+        expect(png.readUInt32BE(16)).toBe(512);
+        expect(png.readUInt32BE(20)).toBe(512);
+        await page.getByRole("button", { name: "I’ve uploaded the avatar" }).click();
         await expect(page.getByRole("heading", { name: "Connect your Slack account" })).toBeVisible();
         await expect(page.getByText("/maya-public connect", { exact: true })).toBeVisible();
         await page.getByRole("button", { name: "Link Test operator to my Paperclip account" }).click();
@@ -318,6 +329,13 @@ test.describe.serial("native chat adapter UI", () => {
         await expect(page.getByText("@maya-paperclip you there?", { exact: true })).toBeVisible();
         await expect(page.getByRole("button", { name: "Copy message" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Allowed Channels" })).toBeVisible();
+        const avatarSection = page.getByRole("region", { name: "Slack avatar" });
+        await expect(avatarSection.getByRole("link", { name: "Download avatar" })).toBeVisible();
+        await avatarSection.getByText("How to upload in Slack", { exact: true }).click();
+        await expect(avatarSection.getByRole("link", { name: "Open Slack app Settings" })).toBeVisible();
+        const settingsDownloadEvent = page.waitForEvent("download");
+        await avatarSection.getByRole("link", { name: "Download avatar" }).click();
+        expect((await settingsDownloadEvent).suggestedFilename()).toBe("maya-paperclip-avatar.png");
       }
 
       await expect(
