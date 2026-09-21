@@ -43,6 +43,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { writeDevServerListenerRecord } from "./dev-server-status.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
@@ -999,6 +1000,20 @@ async function startServerWithDatabaseTeardown(
     });
   });
   startupListenerBound = true;
+
+  // Tell the dev supervisor where this process actually landed. It computes the
+  // port it expects us to request, but `detectPort` above may have moved us to
+  // the next free one, and a supervisor probing the wrong port is inert
+  // (TES-2189).
+  if (
+    writeDevServerListenerRecord({
+      port: listenPort,
+      pid: process.pid,
+      boundAt: new Date().toISOString(),
+    })
+  ) {
+    logger.debug(`Published dev-server listener record (port=${listenPort})`);
+  }
 
   try {
     const result = await workspaceOperationService(db as any)

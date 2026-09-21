@@ -15,15 +15,25 @@ import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshot
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
 import {
+  readDevServerListenerRecord,
   readDevServerRestartRequest,
+  removeDevServerListenerRecord,
   removeDevServerRestartRequest,
 } from "../server/src/dev-server-status.ts";
 import {
   findAdoptableLocalService,
+  isPidAlive,
+  listLocalServiceRegistryRecords,
   removeLocalServiceRegistryRecord,
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "../server/src/services/local-service-supervisor.ts";
+import { resolveRequestedDevServerPort } from "./dev-runner-port.ts";
+import {
+  findConflictingDevSupervisor,
+  formatConflictingDevSupervisorMessage,
+  shouldReportHealthProbeFailure,
+} from "./dev-runner-supervision.ts";
 
 // Keep these values local so the dev runner can boot from the server package's
 // tsx context without requiring workspace package resolution first.
@@ -97,6 +107,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
+  ".paperclip/dev-server-listener.json",
   ".paperclip/dev-server-restart-request.json",
   ".paperclip/dev-server-status.json",
 ]);
@@ -217,7 +228,13 @@ if (tailscaleAuth || bindMode) {
   console.log("[paperclip] dev mode: local_trusted (default)");
 }
 
-const serverPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
+// Resolve the port exactly the way server/src/config.ts does, including the
+// repository's .paperclip/config.json. Reading only PORT here left the
+// supervisor probing 3100 while its child bound the configured port, which
+// silently killed both restart paths (TES-2189).
+const serverPort = resolveRequestedDevServerPort({ env, startDir: repoRoot });
+let observedListenPort: number | null = null;
+let consecutiveHealthProbeFailures = 0;
 const devService = createDevServiceIdentity({
   mode,
   forwardedArgs: dataDir ? [...forwardedArgs, `--data-dir=${dataDir}`] : forwardedArgs,
@@ -236,6 +253,33 @@ if (existingRunner) {
     `[paperclip] ${devService.serviceName} already running (pid ${existingRunner.pid}${typeof existingRunner.metadata?.childPid === "number" ? `, child ${existingRunner.metadata.childPid}` : ""})`,
   );
   process.exit(0);
+}
+
+// The adoption check above keys on the port this runner *believes* it will
+// use, so two supervisors that disagree about the port miss each other and
+// then share one repo-level status file. Ownership of a checkout is what
+// matters, so check that directly (TES-2189).
+const conflictingSupervisor = findConflictingDevSupervisor({
+  records: (await listLocalServiceRegistryRecords({ profileKind: "paperclip-dev" })).map(
+    (record) => ({
+      serviceKey: record.serviceKey,
+      serviceName: record.serviceName,
+      pid: record.pid,
+      repoRoot:
+        typeof record.metadata?.repoRoot === "string" ? record.metadata.repoRoot : record.cwd,
+      port: record.port,
+      startedAt: record.startedAt,
+    }),
+  ),
+  repoRoot,
+  currentPid: process.pid,
+  isPidAlive,
+});
+if (conflictingSupervisor) {
+  console.error(
+    formatConflictingDevSupervisorMessage({ conflict: conflictingSupervisor, repoRoot }),
+  );
+  process.exit(1);
 }
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
@@ -333,6 +377,7 @@ function clearDevServerStatus() {
   if (mode !== "dev") return;
   rmSync(devServerStatusFilePath, { force: true });
   rmSync(devServerRestartRequestFilePath, { force: true });
+  removeDevServerListenerRecord(env);
 }
 
 function getDevServerRestartRequest() {
@@ -673,8 +718,31 @@ async function scanForBackendChanges() {
   }
 }
 
-async function getDevHealthPayload() {
-  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`, {
+/**
+ * The port the child is actually listening on.
+ *
+ * The child publishes this after it binds, because a busy configured port
+ * sends it to the next free one. Fall back to the requested port only until
+ * that record appears.
+ */
+function resolveHealthProbePort() {
+  const listener = readDevServerListenerRecord(env);
+  if (listener && isPidAlive(listener.pid)) {
+    if (listener.port !== observedListenPort) {
+      observedListenPort = listener.port;
+      if (listener.port !== serverPort) {
+        console.log(
+          `[paperclip] dev server bound port ${listener.port} (requested ${serverPort}); supervising ${listener.port}`,
+        );
+      }
+    }
+    return listener.port;
+  }
+  return observedListenPort ?? serverPort;
+}
+
+async function getDevHealthPayload(port: number) {
+  const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
     headers: devServerStatusToken ? { [devServerStatusTokenHeader]: devServerStatusToken } : undefined,
   });
   if (!response.ok) {
@@ -703,6 +771,10 @@ async function stopChildForRestart() {
     return await waitForChildExit();
   } finally {
     clearTimeout(killTimer);
+    // Do not carry the outgoing child's port into the next one; the
+    // replacement republishes its own as soon as it binds.
+    removeDevServerListenerRecord(env);
+    observedListenPort = null;
   }
 }
 
@@ -755,9 +827,22 @@ async function maybeAutoRestartChild() {
 
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
+  const probePort = resolveHealthProbePort();
   try {
-    health = await getDevHealthPayload();
-  } catch {
+    health = await getDevHealthPayload(probePort);
+    consecutiveHealthProbeFailures = 0;
+  } catch (error) {
+    // A supervisor that cannot reach its own child can neither auto-restart on
+    // backend changes nor service a restart request. Saying so is the only way
+    // that state is visible from outside (TES-2189).
+    consecutiveHealthProbeFailures += 1;
+    if (shouldReportHealthProbeFailure(consecutiveHealthProbeFailures)) {
+      process.stderr.write(
+        `[paperclip] cannot reach the dev server at http://127.0.0.1:${probePort}/api/health `
+          + `after ${consecutiveHealthProbeFailures} attempts; restarts are stalled `
+          + `(${error instanceof Error ? error.message : String(error)})\n`,
+      );
+    }
     restartInFlight = false;
     return;
   }

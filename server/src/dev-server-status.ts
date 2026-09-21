@@ -52,6 +52,12 @@ export type DevServerRestartRequest = {
   previousServerIdentity?: string;
 };
 
+export type DevServerListenerRecord = {
+  port: number;
+  pid: number;
+  boundAt: string;
+};
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -241,6 +247,87 @@ export function removeDevServerRestartRequest(
     }
     throw error;
   }
+}
+
+export function getDevServerListenerFilePath(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const statusFilePath = env.PAPERCLIP_DEV_SERVER_STATUS_FILE?.trim();
+  if (!statusFilePath) return null;
+  return path.join(path.dirname(statusFilePath), "dev-server-listener.json");
+}
+
+/**
+ * Record the port the server actually bound, for its supervisor to read.
+ *
+ * The dev runner computes the port it *expects* the child to use, but the
+ * server falls back to the next free port when the configured one is busy
+ * (`detectPort` in server/src/index.ts). The supervisor never learned about
+ * that hop, so it health-probed a port nobody listened on and quietly stopped
+ * being able to restart anything (TES-2189). Publishing the port is
+ * best-effort by design: failing to write it must never take the server down.
+ */
+export function writeDevServerListenerRecord(
+  record: DevServerListenerRecord,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const filePath = getDevServerListenerFilePath(env);
+  if (!filePath) return false;
+
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    writeFileSync(tempPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+    renameSync(tempPath, filePath);
+    return true;
+  } catch {
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      // The temp file may never have been created.
+    }
+    return false;
+  }
+}
+
+export function readDevServerListenerRecord(
+  env: NodeJS.ProcessEnv = process.env,
+): DevServerListenerRecord | null {
+  const filePath = getDevServerListenerFilePath(env);
+  if (!filePath || !existsSync(filePath)) return null;
+
+  try {
+    if (statSync(filePath).size > MAX_PERSISTED_DEV_SERVER_STATUS_BYTES) return null;
+    const value = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+    const { port, pid } = value;
+    if (
+      typeof port !== "number"
+      || !Number.isInteger(port)
+      || port <= 0
+      || port > 65535
+      || typeof pid !== "number"
+      || !Number.isInteger(pid)
+      || pid <= 0
+    ) {
+      return null;
+    }
+    return {
+      port,
+      pid,
+      boundAt:
+        typeof value.boundAt === "string" ? value.boundAt : new Date(0).toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function removeDevServerListenerRecord(
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const filePath = getDevServerListenerFilePath(env);
+  if (!filePath) return;
+  rmSync(filePath, { force: true });
 }
 
 function normalizeStringArray(value: unknown): string[] {
