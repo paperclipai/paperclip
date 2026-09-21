@@ -198,6 +198,28 @@ describeEmbeddedPostgres("heartbeat taskless run admission", () => {
     return runId;
   }
 
+  // Some wake paths record the issue as `taskId` rather than `issueId`. A run
+  // bound that way is still bound: admitting it is not the overlap this rule
+  // guards against, and deferring it would strand real work behind a timer.
+  async function insertQueuedTaskKeyedRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+  }) {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      responsibleUserId: "responsible-user",
+      contextSnapshot: { taskId: input.issueId, wakeReason: "issue_assigned" },
+    });
+    return runId;
+  }
+
   async function readRun(runId: string) {
     return db
       .select({
@@ -292,6 +314,25 @@ describeEmbeddedPostgres("heartbeat taskless run admission", () => {
       startedAt: null,
     });
     expect(await countRunning()).toBe(1);
+  }, 15_000);
+
+  it("admits a queued run that names the issue as taskId while a bound run is live", async () => {
+    const { companyId, agentId, issueId } = await insertAgentAndIssue();
+    await insertRunningRun({ companyId, agentId, issueId });
+    const taskKeyedRunId = await insertQueuedTaskKeyedRun({
+      companyId,
+      agentId,
+      issueId,
+    });
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    await heartbeat.resumeQueuedRuns();
+
+    // Read straight after the pass: the bound run is live and the slot is free,
+    // so this pass is the one that decides. Waiting would let a stale-run sweep
+    // clear the live run and admit it on a later pass, which proves nothing.
+    expect((await readRun(taskKeyedRunId))?.status).not.toBe("queued");
+    expect(await countRunning()).toBe(2);
   }, 15_000);
 
   it("still admits an issue-bound run while an issue-bound run is live", async () => {

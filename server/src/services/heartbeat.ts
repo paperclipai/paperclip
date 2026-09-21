@@ -16859,6 +16859,18 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
+  // A run is bound to an issue when its context carries the issue as either
+  // `issueId` or `taskId`; both spellings are in use, which is why the rest of
+  // this file resolves a run's issue the same way. Reading only one of them
+  // would classify a bound run as taskless and defer it as if it were a timer
+  // wake.
+  function readRunIssueId(contextSnapshot: unknown) {
+    const context = parseObject(contextSnapshot);
+    return (
+      readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId)
+    );
+  }
+
   // Admission has to know *what* the running runs are working on, not only how
   // many there are: every run of an agent resolves the same workspace
   // directory, so a run with no issue context can duplicate and overwrite the
@@ -19735,9 +19747,7 @@ export function heartbeatService(
       // taskless runs queued: the run-drain path re-enters admission when the
       // bound run finishes, so they are deferred, not dropped.
       const hasIssueBoundRunningRun = runningRuns.some((run) =>
-        Boolean(
-          readNonEmptyString(parseObject(run.contextSnapshot).issueId),
-        ),
+        Boolean(readRunIssueId(run.contextSnapshot)),
       );
 
       const queuedRuns = await db
@@ -19835,9 +19845,7 @@ export function heartbeatService(
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const queuedIssueId = readNonEmptyString(
-          parseObject(queuedRun.contextSnapshot).issueId,
-        );
+        const queuedIssueId = readRunIssueId(queuedRun.contextSnapshot);
         if (hasIssueBoundLiveRun && !queuedIssueId) continue;
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
         if (claimed) {
