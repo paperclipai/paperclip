@@ -220,6 +220,27 @@ describeEmbeddedPostgres("heartbeat taskless run admission", () => {
     expect(await countRunning()).toBe(1);
   }, 10_000);
 
+  it("admits the taskless queued run once the issue-bound run finishes", async () => {
+    const { companyId, agentId, issueId } = await insertAgentAndIssue();
+    const boundRunId = await insertRunningRun({ companyId, agentId, issueId });
+    const tasklessRunId = await insertQueuedTasklessRun({ companyId, agentId });
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    await heartbeat.resumeQueuedRuns();
+    expect((await readRun(tasklessRunId))?.status).toBe("queued");
+
+    // The bound run drains. Deferral has to be a deferral: the queued taskless
+    // run must be claimed on the next admission pass, not stranded.
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, boundRunId));
+
+    await heartbeat.resumeQueuedRuns();
+    const tasklessRun = await waitForRunToLeaveQueued(tasklessRunId);
+    expect(tasklessRun?.status).not.toBe("queued");
+  }, 15_000);
+
   it("admits the taskless queued run when no issue-bound run is live", async () => {
     const { companyId, agentId } = await insertAgentAndIssue();
     await insertRunningRun({ companyId, agentId });
