@@ -172,7 +172,16 @@ workflows that explicitly supply their own pack do not need this Dockerfile
 addition. Remote native ACPX/OpenCode bootstrap remains a separate Runner
 prerequisite; no production runtime flags or deployment are changed.
 
-The replacement qualification will exercise the existing native Codex path
-on the dedicated QA tenant using an image without the additional provider
-pack. Results will be recorded with their source revision and real task, run,
-and GitHub check links.
+The hosted native Codex replacement qualification is currently blocked: the
+dedicated QA tenant has only an Anthropic managed AI connection, and no
+approved staging OpenAI connection was available. No new hosted Codex run or
+no-pack deployment is claimed. Focused GitHub regressions and the existing
+native Codex bootstrap tests pass; these do not substitute for a real provider
+execution. The current PR keeps standard Cloud image packaging unchanged.
+
+Master subsequently claimed migration 0282 for Slack communication guidance.
+Regenerated the GitHub schema delta as 0283 and made it safe to reapply when
+preview tables already exist. A disposable PostgreSQL regression verifies
+that replay preserves the existing relation and constraint identities. The
+fleet migration-history preflight still governs upgrades from older preview
+images; this change does not bypass that protection.

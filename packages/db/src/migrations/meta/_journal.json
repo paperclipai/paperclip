@@ -1968,6 +1968,13 @@
       "when": 1790004509370,
       "tag": "0282_colossal_shocker",
       "breakpoints": true
+    },
+    {
+      "idx": 283,
+      "version": "7",
+      "when": 1790018362070,
+      "tag": "0283_jittery_psynapse",
+      "breakpoints": true
     }
   ]
 }
