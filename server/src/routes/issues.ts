@@ -5345,13 +5345,16 @@ export function issueRoutes(
         return true;
       }
       if (issue.status === "in_progress") {
-        // Run/checkout ownership stays assignee-scoped even though writes are
-        // open, so this lock clears on its own — the copy routes to comments.
+        // Deliberately a *status* check, not a run check. An assignee is idle
+        // between heartbeats but still owns its in-progress work, and a
+        // heartbeatRuns lookup here would open a mutation window in every one
+        // of those gaps. The trade is that this never clears on its own, so
+        // the copy must not promise a retry — it routes to comments instead.
         return denyIssueWrite(
           req,
           res,
           issue,
-          "issue_write_assignee_run_lock",
+          "issue_write_assignee_in_progress_lock",
           {
             issueId: issue.id,
             assigneeAgentId: issue.assigneeAgentId,
@@ -5359,8 +5362,8 @@ export function issueRoutes(
           },
         );
       }
-      // Past the run lock the issue is idle, so only channels that have not
-      // adopted the default-open rule still refuse another agent's issue.
+      // Past the in-progress lock the issue is unclaimed, so only channels that
+      // have not adopted the default-open rule still refuse another agent's issue.
       if (!options.allowVisibleIssueWrite) {
         res.status(403).json({
           error: "Agent cannot mutate another agent's issue",

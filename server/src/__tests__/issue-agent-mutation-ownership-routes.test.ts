@@ -853,9 +853,9 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await sendRequest(await createApp(peerActor()));
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
-    // Plan §6: the run lock names the boundary and routes to the open channel.
-    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
-    expect(res.body.details.boundary).toBe("Run checkout lock");
+    // Plan §6: the lock names the boundary and routes to the open channel.
+    expect(res.body.details.code).toBe("issue_write_assignee_in_progress_lock");
+    expect(res.body.details.boundary).toBe("In-progress assignee ownership");
     expect(res.body.error).toContain("Who can act:");
     expect(res.body.error).toContain("Comment instead");
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();

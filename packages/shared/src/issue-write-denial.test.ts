@@ -97,14 +97,29 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.sanctionedPath).toContain("onBehalfOfUserId");
   });
 
-  it("routes a run lock to comments, which stay open", () => {
-    const copy = describeIssueWriteDenial("issue_write_assignee_run_lock", {
+  it("routes an in-progress lock to comments, which stay open", () => {
+    const copy = describeIssueWriteDenial("issue_write_assignee_in_progress_lock", {
       assigneeLabel: "CodexCoder",
     });
     expect(copy.status).toBe(409);
-    expect(copy.tone).toBe("lock");
+    expect(copy.tone).toBe("boundary");
     expect(copy.sanctionedPath).toContain("Comment instead");
     expect(copy.sanctionedPath).toContain("CodexCoder");
+  });
+
+  // The guard behind this code reads issue.status only — it never consults the
+  // runs table — so copy that claims a live run, or tells the caller to wait
+  // for one to release, sends them into a retry loop that cannot succeed.
+  it("does not claim a live run or promise the lock will release", () => {
+    const copy = describeIssueWriteDenial("issue_write_assignee_in_progress_lock", {
+      assigneeLabel: "CodexCoder",
+      issueIdentifier: "TASK-2193",
+    });
+    const prose = `${copy.title} ${copy.description} ${copy.whoCanAct} ${copy.sanctionedPath}`;
+    expect(prose).not.toMatch(/run is live|live run|wait for the run|release the lock/i);
+    expect(copy.description).toContain("in progress");
+    expect(copy.description).toContain("TASK-2193");
+    expect(copy.sanctionedPath).toContain("Do not retry");
   });
 
   it("reuses responsible-user ceiling copy and keeps on-behalf-of terminology", () => {
@@ -177,7 +192,7 @@ describe("issueWriteDenialResponse", () => {
   });
 
   it("uses the status each code declares", () => {
-    expect(issueWriteDenialResponse("issue_write_assignee_run_lock").status).toBe(409);
+    expect(issueWriteDenialResponse("issue_write_assignee_in_progress_lock").status).toBe(409);
     expect(issueWriteDenialResponse("issue_write_attribution_spoof_rejected").status).toBe(422);
     expect(issueWriteDenialResponse("issue_write_not_visible").status).toBe(403);
   });

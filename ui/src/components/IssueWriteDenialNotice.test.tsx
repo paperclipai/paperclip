@@ -31,20 +31,24 @@ describe("IssueWriteDenialNotice", () => {
     expect(html).toContain("child issue");
   });
 
-  it("tones a run lock as transient rather than a permission wall", () => {
+  // The in-progress lock used to render amber with a clock, which reads as
+  // "wait". Nothing releases it but the assignee, so it gets the wall tone and
+  // points at the channel that is actually open.
+  it("tones an in-progress lock as a wall and routes to comments", () => {
     const lock = renderToStaticMarkup(
       <IssueWriteDenialNotice
-        code="issue_write_assignee_run_lock"
+        code="issue_write_assignee_in_progress_lock"
         context={{ assigneeLabel: "CodexCoder" }}
       />,
     );
-    expect(lock).toContain('data-denial-tone="lock"');
+    expect(lock).toContain('data-denial-tone="boundary"');
     expect(lock).toContain("Comment instead");
+    expect(lock).not.toContain("wait for the run");
 
-    const wall = renderToStaticMarkup(
-      <IssueWriteDenialNotice code="issue_write_not_visible" />,
+    const cap = renderToStaticMarkup(
+      <IssueWriteDenialNotice code="cross_issue_influence_cap_exceeded" />,
     );
-    expect(wall).toContain('data-denial-tone="boundary"');
+    expect(cap).toContain('data-denial-tone="cap"');
   });
 
   it("shows the cap and attempt count on a rate denial", () => {

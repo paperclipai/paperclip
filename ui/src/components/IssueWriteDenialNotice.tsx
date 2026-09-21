@@ -21,7 +21,6 @@ import { cn } from "../lib/utils";
 
 const TONE_ICONS: Record<IssueWriteDenialTone, typeof ShieldX> = {
   boundary: ShieldX,
-  lock: Clock,
   cap: Clock,
   attribution: UserCog,
 };
@@ -33,13 +32,6 @@ const TONE_CLASSES: Record<IssueWriteDenialTone, { surface: string; icon: string
       "border-red-300/70 bg-red-50/90 text-red-950 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100",
     icon: "text-red-600 dark:text-red-300",
     action: "text-red-800 dark:text-red-200",
-  },
-  // Run-lifecycle machinery that clears on its own; not a permission problem.
-  lock: {
-    surface:
-      "border-amber-300/70 bg-amber-50/90 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
-    icon: "text-amber-600 dark:text-amber-300",
-    action: "text-amber-800 dark:text-amber-200",
   },
   // A rate backstop — the write was allowed, the budget was not.
   cap: {

@@ -28,7 +28,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_actor_class_excluded",
   "issue_write_responsible_user_ceiling",
   "issue_write_responsible_user_unavailable",
-  "issue_write_assignee_run_lock",
+  "issue_write_assignee_in_progress_lock",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
@@ -38,10 +38,12 @@ export type IssueWriteDenialCode = (typeof ISSUE_WRITE_DENIAL_CODES)[number];
 
 /**
  * Why the write stopped, which drives icon + colour. `boundary` is an
- * authorization wall, `lock` is run-lifecycle machinery that will clear on its
- * own, `cap` is a rate backstop, and `attribution` is a rejected spoof.
+ * authorization wall, `cap` is a rate backstop, and `attribution` is a rejected
+ * spoof. There is deliberately no "wait and retry" tone: a tone that promises
+ * the denial clears on its own has to be backed by something that actually
+ * releases, and nothing on the issue-write path is.
  */
-export type IssueWriteDenialTone = "boundary" | "lock" | "cap" | "attribution";
+export type IssueWriteDenialTone = "boundary" | "cap" | "attribution";
 
 export interface IssueWriteDenialCopy {
   code: IssueWriteDenialCode;
@@ -203,22 +205,29 @@ export function describeIssueWriteDenial(
       };
     }
 
-    case "issue_write_assignee_run_lock":
+    // This fires on the issue's *status*, not on a live run. The guard reads
+    // `status === "in_progress"` and nothing else, so an assignee that is idle
+    // between heartbeats still holds it. Say so: the previous copy promised a
+    // run would release the lock, and a caller that believed it burned 25
+    // minutes retrying a 409 that could never clear on its own.
+    case "issue_write_assignee_in_progress_lock":
       return {
         code,
         status: 409,
-        tone: "lock",
-        boundary: "Run checkout lock",
-        title: "Another agent's run owns this task",
+        tone: "boundary",
+        boundary: "In-progress assignee ownership",
+        title: "Another agent owns this task while it is in progress",
         description:
-          `${assignee} has ${issue} checked out and a run is live. Checkout and run ` +
-          `ownership stay assignee-scoped even though writes are open, so field edits ` +
-          `belong to the run that holds the lock until it finishes.`,
+          `${issue} is in progress and assigned to ${assignee}. Field edits on an ` +
+          `in-progress task belong to its assignee even though writes are otherwise ` +
+          `open. This is a status check, not a live-run check — ${assignee} does not ` +
+          `have to be running for it to apply, and it holds until the status changes.`,
         whoCanAct:
-          `${assignee}'s live run, or an agent holding the manage-active-checkouts permission.`,
+          `${assignee}, or an agent holding the manage-active-checkouts permission.`,
         sanctionedPath:
           `Comment instead of patching — comments stay open and wake ${assignee} — or ` +
-          `wait for the run to release the lock and retry.`,
+          `ask ${assignee} to make the edit. Do not retry the same write: nothing ` +
+          `releases while the task is in progress.`,
       };
 
     case "cross_issue_influence_cap_exceeded": {

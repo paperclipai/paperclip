@@ -282,7 +282,7 @@ describe("external object routes", () => {
       .send({});
 
     expect(res.status).toBe(409);
-    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(res.body.details.code).toBe("issue_write_assignee_in_progress_lock");
     expect(mockExternalObjectsService.refreshIssueObjects).not.toHaveBeenCalled();
   });
 

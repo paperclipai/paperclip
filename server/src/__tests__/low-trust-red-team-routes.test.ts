@@ -1002,7 +1002,7 @@ describeEmbeddedPostgres(
         JSON.stringify(checkedOutPeerUpdate.body),
       ).toBe(409);
       expect(checkedOutPeerUpdate.body.details.code).toBe(
-        "issue_write_assignee_run_lock",
+        "issue_write_assignee_in_progress_lock",
       );
 
       const documentWrite = await request(standardApp)
@@ -1014,7 +1014,7 @@ describeEmbeddedPostgres(
         409,
       );
       expect(documentWrite.body.details.code).toBe(
-        "issue_write_assignee_run_lock",
+        "issue_write_assignee_in_progress_lock",
       );
 
       for (const closedParent of [
