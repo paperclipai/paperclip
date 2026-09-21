@@ -911,7 +911,7 @@ export async function expectSetupRail(page: Page) {
   const rail = page.getByRole("navigation", { name: "Connection setup progress" });
   await expect(rail).toBeVisible();
   const labels = new URL(page.url()).searchParams.get("provider") === "slack"
-    ? ["Choose agent", "Create Slack app", "Add credentials", "Verify Slack connection", "Connect your Slack account", "Try it"]
+    ? ["Choose agent", "Create Slack app", "Add credentials", "Verify Slack connection", "Add avatar", "Connect your Slack account", "Try it"]
     : ["Choose agent", "Connect provider", "Try it"];
   await expect(rail.getByRole("listitem")).toHaveCount(labels.length);
   for (const label of labels) {

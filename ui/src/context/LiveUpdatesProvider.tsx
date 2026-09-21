@@ -54,6 +54,8 @@ import { tryCreateWebSocket } from "../lib/websocket";
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
+const RUN_TOAST_MAX_AGE_MS = 5 * 60_000;
+const MAX_OBSERVED_RUN_OUTCOMES = 2000;
 const DISCONNECTED_POLL_INTERVAL_MS = 15_000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
@@ -1587,6 +1589,29 @@ function invalidateActivityQueries(
 interface ToastGate {
   cooldownHits: Map<string, number[]>;
   suppressUntil: number;
+  observedRunOutcomes: Set<string>;
+}
+
+function observeRunOutcome(gate: ToastGate, event: LiveEvent): boolean {
+  const payload = event.payload ?? {};
+  const runId = readString(payload.runId);
+  const status = readString(payload.status);
+  if (!runId || !status || !TERMINAL_RUN_STATUSES.has(status)) return false;
+  const key = `${event.companyId}:${runId}:${status}`;
+  const observed = gate.observedRunOutcomes.has(key);
+  // Refresh insertion order so repeated deliveries stay remembered even in a
+  // busy company. Remember suppressed outcomes too (visible task/reconnect).
+  gate.observedRunOutcomes.delete(key);
+  gate.observedRunOutcomes.add(key);
+  if (gate.observedRunOutcomes.size > MAX_OBSERVED_RUN_OUTCOMES) {
+    gate.observedRunOutcomes.delete(gate.observedRunOutcomes.values().next().value!);
+  }
+  // Use the two server timestamps: delivery time is not failure time. This
+  // also keeps historical failures quiet after a reload, without client clock
+  // skew hiding fresh failures. Missing timestamps retain legacy behavior.
+  const finishedAt = Date.parse(readString(payload.finishedAt) ?? "");
+  const deliveredAt = Date.parse(event.createdAt);
+  return observed || deliveredAt - finishedAt > RUN_TOAST_MAX_AGE_MS;
 }
 
 function shouldSuppressToast(gate: ToastGate, category: string): boolean {
@@ -1636,7 +1661,8 @@ function handleLiveEvent(
   // Resolve membership before terminal lifecycle patches remove live-run rows.
   const suppressRunToast =
     event.type === "heartbeat.run.status" &&
-    shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload);
+    (observeRunOutcome(gate, event) ||
+      shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload));
   const liveStatusPatch = readRunLiveStatusPatchFromPayload(
     payload,
     event.createdAt,
@@ -1837,6 +1863,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const gateRef = useRef<ToastGate>({
     cooldownHits: new Map(),
     suppressUntil: 0,
+    observedRunOutcomes: new Set(),
   });
   const pathnameRef = useRef(location.pathname);
   const { data: session, status: sessionStatus } = useQuery({
