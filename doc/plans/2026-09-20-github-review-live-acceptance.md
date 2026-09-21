@@ -159,3 +159,20 @@ The dedicated Cloud tenant served application and matching preview migrator sour
 After restoring automatic push reviews, PR #6 head `b82e329e3f1d22ec174498795e1a6ca09a778fc2` rendered only uppercase OOGABOOGA. Hosted run `51101ba7-f67d-46f5-9a38-ee9ad6485a78` generated/built/rendered both stories, used the configured case-sensitive word match, and failed check `106098111113` at 3/5. The downloaded ZIP artifact `82f2f9ec-28a1-4497-acdd-593a5327b2f3` independently confirmed the script, visible text, and screenshots.
 
 Inspecting the live check exposed a navigation defect: absent `details_url`, GitHub used the App registration homepage, still pointing to the earlier local tunnel. Check publications now explicitly point to the underlying task on the trusted current runtime origin, or the connector review page while no task exists. Regression assertions cover pending, failing, passing, a renamed vanity hostname, and a gated pre-task check.
+
+
+### 2026-09-21: remove the Cloud provider-pack packaging change
+
+The Cloud-only provider-pack layer added during the earlier native Claude QA
+work is removed from this feature. It added approximately 497 MiB compressed
+to the published QA image. Historical Claude staging runs above used that
+packaging and do not establish remote native Claude support on the standard
+Cloud image. Existing direct adapters, the native Codex backend, and E2E
+workflows that explicitly supply their own pack do not need this Dockerfile
+addition. Remote native ACPX/OpenCode bootstrap remains a separate Runner
+prerequisite; no production runtime flags or deployment are changed.
+
+The replacement qualification will exercise the existing native Codex path
+on the dedicated QA tenant using an image without the additional provider
+pack. Results will be recorded with their source revision and real task, run,
+and GitHub check links.

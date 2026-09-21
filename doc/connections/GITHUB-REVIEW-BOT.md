@@ -32,9 +32,19 @@ required GitHub checks, read
 7. Configure access, event prompts, review behavior, and publication permissions.
    Save progress to resume later. The final mention test is optional.
 
-Hosted native runner images also need their build-owned provider pack. Setup
-verification checks runtime support and isolation; an actual test task proves
-that the selected AI provider can execute in that environment.
+GitHub review bots use the existing agent runtime; this connector does not add
+provider software to the Cloud server image. Codex with managed MCP tools and
+the native Runner Codex backend do not require a server-side remote provider
+pack. Remote native ACPX (including Claude) and OpenCode currently require an
+operator-supplied, build-owned provider pack configured through
+`PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH`; the standard Cloud server image
+does not supply one. A pack installed in the sandbox alone does not satisfy
+that existing runtime requirement. Treat that provider setup as a separate
+Runner prerequisite, not an automatic connector installation step.
+
+Setup verification checks tool/runtime support and isolation; an actual test
+task is still required to prove that the chosen provider can execute in the
+selected environment.
 
 ## Who can start work
 
