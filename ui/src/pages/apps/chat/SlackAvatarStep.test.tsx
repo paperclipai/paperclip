@@ -30,7 +30,7 @@ describe("Slack avatar download", () => {
     const createObjectURL = vi.fn(() => "blob:avatar");
     vi.stubGlobal("URL", class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = vi.fn(); });
     const downloaded: string[] = [];
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () { downloaded.push(this.download); });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) { downloaded.push(this.download); });
     const { node } = render(<SlackAvatarContent agentName="Maya" appName="Maya / App" avatarUrl="/api/agent-avatars/cap-v1/cherry-pop/rest.png?size=512&scale=1" />);
     const clickDownload = async () => {
       flushSync(() => node.querySelector('a[download]')!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })));
