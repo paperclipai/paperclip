@@ -65,12 +65,12 @@ let sentry: SentryBrowserModule | null = null;
  * — the session query can refetch and call this again, and a second call is
  * a no-op because a client is already started.
  */
-export function initBrowserErrorMonitoring(dsn: string): Promise<void> {
+export function initBrowserErrorMonitoring(dsn: string, environment?: string | null): Promise<void> {
   return enqueue(async () => {
     if (sentry) return;
     try {
       const Sentry = await import("@sentry/browser");
-      Sentry.init(buildBrowserSentryInitOptions(dsn));
+      Sentry.init(buildBrowserSentryInitOptions(dsn, environment));
       sentry = Sentry;
     } catch (err) {
       // The dynamic import or the init call failed. Fall through with a
@@ -152,9 +152,13 @@ export function captureBrowserException(error: unknown): void {
  * `@sentry/browser` module and assert the resolved integration list and the
  * captured-event shape against the true SDK, not a stand-in.
  */
-export function buildBrowserSentryInitOptions(dsn: string): BrowserSentryInitOptions {
+export function buildBrowserSentryInitOptions(
+  dsn: string,
+  environment?: string | null,
+): BrowserSentryInitOptions {
   return {
     dsn,
+    environment: environment ?? undefined,
     // Use the loaded bundle's build, even when the server has since deployed.
     release:
       typeof __PAPERCLIP_BUILD_COMMIT__ === "string"

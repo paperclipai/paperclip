@@ -111,11 +111,10 @@ describe("initBrowserErrorMonitoring", () => {
     const mocks = mockSentryPackage();
     const { initBrowserErrorMonitoring } = await importFreshSentry();
 
-    await initBrowserErrorMonitoring(DSN);
+    await initBrowserErrorMonitoring(DSN, "staging");
 
     expect(mocks.init).toHaveBeenCalledTimes(1);
-    const initOptions = mocks.init.mock.calls[0][0] as { dsn: string };
-    expect(initOptions.dsn).toBe(DSN);
+    expect(mocks.init.mock.calls[0][0]).toMatchObject({ dsn: DSN, environment: "staging" });
   });
 
   it("a second call starts no second client", async () => {
@@ -376,11 +375,14 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
    * adds no `beforeSend` of its own (see the "holds no beforeSend hook"
    * test above).
    */
-  async function initRealSentryForTest(onEvent: (event: Record<string, unknown>) => void) {
+  async function initRealSentryForTest(
+    onEvent: (event: Record<string, unknown>) => void,
+    environment?: string | null,
+  ) {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
     const Sentry = await import("@sentry/browser");
     Sentry.init({
-      ...buildBrowserSentryInitOptions(DSN),
+      ...buildBrowserSentryInitOptions(DSN, environment),
       transport: () => ({ send: async () => ({}), flush: async () => true }),
       beforeSend: (event) => {
         onEvent(event as unknown as Record<string, unknown>);
@@ -389,6 +391,25 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
     });
     return Sentry;
   }
+
+  it.each([
+    ["staging", "staging"],
+    ["production", "production"],
+    [null, "production"],
+    [undefined, "production"],
+  ])("emits environment %s as %s without page context", async (environment, expected) => {
+    let captured: Record<string, unknown> | null = null;
+    const Sentry = await initRealSentryForTest((event) => { captured = event; }, environment);
+    try {
+      Sentry.captureException(new Error("environment attribution check"));
+      await Sentry.flush(2000);
+      expect(captured).toMatchObject({ environment: expected });
+      expect(captured).not.toHaveProperty("request");
+      expect((captured as unknown as Record<string, unknown>).breadcrumbs).toBeUndefined();
+    } finally {
+      await Sentry.close();
+    }
+  });
 
   it("attaches the bundle release to an emitted event without page context", async () => {
     const commit = "0123456789abcdef0123456789abcdef01234567";

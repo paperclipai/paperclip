@@ -317,6 +317,22 @@ event. These pages run signed out:
 session response arrives is not captured. The gate opens only after the
 session query resolves.
 
+### Environment attribution
+
+Set `SENTRY_ENVIRONMENT` to the deployment environment, such as `staging`
+or `production`. The server SDK reads this value from its process environment.
+The authenticated session sends the same value in `sentryEnvironment`, and
+`SentryGate` passes it to the browser SDK. This is runtime configuration, so the
+same built image can report correctly in different environments. It does not
+infer an environment from the page URL or include a tenant identifier.
+
+When the variable is absent or empty, the session sends `null` and the browser
+keeps the SDK's default environment. The field is optional in the session
+schema so a newer browser can still read a response from an older server.
+A session refetch that changes the environment closes and restarts monitoring;
+signing out still closes it. The browser release continues to identify the
+loaded bundle, even if the server has since deployed another version.
+
 ### Privacy settings
 
 The feature uses built-in Sentry options only.
