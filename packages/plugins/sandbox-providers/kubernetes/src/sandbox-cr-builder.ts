@@ -115,9 +115,15 @@ export function buildSandboxCrManifest(
                 // export step of a run fails with "detected dubious ownership".
                 // Declare the mount as safe through the environment, which needs
                 // no write to a git config file.
-                { name: "GIT_CONFIG_COUNT", value: "1" },
-                { name: "GIT_CONFIG_KEY_0", value: "safe.directory" },
-                { name: "GIT_CONFIG_VALUE_0", value: WORKSPACE_MOUNT_PATH },
+                //
+                // `GIT_CONFIG_PARAMETERS` adds to the configuration git reads,
+                // so an adapter that supplies its own `GIT_CONFIG_COUNT` entries
+                // for credentials or URL rewriting keeps them. A fixed
+                // `GIT_CONFIG_COUNT` here would replace that whole set instead.
+                {
+                  name: "GIT_CONFIG_PARAMETERS",
+                  value: `'safe.directory=${WORKSPACE_MOUNT_PATH}'`,
+                },
               ],
               envFrom: [{ secretRef: { name: input.envSecretName } }],
               securityContext: {

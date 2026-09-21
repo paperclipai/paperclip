@@ -48,14 +48,23 @@ describe("buildJobManifest", () => {
     const job = buildJobManifest(baseInput);
     const env = job.spec.template.spec.containers[0].env as Array<{ name: string; value: string }>;
     const byName = Object.fromEntries(env.map((entry) => [entry.name, entry.value]));
-    expect(byName.GIT_CONFIG_COUNT).toBe("1");
-    expect(byName.GIT_CONFIG_KEY_0).toBe("safe.directory");
-    expect(byName.GIT_CONFIG_VALUE_0).toBe("/workspace");
-    expect(byName.GIT_CONFIG_VALUE_0).toBe(
-      job.spec.template.spec.containers[0].volumeMounts.find(
-        (mount: { name: string }) => mount.name === "workspace",
-      ).mountPath,
+    expect(byName.GIT_CONFIG_PARAMETERS).toBe("'safe.directory=/workspace'");
+    expect(byName.GIT_CONFIG_PARAMETERS).toBe(
+      `'safe.directory=${
+        job.spec.template.spec.containers[0].volumeMounts.find(
+          (mount: { name: string }) => mount.name === "workspace",
+        ).mountPath
+      }'`,
     );
+  });
+
+  it("adds to the git configuration instead of replacing an adapter's own GIT_CONFIG entries", () => {
+    const job = buildJobManifest(baseInput);
+    const env = job.spec.template.spec.containers[0].env as Array<{ name: string; value: string }>;
+    const names = env.map((entry) => entry.name);
+    expect(names).not.toContain("GIT_CONFIG_COUNT");
+    expect(names).not.toContain("GIT_CONFIG_KEY_0");
+    expect(names).not.toContain("GIT_CONFIG_VALUE_0");
   });
 
   it("wraps the entrypoint in tini for PID 1", () => {
