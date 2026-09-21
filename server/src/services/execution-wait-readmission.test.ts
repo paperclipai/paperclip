@@ -95,6 +95,10 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(runs[0].contextSnapshot).toMatchObject({ issueId: f.issueId });
     const [retired] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, parked.id));
     expect(retired.status).toBe("skipped");
+    // The replacement wake records the re-admission key. A later pass reads it
+    // as proof that this receipt was already handed to admission.
+    expect(await db.select().from(agentWakeupRequests).where(eq(
+      agentWakeupRequests.idempotencyKey, `execution-wait-readmit:${parked.id}`))).toHaveLength(1);
     // A second pass over the same task must not stack another run on top.
     await heartbeatService(db).readmitUnblockedExecutionWaits();
     expect(await queuedRuns(f.companyId)).toHaveLength(1);
@@ -123,6 +127,43 @@ const support = await getEmbeddedPostgresTestSupport();
     await makeDue(parked.id);
     await heartbeatService(db).readmitUnblockedExecutionWaits();
     expect(await queuedRuns(f.companyId)).toHaveLength(1);
+  });
+
+  it("does not start a second run when the retire is interrupted after admission", async () => {
+    const f = await seed();
+    const parked = await park(f);
+    await clearGate(f.sourceRunId);
+    await makeDue(parked.id);
+    // Stand in for a server that dies after admission commits but before the
+    // receipt is retired: the retire update fails, so the receipt stays held.
+    await db.execute(sql.raw(`create or replace function readmit_block_retire() returns trigger as $$
+      begin raise exception 'retire interrupted'; end; $$ language plpgsql`));
+    await db.execute(sql.raw(`create trigger readmit_block_retire before update on agent_wakeup_requests
+      for each row when (new.id = '${parked.id}'::uuid and new.status = 'skipped')
+      execute function readmit_block_retire()`));
+    await expect(heartbeatService(db).readmitUnblockedExecutionWaits()).rejects.toThrow();
+    await db.execute(sql.raw(`drop trigger readmit_block_retire on agent_wakeup_requests`));
+
+    const firstRuns = await queuedRuns(f.companyId);
+    expect(firstRuns).toHaveLength(1);
+    expect((await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, parked.id)))[0].status).toBe("deferred_issue_execution");
+
+    // The admitted run finishes, so no live run or execution lock hides the
+    // held receipt from the next pass.
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, firstRuns[0].id));
+    await makeDue(parked.id);
+    await heartbeatService(db).readmitUnblockedExecutionWaits();
+
+    // The replacement wake carries the re-admission key, so the held receipt is
+    // retired instead of producing a second run for the same wake.
+    expect(await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`,
+      eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+    expect((await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, parked.id)))[0].status).toBe("skipped");
   });
 
   it("refuses a task that changed hands between selection and admission", async () => {
