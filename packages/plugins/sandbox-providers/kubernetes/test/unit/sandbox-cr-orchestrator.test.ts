@@ -83,6 +83,16 @@ describe("deleteSandboxCr — cleanup must not depend on discovery", () => {
     };
   }
 
+  it("falls back to the other version when the recorded one is no longer served", async () => {
+    const notFound = Object.assign(new Error("not found"), { code: 404 });
+    const del = vi.fn().mockRejectedValueOnce(notFound).mockResolvedValueOnce({});
+    const clients = failingDiscovery({ custom: { deleteNamespacedCustomObject: del } });
+
+    await deleteSandboxCr(clients as never, "ns", "pc-abc", { apiVersion: "v1alpha1" });
+
+    expect(del.mock.calls.map((call) => call[0].version)).toEqual(["v1alpha1", "v1beta1"]);
+  });
+
   it("uses the version recorded on the lease and never asks discovery", async () => {
     const del = vi.fn().mockResolvedValue({});
     const clients = failingDiscovery({ custom: { deleteNamespacedCustomObject: del } });

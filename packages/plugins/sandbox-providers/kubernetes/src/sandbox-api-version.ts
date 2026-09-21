@@ -84,25 +84,28 @@ export function isSandboxApiVersion(value: unknown): value is SandboxApiVersion 
 }
 
 /**
- * The versions a cleanup call may try, newest first.
+ * The versions a cleanup call may try, best candidate first.
  *
  * Cleanup must never depend on discovery. A release or destroy call builds a
  * fresh client set, so it cannot reuse the version cached during acquisition,
  * and a discovery endpoint that is unavailable or forbidden would otherwise
- * strand the sandbox, its pod and its Secret. So: use the version the caller
- * recorded on the lease when it has one, fall back to discovery, and fall back
- * again to every supported version when discovery itself fails.
+ * strand the sandbox, its pod and its Secret.
+ *
+ * The version recorded on the lease is therefore a preference, not the only
+ * candidate: a cluster upgraded between acquisition and cleanup no longer
+ * serves the recorded version, and stopping there would leave the resource
+ * behind. Every supported version stays in the list, so a delete that finds
+ * nothing under the first candidate still tries the rest.
  */
 export async function resolveSandboxApiVersionsForCleanup(
   clients: KubeClients,
   known?: unknown,
 ): Promise<SandboxApiVersion[]> {
-  if (isSandboxApiVersion(known)) return [known];
-  try {
-    return [await resolveSandboxApiVersion(clients)];
-  } catch {
-    return [...SUPPORTED_SANDBOX_VERSIONS];
-  }
+  const preferred = isSandboxApiVersion(known)
+    ? known
+    : await resolveSandboxApiVersion(clients).catch(() => null);
+  if (!preferred) return [...SUPPORTED_SANDBOX_VERSIONS];
+  return [preferred, ...SUPPORTED_SANDBOX_VERSIONS.filter((version) => version !== preferred)];
 }
 
 /** Test seam: drop a cached lookup so a test can resolve again. */
