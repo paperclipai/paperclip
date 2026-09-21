@@ -26,8 +26,20 @@ import {
   type StoryRun,
   type StoryIssue,
 } from "./everyday-observations.js";
+import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
 
 describe("everyday workflow grader and review timing", () => {
+  it("requires nonempty persisted source evidence", () => {
+    expect(hasPersistedSource(undefined)).toBe(false);
+    expect(hasPersistedSource(Buffer.alloc(0))).toBe(false);
+    expect(hasPersistedSource(Buffer.from("source"))).toBe(true);
+  });
+
+  it("requires an active run and saved source at the same Stop checkpoint", () => {
+    expect(isSavedSourceCheckpoint(false, Buffer.from("source"))).toBe(false);
+    expect(isSavedSourceCheckpoint(true, Buffer.alloc(0))).toBe(false);
+    expect(isSavedSourceCheckpoint(true, Buffer.from("source"))).toBe(true);
+  });
   it("uses base grading for review delivery and preserves late max-length cases", () => {
     expect(artifactGradeModeForPhase("reviewed-delivery")).toBe("base");
     expect(artifactGradeModeForPhase("delegated-delivery")).toBe("max-length");

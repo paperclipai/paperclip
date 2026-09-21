@@ -172,3 +172,10 @@ workspaces, task documents, and ordering. They pass through the normal sanitizer
 Screenshots are allowlisted to the exact disposable agent chat. Cleanup cancels
 all active runs in the isolated company, including handed-off work; usage from
 failed and cancelled runs must not disappear from campaign totals.
+
+
+Warm three-turn continuity grades the exact workspace file after each turn,
+task completion, and sandbox/session identity. It also requires a visible
+persisted final reply. It does not grade exact final-reply wording; the hello
+and continuation fixtures retain those exact-response checks. This separates
+workspace persistence failures from model response-format variance.

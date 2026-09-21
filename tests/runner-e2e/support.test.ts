@@ -18,7 +18,7 @@ import {
 } from "./harness-env.js";
 import { runnerExecutionById, runnerMatrix } from "./catalog.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
-import { evaluateMatchers } from "./matchers.js";
+import { evaluateMatchers, persistedFinalRunMessage } from "./matchers.js";
 import {
   assertSecretFree,
   findSecretLeak,
@@ -1308,5 +1308,41 @@ describe("runner E2E macOS shared-memory cleanup", () => {
         creatorPid: 52172,
       },
     ]);
+  });
+});
+
+describe("persisted final response selection", () => {
+  const comments = [
+    { id: "attachment", body: "Prepared file.", createdByRunId: "run-1" },
+    { id: "reply", body: "FINAL", createdByRunId: "run-1" },
+    { id: "other", body: "other run", createdByRunId: "run-2" },
+  ];
+  it("uses the persisted presentation comment for final response grading", () => {
+    expect(persistedFinalRunMessage(comments, {
+      id: "run-1",
+      resultJson: { presentationDecision: { commentId: "reply" } },
+    })).toBe("FINAL");
+  });
+  it("fails closed when the selected response is absent", () => {
+    expect(persistedFinalRunMessage(comments, {
+      id: "run-1",
+      resultJson: { presentationDecision: { commentId: "other" } },
+    })).toBe("");
+  });
+});
+
+
+describe("warm continuity grading scope", () => {
+  it("checks workspace bytes and lifecycle without grading exact response formatting", () => {
+    const execution = runnerMatrix.find((cell) => cell.task.flow === "warm_three_turn")!;
+    const matchers = execution.task.buildMatchers("test-nonce", execution);
+    expect(matchers.filter((matcher) => matcher.kind.startsWith("message_"))).toEqual([]);
+    expect(matchers).toContainEqual({
+      kind: "file_exact", path: "daytona-warm-test-nonce.txt",
+      expected: "T1-test-nonce\nT2-test-nonce\nT3-test-nonce\n",
+    });
+    expect(matchers).toContainEqual({ kind: "issue_status", expected: "done" });
+    const hello = runnerMatrix.find((cell) => cell.task.id === "hello-complete")!;
+    expect(hello.task.buildMatchers("test-nonce", hello).some((matcher) => matcher.kind === "message_exact")).toBe(true);
   });
 });
