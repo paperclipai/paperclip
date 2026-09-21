@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -306,14 +306,41 @@ describeEmbeddedPostgres("heartbeat taskless run admission", () => {
     const heartbeat = heartbeatService(db, { runtimeEnv: {} });
     await heartbeat.resumeQueuedRuns();
 
-    // Read straight after the pass, before the claimed run's process has had a
-    // chance to finish and re-enter admission through the drain path.
-    expect((await readRun(boundRunId))?.status).toBe("running");
-    expect(await readRun(tasklessRunId)).toMatchObject({
-      status: "queued",
-      startedAt: null,
-    });
-    expect(await countRunning()).toBe(1);
+    // One statement, so both rows describe the same instant. `resumeQueuedRuns`
+    // claims a run and then starts `executeRun` without awaiting it, so the bound
+    // run can reach a terminal status before any read that follows this pass.
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, [boundRunId, tasklessRunId]));
+    const boundRun = rows.find((row) => row.id === boundRunId) ?? null;
+    const tasklessRun = rows.find((row) => row.id === tasklessRunId) ?? null;
+
+    // The pass claimed the bound run. Assert that on `startedAt`, which the claim
+    // writes and nothing clears, rather than on `status === "running"`: the run is
+    // already executing in the background and may have finished by this read.
+    expect(boundRun?.status).not.toBe("queued");
+    expect(boundRun?.startedAt).not.toBeNull();
+
+    // The deferral must be observable without depending on how long that background
+    // execution takes. Waiting for quiescence would prove nothing — the taskless run
+    // is legitimately admitted once the bound run drains — so assert the ordering
+    // instead: it may only be admitted once the run it was deferred behind has
+    // finished. A guard that ignores runs claimed earlier in the same pass admits it
+    // while that run is still live, or before it finished.
+    if (tasklessRun?.startedAt) {
+      expect(boundRun?.finishedAt).not.toBeNull();
+      expect(tasklessRun.startedAt.getTime()).toBeGreaterThanOrEqual(
+        boundRun!.finishedAt!.getTime(),
+      );
+    } else {
+      expect(tasklessRun).toMatchObject({ status: "queued", startedAt: null });
+    }
   }, 15_000);
 
   it("admits a queued run that names the issue as taskId while a bound run is live", async () => {
