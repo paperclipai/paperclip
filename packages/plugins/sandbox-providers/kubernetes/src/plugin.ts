@@ -28,6 +28,7 @@ import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./ad
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
+import { resolveSandboxApiVersion, SANDBOX_GROUP } from "./sandbox-api-version.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
@@ -368,9 +369,16 @@ const plugin = definePlugin({
     // Pick the orchestrator and build the appropriate manifest based on backend.
     const isSandboxCrBackend = config.backend === "sandbox-cr";
     const orchestrator = isSandboxCrBackend ? sandboxCrOrchestrator : jobOrchestrator;
+    // The Sandbox API version this cluster serves. Resolved once here so the
+    // manifest and every ownerReference that points at it agree, and so an
+    // unsupported cluster fails with a clear message before anything is created.
+    const sandboxApiVersion = isSandboxCrBackend
+      ? `${SANDBOX_GROUP}/${await resolveSandboxApiVersion(clients)}`
+      : "batch/v1";
 
     const manifest = isSandboxCrBackend
       ? buildSandboxCrManifest({
+          apiVersion: sandboxApiVersion,
           namespace,
           sandboxName: jobName,
           adapterType: effectiveAdapterType,
@@ -407,7 +415,7 @@ const plugin = definePlugin({
         runId: params.runId,
         workloadName: jobName,
         ownerReference: {
-          apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+          apiVersion: sandboxApiVersion,
           kind: isSandboxCrBackend ? "Sandbox" : "Job",
           name: jobName,
           uid: ownerUid,
@@ -438,7 +446,7 @@ const plugin = definePlugin({
       secretName,
       runId: params.runId,
       ownerKind: isSandboxCrBackend ? "Sandbox" : "Job",
-      ownerApiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+      ownerApiVersion: sandboxApiVersion,
       ownerName: jobName,
       ownerUid,
       bootstrapToken,

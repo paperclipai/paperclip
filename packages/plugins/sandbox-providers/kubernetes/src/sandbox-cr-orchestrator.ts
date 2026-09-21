@@ -23,10 +23,13 @@
 
 import type { KubeClients } from "./kube-client.js";
 import type { SandboxOrchestrator, SandboxStatus } from "./sandbox-orchestrator.js";
+import {
+  resolveSandboxApiVersion,
+  SANDBOX_GROUP,
+  SANDBOX_PLURAL,
+} from "./sandbox-api-version.js";
 
-const SANDBOX_GROUP = "agents.x-k8s.io";
-const SANDBOX_VERSION = "v1alpha1";
-const SANDBOX_PLURAL = "sandboxes";
+
 
 export class SandboxCrTimeoutError extends Error {
   constructor(namespace: string, name: string, timeoutMs: number) {
@@ -101,7 +104,7 @@ export async function createSandboxCr(
 ): Promise<{ uid: string }> {
   const result = await clients.custom.createNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: await resolveSandboxApiVersion(clients),
     namespace,
     plural: SANDBOX_PLURAL,
     body: manifest,
@@ -118,7 +121,7 @@ export async function getSandboxCrStatus(
 ): Promise<SandboxStatus> {
   const result = await clients.custom.getNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: await resolveSandboxApiVersion(clients),
     namespace,
     plural: SANDBOX_PLURAL,
     name,
@@ -140,7 +143,7 @@ export async function findPodForSandbox(
   // Primary: read status.podName from the Sandbox CR
   const cr = await clients.custom.getNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: await resolveSandboxApiVersion(clients),
     namespace,
     plural: SANDBOX_PLURAL,
     name,
@@ -227,7 +230,7 @@ export async function deleteSandboxCr(
 ): Promise<void> {
   await clients.custom.deleteNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: await resolveSandboxApiVersion(clients),
     namespace,
     plural: SANDBOX_PLURAL,
     name,
@@ -259,7 +262,7 @@ export async function waitForSandboxReady(
   while (Date.now() < deadline) {
     const cr = await clients.custom.getNamespacedCustomObject({
       group: SANDBOX_GROUP,
-      version: SANDBOX_VERSION,
+      version: await resolveSandboxApiVersion(clients),
       namespace,
       plural: SANDBOX_PLURAL,
       name,
