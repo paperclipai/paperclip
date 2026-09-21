@@ -22,6 +22,8 @@ import {
 } from "../services/index.js";
 import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
 
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
 const RESUME_EXECUTABLE_STATUSES = ["todo", "in_progress", "in_review"];
 
@@ -43,11 +45,16 @@ async function waitForRunCancellationTasks(tasks: Promise<void>[]) {
   }
 }
 
-export function issueTreeControlRoutes(db: Db) {
+export function issueTreeControlRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
 
   async function resolveRootIssue(req: Request) {
     const rootIssueId = req.params.id as string;

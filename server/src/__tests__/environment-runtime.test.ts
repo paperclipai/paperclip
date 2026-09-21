@@ -494,6 +494,29 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     },
   );
 
+  it("reports an unwired manager separately from a stopped sandbox worker", async () => {
+    const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
+    const input = {
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    };
+    const runtimeWithoutManager = environmentRuntimeService(db);
+    await expect(runtimeWithoutManager.acquireRunLease(input))
+      .rejects.toThrow("sandbox plugin workers are unavailable in this server process");
+
+    const offlineManager = { isRunning: () => false, call: vi.fn() } as unknown as PluginWorkerManager;
+    const runtimeWithStoppedWorker = environmentRuntimeService(db, {
+      pluginWorkerManager: offlineManager,
+      pluginWorkerReadyTimeoutMs: 0,
+    });
+    await expect(runtimeWithStoppedWorker.acquireRunLease(input))
+      .rejects.toThrow("its worker is not running");
+    expect(offlineManager.call).not.toHaveBeenCalled();
+  });
+
   it("retains a successful reusable sandbox lease without stopping the provider resource", async () => {
     const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
     const workerManager = {
