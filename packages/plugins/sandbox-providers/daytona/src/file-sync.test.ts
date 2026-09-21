@@ -356,6 +356,88 @@ it.skipIf(!gnuTar)("extracts interleaved read-only skill directories with GNU ta
   }
 }, 30_000);
 
+it.skipIf(!gnuTar)("uploads gzip directory archives and preserves content, executable modes, and symlinks", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-daytona-gzip-dir-"));
+  const source = path.join(root, "source");
+  const remoteDir = path.join(root, "remote");
+  const target = path.join(remoteDir, "target");
+  const bin = path.join(root, "bin");
+  await fs.mkdir(path.join(source, "bin"), { recursive: true });
+  await fs.mkdir(remoteDir);
+  await fs.mkdir(bin);
+  await fs.symlink(gnuTar!, path.join(bin, "tar"));
+  await fs.writeFile(path.join(source, "bin", "tool.sh"), "#!/bin/sh\necho ok\n", { mode: 0o755 });
+  await fs.symlink("bin/tool.sh", path.join(source, "tool-link"));
+
+  try {
+    let uploadedArchiveBytes: Buffer | undefined;
+    const { sandbox } = createRealExecSandbox({
+      commandEnv: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      uploadOverride: async (uploads) => {
+        uploadedArchiveBytes = await fs.readFile(uploads[0]!.source);
+        for (const upload of uploads) await fs.copyFile(upload.source, upload.destination);
+        return true;
+      },
+    });
+
+    await performSyncIn({
+      sandbox: sandbox as never,
+      remoteDir,
+      timeoutSeconds: 30,
+      operations: [{
+        operationId: "gzip-directory",
+        files: [{ sourcePath: source, targetPath: target, kind: "directory" }],
+      }],
+    });
+
+    expect(uploadedArchiveBytes).toBeDefined();
+    expect(uploadedArchiveBytes!.subarray(0, 2)).toEqual(Buffer.from([0x1f, 0x8b]));
+    expect(await fs.readFile(path.join(target, "bin", "tool.sh"), "utf8")).toBe("#!/bin/sh\necho ok\n");
+    expect((await fs.stat(path.join(target, "bin", "tool.sh"))).mode & 0o777).toBe(0o755);
+    expect(await fs.readlink(path.join(target, "tool-link"))).toBe("bin/tool.sh");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it.skipIf(!gnuTar)("uploads and extracts a gzip empty directory archive", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-daytona-gzip-empty-"));
+  const source = path.join(root, "source");
+  const remoteDir = path.join(root, "remote");
+  const target = path.join(remoteDir, "target");
+  const bin = path.join(root, "bin");
+  await fs.mkdir(source);
+  await fs.mkdir(remoteDir);
+  await fs.mkdir(bin);
+  await fs.symlink(gnuTar!, path.join(bin, "tar"));
+
+  try {
+    let uploadedArchiveBytes: Buffer | undefined;
+    const { sandbox } = createRealExecSandbox({
+      commandEnv: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      uploadOverride: async (uploads) => {
+        uploadedArchiveBytes = await fs.readFile(uploads[0]!.source);
+        for (const upload of uploads) await fs.copyFile(upload.source, upload.destination);
+        return true;
+      },
+    });
+    await performSyncIn({
+      sandbox: sandbox as never,
+      remoteDir,
+      timeoutSeconds: 30,
+      operations: [{
+        operationId: "gzip-empty-directory",
+        files: [{ sourcePath: source, targetPath: target, kind: "directory" }],
+      }],
+    });
+    expect(uploadedArchiveBytes).toBeDefined();
+    expect(uploadedArchiveBytes!.subarray(0, 2)).toEqual(Buffer.from([0x1f, 0x8b]));
+    expect(await fs.readdir(target)).toEqual([]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 describe("daytona file-sync inbound zstd transport compression", () => {
   const cleanupDirs: string[] = [];
 
