@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
@@ -72,6 +73,8 @@ import {
   type ActivityPublication,
 } from "../activity-log.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
+import { publishLiveEvent } from "../live-events.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
@@ -5647,6 +5650,10 @@ export function recoveryService(
         errorCode:
           run.errorCode ??
           (terminalStatus === "interrupted" ? errorCode : null),
+        // Queue a durable status delivery, as setRunStatus does. The status
+        // delivery sweep retries it if the publish below does not reach a
+        // client (for example, the server stops before the publish).
+        executionStatusDeliveryId: randomUUID(),
         updatedAt: now,
       })
       .where(
@@ -5687,6 +5694,24 @@ export function recoveryService(
     // the stale lock below, so fire it and do not await it.
     void emitAgentTaskRun(db, updated);
     runningProcesses.delete(run.id);
+    // This path writes heartbeat_runs directly and not through heartbeat's
+    // setRunStatus, so it must announce the transition itself. Without this
+    // event, live-run views keep the run as live until they refetch. Use the
+    // same payload as setRunStatus, so terminal consumers also get finalText.
+    // A publish failure must not abort the sweep: the queued delivery above
+    // retries the event.
+    try {
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
+      });
+    } catch (error) {
+      logger.warn(
+        { err: error, runId: run.id },
+        "failed to publish run status after terminalizing orphaned run; the status delivery sweep retries it",
+      );
+    }
     // The run update above already committed the terminal status. The audit
     // event is best-effort: if the insert fails, the caller must still treat
     // the run as terminalized and clear the lock in the same sweep. So catch
