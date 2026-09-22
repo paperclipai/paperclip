@@ -743,10 +743,16 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0] ?? null);
       if (!company) throw notFound("Company not found");
       if (company.status === "paused") {
+        // A paused company is a stop of the whole company, and the pause can
+        // come from an operator as well as from a budget hard-stop. Callers
+        // must be able to tell the two apart without reading the company row
+        // again, because a second read can observe a later resume and turn a
+        // pause into a false budget verdict.
         return {
           scopeType: "company" as const,
           scopeId: companyId,
           scopeName: company.name,
+          cause: "company_paused" as const,
           reason:
             company.pauseReason === "budget"
               ? "Company is paused because its budget hard-stop was reached."
@@ -774,6 +780,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             scopeType: "company" as const,
             scopeId: companyId,
             scopeName: company.name,
+            cause: "budget_exhausted" as const,
             reason: "Company cannot start new work because its budget hard-stop is exceeded.",
           };
         }
@@ -784,6 +791,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           scopeType: "agent" as const,
           scopeId: agentId,
           scopeName: agent.name,
+          cause: "budget_exhausted" as const,
           reason: "Agent is paused because its budget hard-stop was reached.",
         };
       }
@@ -808,6 +816,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             scopeType: "agent" as const,
             scopeId: agentId,
             scopeName: agent.name,
+            cause: "budget_exhausted" as const,
             reason: "Agent cannot start because its budget hard-stop is still exceeded.",
           };
         }
@@ -849,6 +858,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             scopeType: "project" as const,
             scopeId: project.id,
             scopeName: project.name,
+            cause: "budget_exhausted" as const,
             reason: "Project cannot start work because its budget hard-stop is still exceeded.",
           };
         }
@@ -859,6 +869,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         scopeType: "project" as const,
         scopeId: project.id,
         scopeName: project.name,
+        cause: "budget_exhausted" as const,
         reason: "Project is paused because its budget hard-stop was reached.",
       };
     },
