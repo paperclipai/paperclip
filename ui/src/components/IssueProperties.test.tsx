@@ -130,8 +130,8 @@ vi.mock("../lib/assignees", () => ({
 }));
 
 vi.mock("./StatusIcon", () => ({
-  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
-    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
+  StatusIcon: ({ status, blockerAttention, className, glyphContainerClassName, size }: { status: string; blockerAttention?: Issue["blockerAttention"]; className?: string; glyphContainerClassName?: string; size?: string }) => (
+    <span className={className} data-glyph-container-class={glyphContainerClassName} data-testid="status-icon" data-size={size} data-status-icon-state={blockerAttention?.state}>{status}</span>
   ),
 }));
 
@@ -526,6 +526,12 @@ describe("IssueProperties", () => {
     expect(surface?.classList).toContain("pl-4");
     expect(surface?.querySelectorAll('[data-property-section="true"]').length).toBeGreaterThan(1);
     expect(surface?.querySelector('[data-property-value="true"]')).not.toBeNull();
+    const statusVisual = surface?.querySelector(
+      '[data-property-label="Status"] + [data-property-value="true"] [data-testid="status-icon"]',
+    );
+    expect(statusVisual).not.toBeNull();
+    expect(statusVisual?.getAttribute("data-size")).toBeNull();
+    expect(statusVisual?.getAttribute("data-glyph-container-class")).toContain("size-6");
     expect(surface?.querySelector('[data-property-section="true"] > div')?.classList)
       .toContain("text-muted-foreground/70");
     const projectLabel = surface?.querySelector('[data-property-label="Project"]');
