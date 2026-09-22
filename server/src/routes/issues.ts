@@ -13399,7 +13399,22 @@ export function issueRoutes(
         }
       }
 
-      if (assigneeWillChange && existing.assigneeAgentId) {
+      // The stop below exists to hand ownership to the successor run. A
+      // workflow-controlled transition that ends the stage on a principal
+      // which cannot execute -- the escalation a review stage reaches when its
+      // agent rounds run out -- starts no successor at all. Stopping there
+      // takes the stage's only live executor away and records the stop as
+      // `issue_reassigned`, which it is not: nothing took over from a run.
+      // Let the run end its own turn instead.
+      const handsStageToNonExecutingPrincipal =
+        transition.workflowControlledAssignment === true &&
+        nextAssigneeAgentId === null &&
+        nextAssigneeUserId !== null;
+      if (
+        assigneeWillChange &&
+        existing.assigneeAgentId &&
+        !handsStageToNonExecutingPrincipal
+      ) {
         await stopRunnerGoalForOwnershipChange({
           companyId: existing.companyId,
           issueId: existing.id,

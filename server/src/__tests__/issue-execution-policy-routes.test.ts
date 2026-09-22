@@ -53,10 +53,34 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockTxWrite = vi.hoisted(() => {
+  // The transactional write chain is awaited at several depths
+  // (`await tx.insert(..).values(..)`, `.. .values(..).returning(..)`), so the
+  // stub stays thenable and chainable at once and always resolves.
+  const result: Record<string, unknown> = {
+    then: (onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve(undefined).then(onFulfilled, onRejected),
+  };
+  result.returning = () => result;
+  result.onConflictDoNothing = () => result;
+  result.values = () => result;
+  result.set = () => result;
+  result.where = () => result;
+  result.from = () => result;
+  return result;
+});
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+  transaction: vi.fn(
+    async (callback: (tx: Record<string, unknown>) => Promise<unknown>) =>
+      callback({
+        select: mockDbSelect,
+        insert: () => mockTxWrite,
+        update: () => mockTxWrite,
+        delete: () => mockTxWrite,
+        execute: () => mockTxWrite,
+      }),
+  ),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -1204,6 +1228,175 @@ describe("issue execution policy routes", () => {
         entityId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         details: expect.not.objectContaining({ externalRef: expect.anything() }),
       }),
+    );
+  });
+
+  const REVIEWER_AGENT_ID = "33333333-3333-4333-8333-333333333333";
+  const IMPLEMENTER_AGENT_ID = "44444444-4444-4444-8444-444444444444";
+  const REVIEWER_RUN_ID = "66666666-6666-4666-8666-666666666666";
+  const REVIEW_STAGE_ID = "11111111-1111-4111-8111-111111111111";
+
+  function reviewStageIssue(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: REVIEWER_AGENT_ID,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      responsibleUserId: "99999999-9999-4999-8999-999999999999",
+      identifier: "PAP-1020",
+      title: "Review in progress",
+      executionRunId: REVIEWER_RUN_ID,
+      executionPolicy: normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            id: REVIEW_STAGE_ID,
+            type: "review",
+            participants: [{ type: "agent", agentId: REVIEWER_AGENT_ID }],
+          },
+        ],
+      }),
+      executionState: {
+        status: "pending",
+        currentStageId: REVIEW_STAGE_ID,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REVIEWER_AGENT_ID },
+        returnAssignee: { type: "agent", agentId: IMPLEMENTER_AGENT_ID },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 2,
+      },
+      ...overrides,
+    };
+  }
+
+  function stubReviewerComment() {
+    mockIssueService.addComment.mockResolvedValue({
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      body: "review verdict",
+      createdAt: new Date(),
+      authorAgentId: REVIEWER_AGENT_ID,
+      authorUserId: null,
+    });
+  }
+
+  function agentReviewerApp() {
+    return createApp({
+      type: "agent",
+      agentId: REVIEWER_AGENT_ID,
+      companyId: "company-1",
+      runId: REVIEWER_RUN_ID,
+    });
+  }
+
+  it("keeps the review stage's live run when it escalates the stage to a human", async () => {
+    const issue = reviewStageIssue();
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    stubReviewerComment();
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: REVIEWER_RUN_ID,
+      companyId: "company-1",
+      agentId: REVIEWER_AGENT_ID,
+      status: "running",
+      contextSnapshot: { issueId: issue.id },
+    });
+
+    const res = await request(await agentReviewerApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_progress", comment: "Third round of changes requested." });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.executionState).toMatchObject({
+      status: "pending",
+      currentStageId: REVIEW_STAGE_ID,
+      currentParticipant: { type: "user", userId: "99999999-9999-4999-8999-999999999999" },
+    });
+    expect(updatePatch.assigneeAgentId).toBeNull();
+    expect(updatePatch.assigneeUserId).toBe("99999999-9999-4999-8999-999999999999");
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("still stops the live run when the stage hands back to the return assignee", async () => {
+    const issue = reviewStageIssue({
+      executionState: {
+        status: "pending",
+        currentStageId: REVIEW_STAGE_ID,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REVIEWER_AGENT_ID },
+        returnAssignee: { type: "agent", agentId: IMPLEMENTER_AGENT_ID },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+      },
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    stubReviewerComment();
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: REVIEWER_RUN_ID,
+      companyId: "company-1",
+      agentId: REVIEWER_AGENT_ID,
+      status: "running",
+      contextSnapshot: { issueId: issue.id },
+    });
+    mockHeartbeatService.cancelRun.mockResolvedValue({ id: REVIEWER_RUN_ID, status: "cancelled" });
+
+    const res = await request(await agentReviewerApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_progress", comment: "Please rework the proof." });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      REVIEWER_RUN_ID,
+      "Cancelled before issue reassignment",
+      expect.objectContaining({ errorCode: "issue_reassigned" }),
+    );
+  });
+
+  it("still stops the live run when a board reassigns the issue", async () => {
+    const issue = reviewStageIssue();
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    stubReviewerComment();
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: REVIEWER_RUN_ID,
+      companyId: "company-1",
+      agentId: REVIEWER_AGENT_ID,
+      status: "running",
+      contextSnapshot: { issueId: issue.id },
+    });
+    mockHeartbeatService.cancelRun.mockResolvedValue({ id: REVIEWER_RUN_ID, status: "cancelled" });
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ assigneeUserId: "99999999-9999-4999-8999-999999999999" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      REVIEWER_RUN_ID,
+      "Cancelled before issue reassignment",
+      expect.objectContaining({ errorCode: "issue_reassigned" }),
     );
   });
 });
