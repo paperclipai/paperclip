@@ -1297,6 +1297,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     kind?: string;
     previousOwnerAgentId?: string | null;
     returnOwnerAgentId?: string | null;
+    // TES-2107: an un-run task settles back to `todo`. Only a cause whose next
+    // step is outside the assignee's control still holds it at `blocked`.
+    settledStatus?: "todo" | "blocked";
   }) {
     const action = await waitForValue(async () =>
       db
@@ -1375,7 +1378,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, input.issueId))
       .then((rows) => rows[0] ?? null);
-    expect(sourceIssue?.status).toBe("blocked");
+    // Read after the heartbeat goes idle: the settle has to survive the sweep
+    // that produced it, not just hold for an instant.
+    expect(sourceIssue?.status).toBe(input.settledStatus ?? "todo");
 
     return action;
   }
@@ -1591,7 +1596,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0]?.status),
-    ).toBe("blocked");
+    ).toBe("todo");
     await expect(
       db
         .select({ status: agents.status, errorReason: agents.errorReason })
@@ -4726,7 +4731,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
 
     const recoveryAction = await db
       .select({
@@ -4826,7 +4831,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
 
     const recoveryAction = await db
       .select({
@@ -5769,7 +5774,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.status).toBe("todo");
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual(
       [],
     );
@@ -8948,6 +8953,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       previousStatus: "in_review",
       retryReason: "execution_review_participant_recovery",
       cause: "execution_review_participant_recovery",
+      // A stalled review is a genuine hold: the next step belongs to the
+      // reviewer path, not to the assignee.
+      settledStatus: "blocked",
     });
     expect(recoveryAction.evidence).toMatchObject({
       latestRunId: reviewRecoveryRun?.id,
@@ -10017,7 +10025,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("blocks assigned todo work after the one automatic dispatch recovery was already used", async () => {
+  it("escalates assigned todo work after the one automatic dispatch recovery was already used", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "todo",
@@ -10043,7 +10051,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -10603,7 +10611,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       wakes.some((row) => row.reason === "run_liveness_continuation"),
     ).toBe(false);
   });
-  it("blocks stranded in-progress work after the continuation retry was already used", async () => {
+  it("escalates stranded in-progress work after the continuation retry was already used", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -10622,7 +10630,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -10794,7 +10802,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
 
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -10872,7 +10880,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
 
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -10960,7 +10968,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
 
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -13117,7 +13125,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
 
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -13229,7 +13237,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
   });
 
-  it("blocks stranded in-progress work after a productive continuation retry was already used", async () => {
+  it("escalates stranded in-progress work after a productive continuation retry was already used", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -13250,7 +13258,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -15026,7 +15034,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("todo");
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {

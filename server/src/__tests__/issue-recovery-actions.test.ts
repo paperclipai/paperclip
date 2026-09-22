@@ -427,7 +427,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
     expect(updatedIssue).toMatchObject({
-      status: "blocked",
+      status: "todo",
     });
     const recoveryIssues = await db
       .select()
@@ -1447,7 +1447,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
+  it("returns the source issue to todo when source-scoped wakeup is claimed synchronously", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
     const enqueueWakeup = vi.fn(async () => {
@@ -1476,7 +1476,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     const [afterFirst] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    expect(afterFirst?.status).toBe("blocked");
+    expect(afterFirst?.status).toBe("todo");
     expect(afterFirst?.assigneeAgentId).toBe(coderId);
 
     const secondLatestRun = {
@@ -1505,7 +1505,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       attemptCount: 2,
     });
     const [afterSecond] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    expect(afterSecond?.status).toBe("blocked");
+    expect(afterSecond?.status).toBe("todo");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments).toHaveLength(1);
@@ -1514,6 +1514,171 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).not.toContain("Recovery action:");
     expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, actionRows[0]!.id)).toBe(true);
     expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+  });
+
+  // TES-2107: a run that ends without a disposition leaves the work un-run, not
+  // held. Settling it to `blocked` produced a hold with no blocker and no
+  // unblock descriptor — indistinguishable from a real dependency, clearable by
+  // nothing, and invisible to its owner's next heartbeat.
+  it("returns a successful run's issue to todo when its missing disposition cannot be recovered", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const sourceRunId = randomUUID();
+    const correctiveRunId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: sourceRunId, issueId: sourceIssue.id, status: "succeeded" });
+    await db
+      .update(issues)
+      .set({ executionRunId: sourceRunId, checkoutRunId: sourceRunId })
+      .where(eq(issues.id, sourceIssue.id));
+    const [locked] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: locked!,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: correctiveRunId,
+        agentId: coderId,
+        status: "succeeded",
+        error: null,
+        errorCode: null,
+        contextSnapshot: { issueId: sourceIssue.id },
+        livenessState: "needs_followup",
+      },
+      recoveryCause: "successful_run_missing_state",
+      successfulRunHandoffEvidence: {
+        sourceRunId,
+        correctiveRunId,
+        missingDisposition: "clear_next_step",
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+      },
+    });
+
+    const [settled] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(settled?.status).toBe("todo");
+    // The assignment is what makes it drainable: only the assignee may clear an
+    // active recovery action, so losing the owner would strand it again.
+    expect(settled?.assigneeAgentId).toBe(coderId);
+    // The run that held these is over; a `todo` issue that still carries them
+    // refuses the next checkout.
+    expect(settled?.executionRunId).toBeNull();
+    expect(settled?.checkoutRunId).toBeNull();
+    expect(settled?.unblockDescriptor ?? null).toBeNull();
+
+    const [escalation] = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, sourceIssue.id), eq(activityLog.action, "issue.successful_run_handoff_escalated")));
+    expect(escalation?.details).toMatchObject({
+      status: "todo",
+      source: "recovery.reconcile_successful_run_handoff_missing_state",
+    });
+
+    // The evidence still exists — this is a disposition fix, not amnesia.
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action).toMatchObject({ kind: "missing_disposition", status: "active", returnOwnerAgentId: coderId });
+  });
+
+  // The settle must survive the sweep that produced it. Re-blocking was seen as
+  // batches of issues bouncing back at identical timestamps, so the gate is a
+  // second and third reconcile pass, not one issue holding `todo` for a moment.
+  it("does not re-escalate an issue it already returned to todo", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+    const [settled] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(settled?.status).toBe("todo");
+
+    const first = await recovery.reconcileStrandedAssignedIssues();
+    const second = await recovery.reconcileStrandedAssignedIssues();
+
+    // The board-owned recovery action is what stops the sweep, and it survives
+    // the status change — so the issue is skipped rather than re-escalated.
+    expect(first).toMatchObject({ escalated: 0, skipped: 1 });
+    expect(second).toMatchObject({ escalated: 0, skipped: 1 });
+    const [afterSweeps] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(afterSweeps?.status).toBe("todo");
+    expect(afterSweeps?.assigneeAgentId).toBe(coderId);
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]).toMatchObject({ companyId, ownerType: "board", attemptCount: 1 });
+  });
+
+  it("still blocks a stranded issue that has a first-class unresolved blocker", async () => {
+    const { companyId, coderId, prefix, sourceIssue } = await seedCompany();
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Upstream dependency",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: sourceIssue.id,
+      type: "blocks",
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+
+    const [settled] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(settled?.status).toBe("blocked");
+  });
+
+  it("still blocks a stranded issue whose next step is outside the assignee's control", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "workspace validation failed",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: { issueId: sourceIssue.id },
+        livenessState: "needs_followup",
+      },
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    const [settled] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(settled?.status).toBe("blocked");
   });
 
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {

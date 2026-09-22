@@ -175,7 +175,7 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     });
 
     expect(notice.body).toBe(DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
-    expect(notice.presentation.title).toBe("Automatic recovery blocked");
+    expect(notice.presentation.title).toBe("Automatic recovery stopped");
   });
 
   it("omits the failure code row when the source run has no error code", () => {

@@ -21,8 +21,11 @@ export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
+// A successful run that forgot to say what happened leaves the work in a
+// healthy, actionable state. Say so: the issue returns to `todo` with its
+// assignment intact rather than being hidden behind a hold nothing can clear.
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
-  "Paperclip could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required.";
+  "Paperclip could not resolve this issue's missing disposition automatically. The source assignment is unchanged and the issue is back in `todo` for its owner to dispose of.";
 export const LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES = [
   "## This issue still needs a next step",
   "## Successful run missing issue disposition",
@@ -212,7 +215,7 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
     body: SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
     presentation: systemNoticePresentation({
       tone: "danger",
-      title: "Missing disposition recovery blocked",
+      title: "Missing disposition recovery stopped",
     }),
     metadata: {
       version: 1,

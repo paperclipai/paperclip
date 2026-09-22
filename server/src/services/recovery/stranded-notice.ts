@@ -24,11 +24,15 @@ export type StrandedRecoveryEscalationNotice = {
   metadata: IssueCommentMetadata;
 };
 
+// A run that ended without a disposition leaves the work un-run, not held:
+// there is no blocker to clear, so the issue returns to `todo` and stays
+// actionable for its owner. Only the causes whose next step is outside the
+// assignee's control (see HUMAN_GATED_RECOVERY_CAUSES) still say `blocked`.
 export const DEFAULT_STRANDED_RECOVERY_NOTICE_BODY =
   "Paperclip could not restore a live execution path for this issue automatically. " +
-  "Moving it to `blocked` so it is visible for intervention.";
+  "Returning it to `todo` so its owner can pick the work back up; no work was replayed.";
 
-const DEFAULT_STRANDED_RECOVERY_NOTICE_TITLE = "Automatic recovery blocked";
+const DEFAULT_STRANDED_RECOVERY_NOTICE_TITLE = "Automatic recovery stopped";
 
 const STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE: Record<string, string> = {
   workspace_validation_failed: "Workspace validation failed",
@@ -64,7 +68,7 @@ export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   return {
     body:
       `${retryDescription}, but it still has no live execution path. ` +
-      "Moving it to `blocked` so it is visible for intervention.",
+      "Returning it to `todo` so its owner can pick the work back up; no work was replayed.",
     title: "No live execution path",
     tone: "danger",
   };

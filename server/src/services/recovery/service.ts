@@ -250,6 +250,41 @@ const NATIVE_RUNNER_RECOVERY_CAUSES = new Set<StrandedRecoveryCause>([
   "provider_frame_too_large",
 ]);
 
+/**
+ * Causes whose next step is outside the assignee's control: the environment,
+ * the configuration, an external clock, or a stalled review. Those genuinely
+ * need someone other than the owner before the task is safe to re-run, so the
+ * task is held at `blocked`.
+ *
+ * Every other cause means the run simply did not finish — crashed, lost its
+ * process, or succeeded without recording a disposition. Nothing is being
+ * waited on, so `blocked` would be a hold with no blocker and no unblock
+ * descriptor: indistinguishable from a real dependency and clearable by
+ * nothing. Those settle back to `todo` with the recovery evidence attached.
+ */
+const HUMAN_GATED_RECOVERY_CAUSES = new Set<StrandedRecoveryCause>([
+  "workspace_validation_failed",
+  "configuration_incomplete",
+  "provider_quota",
+  "execution_review_participant_recovery",
+  "deliberate_wait_without_target",
+]);
+
+export function strandedRecoverySettledStatus(input: {
+  cause: StrandedRecoveryCause;
+  blockerIssueIds: readonly string[];
+  ownerCanRun: boolean;
+}): "todo" | "blocked" {
+  // A first-class blocker relation outranks the cause: the task really is
+  // waiting on another issue, whatever ended the run.
+  if (input.blockerIssueIds.length > 0) return "blocked";
+  // An owner that cannot run is a real hold — the work sits until someone
+  // unpauses the agent or clears its budget. `todo` would promise a pickup
+  // that nothing can deliver.
+  if (!input.ownerCanRun) return "blocked";
+  return HUMAN_GATED_RECOVERY_CAUSES.has(input.cause) ? "blocked" : "todo";
+}
+
 export function shouldRouteRecoveryToOriginalAgent(
   cause: StrandedRecoveryCause,
 ): boolean {
@@ -3770,9 +3805,30 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
+    const sourceAssignee = input.issue.assigneeAgentId
+      ? await getAgent(input.issue.assigneeAgentId)
+      : null;
+    const settledStatus = strandedRecoverySettledStatus({
+      cause: recoveryCause,
+      blockerIssueIds: blockerIds,
+      ownerCanRun:
+        sourceAssignee !== null &&
+        sourceAssignee.companyId === input.issue.companyId &&
+        (await isAgentInvokable(sourceAssignee)) &&
+        !(await isInvocationBudgetBlocked(
+          input.issue,
+          sourceAssignee.id,
+        )),
+    });
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+      status: settledStatus,
       blockedByIssueIds: blockerIds,
+      // The run that held these locks is over. Leaving them set would make a
+      // task that reads `todo` refuse the next checkout until the stale-lock
+      // sweeper happens to run.
+      ...(settledStatus === "todo"
+        ? { executionRunId: null, checkoutRunId: null }
+        : {}),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -3782,9 +3838,6 @@ export function recoveryService(
 
     const recoveryOwner = recoveryAction.ownerAgentId
       ? await getAgent(recoveryAction.ownerAgentId)
-      : null;
-    const sourceAssignee = input.issue.assigneeAgentId
-      ? await getAgent(input.issue.assigneeAgentId)
       : null;
     let notice: SuccessfulRunHandoffNotice | null = null;
     if (
@@ -3925,7 +3978,7 @@ export function recoveryService(
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        status: "blocked",
+        status: settledStatus,
         previousStatus: input.previousStatus,
         source:
           input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
