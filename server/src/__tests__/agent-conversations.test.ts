@@ -877,7 +877,13 @@ const support = await getEmbeddedPostgresTestSupport();
       await settleUnrecoverableExecutions(db);
       const [after] = await db.select().from(issues).where(eq(issues.id, task.id));
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actions[0]!.id));
-      expect(after.status).toBe(scenario.superseded ? status : "blocked");
+      // The settle releases the cancelled run's locks and records the
+      // no-replay decision. The only status it is entitled to rewrite is
+      // `in_progress`, which would claim an execution that is now cancelled;
+      // everything else is the owner's last choice and survives (TES-2107).
+      expect(after.status).toBe(
+        scenario.superseded || status !== "in_progress" ? status : "todo",
+      );
       expect(action).toMatchObject({ status: "resolved", outcome: scenario.superseded ? "cancelled" : "blocked" });
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("cancelled");
       if (!scenario.ordinary) expect(after.conversationSessionGeneration).toBe(scenario.generation);
