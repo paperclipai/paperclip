@@ -1,0 +1,37 @@
+{
+  "source": {
+    "type": "github",
+    "hostname": "github.com",
+    "owner": "glasser-ai",
+    "repo": "skills",
+    "ref": "v0.1.1",
+    "commit": "391aa4cd119db01fd675a809dd391aeda0d2a10f",
+    "path": "skills/competitor-research"
+  },
+  "files": [
+    "SKILL.md"
+  ],
+  "defaultInstall": false,
+  "recommendedForRoles": [
+    "researcher",
+    "marketer",
+    "sales",
+    "analyst",
+    "founder",
+    "product-manager"
+  ],
+  "requires": [
+    "node"
+  ],
+  "tags": [
+    "research",
+    "competitive-intelligence",
+    "competitor-analysis",
+    "company-data",
+    "funding",
+    "web-traffic",
+    "hiring",
+    "ads",
+    "glasser"
+  ]
+}
