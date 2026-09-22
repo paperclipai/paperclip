@@ -475,10 +475,19 @@ export async function settleUnrecoverableExecutions(
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         if (current) {
+          // Releasing the dead run's locks is this settle's job; choosing a
+          // hold is not. The status stays whatever its owner last chose,
+          // except `in_progress`, which would claim an execution that no
+          // longer exists. Forcing `blocked` built a trap: the stranded sweep
+          // only visits non-blocked issues, so every attempt to free one
+          // re-entered this path and re-blocked it within seconds, leaving
+          // `blocked` as the single state the issue could rest in (TES-2107).
+          const settledStatus =
+            task.status === "in_progress" ? "todo" : task.status;
           const [projected] = await tx
             .update(issues)
             .set({
-              status: "blocked",
+              status: settledStatus,
               executionRunId: null,
               checkoutRunId: null,
               updatedAt: now,

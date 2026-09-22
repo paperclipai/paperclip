@@ -117,12 +117,19 @@ export async function terminalizeLegacyExecution(input: {
     ) {
       // Periodic stranded-work checks may revisit this terminal run before its
       // reconciled continuation is dispatched. Preserve the recorded decision.
+      // Both dispositions count: an operator's `executionReconciliation` and
+      // the automatic `preserve_without_replay_v1` one. Matching only the
+      // former meant a run that automatic recovery had already settled earned
+      // a fresh watchdog on every sweep, which settled it by blocking the
+      // issue again — so `blocked` was the only state this run could rest in
+      // and no unblock survived more than a few seconds (TES-2107).
       const [reconciled] = await tx.select({ id: issueRecoveryActions.id })
         .from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, run.companyId),
           eq(issueRecoveryActions.sourceIssueId, task.id),
           eq(issueRecoveryActions.status, "resolved"),
-          sql`${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}`,
+          sql`${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}
+            or ${issueRecoveryActions.evidence}->'automaticRecovery'->>'runId' = ${run.id}`,
         )).limit(1);
       if (reconciled) return updated;
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({

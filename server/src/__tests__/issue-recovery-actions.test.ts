@@ -13,6 +13,7 @@ import {
   createDb,
   environmentLeases,
   environments,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueInboxArchives,
@@ -27,7 +28,11 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../services/heartbeat.js";
-import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
+import {
+  deliverReconciledExecutions,
+  settleUnrecoverableExecutions,
+} from "../services/execution-recovery-resolution.js";
+import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
@@ -142,6 +147,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
@@ -1618,6 +1624,67 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
     expect(actionRows).toHaveLength(1);
     expect(actionRows[0]).toMatchObject({ companyId, ownerType: "board", attemptCount: 1 });
+  });
+
+  // TES-2107: the trap that made `blocked` the only state one of these issues
+  // could rest in. The stranded sweep visits `todo`/`in_progress`/`in_review`
+  // only, so every unblock re-entered this path, minted a fresh watchdog for
+  // the same long-dead run, and re-blocked the issue within seconds. Measured
+  // on TES-1881: three re-blocks on three consecutive days, one per unblock,
+  // each against the same run that timed out 28 days earlier.
+  it("does not re-arm a legacy watchdog for a run automatic recovery already settled", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "running",
+      runtimeMode: "legacy",
+      startedAt: new Date("2026-08-25T18:00:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+
+    await terminalizeLegacyExecution({ db, run: run!, status: "timed_out", patch: { errorCode: "timeout" } });
+    const armed = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(armed).toHaveLength(1);
+    expect(armed[0]).toMatchObject({ cause: "legacy_execution_requires_reconciliation", status: "active" });
+
+    await settleUnrecoverableExecutions(db);
+
+    // The settle releases the dead run's locks and records the no-replay
+    // decision; it no longer invents a hold on work nobody is waiting for.
+    const [settled] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(settled?.status).toBe("todo");
+    expect(settled?.executionRunId).toBeNull();
+    expect(settled?.checkoutRunId).toBeNull();
+    const [resolved] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(resolved).toMatchObject({ status: "resolved" });
+    expect(resolved!.evidence).toMatchObject({
+      automaticRecovery: { policy: "preserve_without_replay_v1", runId, replay: "blocked" },
+    });
+
+    // The sweep revisits the same terminal run on every later pass. It must
+    // recognise the automatic disposition, not only an operator's.
+    const [terminal] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await terminalizeLegacyExecution({ db, run: terminal!, status: "timed_out", fromStatuses: ["timed_out"] });
+    await settleUnrecoverableExecutions(db);
+
+    const afterSecondPass = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(afterSecondPass).toHaveLength(1);
+    const [afterSecondIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(afterSecondIssue?.status).toBe("todo");
   });
 
   it("still blocks a stranded issue that has a first-class unresolved blocker", async () => {
