@@ -376,6 +376,10 @@ Document-scoped activity may still route work when it is converted into an expli
 
 Freeform document approval text is not auto-acceptance. Plan approval, implementation approval, or review acceptance must flow through the explicit interaction, approval, execution-policy, assignment, or blocker primitives that define who owns the next move.
 
+An interaction can be created by a run on another task in the same company, or by a run with no task. That run records the interaction's origin; its comments and results do not become context for the target task. Explicit resume and retry history takes precedence and must belong to the target task.
+
+New interactions exclude known comments from other tasks when recording their origins. At dispatch, older interactions may discard a copied origin only when both the producer's saved context and a comment on that producer's other task prove where it came from. Missing records, cross-company references, explicit wake comments, and unrelated origins still fail closed.
+
 ### Comment interrupts and ownership handoffs
 
 A board comment can be an interrupt, an ownership change, both, or neither. Paperclip must keep those concepts separate in the product contract.
