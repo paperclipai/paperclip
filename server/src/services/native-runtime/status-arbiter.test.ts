@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
-import { arbitrateNativeStatus } from "./status-arbiter.js";
+import {
+  arbitrateNativeStatus,
+  NATIVE_STATUS_ARBITER_POLICY_VERSION,
+} from "./status-arbiter.js";
 
 function assessment(
   overrides: Partial<NativeEvidenceAssessment> = {},
@@ -43,7 +46,228 @@ function arbitrate(
   });
 }
 
+function canaryRecoveryPolicy() {
+  return {
+    mode: "auto",
+    commentRequired: true,
+    stages: [],
+    nativeRecovery: {
+      version: 1,
+      lane: "canary",
+      authority: "html_ratified",
+      authorityRouteKey: "autoflow-html/native-runner-canary",
+      authoritySourcePath: "docs/specs/230-owner-ratified-governance-brownfield/anchors/target.html",
+      routeKey: "autoflow-html/native-runner-canary",
+      snapshotSha256: "4c9dc0ad5935737f45feb6ef5e1459162af34949d67d51090c207f298ae3c0e8",
+      recoverableCauses: ["environment_unavailable", "tool_unavailable"],
+      recoverableAttentionKinds: ["review", "external_action"],
+      maxAttempts: 3,
+    },
+  };
+}
+
+function infrastructureAttentionAssessment(
+  overrides: Partial<NativeEvidenceAssessment> = {},
+) {
+  return assessment({
+    reportedDisposition: "needs_review",
+    acceptedEvidenceRefs: [],
+    attentionRequests: [
+      {
+        kind: "review",
+        summary: "Runner host bridge is unavailable.",
+        ownerClass: "human",
+        targetAgentId: null,
+        sourceIndex: 0,
+        sourceKind: "review",
+        legacy: true,
+      },
+    ],
+    verificationAssessments: [
+      {
+        commandOrCheck: "native Runner host bridge",
+        claimStatus: "not_run",
+        outcome: "unverifiable",
+        evidenceRef: null,
+        reasonCode: "verification_environment_unavailable",
+        reportedReasonCode: "environment_unavailable",
+        detail: "The environment prevented a meaningful check.",
+      },
+    ],
+    ...overrides,
+  });
+}
+
 describe("native status authority", () => {
+  it("routes a ratified canary infrastructure failure to bounded agent recovery", () => {
+    const decision = arbitrate({
+      assessment: infrastructureAttentionAssessment(),
+      nativeRecoveryPolicy: canaryRecoveryPolicy(),
+      nativeRecoveryAttempt: 0,
+      runtimeMode: "native",
+    });
+    expect(decision).toMatchObject({
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "native_infrastructure_recovery_authorized",
+    });
+    expect(decision.effects).toEqual([
+      expect.objectContaining({
+        kind: "record_recovery",
+        maxAttempts: 3,
+      }),
+      expect.objectContaining({
+        kind: "enqueue_continuation",
+        continuationKind: "retry",
+      }),
+    ]);
+    expect(decision.effects.some((effect) => effect.kind === "bind_reviewer")).toBe(false);
+  });
+
+  it("keeps an unclassified recovery cause on the human review path", () => {
+    const decision = arbitrate({
+      assessment: infrastructureAttentionAssessment({
+        verificationAssessments: [
+          {
+            commandOrCheck: "native Runner host bridge",
+            claimStatus: "not_run",
+            outcome: "missing",
+            evidenceRef: null,
+            reasonCode: "unclassified_operational_failure",
+            reportedReasonCode: null,
+            detail: "The failure has no server-owned recovery classification.",
+          },
+        ],
+      }),
+      nativeRecoveryPolicy: canaryRecoveryPolicy(),
+      runtimeMode: "native",
+    });
+    expect(decision).toMatchObject({
+      statusAction: "in_review",
+      reasonCode: "actionable_attention_pending",
+    });
+    expect(decision.effects).toEqual([
+      expect.objectContaining({
+        kind: "bind_reviewer",
+        resolverPolicy: "human_only",
+      }),
+    ]);
+    expect(decision.effects.some((effect) => effect.kind === "enqueue_continuation")).toBe(false);
+  });
+
+  it("preserves human-only routing for a real approval request", () => {
+    const decision = arbitrate({
+      assessment: infrastructureAttentionAssessment({
+        attentionRequests: [
+          {
+            kind: "approval",
+            summary: "Approve the governed external action.",
+            ownerClass: "human",
+            targetAgentId: null,
+            sourceIndex: 0,
+            sourceKind: "approval",
+            legacy: false,
+          },
+        ],
+      }),
+      nativeRecoveryPolicy: canaryRecoveryPolicy(),
+      runtimeMode: "native",
+    });
+    expect(decision).toMatchObject({
+      statusAction: "in_review",
+      reasonCode: "actionable_attention_pending",
+    });
+    expect(decision.effects).toEqual([
+      expect.objectContaining({
+        kind: "bind_reviewer",
+        resolverPolicy: "human_only",
+      }),
+    ]);
+  });
+
+  it("does not apply canary recovery policy to the legacy local adapter", () => {
+    const decision = arbitrate({
+      assessment: infrastructureAttentionAssessment(),
+      nativeRecoveryPolicy: canaryRecoveryPolicy(),
+      runtimeMode: "legacy",
+    });
+    expect(decision.effects).toEqual([
+      expect.objectContaining({
+        kind: "bind_reviewer",
+        resolverPolicy: "human_only",
+      }),
+    ]);
+  });
+
+  it("does not infer native execution when the runtime lane is absent", () => {
+    const decision = arbitrate({
+      assessment: infrastructureAttentionAssessment(),
+      nativeRecoveryPolicy: canaryRecoveryPolicy(),
+    });
+    expect(decision.effects).toEqual([
+      expect.objectContaining({
+        kind: "bind_reviewer",
+        resolverPolicy: "human_only",
+      }),
+    ]);
+  });
+
+  it("rejects a self-described HTML authority with an unregistered digest", () => {
+    const policy = canaryRecoveryPolicy();
+    const decision = arbitrate({
+      assessment: infrastructureAttentionAssessment(),
+      nativeRecoveryPolicy: {
+        ...policy,
+        nativeRecovery: {
+          ...policy.nativeRecovery,
+          snapshotSha256: "a".repeat(64),
+        },
+      },
+      runtimeMode: "native",
+    });
+    expect(decision.effects).toEqual([
+      expect.objectContaining({
+        kind: "bind_reviewer",
+        resolverPolicy: "human_only",
+      }),
+    ]);
+  });
+
+  it("keeps accepted material on the human review path even with an operational note", () => {
+    const decision = arbitrate({
+      assessment: infrastructureAttentionAssessment({
+        acceptedEvidenceRefs: ["work_product:accepted"],
+      }),
+      nativeRecoveryPolicy: canaryRecoveryPolicy(),
+      runtimeMode: "native",
+    });
+    expect(decision).toMatchObject({
+      statusAction: "in_review",
+      reasonCode: "actionable_attention_pending",
+    });
+    expect(decision.effects).toEqual([
+      expect.objectContaining({
+        kind: "bind_reviewer",
+        resolverPolicy: "human_only",
+      }),
+    ]);
+  });
+
+  it("stops at the explicit recovery budget without creating another wake", () => {
+    const decision = arbitrate({
+      assessment: infrastructureAttentionAssessment(),
+      nativeRecoveryPolicy: canaryRecoveryPolicy(),
+      nativeRecoveryAttempt: 2,
+      runtimeMode: "native",
+    });
+    expect(decision).toMatchObject({
+      statusAction: "blocked",
+      toStatus: "blocked",
+      reasonCode: "native_infrastructure_recovery_budget_exhausted",
+    });
+    expect(decision.effects.some((effect) => effect.kind === "enqueue_continuation")).toBe(false);
+  });
+
   it("a reviewer finishes its decision without completing rejected or still-reviewed work", () => {
     for (const priorIssueStatus of ["in_progress", "in_review"] as const) {
       const decision = arbitrate({ priorIssueStatus, nativeReviewOutcome: "resolved" });
@@ -477,7 +701,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v6",
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

@@ -698,6 +698,7 @@ export type {
   IssueRelationIssueSummary,
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,
+  NativeRecoveryPolicy,
   IssueExecutionPolicy,
   IssueExecutionState,
   IssueExecutionStage,

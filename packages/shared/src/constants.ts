@@ -518,6 +518,53 @@ export type ExternalObjectMentionConfidence = (typeof EXTERNAL_OBJECT_MENTION_CO
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
 
+/**
+ * Server-owned recovery causes that may be resumed by the native Runner when
+ * an issue explicitly carries the canary recovery policy. These are transport
+ * and environment failures, not business approvals or irreversible actions.
+ */
+export const NATIVE_RECOVERY_CAUSES = [
+  "environment_unavailable",
+  "tool_unavailable",
+  "dependency_missing",
+  "permission_denied",
+  "external_service_unavailable",
+] as const;
+export type NativeRecoveryCause = (typeof NATIVE_RECOVERY_CAUSES)[number];
+
+export const NATIVE_RECOVERY_ATTENTION_KINDS = [
+  "review",
+  "external_action",
+] as const;
+export type NativeRecoveryAttentionKind =
+  (typeof NATIVE_RECOVERY_ATTENTION_KINDS)[number];
+
+export const NATIVE_RECOVERY_LANES = ["canary"] as const;
+export type NativeRecoveryLane = (typeof NATIVE_RECOVERY_LANES)[number];
+
+export const NATIVE_RECOVERY_AUTHORITY = "html_ratified" as const;
+export const NATIVE_RECOVERY_POLICY_VERSION = 1 as const;
+export const NATIVE_RECOVERY_AUTHORITY_ROUTE_KEYS = [
+  "autoflow-html/native-runner-canary",
+] as const;
+export type NativeRecoveryAuthorityRouteKey =
+  (typeof NATIVE_RECOVERY_AUTHORITY_ROUTE_KEYS)[number];
+
+/**
+ * Server-owned provenance registry for the one currently ratified Runner
+ * canary. An issue may reference this route, but it cannot mint a new route,
+ * source path, or HTML digest by writing arbitrary policy JSON.
+ */
+export const NATIVE_RECOVERY_AUTHORITY_REGISTRY = {
+  [NATIVE_RECOVERY_AUTHORITY_ROUTE_KEYS[0]]: {
+    authority: NATIVE_RECOVERY_AUTHORITY,
+    sourcePath:
+      "docs/specs/230-owner-ratified-governance-brownfield/anchors/target.html",
+    snapshotSha256:
+      "4c9dc0ad5935737f45feb6ef5e1459162af34949d67d51090c207f298ae3c0e8",
+  },
+} as const;
+
 export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;
 export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];
 

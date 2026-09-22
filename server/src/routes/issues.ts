@@ -227,6 +227,7 @@ import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import {
   assertBoard,
   assertCompanyAccess,
+  assertInstanceAdmin,
   getAccessibleResource,
   getActorInfo,
 } from "./authz.js";
@@ -2168,6 +2169,31 @@ function applyActorMonitorScheduledBy(
   return setIssueExecutionPolicyMonitorScheduledBy(
     policy,
     actorType === "user" ? "board" : "assignee",
+  );
+}
+
+/**
+ * Native Runner recovery is an authority-bearing server capability, not a
+ * normal agent-editable issue field. The policy schema remains readable and
+ * persistable for the internal canary path, but public issue PATCH cannot mint
+ * or revoke it unless the caller is the local owner context or an instance
+ * administrator.
+ */
+function assertNativeRecoveryPolicyAuthority(
+  req: Request,
+  previousPolicy: NormalizedExecutionPolicy | null,
+  nextPolicy: NormalizedExecutionPolicy | null,
+) {
+  const previous = previousPolicy?.nativeRecovery ?? null;
+  const next = nextPolicy?.nativeRecovery ?? null;
+  if (JSON.stringify(previous) === JSON.stringify(next)) return;
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+    assertInstanceAdmin(req);
+    return;
+  }
+  throw forbidden(
+    "Only the owner control-plane context may change native Runner recovery authority",
+    { code: "native_recovery_authority_required" },
   );
 }
 
@@ -13133,6 +13159,11 @@ export function issueRoutes(
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
           : previousExecutionPolicy;
+      assertNativeRecoveryPolicyAuthority(
+        req,
+        previousExecutionPolicy,
+        nextExecutionPolicy,
+      );
       if (normalizedAssigneeAgentId !== undefined) {
         updateFields.assigneeAgentId = normalizedAssigneeAgentId;
       }

@@ -1,4 +1,8 @@
-import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
+import {
+  dismissAutomaticCompletionReviews,
+  dismissAuthorizedNativeInfrastructureRecoveryReviews,
+  decisionHasRetiredAutomaticReview,
+} from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
@@ -552,9 +556,13 @@ export async function reconcileNativeFinalizations(
   if (runIds?.length) {
     const scopes = await db.select({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations)
       .where(inArray(nativeRunFinalizations.runId, runIds));
-    for (const scope of scopes) await dismissAutomaticCompletionReviews(db, scope.issueId);
+    for (const scope of scopes) {
+      await dismissAutomaticCompletionReviews(db, scope.issueId);
+      await dismissAuthorizedNativeInfrastructureRecoveryReviews(db, scope.issueId);
+    }
   } else {
     await dismissAutomaticCompletionReviews(db);
+    await dismissAuthorizedNativeInfrastructureRecoveryReviews(db);
   }
   const rows = await db
     .select({
@@ -796,6 +804,9 @@ export async function reconcileNativeFinalizations(
                 runId: row.runId, executionState: record(currentIssue.executionState) }),
               completionClaimPolicyAccepted: contractRow.risk === "low" && contractRow.completionAuthority === "agent_claim_policy",
               hasUnresolvedIssueBlockers: (readiness?.unresolvedBlockerCount ?? 0) > 0,
+              nativeRecoveryPolicy: currentIssue.executionPolicy,
+              nativeRecoveryAttempt: currentRun?.continuationAttempt ?? 0,
+              runtimeMode: currentRun?.runtimeMode === "native" ? "native" : "legacy",
               reviewOwnerUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId,
               priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId,
             })

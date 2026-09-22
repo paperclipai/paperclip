@@ -1,4 +1,7 @@
-import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
+import {
+  dismissAutomaticCompletionReviews,
+  dismissAuthorizedNativeInfrastructureRecoveryReviews,
+} from "./automatic-completion-reviews.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
 import { randomUUID } from "node:crypto";
@@ -1107,6 +1110,10 @@ export async function finalizeNativeRun(input: {
   };
 
   await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
+  await dismissAuthorizedNativeInfrastructureRecoveryReviews(
+    input.db,
+    coordinator.issueId,
+  );
   const sourceWake = run.wakeupRequestId ? await input.db.select({ payload: agentWakeupRequests.payload })
     .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
       eq(agentWakeupRequests.companyId, run.companyId))).then((rows) => rows[0]) : null;
@@ -1201,6 +1208,9 @@ export async function finalizeNativeRun(input: {
       externalChatResponseWaitAuthorization,
       boardResponseWaitAuthorized: boardResponseWait !== null,
       boardResponseWaitOrigin: boardResponseWaitOrigin !== null,
+      nativeRecoveryPolicy: authoritativeIssue.executionPolicy,
+      nativeRecoveryAttempt: run.continuationAttempt,
+      runtimeMode: run.runtimeMode === "native" ? "native" : "legacy",
       reviewOwnerUserId:
         authoritativeIssue.responsibleUserId ??
         authoritativeIssue.createdByUserId ??

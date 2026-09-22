@@ -325,11 +325,12 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
+  if (policy.stages.length === 0 && !policy.nativeRecovery) return null;
   return {
     mode: policy.mode,
     commentRequired: policy.commentRequired,
     stages: policy.stages,
+    ...(policy.nativeRecovery ? { nativeRecovery: policy.nativeRecovery } : {}),
   };
 }
 
@@ -400,8 +401,15 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
+  const nativeRecovery = parsed.data.nativeRecovery;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (
+    stages.length === 0 &&
+    !monitor &&
+    !reviewPreset &&
+    !authorizationPolicy &&
+    !nativeRecovery
+  ) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
@@ -410,6 +418,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
+    ...(nativeRecovery ? { nativeRecovery } : {}),
     ...(parsed.data.maxReviewRounds != null ? { maxReviewRounds: parsed.data.maxReviewRounds } : {}),
   };
 }

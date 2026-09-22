@@ -32,6 +32,12 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
+  NATIVE_RECOVERY_ATTENTION_KINDS,
+  NATIVE_RECOVERY_AUTHORITY,
+  NATIVE_RECOVERY_AUTHORITY_ROUTE_KEYS,
+  NATIVE_RECOVERY_CAUSES,
+  NATIVE_RECOVERY_LANES,
+  NATIVE_RECOVERY_POLICY_VERSION,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
@@ -438,6 +444,27 @@ export const issueExecutionPolicySchema = z.object({
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  nativeRecovery: z
+    .object({
+      version: z.literal(NATIVE_RECOVERY_POLICY_VERSION),
+      lane: z.enum(NATIVE_RECOVERY_LANES),
+      authority: z.literal(NATIVE_RECOVERY_AUTHORITY),
+      authorityRouteKey: z.enum(NATIVE_RECOVERY_AUTHORITY_ROUTE_KEYS),
+      authoritySourcePath: z.string().trim().min(1).max(500),
+      routeKey: z.string().trim().min(1).max(200),
+      snapshotSha256: z.string().regex(/^[0-9a-f]{64}$/i),
+      recoverableCauses: z
+        .array(z.enum(NATIVE_RECOVERY_CAUSES))
+        .min(1)
+        .max(NATIVE_RECOVERY_CAUSES.length),
+      recoverableAttentionKinds: z
+        .array(z.enum(NATIVE_RECOVERY_ATTENTION_KINDS))
+        .min(1)
+        .max(NATIVE_RECOVERY_ATTENTION_KINDS.length),
+      maxAttempts: z.number().int().positive().max(3),
+    })
+    .strict()
+    .optional(),
   maxReviewRounds: z
     .number()
     .int()

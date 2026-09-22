@@ -1,4 +1,8 @@
-import { dismissAutomaticCompletionReviews } from "../services/native-runtime/automatic-completion-reviews.js";
+import {
+  dismissAutomaticCompletionReviews,
+  dismissAuthorizedNativeInfrastructureRecoveryReviews,
+  decisionHasRetiredAutomaticReview,
+} from "../services/native-runtime/automatic-completion-reviews.js";
 import { nativeCompletionFeedback } from "../services/native-runtime/native-completion-feedback.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -2106,6 +2110,103 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect(decision!.reasonCode).toBe("prior_status_preserved_no_live_path");
     expect(decision!.decisionJson.effects).toEqual([expect.objectContaining({ kind: "record_finalization_error" })]);
     expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, incomplete.issueId))).toHaveLength(0);
+  }, 30_000);
+
+  it("withdraws only a stale native human-only card authorized by the canary recovery policy", async () => {
+    const seeded = await seedAutomaticReview();
+    await db.update(issues).set({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        nativeRecovery: {
+          version: 1,
+          lane: "canary",
+          authority: "html_ratified",
+          authorityRouteKey: "autoflow-html/native-runner-canary",
+          authoritySourcePath: "docs/specs/230-owner-ratified-governance-brownfield/anchors/target.html",
+          routeKey: "autoflow-html/native-runner-canary",
+          snapshotSha256: "4c9dc0ad5935737f45feb6ef5e1459162af34949d67d51090c207f298ae3c0e8",
+          recoverableCauses: ["environment_unavailable"],
+          recoverableAttentionKinds: ["review"],
+          maxAttempts: 3,
+        },
+      },
+    }).where(eq(issues.id, seeded.issueId));
+    await db.update(workAssessments).set({ assessmentJson: {
+      reportedDisposition: "needs_review",
+      hasFailedVerification: false,
+      acceptedEvidenceRefs: [],
+      attentionRequests: [{
+        kind: "review",
+        ownerClass: "human",
+        summary: "Runner host is unavailable; retry the native canary.",
+        sourceKind: "verification",
+        sourceIndex: 0,
+      }],
+      verificationAssessments: [{
+        commandOrCheck: "runner host probe",
+        claimStatus: "not_run",
+        outcome: "missing",
+        evidenceRef: null,
+        reasonCode: "verification_not_run",
+        reportedReasonCode: "environment_unavailable",
+        detail: "The native Runner host did not answer.",
+      }],
+    } }).where(eq(workAssessments.id, seeded.assessmentId));
+    await db.update(statusDecisions).set({ reasonCode: "actionable_attention_pending" })
+      .where(eq(statusDecisions.id, seeded.decision.id));
+    const [storedResult] = await db.select().from(nativeRunResults)
+      .where(eq(nativeRunResults.id, seeded.resultId!));
+    const resultEnvelope = storedResult!.resultJson as Record<string, unknown>;
+    const resultPayload = resultEnvelope.result as Record<string, unknown>;
+    await db.update(nativeRunResults).set({ resultJson: {
+      ...resultEnvelope,
+      result: {
+        ...resultPayload,
+        completionClaim: {
+          contractRevision: "corpus-v1",
+          objectiveSatisfied: false,
+          criteria: [],
+          remainingWork: [],
+        },
+        reportedWorkDisposition: "needs_review",
+        attentionRequests: [{
+          kind: "review",
+          ownerClass: "human",
+          summary: "Runner host is unavailable; retry the native canary.",
+        }],
+        verification: [{
+          commandOrCheck: "runner host probe",
+          status: "not_run",
+          reasonCode: "environment_unavailable",
+          detail: "The native Runner host did not answer.",
+        }],
+      },
+    } }).where(eq(nativeRunResults.id, seeded.resultId!));
+
+    await dismissAuthorizedNativeInfrastructureRecoveryReviews(db, seeded.issueId);
+
+    const [card] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interaction.id));
+    expect(card).toMatchObject({
+      status: "cancelled",
+      result: { outcome: "withdrawn", reason: "native_infrastructure_recovery_authorized" },
+    });
+    expect(await decisionHasRetiredAutomaticReview(db, seeded.decision)).toBe(true);
+    await reconcileNativeFinalizations(db, [seeded.runId]);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    const decisions = await db.select().from(statusDecisions)
+      .where(eq(statusDecisions.issueId, seeded.issueId));
+    expect(issue!.status).toBe("in_progress");
+    const recoveryDecision = decisions.find(
+      (entry) => entry.reasonCode === "native_infrastructure_recovery_authorized",
+    );
+    expect(recoveryDecision).toBeDefined();
+    expect(recoveryDecision?.decisionJson.effects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "record_recovery" }),
+      expect.objectContaining({ kind: "enqueue_continuation" }),
+    ]));
   }, 30_000);
 
   it("rejects wrong, missing, and duplicate criterion IDs before accepting completion", async () => {

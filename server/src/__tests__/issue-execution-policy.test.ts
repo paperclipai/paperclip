@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -41,6 +41,39 @@ describe("normalizeIssueExecutionPolicy", () => {
 
   it("returns null when stages are empty", () => {
     expect(normalizeIssueExecutionPolicy({ stages: [] })).toBeNull();
+  });
+
+  it("keeps a canary native recovery policy without creating review stages", () => {
+    const result = normalizeIssueExecutionPolicy({
+      stages: [],
+      nativeRecovery: {
+        version: 1,
+        lane: "canary",
+        authority: "html_ratified",
+        authorityRouteKey: "autoflow-html/native-runner-canary",
+        authoritySourcePath: "docs/specs/230-owner-ratified-governance-brownfield/anchors/target.html",
+        routeKey: "autoflow-html/native-runner-canary",
+        snapshotSha256: "4c9dc0ad5935737f45feb6ef5e1459162af34949d67d51090c207f298ae3c0e8",
+        recoverableCauses: ["environment_unavailable"],
+        recoverableAttentionKinds: ["review"],
+        maxAttempts: 3,
+      },
+    });
+    expect(result?.nativeRecovery).toMatchObject({
+      lane: "canary",
+      authority: "html_ratified",
+      maxAttempts: 3,
+    });
+    expect(
+      stripMonitorFromExecutionPolicy({
+        ...result!,
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: null,
+          scheduledBy: "assignee",
+        },
+      }),
+    ).toMatchObject({ nativeRecovery: result!.nativeRecovery });
   });
 
   it("throws when all participants are invalid (missing agentId)", () => {

@@ -1,4 +1,5 @@
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
+import { classifyNativeInfrastructureRecovery } from "./native-infrastructure-recovery.js";
 
 export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v6";
 
@@ -25,6 +26,8 @@ export type NativeStatusEffect =
       detailsMarkdown?: string | null;
       ownerUserId?: string | null;
       ownerAgentId?: string | null;
+      /** Explicit routing; absence is retained only for old persisted effects. */
+      resolverPolicy?: "anyone" | "human_only";
     }
   | { kind: "notify_owner"; agentId: string; reason: string }
   | {
@@ -75,6 +78,8 @@ export type NativeStatusEffect =
       cause: string;
       nextAction: string;
       agentId: string;
+      fingerprint?: string;
+      maxAttempts?: number;
     }
   | { kind: "release_checkout" };
 
@@ -111,6 +116,11 @@ export function arbitrateNativeStatus(input: {
   boardResponseWaitAuthorized?: boolean;
   boardResponseWaitOrigin?: boolean;
   reviewOwnerUserId?: string | null;
+  /** The issue-owned policy is parsed and verified before this seam uses it. */
+  nativeRecoveryPolicy?: unknown;
+  /** Durable continuation count for the current native issue. */
+  nativeRecoveryAttempt?: number | null;
+  runtimeMode?: "native" | "legacy";
   /** Review decisions own task state; a reviewer's finish report cannot override them. */
   nativeReviewOutcome?: "resolved" | "pending" | "stale";
   agentId: string;
@@ -302,6 +312,56 @@ export function arbitrateNativeStatus(input: {
       effects: [{ kind: "release_checkout" }],
     };
   }
+  const infrastructureRecovery = classifyNativeInfrastructureRecovery({
+    executionPolicy: input.nativeRecoveryPolicy,
+    runtimeMode: input.runtimeMode,
+    governanceGate: input.governanceGate,
+    assessment: input.assessment,
+    attempt: input.nativeRecoveryAttempt,
+  });
+  if (infrastructureRecovery.authorized) {
+    const recoveryEffect: NativeStatusEffect = {
+      kind: "record_recovery",
+      cause: `native_infrastructure_recovery:${infrastructureRecovery.cause}`,
+      nextAction:
+        "Repair the Runner host/control-plane bridge and resume the same canary route without creating a product merge or approval card.",
+      agentId: input.agentId,
+      fingerprint: infrastructureRecovery.fingerprint,
+      maxAttempts: infrastructureRecovery.maxAttempts,
+    };
+    if (infrastructureRecovery.exhausted) {
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "blocked",
+        toStatus: "blocked",
+        reasonCode: "native_infrastructure_recovery_budget_exhausted",
+        unblockDescriptor: {
+          owner: "board",
+          action:
+            "Review the bounded Runner infrastructure recovery and explicitly choose a new authorized canary attempt.",
+        },
+        effects: [recoveryEffect],
+      };
+    }
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "native_infrastructure_recovery_authorized",
+      unblockDescriptor: null,
+      effects: [
+        recoveryEffect,
+        {
+          kind: "enqueue_continuation",
+          continuationKind: "retry",
+          summary:
+            "Recover the native Runner infrastructure and retry the same canary route; no human approval is required for this ratified infrastructure path.",
+          idempotencyKey: `${infrastructureRecovery.fingerprint}:attempt:${infrastructureRecovery.attempt + 1}`,
+          agentId: input.agentId,
+        },
+      ],
+    };
+  }
   // A completion claim is not a request for human approval. Only a concrete,
   // explicitly reported attention request may create a review interaction.
   if (input.assessment.attentionRequests.length > 0) {
@@ -318,6 +378,7 @@ export function arbitrateNativeStatus(input: {
         detailsMarkdown: input.assessment.summary,
         ownerUserId: request.ownerClass === "agent" ? null : (input.reviewOwnerUserId ?? null),
         ownerAgentId: request.ownerClass === "agent" ? request.targetAgentId : null,
+        resolverPolicy: request.ownerClass === "agent" ? "anyone" : "human_only",
       })),
     };
   }

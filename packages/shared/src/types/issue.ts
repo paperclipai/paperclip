@@ -33,6 +33,10 @@ import type {
   IssueThreadInteractionResolverPolicyProvenance,
   IssueThreadInteractionStatus,
   IssueStatus,
+  NativeRecoveryAttentionKind,
+  NativeRecoveryAuthorityRouteKey,
+  NativeRecoveryCause,
+  NativeRecoveryLane,
 } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
@@ -645,6 +649,24 @@ export interface IssueExecutionStageParticipant extends IssueExecutionStagePrinc
   id: string;
 }
 
+/**
+ * Explicit, issue-owned authority for bounded infrastructure recovery on the
+ * native Runner. This policy is only meaningful for the canary lane; it never
+ * authorizes a product merge or a governed human action.
+ */
+export interface NativeRecoveryPolicy {
+  version: 1;
+  lane: NativeRecoveryLane;
+  authority: "html_ratified";
+  authorityRouteKey: NativeRecoveryAuthorityRouteKey;
+  authoritySourcePath: string;
+  routeKey: string;
+  snapshotSha256: string;
+  recoverableCauses: NativeRecoveryCause[];
+  recoverableAttentionKinds: NativeRecoveryAttentionKind[];
+  maxAttempts: number;
+}
+
 export interface IssueExecutionStage {
   id: string;
   type: IssueExecutionStageType;
@@ -671,6 +693,7 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  nativeRecovery?: NativeRecoveryPolicy;
   /**
    * Maximum consecutive agent-initiated changes-requested rounds before the
    * pending stage escalates to the responsible human. Null uses the server

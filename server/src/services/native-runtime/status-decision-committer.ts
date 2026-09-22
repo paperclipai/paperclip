@@ -583,7 +583,8 @@ async function materializeDecisionEffect(input: {
       kind: "request_confirmation",
       idempotencyKey: `native-review:${input.decisionId}${effect.requestKey ? `:${effect.requestKey}` : ""}`,
       sourceRunId: input.runId,
-      resolverPolicy: effect.ownerAgentId ? "anyone" : "human_only",
+      resolverPolicy:
+        effect.resolverPolicy ?? (effect.ownerAgentId ? "anyone" : "human_only"),
       addresseeAgentId: effect.ownerAgentId ?? null,
       addresseeUserId: effect.ownerUserId,
       title: "Review requested",
@@ -1501,15 +1502,23 @@ async function materializeDecisionEffect(input: {
       ownerType: "agent",
       ownerAgentId: effect.agentId,
       cause: effect.cause,
-      fingerprint: nativeSha256({
+      fingerprint:
+        effect.fingerprint ??
+        nativeSha256({
+          runId: input.runId,
+          decisionId: input.decisionId,
+          cause: effect.cause,
+        }),
+      evidence: {
         runId: input.runId,
         decisionId: input.decisionId,
-        cause: effect.cause,
-      }),
-      evidence: { runId: input.runId, decisionId: input.decisionId },
+        ...(effect.fingerprint
+          ? { recoveryFingerprint: effect.fingerprint }
+          : {}),
+      },
       nextAction: effect.nextAction,
       wakePolicy: { kind: "resume_native_run", runId: input.runId },
-      maxAttempts: 3,
+      maxAttempts: effect.maxAttempts ?? 3,
     });
     return {
       effectKind: effect.kind,
