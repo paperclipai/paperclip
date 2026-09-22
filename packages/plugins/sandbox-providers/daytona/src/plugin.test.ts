@@ -1296,6 +1296,16 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockCreate).not.toHaveBeenCalled();
     });
 
+    it.each(["sandbox-opaque", "sandbox.with+[literal](characters)"])("matches the opaque sandbox ID literally: %s", async (id) => {
+      const sandbox = { ...missingSandbox(), id, errorReason: missing.replaceAll(sandboxId, id) };
+      mockGet.mockResolvedValue(sandbox);
+      await expect(plugin.definition.onEnvironmentResumeLease!({ ...params, providerLeaseId: id }))
+        .resolves.toEqual({ providerLeaseId: null, metadata: { expired: true } });
+      expect(sandbox.refreshData).toHaveBeenCalledOnce();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
     it.each([
       "not found: provider temporarily unavailable",
       missing.replace("No such container:", "No such volume:"),

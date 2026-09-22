@@ -504,10 +504,9 @@ async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number): P
 
 function hasMissingSandboxContainer(sandbox: Sandbox): boolean {
   if (sandbox.state !== "error" || sandbox.recoverable !== false || typeof sandbox.errorReason !== "string") return false;
-  const match = sandbox.errorReason.match(
-    /^not found: failed to inspect sandbox container ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}): Error response from daemon: No such container: \1$/i,
-  );
-  return !!match && match[1] === sandbox.id;
+  if (typeof sandbox.id !== "string" || !sandbox.id) return false;
+  return sandbox.errorReason ===
+    `not found: failed to inspect sandbox container ${sandbox.id}: Error response from daemon: No such container: ${sandbox.id}`;
 }
 
 async function resolveSandboxWorkingDirectory(sandbox: Sandbox): Promise<string> {
