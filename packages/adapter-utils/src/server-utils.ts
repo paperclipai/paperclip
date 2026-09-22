@@ -10,9 +10,17 @@ import {
   buildLocalProcessSandboxSpawnTarget,
   type LocalProcessSandboxOptions,
 } from "./local-process-sandbox.js";
-import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
+import { buildSshSpawnTarget, runSshCommand, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
+import {
+  formatPaperclipWakePayloadDiagnostic,
+  materializePaperclipWakePayloadEnv,
+  paperclipWakePayloadRemoteInstallCommand,
+  paperclipWakePayloadSandboxMounts,
+  PAPERCLIP_WAKE_PAYLOAD_INLINE_MAX_BYTES,
+  retargetPaperclipWakePayloadEnv,
+} from "./wake-payload-env.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
@@ -3069,6 +3077,13 @@ export function redactEnvForLogs(
 ): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
+    if (
+      key === "PAPERCLIP_WAKE_PAYLOAD_JSON" &&
+      Buffer.byteLength(value) > PAPERCLIP_WAKE_PAYLOAD_INLINE_MAX_BYTES
+    ) {
+      redacted[key] = `[omitted wake payload: ${Buffer.byteLength(value)} bytes]`;
+      continue;
+    }
     redacted[key] = SENSITIVE_ENV_KEY.test(key) ? REDACTED_LOG_VALUE : value;
   }
   return redacted;
@@ -3567,7 +3582,13 @@ async function resolveSpawnTarget(
       executable,
       args,
       cwd,
-      options: options.localProcessSandbox,
+      options: {
+        ...options.localProcessSandbox,
+        managedPaths: [
+          ...(options.localProcessSandbox.managedPaths ?? []),
+          ...paperclipWakePayloadSandboxMounts(env),
+        ],
+      },
     });
     return { ...sandboxTarget, command: sandboxCommand };
   }
@@ -4596,6 +4617,33 @@ export async function runChildProcess(
   const onLogError =
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
+  const wakeDelivery = await materializePaperclipWakePayloadEnv(opts.env, {
+    runId,
+    scratchDir: opts.env.PAPERCLIP_RUN_SCRATCH_DIR ?? null,
+  });
+  if (wakeDelivery.rewritten) {
+    await opts.onLog("stdout", formatPaperclipWakePayloadDiagnostic(wakeDelivery));
+  }
+  if (opts.remoteExecution && opts.env.PAPERCLIP_WAKE_PAYLOAD_LOCAL_PATH) {
+    const remote = opts.remoteExecution;
+    await retargetPaperclipWakePayloadEnv({
+      env: opts.env,
+      runId,
+      publish: async (remotePath, body) => {
+        try {
+          await runSshCommand(remote, paperclipWakePayloadRemoteInstallCommand(remotePath), {
+            stdin: body,
+            timeoutMs: 60_000,
+            maxBuffer: 64 * 1024,
+          });
+        } catch {
+          throw new Error(
+            `Failed to publish the wake payload file (${Buffer.byteLength(body)} bytes) to the remote host.`,
+          );
+        }
+      },
+    });
+  }
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = {
       ...sanitizeInheritedPaperclipEnv(process.env),
