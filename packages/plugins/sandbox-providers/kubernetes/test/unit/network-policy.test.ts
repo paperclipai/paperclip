@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildNetworkPolicyManifests } from "../../src/network-policy.js";
+import { baselineEgressPolicyLabel, buildNetworkPolicyManifests } from "../../src/network-policy.js";
 
 describe("buildNetworkPolicyManifests", () => {
   const baseInput = {
@@ -108,5 +108,26 @@ describe("buildNetworkPolicyManifests", () => {
     expect(egress.spec.podSelector.matchLabels).toEqual({ "paperclip.io/run-id": "run-123" });
     expect(egress.spec.egress).toHaveLength(1);
     expect(egress.spec.egress[0].to[0].ipBlock.cidr).toBe("0.0.0.0/0");
+  });
+
+  it("reports the namespace baseline posture to the sandbox", () => {
+    expect(baselineEgressPolicyLabel(undefined)).toBe("kubernetes-default-deny");
+    expect(baselineEgressPolicyLabel("allowlist")).toBe("kubernetes-default-deny");
+    expect(baselineEgressPolicyLabel("open-internet")).toBe("kubernetes-open-internet");
+  });
+
+  it("applies the public-internet fallback whenever egressPolicy is open-internet", () => {
+    const [, egressAllow]: any[] = buildNetworkPolicyManifests({
+      namespace: "tenant-x",
+      paperclipServerNamespace: "paperclip-app",
+      egressAllowCidrs: ["203.0.113.0/24"],
+      egressAllowFqdns: [],
+      egressPolicy: "open-internet",
+    });
+    const fallback = egressAllow.spec.egress.find(
+      (rule: any) => rule.to?.[0]?.ipBlock?.cidr === "0.0.0.0/0",
+    );
+    expect(fallback).toBeDefined();
+    expect(fallback.to[0].ipBlock.except).toContain("169.254.0.0/16");
   });
 });
