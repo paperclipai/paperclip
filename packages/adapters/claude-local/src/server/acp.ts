@@ -324,7 +324,10 @@ export function classifyClaudeTerminalSessionFailure(
   // Only the provider's quota wording qualifies for a quota wait.
   if (failure.category !== "limit") return null;
   const surface = { errorMessage: [failure.title, failure.details].filter(Boolean).join("\n") };
-  if (!isClaudeProviderQuotaError(surface)) return null;
+  // claude-agent-acp uses this exact quota_exhausted fallback when no provider
+  // title is available. It does not match the CLI's usage-limit wording.
+  const isQuotaFallback = failure.title === "The Claude account has no available quota.";
+  if (!isQuotaFallback && !isClaudeProviderQuotaError(surface)) return null;
   const retryNotBefore = extractClaudeRetryNotBefore(surface, now)?.toISOString();
   return {
     errorCode: "provider_quota",

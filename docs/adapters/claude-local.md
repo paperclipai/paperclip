@@ -10,6 +10,8 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 Claude ACP runs that end with a typed provider-quota error retain the quota
 classification and any parsed reset time. Recovery waits until that time, or
 uses its existing one-hour quota backoff when no reset time is available.
+This includes the Claude bridge's typed “The Claude account has no available
+quota.” fallback, which carries no reset timestamp.
 The adapter inspects the terminal provider message in memory; the run result
 and run log retain only the generic failure message, recovery labels, and reset
 timestamp. Context, turn, rate, and configured budget limits are not treated as

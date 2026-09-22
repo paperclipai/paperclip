@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
-import { createClaudeAcpExecutor } from "./acp.js";
+import { classifyClaudeTerminalSessionFailure, createClaudeAcpExecutor } from "./acp.js";
 import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
 
 const repoRoot = fileURLToPath(new URL("../../../../..", import.meta.url));
@@ -83,11 +83,36 @@ it("classifies quota without a reset time for the existing recovery backoff", as
 });
 
 it.each([
+  ["0.12.0", "oneshot"],
+  ["0.12.0", "persistent"],
+  ["0.13.1", "oneshot"],
+  ["0.13.1", "persistent"],
+])("recognizes the Claude bridge quota fallback with ACPX %s in %s mode", async (version, mode) => {
+  // @agentclientprotocol/claude-agent-acp's quota_exhausted fallback title.
+  const title = "The Claude account has no available quota.";
+  const { result, logs } = await executeFailure(
+    title, "limit", mode, version === "0.13.1" ? runnerAcpx.createAcpRuntime : undefined,
+  );
+  expect(result).toMatchObject({
+    exitCode: 1,
+    errorMessage: "ACP agent reported a terminal limit failure.",
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    resultJson: { errorFamily: "provider_quota" },
+  });
+  expect(result.retryNotBefore).toBeUndefined();
+  expect(JSON.stringify(result)).not.toContain(title);
+  expect(logs).not.toContain(title);
+});
+
+it.each([
   ["Context window limit exceeded", "limit"],
   ["Maximum number of turns reached", "limit"],
   ["Configured budget limit reached", "limit"],
   ["Rate limit exceeded; retry later", "limit"],
   ["You've hit your session limit", "request"],
+  ["The Claude account has no available quota.", "request"],
+  ["The Claude account has available quota.", "limit"],
   ["The worker connection closed", "connection"],
 ])("keeps a non-quota typed failure out of quota recovery: %s", async (title, category) => {
   const { result, logs } = await executeFailure(title, category);
@@ -96,4 +121,11 @@ it.each([
   expect(result.retryNotBefore).toBeUndefined();
   expect(JSON.stringify(result)).not.toContain(title);
   expect(logs).not.toContain(title);
+});
+
+it("does not infer quota from the historical generic terminal-limit error", () => {
+  expect(classifyClaudeTerminalSessionFailure({
+    category: "limit",
+    title: "ACP agent reported a terminal limit failure.",
+  }, now)).toBeNull();
 });
