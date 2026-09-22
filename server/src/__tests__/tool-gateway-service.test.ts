@@ -38,6 +38,7 @@ import { commitToolActionReview } from "../services/tool-action-review.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
 import { toolActionDeliveryService } from "../services/tool-action-delivery.js";
 import { secretService } from "../services/secrets.js";
+import { toolAccessService } from "../services/tool-access.js";
 import {
   createToolGatewayService,
   ToolGatewayHttpError,
@@ -1312,6 +1313,68 @@ describeEmbeddedPostgres("tool gateway service", () => {
       { method: "notifications/initialized", sessionId: "session-123", protocolVersion: "2025-06-18" },
       { method: "tools/call", sessionId: "session-123", protocolVersion: "2025-06-18" },
     ]);
+  });
+
+  it("hides cached Chat unread filters and blocks agent and board requests before provider dispatch", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection, catalogEntry } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({
+      lastCatalogRefreshAt: new Date(),
+      config: {
+        url: "https://8.8.8.8/mcp",
+        sourceTemplateKey: "google-chat",
+        connectionMethodKey: "customer-read-oauth",
+        oauth: { scopes: ["https://www.googleapis.com/auth/chat.users.readstate.readonly"] },
+      },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.update(toolCatalogEntries).set({
+      name: "search_messages", toolName: "search_messages", description: "Search unread messages.",
+      inputSchema: { type: "object", properties: {
+        searchParameters: { type: "object", properties: {
+          isUnread: { type: "boolean" }, keywords: { type: "array", items: { type: "string" } },
+        } },
+      } },
+    }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+    await db.insert(toolPolicies).values({
+      companyId: company.id, name: "Allow Chat reads", policyType: "allow", selectors: { riskLevel: "read" },
+    });
+    const provider = vi.fn(async (_url, init) => {
+      const payload = JSON.parse(String(init.body));
+      if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return Response.json({ jsonrpc: "2.0", id: payload.id, result: payload.method === "initialize"
+        ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "chat-fixture", version: "1" } }
+        : { content: [{ type: "text", text: "Found matching messages." }] } });
+    });
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.upstreamToolName === "search_messages")!;
+    expect(tool).toBeTruthy();
+    expect(JSON.stringify(tool.parametersSchema)).not.toContain("isUnread");
+    expect(tool.description).toContain("Read/unread filtering is not supported.");
+    const catalog = await toolAccessService(db).listCatalog(connection.id, company.id);
+    expect(JSON.stringify(catalog[0].inputSchema)).not.toContain("isUnread");
+    expect(catalog[0].description).toContain("Read/unread filtering is not supported.");
+
+    for (const isUnread of [true, false]) {
+      const parameters = { searchParameters: { isUnread, keywords: ["release"] } };
+      const error = { status: 400, details: { code: "google_chat_unread_filter_unsupported" } };
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters }))
+        .rejects.toMatchObject(error);
+      await expect(gateway.executeTestCall({
+        companyId: company.id, connectionId: connection.id, agentId: agent.id,
+        userId: "board", toolName: "search_messages", parameters,
+      })).rejects.toMatchObject(error);
+    }
+    expect(provider).not.toHaveBeenCalled();
+
+    const parameters = { searchParameters: { keywords: ["release"], startTime: "2026-09-22T00:00:00Z" }, pageSize: 10 };
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters }))
+      .resolves.toMatchObject({ status: "completed" });
+    const calls = provider.mock.calls.map(([, init]) => JSON.parse(String(init.body)))
+      .filter((payload) => payload.method === "tools/call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params).toEqual({ name: "search_messages", arguments: parameters });
   });
 
   it("explains Google Workspace preview enrollment when a tool call is denied", async () => {

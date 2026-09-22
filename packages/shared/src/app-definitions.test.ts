@@ -181,9 +181,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     riskTier: "S3",
     scopes: [
       googleScope("chat.spaces.readonly"),
-      googleScope("chat.memberships.readonly"),
       googleScope("chat.messages.readonly"),
-      googleScope("chat.users.readstate.readonly"),
     ],
     writeTools: [],
   },
@@ -195,9 +193,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     riskTier: "S4",
     scopes: [
       googleScope("chat.spaces.readonly"),
-      googleScope("chat.memberships.readonly"),
       googleScope("chat.messages.readonly"),
-      googleScope("chat.users.readstate.readonly"),
       googleScope("chat.messages.create"),
     ],
     writeTools: ["send_message"],

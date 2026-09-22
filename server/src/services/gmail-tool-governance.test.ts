@@ -37,4 +37,17 @@ describe("Google Workspace tool governance", () => {
     expect(isGoogleWorkspaceToolAllowed("sheets.write", { name: "sheets.updateValues" })).toBe(true);
     expect(isGoogleWorkspaceToolAllowed("people.read", { name: "delete_contact" })).toBe(false);
   });
+
+  it("keeps Chat search, history, and sending but excludes membership and read-state tools", () => {
+    for (const profile of ["chat.read", "chat.write"] as const) {
+      for (const name of ["search_conversations", "list_messages", "search_messages"]) {
+        expect(isGoogleWorkspaceToolAllowed(profile, { name })).toBe(true);
+      }
+      for (const name of ["list_memberships", "mark_as_read", "mark_as_unread"]) {
+        expect(isGoogleWorkspaceToolAllowed(profile, { name })).toBe(false);
+      }
+    }
+    expect(isGoogleWorkspaceToolAllowed("chat.read", { name: "send_message" })).toBe(false);
+    expect(isGoogleWorkspaceToolAllowed("chat.write", { name: "send_message" })).toBe(true);
+  });
 });
