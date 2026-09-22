@@ -7,6 +7,8 @@ import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard"
 import { ImageGalleryModal, type GalleryMediaItem } from "@/components/ImageGalleryModal";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { isImageLikeOutput, isVideoLikeOutput } from "@/lib/issue-output";
+import { TaskChatBubble } from "@/components/task-chat/TaskChatBubble";
 import { workProductHref } from "@/lib/issue-artifacts";
 import { createIssue, storybookAgents } from "../fixtures/paperclipData";
 import manila from "../fixtures/artifact-media/manila-ledger.mp4?url";
@@ -39,7 +41,7 @@ const files = [
   product("Source package is still being prepared", 22, { status: "pending" }),
 ];
 const images = [manilaImage, nightImage].map((src, index) => product(index ? "Night Pills — cover image" : "Manila Ledger — cover image", index + 10, {
-  metadata: { contentType: "image/png", contentPath: src, originalFilename: `cover-${index}.png`, byteSize: 42000 },
+  metadata: { contentType: index ? "application/octet-stream" : "image/png", contentPath: src, originalFilename: `cover-${index}.png`, byteSize: 42000 },
 }));
 
 type Scenario = "videos" | "mixed" | "rows" | "fallback" | "empty";
@@ -61,7 +63,7 @@ function GalleryStory({ scenario = "videos", width = 480 }: { scenario?: Scenari
   const [galleryIndex, setGalleryIndex] = useState<number | null>(null);
   const items: GalleryMediaItem[] = [...workProducts.flatMap((wp) => {
     const metadata = wp.metadata;
-    if (typeof metadata?.contentPath !== "string" || typeof metadata?.contentType !== "string" || !/^(image|video)\//.test(metadata.contentType)) return [];
+    if (typeof metadata?.contentPath !== "string" || typeof metadata?.contentType !== "string" || !(isImageLikeOutput(metadata.contentType, String(metadata.originalFilename ?? wp.title)) || isVideoLikeOutput(metadata.contentType, String(metadata.originalFilename ?? wp.title)))) return [];
     return [{ id: wp.id, contentPath: metadata.contentPath, contentType: metadata.contentType, originalFilename: typeof metadata.originalFilename === "string" ? metadata.originalFilename : wp.title }];
   }), ...attachments.map((attachment) => ({ id: attachment.id, contentPath: attachment.contentPath, contentType: attachment.contentType, originalFilename: attachment.originalFilename }))];
   return (
@@ -74,7 +76,7 @@ function GalleryStory({ scenario = "videos", width = 480 }: { scenario?: Scenari
               <h1 className="text-xl font-semibold">Paperclip Ships artifacts</h1>
               <p className="max-w-md text-sm text-muted-foreground">Eight video outputs across two runs. Compare previews at a glance, then click anywhere on a tile to watch it.</p>
               <p className="max-w-md text-xs text-muted-foreground">Illustrative offline clips inspired by the task’s five style directions. These stories use the production artifact components.</p>
-              {scenario === "rows" ? <div className="flex flex-col gap-2">{workProducts.map((wp) => <RichWorkProductCard key={wp.id} workProduct={wp} href={workProductHref(wp)} variant="compact" />)}</div> : null}
+              {scenario === "rows" ? <div className="flex flex-col gap-2"><TaskChatBubble item={{ id: "clip-comment", kind: "message", author: "agent", text: "Video ready to review." }} attachments={[{ id: "chat-clip", issueCommentId: "clip-comment", contentPath: trail, contentType: "video/mp4", originalFilename: "paper-trail.mp4", byteSize: 128000 } as IssueAttachment]} />{workProducts.map((wp) => <RichWorkProductCard key={wp.id} workProduct={wp} href={workProductHref(wp)} variant="compact" />)}</div> : null}
             </div>
             <section className="max-w-full shrink-0 rounded-lg border border-border bg-background" style={{ width }} aria-label="Task artifacts panel">
               <header className="flex items-center gap-4 border-b border-border px-4 py-3 text-sm"><span className="text-muted-foreground">Properties</span><strong className="font-medium">Artifacts</strong></header>

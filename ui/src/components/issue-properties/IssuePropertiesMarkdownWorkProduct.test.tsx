@@ -354,18 +354,20 @@ describe("markdown work product review row", () => {
     expect(container.querySelector("button[aria-expanded]")).toBeNull();
   });
 
-  it("renders media tiles for work products and loose agent attachments without duplicates or user uploads", async () => {
-    const image = { ...makeMarkdownAttachment(), contentType: "image/png", originalFilename: "cover.png" };
+  it.each(["image/png", "application/octet-stream"])("renders %s media tiles without duplicates or user uploads", async (contentType) => {
+    const image = { ...makeMarkdownAttachment(), contentType, originalFilename: "cover.png" };
+    const looseImage = { ...image, id: "loose-image", contentPath: "/api/attachments/loose-image/content" };
     const video = { ...makeMarkdownAttachment(), id: "loose-video", contentType: "application/octet-stream", originalFilename: "clip.mp4", contentPath: "/api/attachments/loose-video/content" };
-    mockIssuesApi.listAttachments.mockResolvedValue([image, video, { ...video, id: "user-video", createdByAgentId: null, createdByUserId: "user-1" }]);
+    mockIssuesApi.listAttachments.mockResolvedValue([image, video, looseImage, { ...video, id: "user-video", createdByAgentId: null, createdByUserId: "user-1" }]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([makeMarkdownWorkProduct({
       title: "Cover artwork",
-      metadata: { attachmentId: ATTACHMENT_ID, contentType: "image/png", contentPath: image.contentPath, openPath: image.contentPath, downloadPath: `${image.contentPath}?download=1`, byteSize: 64 },
+      metadata: { attachmentId: ATTACHMENT_ID, contentType, originalFilename: "cover.png", contentPath: image.contentPath, openPath: image.contentPath, downloadPath: `${image.contentPath}?download=1`, byteSize: 64 },
     })]);
     await renderTab({}, "Cover artwork");
     await waitForAssertion(() => {
       const buttons = container.querySelectorAll('button[aria-label^="Open gallery:"]');
-      expect(buttons).toHaveLength(2);
+      expect(buttons).toHaveLength(3);
+      expect(container.querySelectorAll("img")).toHaveLength(2);
       expect(buttons[0].querySelector("img")).not.toBeNull();
       expect(buttons[1].querySelector("video")?.getAttribute("src")).toBe(video.contentPath);
       expect(container.querySelectorAll("video")).toHaveLength(1);

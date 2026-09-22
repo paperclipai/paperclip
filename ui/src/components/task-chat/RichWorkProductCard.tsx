@@ -3,7 +3,7 @@ import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { ArtifactPreview } from "@/components/artifacts/ArtifactCard";
 import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
 import { ImageGalleryModal } from "@/components/ImageGalleryModal";
-import { isImageContentType, isVideoLikeOutput } from "@/lib/issue-output";
+import { isImageLikeOutput, isVideoLikeOutput } from "@/lib/issue-output";
 import { attachmentDownloadPath } from "@/lib/issue-attachments";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import {
@@ -134,7 +134,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const [galleryOpen, setGalleryOpen] = useState(false);
   const metadata = workProduct.metadata;
   const contentType = stringMeta(metadata, "contentType") ?? "";
-  const isImage = isImageContentType(contentType);
+  const isImage = isImageLikeOutput(contentType, stringMeta(metadata, "originalFilename") ?? workProduct.title);
   const isVideo = isVideoLikeOutput(contentType, stringMeta(metadata, "originalFilename") ?? workProduct.title);
   let Icon: LucideIcon = File;
   let meta: Array<string | null> = [];

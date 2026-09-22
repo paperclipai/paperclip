@@ -98,7 +98,7 @@ export function TaskChatAgentIdentity({
  * surface with an avatar author header (the agent's assigned icon + name);
  * system notices are centered and recede.
  */
-function galleryItemForImage(
+function galleryItemForMedia(
   src: string,
   name?: string,
   attachment?: ReturnType<typeof hydrateAttachmentRefs>[number],
@@ -200,16 +200,17 @@ function TaskChatBubbleContent({
     ...hydratedLinkedRefs.filter((ref) => !isImageAttachment(ref)),
     ...boundAttachmentRefs.filter((ref) => !isImageAttachment(ref)),
   ]);
+  const mediaRefs = [...imageRefs, ...attachmentRefs.filter((ref) => isVideoLikeOutput(ref.contentType, ref.name))];
   const galleryItems: GalleryMediaItem[] =
-    lightboxSrc !== null && !imageRefs.some((ref) => ref.url === lightboxSrc)
+    lightboxSrc !== null && !mediaRefs.some((ref) => ref.url === lightboxSrc)
       ? // A clicked image the extractor missed (e.g. inline HTML) still gets a
         // single-item lightbox rather than nothing.
-        [galleryItemForImage(lightboxSrc)]
-      : imageRefs.map((ref) => galleryItemForImage(ref.url, ref.name, ref));
+        [galleryItemForMedia(lightboxSrc)]
+      : mediaRefs.map((ref) => galleryItemForMedia(ref.url, ref.name, ref));
   const lightboxIndex =
     lightboxSrc === null
       ? -1
-      : Math.max(0, imageRefs.findIndex((ref) => ref.url === lightboxSrc));
+      : Math.max(0, mediaRefs.findIndex((ref) => ref.url === lightboxSrc));
   return (
     <div
       className={cn(
@@ -326,7 +327,8 @@ function TaskChatBubbleContent({
                   </AttachmentContent>
                   <AttachmentTrigger
                     aria-label={`Open ${ref.name}`}
-                    render={
+                    onClick={video ? () => openImage(ref.url) : undefined}
+                    render={video ? <button type="button" /> :
                       <a
                         href={ref.openPath ?? ref.url}
                         target="_blank"

@@ -33,7 +33,7 @@ import {
   workProductHref,
 } from "@/lib/issue-artifacts";
 import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
-import { isImageContentType, isVideoLikeOutput } from "@/lib/issue-output";
+import { isImageLikeOutput, isVideoLikeOutput } from "@/lib/issue-output";
 import { attachmentDownloadPath, attachmentOpenPath } from "@/lib/issue-attachments";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard";
@@ -478,7 +478,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
                   const contentType = typeof wp.metadata?.contentType === "string" ? wp.metadata.contentType : "";
                   const filename = typeof wp.metadata?.originalFilename === "string" ? wp.metadata.originalFilename : wp.title;
                   const hasMediaPath = Boolean(wp.metadata?.contentPath || wp.metadata?.openPath || workProductHref(wp));
-                  const media = hasMediaPath && wp.type === "artifact" && (isImageContentType(contentType) || isVideoLikeOutput(contentType, filename));
+                  const media = hasMediaPath && wp.type === "artifact" && (isImageLikeOutput(contentType, filename) || isVideoLikeOutput(contentType, filename));
                   return (
                     <li key={row.id} className={cn("min-w-0", !media && "col-span-full")}>
                       <RichWorkProductCard workProduct={wp} href={workProductHref(wp)} variant={media ? "gallery" : "compact"} />
@@ -500,7 +500,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
                 }
                 const attachment = row.value;
                 const filename = attachment.originalFilename ?? attachment.objectKey;
-                if (isImageContentType(attachment.contentType) || isVideoLikeOutput(attachment.contentType, filename)) {
+                if (isImageLikeOutput(attachment.contentType, filename) || isVideoLikeOutput(attachment.contentType, filename)) {
                   return (
                     <li key={row.id} className="min-w-0">
                       <MediaArtifactCard

@@ -192,7 +192,7 @@ import { isImageAttachment, isVideoAttachment } from "../lib/issue-attachments";
 import {
   getIssueOutputs,
   getPromotedOutputAttachmentIds,
-  isImageContentType,
+  isImageLikeOutput,
   isVideoLikeOutput,
 } from "../lib/issue-output";
 import { IssueSiblingNavigation } from "../components/IssueSiblingNavigation";
@@ -5532,7 +5532,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       const meta = item.metadata;
       if (!meta) continue;
       const isMedia =
-        isImageContentType(meta.contentType) ||
+        isImageLikeOutput(meta.contentType, meta.originalFilename ?? item.title) ||
         isVideoLikeOutput(meta.contentType, meta.originalFilename);
       if (!isMedia || hasSeen(meta.attachmentId, meta.contentPath)) continue;
       items.push({
