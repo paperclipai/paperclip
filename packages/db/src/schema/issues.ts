@@ -88,6 +88,15 @@ export const issues = pgTable(
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Materialised "newest thing that happened on this issue": the issue's own
+     * `updated_at`, its newest comment, and its newest non-inbox activity-log
+     * row, whichever is latest. Maintained by database triggers, never written
+     * by application code. Nullable only for the window between the migration
+     * that adds it and that migration's own backfill, which is why readers
+     * fall back to `updated_at`.
+     */
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
   },
   (table) => ({
     conversationIdentityIdx: uniqueIndex("issues_conversation_identity_idx").on(table.companyId, table.conversationAgentId, table.conversationUserId),
@@ -121,6 +130,14 @@ export const issues = pgTable(
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
     companyUpdatedIdx: index("issues_company_updated_idx").on(table.companyId, table.updatedAt),
+    // Serves the issue-list ORDER BY exactly as it is written, including the
+    // `updated_at` fallback — an index on the bare column would not be used.
+    companyLastActivityIdx: index("issues_company_last_activity_idx").on(
+      table.companyId,
+      sql`COALESCE(${table.lastActivityAt}, ${table.updatedAt}) DESC`,
+      sql`${table.updatedAt} DESC`,
+      sql`${table.id} DESC`,
+    ),
     companyCreatedIdx: index("issues_company_created_idx").on(table.companyId, table.createdAt),
     openNormalizedTitleCreatedIdx: index("issues_open_normalized_title_created_idx")
       .on(

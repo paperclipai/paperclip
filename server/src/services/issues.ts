@@ -2861,43 +2861,18 @@ const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
   "issue.inbox_unarchived",
 ] as const;
 
-function issueLatestCommentAtExpr(companyId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueComments.createdAt})
-      FROM ${issueComments}
-      WHERE ${issueComments.issueId} = ${issues.id}
-        AND ${issueComments.companyId} = ${companyId}
-    )
-  `;
-}
-
-function issueLatestLogAtExpr(companyId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${activityLog.createdAt})
-      FROM ${activityLog}
-      WHERE ${activityLog.companyId} = ${companyId}
-        AND ${activityLog.entityType} = 'issue'
-        AND ${activityLog.entityId} = ${issues.id}::text
-        AND ${activityLog.action} NOT IN (${sql.join(
-          ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
-          sql`, `,
-        )})
-    )
-  `;
-}
-
-function issueCanonicalLastActivityAtExpr(companyId: string) {
-  const latestCommentAt = issueLatestCommentAtExpr(companyId);
-  const latestLogAt = issueLatestLogAtExpr(companyId);
-  return sql<Date>`
-    GREATEST(
-      ${issues.updatedAt},
-      COALESCE(${latestCommentAt}, to_timestamp(0)),
-      COALESCE(${latestLogAt}, to_timestamp(0))
-    )
-  `;
+/**
+ * "Newest thing that happened on this issue", read from the materialised
+ * `issues.last_activity_at` column that the database triggers maintain.
+ *
+ * This used to be three correlated subqueries (the issue's own `updated_at`,
+ * MAX over its comments, MAX over its non-inbox activity-log rows) evaluated
+ * per row, per issue-list query. The COALESCE fallback covers rows written
+ * before the backfill migration; `issues_company_last_activity_idx` indexes
+ * this expression in exactly this shape, so the sort is index-ordered.
+ */
+function issueCanonicalLastActivityAtExpr() {
+  return sql<Date>`COALESCE(${issues.lastActivityAt}, ${issues.updatedAt})`;
 }
 
 function unreadForUserCondition(companyId: string, userId: string) {
@@ -3112,24 +3087,21 @@ function activeInboxArchiveFields(
   };
 }
 
-function issueListOrderBy(
-  companyId: string,
-  {
-    hasSearch,
-    priorityOrder,
-    searchOrder,
-    sortField,
-    sortDir,
-  }: {
-    hasSearch: boolean;
-    priorityOrder: SQL;
-    searchOrder: SQL;
-    sortField?: IssueFilters["sortField"];
-    sortDir?: IssueFilters["sortDir"];
-  },
-) {
+function issueListOrderBy({
+  hasSearch,
+  priorityOrder,
+  searchOrder,
+  sortField,
+  sortDir,
+}: {
+  hasSearch: boolean;
+  priorityOrder: SQL;
+  searchOrder: SQL;
+  sortField?: IssueFilters["sortField"];
+  sortDir?: IssueFilters["sortDir"];
+}) {
   if (sortField === "id") return [sortDir === "desc" ? desc(issues.id) : asc(issues.id)];
-  const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+  const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr();
   if (sortField === "updated") {
     const activityOrder =
       sortDir === "asc"
@@ -4855,6 +4827,10 @@ const issueListSelect = {
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
+  // Selected to keep this list in parity with the full issue row. The API
+  // field of the same name is recomputed below from the per-issue activity
+  // map and overwrites this value.
+  lastActivityAt: issues.lastActivityAt,
 };
 
 function withActiveRuns(
@@ -6278,7 +6254,7 @@ async function listBlockedInboxIssues(
       .from(issues)
       .where(and(...conditions))
       .orderBy(
-        desc(issueCanonicalLastActivityAtExpr(companyId)),
+        desc(issueCanonicalLastActivityAtExpr()),
         desc(issues.updatedAt),
         desc(issues.id),
       )
@@ -7944,7 +7920,7 @@ export function issueService(db: Db) {
       const baseQuery = searchedSource
         .where(and(...conditions))
         .orderBy(
-          ...issueListOrderBy(companyId, {
+          ...issueListOrderBy({
             hasSearch,
             priorityOrder,
             searchOrder,
