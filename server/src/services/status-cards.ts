@@ -26,6 +26,7 @@ import { builtInAgentService } from "./built-in-agents.js";
 import { companySearchService } from "./company-search.js";
 import { issueService } from "./issues.js";
 import { SUMMARIZER_BUILT_IN_KEY } from "./summary-slots.js";
+import { finalizeStaleStatusCardClaim } from "./status-card-finalization.js";
 import {
   buildStatusCardFingerprint,
   chooseStatusCardUpdateKind,
@@ -37,6 +38,7 @@ import {
   STATUS_CARD_MAX_MENTIONED_ISSUES,
   statusCardChangesHash,
   statusCardFingerprintHash,
+  statusCardStaleClaimThresholdMs,
   type StatusCardDeltaChange,
   type StatusCardFingerprint,
 } from "./status-card-update-engine.js";
@@ -361,13 +363,67 @@ export function statusCardService(
     return builtIn.agentId;
   }
 
-  async function requestCompile(cardId: string, actor: StatusCardActor) {
+  /**
+   * A generation claim whose ledger row has outlived its own refresh cycle by a
+   * full interval. Nothing else releases one: the generation task is created
+   * hidden, so the owner's timer heartbeat cannot select it, and its single
+   * scheduler wake is never retried. Returns null while the claim still looks
+   * live, and also for tasks the stalled-status finalizer already owns
+   * (`done`/`cancelled`/`blocked`).
+   */
+  async function staleGenerationClaim(card: StatusCardRow, now: Date) {
+    if (!card.generatingIssueId) return null;
+    const active = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
+    if (!active || TERMINAL_ISSUE_STATUSES.has(active.status) || active.status === "blocked") return null;
+    const [open] = await db
+      .select({ startedAt: statusCardUpdates.startedAt })
+      .from(statusCardUpdates)
+      .where(and(eq(statusCardUpdates.generationIssueId, active.id), isNull(statusCardUpdates.finishedAt)))
+      .orderBy(statusCardUpdates.startedAt)
+      .limit(1);
+    // A compile claim opens no ledger row, so fall back to the card's own
+    // `updatedAt`, which `requestCompile` stamps when it takes the claim.
+    const claimedAt = open?.startedAt ?? card.updatedAt;
+    if (now.getTime() - claimedAt.getTime() < statusCardStaleClaimThresholdMs(card.refreshPolicy)) return null;
+    return { issue: active, claimedAt };
+  }
+
+  /**
+   * Release a wedged claim and cancel the task that was driving it, so the card
+   * leaves the strand with a recorded failure instead of a healthy-looking card
+   * whose refresh is dead. The task is cancelled rather than left behind because
+   * a hidden live task is unreachable by its owner, so keeping it would strand it
+   * a second time.
+   */
+  async function reapStaleGenerationClaim(
+    card: StatusCardRow,
+    claim: NonNullable<Awaited<ReturnType<typeof staleGenerationClaim>>>,
+    now: Date,
+  ) {
+    const released = await finalizeStaleStatusCardClaim(db, {
+      cardId: card.id,
+      companyId: card.companyId,
+      generatingIssueId: claim.issue.id,
+      nextEvalAt: nextStatusCardEvaluationAt(card.refreshPolicy, now),
+    });
+    if (released.length === 0) return false;
+    await issuesSvc.update(claim.issue.id, { status: "cancelled" });
+    logger.warn(
+      { cardId: card.id, companyId: card.companyId, generationIssueId: claim.issue.id, claimedAt: claim.claimedAt },
+      "status card generation claim was stale and has been released",
+    );
+    return true;
+  }
+
+  async function requestCompile(cardId: string, actor: StatusCardActor, options: { now?: Date } = {}) {
     const card = await getById(cardId);
     if (!card) throw notFound("Status card not found");
     if (card.archivedAt) throw unprocessable("Archived status cards cannot be compiled");
     const summarizerAgentId = await resolveSummarizerAgentId(card);
+    const now = options.now ?? new Date();
 
     const hash = promptHash(card.interestPrompt);
+    let supersededStaleClaim = false;
     if (card.generatingIssueId) {
       const active = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
       const payload = parseGenerationPayload(active?.description ?? null);
@@ -375,8 +431,16 @@ export function statusCardService(
       // genuinely in flight. A `blocked` task is stuck awaiting a human and will
       // never finish on its own, so a manual re-kick must supersede it (reopened
       // to `todo` below) rather than silently no-op.
-      if (active && !TERMINAL_ISSUE_STATUSES.has(active.status) && active.status !== "blocked" && payload?.promptHash === hash) {
+      const stale = await staleGenerationClaim(card, now);
+      if (!stale && active && !TERMINAL_ISSUE_STATUSES.has(active.status) && active.status !== "blocked" && payload?.promptHash === hash) {
         return { card, generatingIssue: active, alreadyGenerating: true };
+      }
+      // A stale claim is superseded rather than reused: reusing it would dedupe
+      // onto a task no wake can reach, and the caller would report "already
+      // compiling" and enqueue nothing.
+      if (stale) {
+        supersededStaleClaim = true;
+        await reapStaleGenerationClaim(card, stale, now);
       }
     }
 
@@ -415,8 +479,9 @@ export function statusCardService(
       generatingIssue: generationIssue!,
       // Only "already generating" when we joined a genuinely in-flight task. A
       // deduplicated `blocked` task was just revived (reopened to todo) above, so
-      // that is a fresh re-kick, not a no-op.
-      alreadyGenerating: deduplicated && !TERMINAL_ISSUE_STATUSES.has(created.status) && created.status !== "blocked",
+      // that is a fresh re-kick, not a no-op. A superseded stale claim is never a
+      // no-op either: the caller must enqueue the wake that the dead task never got.
+      alreadyGenerating: !supersededStaleClaim && deduplicated && !TERMINAL_ISSUE_STATUSES.has(created.status) && created.status !== "blocked",
     };
   }
 
@@ -612,16 +677,24 @@ export function statusCardService(
     if (!card) throw notFound("Status card not found");
     if (card.archivedAt) throw unprocessable("Archived status cards cannot be refreshed");
     if (card.queries.length === 0) throw conflict("Compile the status-card query before refreshing it");
+    const now = input.now ?? new Date();
     if (card.generatingIssueId) {
       const active = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
       // As in requestCompile: a `blocked` update task is stuck, not in flight, so
       // a manual refresh must be allowed to supersede it instead of no-opping.
-      if (active && !TERMINAL_ISSUE_STATUSES.has(active.status) && active.status !== "blocked") {
+      // A stale claim is superseded for the same reason — the run that was meant
+      // to drive it died, so "Run now" must not answer "already running" forever.
+      const stale = await staleGenerationClaim(card, now);
+      if (!stale && active && !TERMINAL_ISSUE_STATUSES.has(active.status) && active.status !== "blocked") {
         return { card, generatingIssue: active, alreadyGenerating: true, enqueued: false };
+      }
+      if (stale) {
+        // Reaping cancels the dead task, so the dedupe below revives that same
+        // task rather than orphaning a second one for the same fingerprint.
+        await reapStaleGenerationClaim(card, stale, now);
       }
     }
 
-    const now = input.now ?? new Date();
     const snapshot = await executeQueries(card);
     const fingerprint = buildStatusCardFingerprint(snapshot);
     const allChanges = diffStatusCardFingerprint(card.fingerprint as StatusCardFingerprint | null, fingerprint);
@@ -742,10 +815,40 @@ export function statusCardService(
         status: "running",
       });
     }
-    return { card: next, generatingIssue: generationIssue!, alreadyGenerating: deduplicated, enqueued: true, kind, changes };
+    // A deduplicated task that was terminal (or `blocked`) was just revived to
+    // `todo` above, so a wake is owed for it exactly as for a fresh task. Report
+    // "already generating" only for a task that was already in flight, or the
+    // caller skips the wake and the revived task waits for a run that never comes.
+    return {
+      card: next,
+      generatingIssue: generationIssue!,
+      alreadyGenerating: deduplicated && !TERMINAL_ISSUE_STATUSES.has(created.status) && created.status !== "blocked",
+      enqueued: true,
+      kind,
+      changes,
+    };
   }
 
   async function tickDueStatusCards(now = new Date()) {
+    // Reap wedged claims before selecting due cards. A card holding a claim is
+    // excluded from the due query below, so without this pass the one card that
+    // most needs a refresh is the one card the scheduler can never reach again.
+    // `nextEvalAt <= now` is implied by the staleness threshold (a claim is only
+    // stale once it has outlived the interval that set `nextEvalAt`), so this is
+    // a cheap prefilter rather than the rule itself. Manual cards have a null
+    // `nextEvalAt` and are not ticked at all; "Run now" supersedes their claim
+    // through `requestRefresh`.
+    const claimed = await db.select().from(statusCards).where(and(isNull(statusCards.archivedAt), isNotNull(statusCards.generatingIssueId), isNotNull(statusCards.nextEvalAt), lte(statusCards.nextEvalAt, now)));
+    let reaped = 0;
+    for (const card of claimed) {
+      try {
+        const stale = await staleGenerationClaim(card, now);
+        if (stale && await reapStaleGenerationClaim(card, stale, now)) reaped += 1;
+      } catch (err) {
+        logger.warn({ err, cardId: card.id, companyId: card.companyId }, "status card stale claim reap failed");
+      }
+    }
+
     const due = await db.select().from(statusCards).where(and(isNull(statusCards.archivedAt), isNull(statusCards.generatingIssueId), isNotNull(statusCards.nextEvalAt), lte(statusCards.nextEvalAt, now)));
     const enqueued: Array<{ cardId: string; generatingIssue: typeof issues.$inferSelect }> = [];
     let evaluated = 0;
@@ -766,7 +869,7 @@ export function statusCardService(
         );
       }
     }
-    return { evaluated, enqueued };
+    return { evaluated, enqueued, reaped };
   }
 
   async function writeSummary(cardId: string, input: WriteStatusCardSummary, actor: StatusCardWriter) {

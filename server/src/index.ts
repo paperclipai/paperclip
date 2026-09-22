@@ -1701,6 +1701,9 @@ async function startServerWithDatabaseTeardown(
               throw err;
             }
           }));
+          if (result.reaped > 0) {
+            logger.warn({ reaped: result.reaped }, "status-card scheduler released stale generation claims");
+          }
           if (result.evaluated > 0 || result.enqueued.length > 0) {
             logger.info({ evaluated: result.evaluated, enqueued: result.enqueued.length }, "status-card scheduler tick complete");
           }
