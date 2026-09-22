@@ -68,11 +68,30 @@ describeEmbeddedPostgres("review escalation to the local board sentinel", () => 
     return createHash("sha256").update(token).digest("hex");
   }
 
-  async function seedEscalationFixture() {
+  /**
+   * `responsibleUserId` and `createdByUserId` are the escalation candidates.
+   * `assertAssignableUser` accepts only a user with an active membership row,
+   * so these cases name the kind of candidate they mean rather than an id:
+   * a case that varies them varies which candidates the round can land on.
+   */
+  type EscalationCandidate = "sentinel" | "member" | "unassignable" | null;
+
+  async function seedEscalationFixture(
+    candidates: { responsible?: EscalationCandidate; created?: EscalationCandidate } = {},
+  ) {
     const companyId = randomUUID();
     const coderAgentId = randomUUID();
     const qaAgentId = randomUUID();
     const memberUserId = `member-${companyId.slice(0, 8)}`;
+    // A responsible user the board left behind: a real id, but no membership
+    // row in this company, which is all `assertAssignableUser` reads.
+    const unassignableUserId = `stale-${companyId.slice(0, 8)}`;
+    const candidateUserId = (candidate: EscalationCandidate | undefined) => {
+      if (candidate === null) return null;
+      if (candidate === "member") return memberUserId;
+      if (candidate === "unassignable") return unassignableUserId;
+      return LOCAL_BOARD_SENTINEL_USER_ID;
+    };
     await db.insert(companies).values({
       id: companyId,
       name: "Escalation Company",
@@ -179,10 +198,11 @@ describeEmbeddedPostgres("review escalation to the local board sentinel", () => 
       status: "in_review",
       priority: "medium",
       assigneeAgentId: qaAgentId,
-      // The sentinel is the responsible user, so the round cap has somewhere to
-      // escalate to. Whether it is reachable is the deployment's question.
-      responsibleUserId: LOCAL_BOARD_SENTINEL_USER_ID,
-      createdByUserId: LOCAL_BOARD_SENTINEL_USER_ID,
+      // By default the sentinel is both candidates, so the round cap has
+      // somewhere to escalate to. Whether it is reachable is the deployment's
+      // question; whether it can be assigned is the company's.
+      responsibleUserId: candidateUserId(candidates.responsible),
+      createdByUserId: candidateUserId(candidates.created),
       executionPolicy: policy,
       executionState: {
         status: "pending",
@@ -210,7 +230,7 @@ describeEmbeddedPostgres("review escalation to the local board sentinel", () => 
       contextSnapshot: { issueId },
     });
 
-    return { companyId, coderAgentId, qaAgentId, issueId, token, runId };
+    return { companyId, coderAgentId, qaAgentId, issueId, token, runId, memberUserId, unassignableUserId };
   }
 
   function app(deploymentMode: "local_trusted" | "authenticated") {
@@ -277,6 +297,57 @@ describeEmbeddedPostgres("review escalation to the local board sentinel", () => 
     const updated = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
     // Nothing off local_trusted can authenticate as the sentinel, so naming it
     // here would strand the stage. The round returns to the implementer.
+    expect(updated.assigneeUserId).toBeNull();
+    expect(updated.assigneeAgentId).toBe(coderAgentId);
+    expect(updated.executionState).toMatchObject({
+      status: "changes_requested",
+      changesRequestedCount: MAX_REVIEW_ROUNDS,
+    });
+  });
+
+  it("escalates to the creator when the responsible user cannot be assigned", async () => {
+    const { issueId, memberUserId, token, runId } = await seedEscalationFixture({
+      responsible: "unassignable",
+      created: "member",
+    });
+
+    await request(app("authenticated"))
+      .patch(`/api/issues/${issueId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ status: "in_progress", comment: "Round three feedback — still not converging" })
+      .expect(200);
+
+    const updated = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    // The responsible user has no membership row, so `assertAssignableUser`
+    // would refuse the assignment and fail the whole PATCH. The next candidate
+    // is a member and takes the stage instead.
+    expect(updated.assigneeUserId).toBe(memberUserId);
+    expect(updated.assigneeAgentId).toBeNull();
+    expect(updated.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+      currentParticipant: { type: "user", userId: memberUserId },
+      changesRequestedCount: MAX_REVIEW_ROUNDS,
+    });
+  });
+
+  it("hands the round back instead of assigning a user no membership accepts", async () => {
+    const { coderAgentId, issueId, token, runId } = await seedEscalationFixture({
+      responsible: "unassignable",
+      created: "unassignable",
+    });
+
+    // Before the fall-through this answered 404 `Assignee user not found`, and
+    // would answer it again on every retry: the round never completed.
+    await request(app("authenticated"))
+      .patch(`/api/issues/${issueId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ status: "in_progress", comment: "Round three feedback — still not converging" })
+      .expect(200);
+
+    const updated = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
     expect(updated.assigneeUserId).toBeNull();
     expect(updated.assigneeAgentId).toBe(coderAgentId);
     expect(updated.executionState).toMatchObject({

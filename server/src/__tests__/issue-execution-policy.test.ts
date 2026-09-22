@@ -13,13 +13,23 @@ import type { DeploymentMode, IssueExecutionPolicy, IssueExecutionState } from "
  * the field — `StageTransitionInput` requires it — so this default exists only
  * to keep the unrelated cases readable. Reachability of the sentinel *given* a
  * deployment is covered by the middleware/route plumbing suite.
+ *
+ * `canAssignUser` defaults the other way, to "the company can assign anyone":
+ * membership is a database fact a pure transition is told about, and the cases
+ * that do not vary it are not about assignability. Cases that do vary it pass
+ * their own predicate.
  */
 function applyIssueExecutionPolicyTransition(
-  input: Omit<Parameters<typeof applyStageTransition>[0], "deploymentMode"> & {
+  input: Omit<Parameters<typeof applyStageTransition>[0], "deploymentMode" | "canAssignUser"> & {
     deploymentMode?: DeploymentMode;
+    canAssignUser?: (userId: string) => boolean;
   },
 ) {
-  return applyStageTransition({ deploymentMode: "authenticated", ...input });
+  return applyStageTransition({
+    deploymentMode: "authenticated",
+    canAssignUser: () => true,
+    ...input,
+  });
 }
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -2156,6 +2166,75 @@ describe("review round circuit breaker", () => {
       status: "pending",
       currentParticipant: { type: "user", userId: localBoardSentinelUserId },
       changesRequestedCount: 3,
+    });
+  });
+
+  it("escalates to the creator when the responsible user cannot be assigned", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      // `assertAssignableUser` refuses a user without an active membership, so
+      // naming one would fail the PATCH rather than park the stage.
+      canAssignUser: (userId) => userId === boardUserId,
+      issue: reviewPendingIssue(
+        { responsibleUserId: "left-behind-user", createdByUserId: boardUserId },
+        { changesRequestedCount: 2 },
+      ),
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round three feedback — still not converging",
+    });
+
+    expect(result.patch.assigneeUserId).toBe(boardUserId);
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "user", userId: boardUserId },
+      changesRequestedCount: 3,
+    });
+  });
+
+  it("hands the round back when no escalation candidate can be assigned", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      canAssignUser: () => false,
+      issue: reviewPendingIssue({ createdByUserId: boardUserId }, { changesRequestedCount: 2 }),
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round three feedback — still not converging",
+    });
+
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+    expect(result.patch.executionState).toMatchObject({
+      status: "changes_requested",
+      changesRequestedCount: 3,
+    });
+  });
+
+  it("releases a hold on a user the company can no longer assign", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      canAssignUser: () => false,
+      issue: reviewPendingIssue(
+        { assigneeAgentId: null, assigneeUserId: boardUserId },
+        {
+          currentParticipant: { type: "user", userId: boardUserId },
+          changesRequestedCount: 3,
+        },
+      ),
+      policy,
+      requestedStatus: "todo",
+      requestedAssigneePatch: { assigneeAgentId: coderAgentId },
+      actor: { userId: boardUserId },
+    });
+
+    // Same repair path as an unreachable sentinel: archiving the held human's
+    // membership is enough to strand the stage if the hold stays sticky.
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: qaAgentId },
     });
   });
 
