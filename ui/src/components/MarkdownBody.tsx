@@ -1,5 +1,5 @@
 import { isValidElement, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -9,8 +9,14 @@ import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
-import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  fetchIssueDetail,
+  getCachedIssueDetail,
+  ISSUE_DETAIL_STALE_TIME_MS,
+} from "../lib/issueDetailCache";
+import { createConcurrencyLimiter } from "../lib/concurrency-limiter";
+import { useInViewOnce } from "../hooks/useInViewOnce";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkLinkCaseReferences } from "../lib/case-reference";
 
@@ -103,6 +109,14 @@ interface MarkdownBodyProps {
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
 
+/**
+ * Bound in-flight issue-link decoration fetches. A single markdown body can
+ * cite well over a thousand issues (sweep reports, umbrella tickets); without
+ * a limit that render opens one socket per link and serialises the server's
+ * event loop behind work nobody is looking at yet.
+ */
+const issueLinkFetchQueue = createConcurrencyLimiter(4);
+
 function MarkdownIssueLink({
   issuePathId,
   children,
@@ -110,19 +124,42 @@ function MarkdownIssueLink({
   issuePathId: string;
   children: ReactNode;
 }) {
+  const queryClient = useQueryClient();
+  // Viewport first gate: a link below the fold renders as a plain link until it
+  // is scrolled near, so an unread page costs nothing.
+  const { ref, inView } = useInViewOnce();
+  // Cheapest source second: list pages and prior navigations seed the
+  // issue-detail cache, and every link resolved on this page seeds it for the
+  // rest, so a cache hit decorates the link with no request at all.
+  //
+  // Deliberately memoised on `inView`, not evaluated every render: a cache
+  // *miss* scans the whole issue-detail cache, and on the page that motivated
+  // this change that is ~1,500 scans per re-render of the comment feed. The
+  // only moments the answer matters are mount and the moment the fetch would
+  // otherwise fire.
+  // (`inView` is a re-evaluation trigger here, not an input to the lookup.)
+  const cached = useMemo(
+    () => getCachedIssueDetail(queryClient, issuePathId),
+    [queryClient, issuePathId, inView],
+  );
+
   const { data } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
-    queryFn: () => issuesApi.get(issuePathId),
-    staleTime: 60_000,
+    queryFn: () => issueLinkFetchQueue(() => fetchIssueDetail(queryClient, issuePathId)),
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
+    enabled: !cached && inView,
+    initialData: cached,
   });
 
-  const identifier = data?.identifier ?? issuePathId;
-  const title = data?.title ?? identifier;
-  const status = data?.status;
+  const issue = data ?? cached;
+  const identifier = issue?.identifier ?? issuePathId;
+  const title = issue?.title ?? identifier;
+  const status = issue?.status;
   const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
 
   return (
     <Link
+      ref={ref}
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
       // Boxless inline mention: the unified status glyph + a regular-weight
