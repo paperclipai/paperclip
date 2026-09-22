@@ -439,6 +439,7 @@ export function TaskChatComposer({
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [uploadBlockedSend, setUploadBlockedSend] = useState(false);
   const [attachments, setAttachmentState] = useState<ComposerAttachment[]>(
     () =>
       draftKey
@@ -828,6 +829,18 @@ export function TaskChatComposer({
     Boolean(onStop || stopControl.stopping);
   const uploadPending = attachments.some((item) => item.status === "uploading");
   const uploadFailed = attachments.some((item) => item.status === "error");
+  // Derived, so the message follows the upload state and clears when the
+  // upload settles instead of going stale. Reset during render so a later
+  // upload does not show the message before the next send attempt.
+  if (uploadBlockedSend && !uploadPending && !uploadFailed)
+    setUploadBlockedSend(false);
+  const uploadBlockedReason = !uploadBlockedSend
+    ? null
+    : uploadPending
+      ? "Waiting for the attachment upload to finish."
+      : uploadFailed
+        ? "Remove the failed attachment before sending."
+        : null;
   const takeoverVisible = Boolean(
     takeover && !pause && !queuedEdit && !submitting && !uploadPending,
   );
@@ -915,10 +928,15 @@ export function TaskChatComposer({
       }
       return;
     }
+    // A pending or failed upload used to abort the send with no on-screen
+    // reason, so Enter looked broken. Show the reason under the editor.
+    if (uploadPending || uploadFailed) {
+      setUploadBlockedSend(true);
+      return;
+    }
+    setUploadBlockedSend(false);
     if (
       (!trimmed && attachedRefs.length === 0) ||
-      uploadPending ||
-      uploadFailed ||
       submitting ||
       uncertainSubmission ||
       disabled
@@ -1336,13 +1354,13 @@ export function TaskChatComposer({
             />
           </div>
 
-          {actionError ? (
+          {actionError || uploadBlockedReason ? (
             <p
               className="px-1 text-xs text-destructive"
               role="alert"
               data-testid="task-chat-goal-error"
             >
-              {actionError}
+              {actionError ?? uploadBlockedReason}
             </p>
           ) : null}
 
