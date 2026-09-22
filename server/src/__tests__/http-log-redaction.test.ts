@@ -399,6 +399,35 @@ describe("HTTP logger redaction", () => {
     expect(log.res.headers["set-cookie"]).toBe("[Redacted]");
   });
 
+  it.each([200, 403, 500])("redacts runtime GitHub capabilities from HTTP %i logs", async (status) => {
+    const capability = "runtime-github-capability-canary";
+    const chunks: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.post("/runtime-tools/github/credentials", (_req, res) => {
+      res.status(status).json({ status });
+    });
+
+    await request(app)
+      .post("/runtime-tools/github/credentials")
+      .set("X-Paperclip-Github-Capability", capability)
+      .send({})
+      .expect(status);
+
+    const output = chunks.join("");
+    expect(output).not.toContain(capability);
+    const log = JSON.parse(output.trim());
+    expect(log.req.headers["x-paperclip-github-capability"]).toBe("[Redacted]");
+    expect(log.req.url).toBe("/runtime-tools/github/credentials");
+    expect(log.res.statusCode).toBe(status);
+  });
+
   it("drops OAuth callback query data from the message and structured request", async () => {
     const chunks: string[] = [];
     const stream = new Writable({
