@@ -3513,10 +3513,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     const createdTasks = createdTasksQuery.data ?? EMPTY_ISSUES;
     const hasError = createdTasksQuery.isError || childIssuesError;
     return {
-      count: new Set([...childIssues, ...createdTasks].map((task) => task.id)).size,
+      count: new Set([...(issue?.ancestors ?? []), ...childIssues, ...createdTasks].map((task) => task.id)).size,
       hasError,
       content: (
         <TaskDetailTasksPanel
+          ancestors={issue?.ancestors}
+          issueLinkState={resolvedIssueDetailState ?? location.state}
           subtasks={childIssues}
           createdTasks={createdTasks}
           projects={projects ?? []}
@@ -3531,6 +3533,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     };
   }, [
     tasksTab,
+    issue?.ancestors,
+    resolvedIssueDetailState,
+    location.state,
     streamlinedTaskDetailEnabled,
     childIssues,
     childIssuesLoading,

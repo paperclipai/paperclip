@@ -50,6 +50,18 @@ function task(number: number, title: string, status: Issue["status"], parentId: 
   });
 }
 
+const rootTask = task(1800, "Make company work easy to follow", "in_progress", null);
+const parentTask = task(1900, "Deliver the board experience", "in_review", rootTask.id);
+function ancestor(issue: Issue): NonNullable<Issue["ancestors"]>[number] {
+  return {
+    id: issue.id, identifier: issue.identifier, title: issue.title,
+    description: issue.description, status: issue.status, priority: issue.priority,
+    assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
+    projectId: issue.projectId, goalId: issue.goalId, project: null, goal: null,
+  };
+}
+const sourceAncestors = [ancestor(parentTask), ancestor(rootTask)];
+
 export const taskCandidates = [
   task(1954, "Scoping review", "done", sourceTask.id, "origin-run-legacy"),
   task(1964, "Phase 5 — UI polish", "in_progress", sourceTask.id),
@@ -102,8 +114,9 @@ export function SeedData({ children }: { children: React.ReactNode }) {
   return ready ? children : null;
 }
 
-export function TasksPanel({ items }: { items: Issue[] }) {
+export function TasksPanel({ items, ancestors = [] }: { items: Issue[]; ancestors?: NonNullable<Issue["ancestors"]> }) {
   return <TaskDetailTasksPanel
+    ancestors={ancestors}
     subtasks={items.filter((item) => item.parentId === sourceTask.id)}
     createdTasks={items.filter((item) => item.originRunId && runSources.get(item.originRunId) === sourceTask.id)}
     projects={storybookProjects}
@@ -123,10 +136,17 @@ sourceTask.planDocument = planDocument;
 sourceTask.documentSummaries = [planDocument];
 
 /** Only replaces data. Every full-page pixel is rendered by the production route. */
-function TaskPageData({ children, scenario }: { children: React.ReactNode; scenario: Scenario }) {
+function TaskPageData({ children, scenario, withAncestors }: { children: React.ReactNode; scenario: Scenario; withAncestors: boolean }) {
   const client = useQueryClient();
   const [fixture] = useState(() => {
-    const rows = [sourceTask, ...taskCandidates];
+    const rows = withAncestors
+      ? [
+          { ...sourceTask, parentId: parentTask.id, ancestors: sourceAncestors },
+          { ...parentTask, ancestors: [ancestor(rootTask)] },
+          { ...rootTask, ancestors: [] },
+          ...taskCandidates,
+        ]
+      : [sourceTask, ...taskCandidates];
     const comments = scenario === "arrival" ? [] : [baseComments[1]!];
     for (const row of rows) {
       seedIssueDetailCache(client, row);
@@ -136,6 +156,7 @@ function TaskPageData({ children, scenario }: { children: React.ReactNode; scena
         client.setQueryData([...queryKeys.issues.documents(ref), "plan"], row.id === sourceTask.id ? planDocument : null);
         client.setQueryData(queryKeys.issues.liveRuns(ref), []);
         client.setQueryData(queryKeys.issues.activeRun(ref), null);
+        client.setQueryData(["issues", "tree-control-state", ref], { activePauseHold: null });
       }
     }
     client.setQueryData(queryKeys.health, { status: "ok", deploymentMode: "local_trusted", bootstrapStatus: "ready" });
@@ -183,6 +204,7 @@ function TaskPageData({ children, scenario }: { children: React.ReactNode; scena
         }
         if (resource === "documents/plan") return row.id === sourceTask.id ? Response.json(planDocument) : Response.json({ error: "No plan" }, { status: 404 });
         if (resource === "documents") return Response.json(row.id === sourceTask.id ? [planDocument] : []);
+        if (resource === "tree-control/state") return Response.json({ activePauseHold: null });
         if (resource === "active-run") return Response.json(null);
         if (resource === "read") return Response.json({ ok: true });
         if (["interactions", "attachments", "work-products", "live-runs", "runs", "feedback-votes", "activity", "approvals", "references"].includes(resource)) return Response.json([]);
@@ -215,15 +237,15 @@ function TaskRoute({ tasksTab }: { tasksTab?: React.ComponentProps<typeof IssueD
   return <IssueDetail tasksTab={issueId === sourceTask.identifier ? tasksTab : undefined} />;
 }
 
-export function OriginatingTasksReview({ scenario = "mixed", fullPage = true, narrow = false, baseline = false }: { scenario?: Scenario; fullPage?: boolean; narrow?: boolean; baseline?: boolean }) {
+export function OriginatingTasksReview({ scenario = "mixed", fullPage = true, narrow = false, baseline = false, withAncestors = false }: { scenario?: Scenario; fullPage?: boolean; narrow?: boolean; baseline?: boolean; withAncestors?: boolean }) {
   const [items, setItems] = useState(() => scenarioTasks(scenario));
   const tasksTab = useMemo(() => ({
-    count: items.length,
-    content: <TasksPanel items={items} />,
-  }), [items]);
+    count: items.length + (withAncestors ? sourceAncestors.length : 0),
+    content: <TasksPanel items={items} ancestors={withAncestors ? sourceAncestors : []} />,
+  }), [items, withAncestors]);
   if (!fullPage) return <div className={cn("min-h-screen bg-background p-4 text-foreground", narrow ? "max-w-md" : "max-w-3xl")}>{tasksTab.content}</div>;
   return (
-    <TaskPageData scenario={scenario}>
+    <TaskPageData scenario={scenario} withAncestors={withAncestors}>
       {scenario === "arrival" && <div className="flex items-center gap-3 border-b border-border p-2 text-xs"><span>Story control</span><Button size="sm" variant="outline" disabled={items.length > 0} onClick={() => setItems(scenarioTasks("other").slice(0, 1))}>Simulate task creation</Button></div>}
       <Routes>
         <Route path="/:companyPrefix" element={<Layout />}>
