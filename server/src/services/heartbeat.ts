@@ -1303,11 +1303,44 @@ const nativeSessionResumeDispatchTimers = new Map<
 // module scope like activeRunExecutions above, so both the pure
 // resolveHeartbeatSchedulingSuppression() check and every heartbeatService()
 // instance see the same drain.
-let taskDrainState: { startedAt: Date; expiresAt: Date | null } | null = null;
+//
+// The optional termination option adds a scheduled deadline to the drain,
+// and a private generation number identifies one exact drain. A later drain
+// (a repeated start, or a stop) always gets a new, higher number, and it
+// never repeats. A termination timer captures the generation number of the
+// drain that armed it, so it can test — right before it acts — whether the
+// drain it was armed for is still the live one. `isTaskDrainGenerationLive`
+// is that test.
+type TaskDrainState = {
+  startedAt: Date;
+  expiresAt: Date | null;
+  terminateActiveTasks: boolean;
+  terminateAt: Date | null;
+  generation: number;
+};
+let taskDrainState: TaskDrainState | null = null;
+let taskDrainGeneration = 0;
 
-function readTaskDrain(
-  now: Date,
-): { startedAt: Date; expiresAt: Date | null } | null {
+const DEFAULT_TASK_DRAIN_TERMINATION_GRACE_SEC = 30;
+
+/**
+ * Read the termination grace period, in milliseconds, from
+ * `PAPERCLIP_TASK_DRAIN_TERMINATION_GRACE_PERIOD_SECONDS`. Reads the
+ * environment on every call (not once at module load), so a test can set
+ * the variable without a module reset. A missing, empty, non-numeric, zero,
+ * or negative value falls back to the 30-second default.
+ */
+function readTaskDrainTerminationGraceMs(): number {
+  const raw = process.env.PAPERCLIP_TASK_DRAIN_TERMINATION_GRACE_PERIOD_SECONDS;
+  const parsedSeconds = raw === undefined || raw.trim().length === 0 ? NaN : Number(raw);
+  const seconds =
+    Number.isFinite(parsedSeconds) && parsedSeconds > 0
+      ? parsedSeconds
+      : DEFAULT_TASK_DRAIN_TERMINATION_GRACE_SEC;
+  return seconds * 1000;
+}
+
+function readTaskDrain(now: Date): TaskDrainState | null {
   if (
     taskDrainState &&
     taskDrainState.expiresAt !== null &&
@@ -1319,28 +1352,55 @@ function readTaskDrain(
 }
 
 /** Compute the drain a start call would apply, without changing state. */
-export function computeTaskDrain(opts: { ttlMs?: number | null } = {}): {
+export function computeTaskDrain(
+  opts: { ttlMs?: number | null; terminateActiveTasks?: boolean } = {},
+): {
   startedAt: Date;
   expiresAt: Date | null;
+  terminateActiveTasks: boolean;
+  terminateAt: Date | null;
 } {
   const startedAt = new Date();
   const ttlMs = opts.ttlMs ?? null;
   const expiresAt =
     ttlMs === null ? null : new Date(startedAt.getTime() + ttlMs);
-  return { startedAt, expiresAt };
+  const terminateActiveTasks = opts.terminateActiveTasks ?? false;
+  const terminateAt =
+    !terminateActiveTasks || expiresAt === null
+      ? null
+      : new Date(
+          Math.max(
+            startedAt.getTime(),
+            expiresAt.getTime() - readTaskDrainTerminationGraceMs(),
+          ),
+        );
+  return { startedAt, expiresAt, terminateActiveTasks, terminateAt };
 }
 
-/** Assign the given drain as the current task-drain state. */
+/**
+ * Assign the given drain as the current task-drain state, under a new
+ * generation number. Returns that number, so a caller can arm a timer that
+ * later proves — via `isTaskDrainGenerationLive` — whether this exact drain
+ * is still the live one.
+ */
 export function applyTaskDrain(drain: {
   startedAt: Date;
   expiresAt: Date | null;
-}): void {
-  taskDrainState = drain;
+  terminateActiveTasks: boolean;
+  terminateAt: Date | null;
+}): number {
+  taskDrainGeneration += 1;
+  taskDrainState = { ...drain, generation: taskDrainGeneration };
+  return taskDrainGeneration;
 }
 
-export function startTaskDrain(opts: { ttlMs?: number | null } = {}): {
+export function startTaskDrain(
+  opts: { ttlMs?: number | null; terminateActiveTasks?: boolean } = {},
+): {
   startedAt: Date;
   expiresAt: Date | null;
+  terminateActiveTasks: boolean;
+  terminateAt: Date | null;
 } {
   const drain = computeTaskDrain(opts);
   applyTaskDrain(drain);
@@ -1349,8 +1409,19 @@ export function startTaskDrain(opts: { ttlMs?: number | null } = {}): {
 
 export function stopTaskDrain(): { wasActive: boolean } {
   const wasActive = readTaskDrain(new Date()) !== null;
+  taskDrainGeneration += 1;
   taskDrainState = null;
   return { wasActive };
+}
+
+/**
+ * Report whether the given generation number still names the live drain.
+ * A stopped drain, a replaced drain, and an expired drain are all not
+ * live. A timer callback must call this first, inside the transition
+ * queue, before it stops one run.
+ */
+export function isTaskDrainGenerationLive(generation: number): boolean {
+  return readTaskDrain(new Date())?.generation === generation;
 }
 
 /**
@@ -1363,6 +1434,8 @@ export function getTaskDrainStatus(): {
   draining: boolean;
   startedAt: Date | null;
   expiresAt: Date | null;
+  terminateActiveTasks: boolean;
+  terminateAt: Date | null;
   activeRuns: number;
   pendingWakes: number;
   quiescent: boolean;
@@ -1374,6 +1447,8 @@ export function getTaskDrainStatus(): {
     draining: state !== null,
     startedAt: state?.startedAt ?? null,
     expiresAt: state?.expiresAt ?? null,
+    terminateActiveTasks: state?.terminateActiveTasks ?? false,
+    terminateAt: state?.terminateAt ?? null,
     activeRuns,
     pendingWakes,
     quiescent: activeRuns === 0 && pendingWakes === 0,
@@ -28957,6 +29032,56 @@ export function heartbeatService(
     }
   }
 
+  /**
+   * Stop every cancellable run, for the task-drain termination option. Uses
+   * `cancelRunInternal` directly, so each run keeps its normal startup
+   * fencing, finalization, and provider receipt checks — the same path
+   * every other stop takes. One failed run is logged and does not stop the
+   * loop, so a single stuck run cannot block the rest.
+   *
+   * Returns the attempted, cancelled, and failed run identifiers, grouped
+   * by company. A company with no cancellable run gets no entry; the
+   * caller is responsible for writing a zero-outcome record for a company
+   * this map does not name.
+   */
+  async function terminateActiveRunsForTaskDrain(
+    reason: string,
+  ): Promise<
+    Map<
+      string,
+      { attemptedRunIds: string[]; cancelledRunIds: string[]; failedRunIds: string[] }
+    >
+  > {
+    const outcomesByCompany = new Map<
+      string,
+      { attemptedRunIds: string[]; cancelledRunIds: string[]; failedRunIds: string[] }
+    >();
+    const runs = await db
+      .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]));
+
+    for (const run of runs) {
+      let outcome = outcomesByCompany.get(run.companyId);
+      if (!outcome) {
+        outcome = { attemptedRunIds: [], cancelledRunIds: [], failedRunIds: [] };
+        outcomesByCompany.set(run.companyId, outcome);
+      }
+      outcome.attemptedRunIds.push(run.id);
+      try {
+        await cancelRunInternal(run.id, reason);
+        outcome.cancelledRunIds.push(run.id);
+      } catch (err) {
+        outcome.failedRunIds.push(run.id);
+        logger.error(
+          { err, runId: run.id, companyId: run.companyId },
+          "task drain termination: failed to stop one active run",
+        );
+      }
+    }
+    return outcomesByCompany;
+  }
+
   async function cancelActiveForAgentInternal(
     agentId: string,
     reason = "Cancelled due to agent pause",
@@ -29451,6 +29576,8 @@ export function heartbeatService(
     getTaskDrainStatus,
     computeTaskDrain,
     applyTaskDrain,
+    isTaskDrainGenerationLive,
+    terminateActiveRunsForTaskDrain,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,

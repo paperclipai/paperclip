@@ -125,7 +125,17 @@ export const MAX_TASK_DRAIN_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const startTaskDrainRequestSchema = z.object({
   ttlMs: z.number().int().positive().max(MAX_TASK_DRAIN_TTL_MS).nullable().optional(),
-}).strict();
+  // Opt-in: stop each active run a fixed period before the drain expires.
+  // A termination deadline needs an expiry time, so this option requires a
+  // positive ttlMs — the refinement below rejects the option without one.
+  terminateActiveTasks: z.boolean().optional(),
+}).strict().refine(
+  (value) => !value.terminateActiveTasks || (typeof value.ttlMs === "number" && value.ttlMs > 0),
+  {
+    message: "terminateActiveTasks requires a positive ttlMs",
+    path: ["terminateActiveTasks"],
+  },
+);
 
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
 // The patch schema removes each default so an absent key stays absent. Declare

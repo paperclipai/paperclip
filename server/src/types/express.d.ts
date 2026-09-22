@@ -32,6 +32,12 @@ declare global {
         identityContextId?: string | null;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "cloud_control" | "none";
       };
+      /**
+       * The requestId of a verified Cloud control assertion, set only when
+       * one authorized this request. An audit value only — it makes no
+       * authorization decision.
+       */
+      cloudControlRequestId?: string;
     }
   }
 }

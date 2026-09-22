@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import { logger } from "../middleware/logger.js";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
@@ -17,6 +18,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
   applyTaskDrain: vi.fn(),
   stopTaskDrain: vi.fn(),
   getTaskDrainStatus: vi.fn(),
+  isTaskDrainGenerationLive: vi.fn(),
+  terminateActiveRunsForTaskDrain: vi.fn(),
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -52,8 +55,42 @@ function defaultTransactionImplementation(fn: (tx: unknown) => Promise<unknown>)
 // Module-scoped (not rebuilt per createApp call) so a test can assert how
 // many times a request opened a transaction — the task-drain audit writes
 // for every company must share ONE transaction, not one each.
+// The termination deadline handler checks for an already-committed outcome
+// row before it writes one (see instance-settings.ts), so the mock db needs
+// a chainable select().from().where().limit() alongside transaction(). A
+// test that wants to model "a prior attempt already committed" overrides
+// this default resolved value; every other test keeps the default empty
+// result, so the write proceeds exactly as it did before that check existed.
+function defaultSelectChain() {
+  return {
+    from: () => ({
+      where: () => ({
+        limit: () => Promise.resolve([] as { id: string }[]),
+      }),
+    }),
+  };
+}
+// Read the literal string value a drizzle-orm `eq()`/`and()` condition
+// binds as a query parameter. A test that must prove which dedup key the
+// route actually queried with — not just whether a row came back — walks
+// the condition object for its bound `Param` values, since the mock
+// `where()` above normally ignores its argument.
+function collectBoundParamValues(node: unknown, found: string[]): void {
+  if (node === null || typeof node !== "object") return;
+  const record = node as Record<string, unknown>;
+  if (typeof record.value === "string") found.push(record.value);
+  if (Array.isArray(record.value)) {
+    for (const entry of record.value) {
+      if (typeof entry === "string") found.push(entry);
+    }
+  }
+  if (Array.isArray(record.queryChunks)) {
+    for (const chunk of record.queryChunks) collectBoundParamValues(chunk, found);
+  }
+}
 const mockDb = {
   transaction: vi.fn(defaultTransactionImplementation),
+  select: vi.fn(defaultSelectChain),
 };
 
 describe("instance settings routes", () => {
@@ -86,6 +123,8 @@ describe("instance settings routes", () => {
     // next one.
     mockDb.transaction.mockReset();
     mockDb.transaction.mockImplementation(defaultTransactionImplementation);
+    mockDb.select.mockReset();
+    mockDb.select.mockImplementation(defaultSelectChain);
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getExperimental.mockReset();
@@ -97,6 +136,9 @@ describe("instance settings routes", () => {
     mockHeartbeatService.applyTaskDrain.mockReset();
     mockHeartbeatService.stopTaskDrain.mockReset();
     mockHeartbeatService.getTaskDrainStatus.mockReset();
+    mockHeartbeatService.isTaskDrainGenerationLive.mockReset();
+    mockHeartbeatService.terminateActiveRunsForTaskDrain.mockReset();
+    mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(new Map());
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
@@ -918,6 +960,9 @@ describe("instance settings routes", () => {
       mockHeartbeatService.computeTaskDrain.mockReset();
       mockHeartbeatService.applyTaskDrain.mockReset();
       mockHeartbeatService.stopTaskDrain.mockReset();
+      mockHeartbeatService.isTaskDrainGenerationLive.mockReset();
+      mockHeartbeatService.terminateActiveRunsForTaskDrain.mockReset();
+      mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(new Map());
     });
 
     it("returns the idle status", async () => {
@@ -941,7 +986,10 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual(drain);
-      expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({ ttlMs: 21_600_000 });
+      expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({
+        ttlMs: 21_600_000,
+        terminateActiveTasks: false,
+      });
       expect(mockDb.transaction).toHaveBeenCalledTimes(1);
       expect(mockLogActivity).toHaveBeenCalledTimes(2);
       for (const call of mockLogActivity.mock.calls) {
@@ -965,7 +1013,10 @@ describe("instance settings routes", () => {
       const res = await request(app).post("/api/instance/task-drain").send({});
 
       expect(res.status).toBe(200);
-      expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({ ttlMs: null });
+      expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({
+        ttlMs: null,
+        terminateActiveTasks: false,
+      });
     });
 
     it("writes an activity record for every company, then stops the drain, using one wasActive value throughout", async () => {
@@ -1287,6 +1338,769 @@ describe("instance settings routes", () => {
       expect(negativeRes.status).toBe(400);
 
       expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+    });
+
+    describe("terminateActiveTasks option", () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("post_task_drain_rejects_terminate_active_tasks_without_a_ttl", async () => {
+        const app = await createApp(adminActor);
+
+        const res = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ terminateActiveTasks: true });
+
+        expect(res.status).toBe(400);
+        expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+      });
+
+      it("post_task_drain_accepts_terminate_active_tasks_with_a_ttl_and_reports_terminate_at", async () => {
+        const drain = {
+          startedAt: "2026-08-29T00:00:00.000Z",
+          expiresAt: "2026-08-29T00:01:00.000Z",
+          terminateActiveTasks: true,
+          terminateAt: new Date(Date.now() + 60 * 60 * 1000),
+        };
+        mockHeartbeatService.computeTaskDrain.mockReturnValue(drain);
+        const app = await createApp(adminActor);
+
+        const res = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 60_000, terminateActiveTasks: true });
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ ...drain, terminateAt: drain.terminateAt.toISOString() });
+        expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({
+          ttlMs: 60_000,
+          terminateActiveTasks: true,
+        });
+      });
+
+      it("post_task_drain_without_the_option_reports_terminate_active_tasks_false_and_a_null_terminate_at", async () => {
+        const drain = {
+          startedAt: "2026-08-29T00:00:00.000Z",
+          expiresAt: null,
+          terminateActiveTasks: false,
+          terminateAt: null,
+        };
+        mockHeartbeatService.computeTaskDrain.mockReturnValue(drain);
+        const app = await createApp(adminActor);
+
+        const res = await request(app).post("/api/instance/task-drain").send({});
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual(drain);
+        expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({
+          ttlMs: null,
+          terminateActiveTasks: false,
+        });
+      });
+
+      it("post_task_drain_accepts_the_option_from_a_cloud_control_actor_without_an_extra_permission", async () => {
+        // Supplementary coverage only: the principal pinning test runs the
+        // real signed assertion through cloudControlMiddleware and this
+        // route, in cloud-control-task-drain.test.ts.
+        const drain = {
+          startedAt: "2026-08-29T00:00:00.000Z",
+          expiresAt: "2026-08-29T00:01:00.000Z",
+          terminateActiveTasks: true,
+          terminateAt: new Date(Date.now() + 60 * 60 * 1000),
+        };
+        mockHeartbeatService.computeTaskDrain.mockReturnValue(drain);
+        const app = await createApp({
+          type: "board",
+          userId: "paperclip-cloud",
+          source: "cloud_control",
+          isInstanceAdmin: true,
+        });
+
+        const res = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 60_000, terminateActiveTasks: true });
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ ...drain, terminateAt: drain.terminateAt.toISOString() });
+      });
+
+      it("post_task_drain_accepts_the_option_from_a_local_instance_admin", async () => {
+        const drain = {
+          startedAt: "2026-08-29T00:00:00.000Z",
+          expiresAt: "2026-08-29T00:01:00.000Z",
+          terminateActiveTasks: true,
+          terminateAt: new Date(Date.now() + 60 * 60 * 1000),
+        };
+        mockHeartbeatService.computeTaskDrain.mockReturnValue(drain);
+        const app = await createApp({
+          type: "board",
+          userId: "local-admin",
+          source: "local_implicit",
+          isInstanceAdmin: false,
+        });
+
+        const res = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 60_000, terminateActiveTasks: true });
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ ...drain, terminateAt: drain.terminateAt.toISOString() });
+      });
+
+      it("post_task_drain_rejects_the_option_from_a_non_admin_session_actor", async () => {
+        const app = await createApp(nonAdminActor);
+
+        const res = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 60_000, terminateActiveTasks: true });
+
+        expect(res.status).toBe(403);
+        expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+      });
+
+      it("post_task_drain_records_every_arm_time_audit_field_in_the_start_activity_details", async () => {
+        const drain = {
+          startedAt: "2026-08-29T00:00:00.000Z",
+          expiresAt: "2026-08-29T00:01:00.000Z",
+          terminateActiveTasks: true,
+          terminateAt: new Date(Date.now() + 60 * 60 * 1000),
+        };
+        mockHeartbeatService.computeTaskDrain.mockReturnValue(drain);
+        const app = await createApp(adminActor);
+
+        const res = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 60_000, terminateActiveTasks: true });
+
+        expect(res.status).toBe(200);
+        expect(mockLogActivity).toHaveBeenCalledTimes(2);
+        for (const call of mockLogActivity.mock.calls) {
+          expect(call[1]).toMatchObject({
+            action: "instance.task_drain.started",
+            details: {
+              terminateActiveTasks: true,
+              startedAt: drain.startedAt,
+              expiresAt: drain.expiresAt,
+              terminateAt: drain.terminateAt,
+              initiatingActor: expect.objectContaining({
+                actorSource: "session",
+                cloudControlRequestId: null,
+              }),
+            },
+          });
+        }
+      });
+
+      it("the_timer_stops_each_cancellable_run_at_the_deadline", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(7);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        const app = await createApp(adminActor);
+
+        const res = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 60_000, terminateActiveTasks: true });
+        expect(res.status).toBe(200);
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(mockHeartbeatService.isTaskDrainGenerationLive).toHaveBeenCalledWith(7);
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).toHaveBeenCalledTimes(1);
+      });
+
+      it("the_timer_does_not_fire_before_the_deadline", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(7);
+        const app = await createApp(adminActor);
+
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+
+        await vi.advanceTimersByTimeAsync(29_999);
+
+        expect(mockHeartbeatService.isTaskDrainGenerationLive).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).not.toHaveBeenCalled();
+      });
+
+      it("a_repeated_post_replaces_the_timer_and_the_replaced_drain_terminates_no_run", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const app = await createApp(adminActor);
+
+        mockHeartbeatService.computeTaskDrain.mockReturnValueOnce({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt: new Date("2026-01-01T00:00:30.000Z"),
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValueOnce(1);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+
+        mockHeartbeatService.computeTaskDrain.mockReturnValueOnce({
+          startedAt: new Date("2026-01-01T00:00:05.000Z"),
+          expiresAt: new Date("2026-01-01T00:02:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt: new Date("2026-01-01T00:01:30.000Z"),
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValueOnce(2);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 115_000, terminateActiveTasks: true });
+
+        // The first drain's deadline passes; the repeated POST already
+        // cleared its timer, so nothing fires.
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).not.toHaveBeenCalled();
+
+        // The second drain's deadline fires its own timer.
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(mockHeartbeatService.isTaskDrainGenerationLive).toHaveBeenCalledWith(2);
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).toHaveBeenCalledTimes(1);
+      });
+
+      it("a_delete_cancels_a_scheduled_termination", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.getTaskDrainStatus.mockReturnValue({
+          draining: true,
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+          activeRuns: 0,
+          pendingWakes: 0,
+          quiescent: true,
+        });
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+
+        const deleteRes = await request(app).delete("/api/instance/task-drain");
+        expect(deleteRes.status).toBe(200);
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(mockHeartbeatService.isTaskDrainGenerationLive).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).not.toHaveBeenCalled();
+      });
+
+      it("a_callback_that_the_event_loop_already_queued_terminates_no_run_after_a_delete", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        // Model a callback the event loop already queued the instant a stop
+        // landed: clearTimeout cannot revoke it, so this proves the
+        // generation check inside the transition queue is the actual
+        // control — not the clearTimeout call a DELETE also makes.
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(false);
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(mockHeartbeatService.isTaskDrainGenerationLive).toHaveBeenCalledWith(1);
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).not.toHaveBeenCalled();
+      });
+
+      it("the_termination_writes_an_outcome_activity_row_for_each_company", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+        mockDb.transaction.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+        const outcomeCalls = mockLogActivity.mock.calls.filter(
+          ([, input]: [unknown, { action: string }]) => input.action === "instance.task_drain.active_tasks_terminated",
+        );
+        expect(outcomeCalls.map(([, input]: [unknown, { companyId: string }]) => input.companyId).sort()).toEqual([
+          "company-1",
+          "company-2",
+        ]);
+      });
+
+      it("the_termination_writes_every_outcome_audit_field", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] }]]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        const [company1Call] = mockLogActivity.mock.calls.filter(
+          ([, input]: [unknown, { action: string; companyId: string }]) =>
+            input.action === "instance.task_drain.active_tasks_terminated" && input.companyId === "company-1",
+        );
+        expect(company1Call[1].details).toMatchObject({
+          terminateAt,
+          attemptedRunIds: ["run-1"],
+          attemptedRunCount: 1,
+          cancelledRunIds: ["run-1"],
+          cancelledRunCount: 1,
+          failedRunIds: [],
+          failedRunCount: 0,
+          initiatingActor: expect.objectContaining({ actorSource: "session" }),
+        });
+        expect(company1Call[1].details.executedAt).toBeInstanceOf(Date);
+      });
+
+      it("the_termination_writes_an_outcome_activity_row_with_empty_lists_when_no_run_is_active", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(new Map());
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        const outcomeCalls = mockLogActivity.mock.calls.filter(
+          ([, input]: [unknown, { action: string }]) => input.action === "instance.task_drain.active_tasks_terminated",
+        );
+        expect(outcomeCalls).toHaveLength(2);
+        for (const [, input] of outcomeCalls as [unknown, Record<string, unknown>][]) {
+          expect(input.details).toMatchObject({
+            attemptedRunIds: [],
+            attemptedRunCount: 0,
+            cancelledRunIds: [],
+            cancelledRunCount: 0,
+            failedRunIds: [],
+            failedRunCount: 0,
+          });
+        }
+      });
+
+      it("the_termination_writes_a_partial_outcome_row_that_holds_both_a_cancelled_run_and_a_failed_run", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([
+            [
+              "company-1",
+              { attemptedRunIds: ["run-1", "run-2"], cancelledRunIds: ["run-1"], failedRunIds: ["run-2"] },
+            ],
+          ]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        const [company1Call] = mockLogActivity.mock.calls.filter(
+          ([, input]: [unknown, { action: string; companyId: string }]) =>
+            input.action === "instance.task_drain.active_tasks_terminated" && input.companyId === "company-1",
+        );
+        expect(company1Call[1].details).toMatchObject({
+          attemptedRunIds: ["run-1", "run-2"],
+          attemptedRunCount: 2,
+          cancelledRunIds: ["run-1"],
+          cancelledRunCount: 1,
+          failedRunIds: ["run-2"],
+          failedRunCount: 1,
+        });
+      });
+
+      it("the_outcome_activity_row_holds_no_error_text", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-2"], cancelledRunIds: [], failedRunIds: ["run-2"] }]]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        const [company1Call] = mockLogActivity.mock.calls.filter(
+          ([, input]: [unknown, { action: string; companyId: string }]) =>
+            input.action === "instance.task_drain.active_tasks_terminated" && input.companyId === "company-1",
+        );
+        expect(company1Call[1].details).not.toHaveProperty("error");
+        expect(company1Call[1].details).not.toHaveProperty("errorMessage");
+        expect(JSON.stringify(company1Call[1].details)).not.toMatch(/error/i);
+      });
+
+      it("the_outcome_activity_row_holds_only_the_run_identifiers_of_its_own_company", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([
+            ["company-1", { attemptedRunIds: ["run-a"], cancelledRunIds: ["run-a"], failedRunIds: [] }],
+            ["company-2", { attemptedRunIds: ["run-b"], cancelledRunIds: ["run-b"], failedRunIds: [] }],
+          ]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        const outcomeCalls = mockLogActivity.mock.calls.filter(
+          ([, input]: [unknown, { action: string }]) => input.action === "instance.task_drain.active_tasks_terminated",
+        ) as [unknown, { companyId: string; details: { attemptedRunIds: string[] } }][];
+        const company1Details = outcomeCalls.find(([, input]) => input.companyId === "company-1")?.[1].details;
+        const company2Details = outcomeCalls.find(([, input]) => input.companyId === "company-2")?.[1].details;
+        expect(company1Details?.attemptedRunIds).toEqual(["run-a"]);
+        expect(company2Details?.attemptedRunIds).toEqual(["run-b"]);
+      });
+
+      // These two tests use the real clock, not vi.useFakeTimers(): a real
+      // POST/DELETE HTTP round trip followed by an advanced fake clock is
+      // unreliable in this suite (the fake timer queue does not resolve a
+      // second supertest request the same way it resolves the first). A
+      // short real delay proves the same behavior without that coupling.
+      it("re_arms_the_prior_deadline_when_a_replacing_post_fails_after_clearing_the_timer", async () => {
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        const app = await createApp(adminActor);
+
+        const firstTerminateAt = new Date(Date.now() + 100);
+        mockHeartbeatService.computeTaskDrain.mockReturnValueOnce({
+          startedAt: new Date(),
+          expiresAt: new Date(Date.now() + 1000),
+          terminateActiveTasks: true,
+          terminateAt: firstTerminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValueOnce(1);
+        const firstRes = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 1000, terminateActiveTasks: true });
+        expect(firstRes.status).toBe(200);
+
+        // The replacing POST clears the first timer, then its own audit
+        // write fails, so the request as a whole fails.
+        mockHeartbeatService.computeTaskDrain.mockReturnValueOnce({
+          startedAt: new Date(),
+          expiresAt: new Date(Date.now() + 100_000),
+          terminateActiveTasks: true,
+          terminateAt: new Date(Date.now() + 100_000),
+        });
+        mockLogActivity.mockRejectedValueOnce(new Error("activity insert failed"));
+        const secondRes = await request(app)
+          .post("/api/instance/task-drain")
+          .send({ ttlMs: 100_000, terminateActiveTasks: true });
+        expect(secondRes.status).toBeGreaterThanOrEqual(500);
+        // The second drain never applied, so the first one is still live.
+        expect(mockHeartbeatService.applyTaskDrain).toHaveBeenCalledTimes(1);
+
+        // The first drain's original deadline still fires: the failed
+        // replacement re-armed the timer it had cleared.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        expect(mockHeartbeatService.isTaskDrainGenerationLive).toHaveBeenCalledWith(1);
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).toHaveBeenCalledTimes(1);
+      });
+
+      it("re_arms_the_deadline_when_a_delete_fails_after_clearing_the_timer", async () => {
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        const terminateAt = new Date(Date.now() + 100);
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date(),
+          expiresAt: new Date(Date.now() + 1000),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.getTaskDrainStatus.mockReturnValue({
+          draining: true,
+          startedAt: new Date(),
+          expiresAt: new Date(Date.now() + 1000),
+          terminateActiveTasks: true,
+          terminateAt,
+          activeRuns: 0,
+          pendingWakes: 0,
+          quiescent: true,
+        });
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 1000, terminateActiveTasks: true });
+
+        // The DELETE clears the timer, then its own audit write fails, so
+        // the request as a whole fails and the drain never stops.
+        mockLogActivity.mockRejectedValueOnce(new Error("activity insert failed"));
+        const deleteRes = await request(app).delete("/api/instance/task-drain");
+        expect(deleteRes.status).toBeGreaterThanOrEqual(500);
+        expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+
+        // The deadline still fires: the failed stop re-armed the timer it
+        // had cleared.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        expect(mockHeartbeatService.isTaskDrainGenerationLive).toHaveBeenCalledWith(1);
+        expect(mockHeartbeatService.terminateActiveRunsForTaskDrain).toHaveBeenCalledTimes(1);
+      });
+
+      it("retries_the_outcome_audit_write_on_a_transient_connection_drop_and_still_records_it", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] }]]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+
+        // The first company-list read after the runs are already cancelled
+        // hits a transient closed-connection error; the retry then
+        // succeeds, so the outcome still gets written.
+        const transientErr = Object.assign(new Error("write CONNECTION_CLOSED db.example.internal:5432"), {
+          code: "CONNECTION_CLOSED",
+        });
+        mockInstanceSettingsService.listCompanyIds.mockRejectedValueOnce(transientErr);
+
+        await vi.advanceTimersByTimeAsync(30_200);
+
+        const outcomeCalls = mockLogActivity.mock.calls.filter(
+          ([, input]: [unknown, { action: string }]) => input.action === "instance.task_drain.active_tasks_terminated",
+        );
+        expect(outcomeCalls).toHaveLength(2);
+      });
+
+      it("does_not_duplicate_the_outcome_row_when_a_retry_finds_a_prior_attempt_already_committed", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] }]]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+        mockDb.transaction.mockClear();
+        mockInstanceSettingsService.listCompanyIds.mockClear();
+
+        // A connection can drop after the server commits the outcome
+        // transaction but before the driver reports success back. Model
+        // that: an existing row for this exact termination is already in
+        // the table when the deadline handler runs, exactly as it would be
+        // after that kind of ambiguous failure. The write must not repeat.
+        mockDb.select.mockImplementation(() => ({
+          from: () => ({
+            where: () => ({
+              limit: () => Promise.resolve([{ id: "activity-already-written" }]),
+            }),
+          }),
+        }));
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(mockDb.transaction).not.toHaveBeenCalled();
+        expect(mockLogActivity).not.toHaveBeenCalled();
+        expect(mockInstanceSettingsService.listCompanyIds).not.toHaveBeenCalled();
+      });
+
+      it("does_not_treat_a_pre_restart_activity_row_as_a_duplicate_of_a_same_numbered_generation", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        // The in-memory generation counter starts at 0 on every process
+        // boot, so a fresh process can hand out generation 1 again. Model
+        // that here: this run's own generation is 1, standing in for a
+        // process restart after an earlier, unrelated termination also
+        // held generation 1.
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] }]]),
+        );
+
+        // A row already sits in the table under the dedup key a
+        // generation-only scheme would have used for generation 1. It
+        // belongs to that earlier, unrelated termination — a real
+        // termination from before the restart — not to this run.
+        const preRestartEntityId = "task-drain-termination:1";
+        let queriedEntityId: string | null = null;
+        mockDb.select.mockImplementation(() => ({
+          from: () => ({
+            where: (condition: unknown) => ({
+              limit: () => {
+                const boundValues: string[] = [];
+                collectBoundParamValues(condition, boundValues);
+                queriedEntityId =
+                  boundValues.find((value) => value.startsWith("task-drain-termination:")) ?? null;
+                const matchesPreRestartRow = queriedEntityId === preRestartEntityId;
+                return Promise.resolve(
+                  matchesPreRestartRow ? [{ id: "activity-from-before-restart" }] : [],
+                );
+              },
+            }),
+          }),
+        }));
+
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+        mockDb.transaction.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        // The dedup key this run queried with must not be the plain
+        // generation number, and it must not match the pre-restart row —
+        // otherwise this run's own outcome audit would be silently
+        // skipped as an apparent duplicate of a termination it never ran.
+        expect(queriedEntityId).not.toBeNull();
+        expect(queriedEntityId).not.toBe(preRestartEntityId);
+        expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+        expect(mockLogActivity).toHaveBeenCalledWith(
+          TX_SENTINEL,
+          expect.objectContaining({ action: "instance.task_drain.active_tasks_terminated" }),
+          expect.any(Array),
+        );
+      });
+
+      it("logs_the_full_termination_outcome_when_the_audit_write_cannot_be_retried_into_success", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+        const terminateAt = new Date("2026-01-01T00:00:30.000Z");
+        mockHeartbeatService.computeTaskDrain.mockReturnValue({
+          startedAt: new Date("2026-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2026-01-01T00:01:00.000Z"),
+          terminateActiveTasks: true,
+          terminateAt,
+        });
+        mockHeartbeatService.applyTaskDrain.mockReturnValue(1);
+        mockHeartbeatService.isTaskDrainGenerationLive.mockReturnValue(true);
+        mockHeartbeatService.terminateActiveRunsForTaskDrain.mockResolvedValue(
+          new Map([["company-1", { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] }]]),
+        );
+        const app = await createApp(adminActor);
+        await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000, terminateActiveTasks: true });
+        mockLogActivity.mockClear();
+
+        const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
+        // A non-transient failure (no closed-connection code) is not
+        // retried; the runs are already cancelled, so this must not throw
+        // out of the deadline handler unlogged.
+        mockInstanceSettingsService.listCompanyIds.mockRejectedValue(new Error("permanently unavailable"));
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        const recoveryCall = loggerErrorSpy.mock.calls.find(
+          ([, message]) =>
+            message === "task drain termination ran but its audit record failed to write; recover the outcome from this log entry",
+        );
+        expect(recoveryCall).toBeDefined();
+        expect(recoveryCall?.[0]).toMatchObject({
+          generation: 1,
+          outcomesByCompany: {
+            "company-1": { attemptedRunIds: ["run-1"], cancelledRunIds: ["run-1"], failedRunIds: [] },
+          },
+        });
+        expect(mockLogActivity).not.toHaveBeenCalled();
+        loggerErrorSpy.mockRestore();
+      });
     });
   });
 });
