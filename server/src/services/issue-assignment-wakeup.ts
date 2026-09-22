@@ -41,8 +41,14 @@ export function queueIssueAssignmentWakeup(input: {
   durableChatRequest?: DurableChatWakeupRequest;
 }) {
   // Blocked issues are waiting on their unblock owner or an external
-  // dependency. Routine assignment mutations must not restart their assignee.
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog" || input.issue.status === "blocked") return;
+  // dependency. Routine assignment mutations must not restart their assignee,
+  // but explicit event-driven wakes (for example a resolved secret proposal)
+  // still need to reach the assignee.
+  if (
+    !input.issue.assigneeAgentId ||
+    input.issue.status === "backlog" ||
+    (input.issue.status === "blocked" && input.reason === "issue_assigned")
+  ) return;
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {

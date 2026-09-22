@@ -20,6 +20,22 @@ describe("issue assignment wakeups", () => {
     expect(wakeup).not.toHaveBeenCalled();
   });
 
+  it("preserves explicit event-driven wakes for blocked issues", async () => {
+    const wakeup = vi.fn().mockResolvedValue(undefined);
+    await queueIssueAssignmentWakeup({
+      heartbeat: { wakeup },
+      issue: { id: "issue-1", assigneeAgentId: "agent-1", status: "blocked" },
+      reason: "secret_proposal_resolved",
+      mutation: "secret_proposal_approved",
+      contextSource: "secret.proposal.resolution",
+    });
+
+    expect(wakeup).toHaveBeenCalledOnce();
+    expect(wakeup).toHaveBeenCalledWith("agent-1", expect.objectContaining({
+      reason: "secret_proposal_resolved",
+    }));
+  });
+
   it("continues to wake an assigned in-progress issue", () => {
     const wakeup = vi.fn(async () => undefined);
 
