@@ -64,6 +64,7 @@ import {
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
   isCodexHarnessCrash,
+  isCodexInvalidApiKeyError,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -1473,9 +1474,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const invalidApiKey =
+        (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
+        isCodexInvalidApiKeyError({
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
       const providerQuota =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
+        !invalidApiKey &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1484,6 +1494,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
+        !invalidApiKey &&
         !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
@@ -1492,6 +1503,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const harnessCrash =
         !authRefreshFailure &&
+        // A rejected OpenAI key exits non-zero before any protocol terminal
+        // event, which otherwise looks exactly like a harness crash. Excluding
+        // it here keeps errorFamily off "transient_upstream" so the permanent
+        // auth failure is not retried.
+        !invalidApiKey &&
         !providerQuota &&
         !transientUpstream &&
         isCodexHarnessCrash({
@@ -1519,6 +1535,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? attempt.proc.errorCode
             : authRefreshFailure
             ? authRefreshFailure
+            : invalidApiKey
+            ? "codex_auth_required"
             : providerQuota
             ? "provider_quota"
             : transientUpstream
