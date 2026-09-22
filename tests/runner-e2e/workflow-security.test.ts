@@ -682,6 +682,23 @@ describe("public repository paid workflow security", () => {
     );
   });
 
+  it("resolves each trusted reporting lockfile before frozen install and AWS credentials", async () => {
+    const workflow = await readFile(
+      path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"), "utf8",
+    );
+    for (const jobName of ["report", "publish_history"]) {
+      const job = workflow.split(`\n  ${jobName}:`)[1]!.split(/\n  [a-z_]+:/u)[0]!;
+      const resolve = job.indexOf("pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile");
+      const install = job.indexOf("pnpm install --frozen-lockfile");
+      expect(job).toContain("ref: ${{ github.sha }}");
+      expect(job).not.toContain("resolved-target-lockfile");
+      expect(resolve, jobName).toBeGreaterThan(-1);
+      expect(install, jobName).toBeGreaterThan(resolve);
+      const credentials = job.indexOf("aws-actions/configure-aws-credentials@");
+      if (credentials >= 0) expect(install).toBeLessThan(credentials);
+    }
+  });
+
   it("binds rerun evidence and Pages artifacts to the exact workflow attempt", async () => {
     const workflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"),

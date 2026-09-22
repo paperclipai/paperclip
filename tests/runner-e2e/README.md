@@ -985,3 +985,19 @@ Current proof and remaining decisions are recorded in
 the original worker-loss attempts quarantined both providers. The version 9 crash
 eval requires a usable fresh conversation after verified cleanup. A passing
 quarantine guard alone is not a recovered workflow.
+
+### Blank-page investigation
+
+Private `browser-diagnostics.json` includes the final document readiness, whether
+`#root` mounted content, whether a service worker controls the page, outstanding
+script/style paths, and recent module 304/error statuses. These fields contain no
+response bodies, headers, or query strings. A 304 is ordinary cache validation;
+recording it does not change the grade or retry the page. The public report still
+uses the existing evidence allowlist.
+
+The provider-free `tests/e2e/task-reload.spec.ts` regression opens a persisted task
+with the production service worker, navigates to the same URL, and reloads it. It
+requires the saved content and usable composer to remain visible. Run it with the
+standard `tests/e2e/playwright.config.ts`; no provider or Daytona credentials are
+needed. Browser-support tests separately exercise blank-root/pending-module
+failure evidence, so a future blank page is distinguishable from a loaded task.
