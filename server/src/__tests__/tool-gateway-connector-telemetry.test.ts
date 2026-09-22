@@ -240,7 +240,7 @@ async function settledEvents(expectedCount: number) {
   await vi.waitFor(() => {
     expect(
       track.mock.calls.filter(
-        ([name]) => name === "connector.invocation_completed",
+        ([name]) => name === "connection.invoked",
       ).length,
     ).toBeGreaterThanOrEqual(expectedCount);
   });
@@ -248,7 +248,7 @@ async function settledEvents(expectedCount: number) {
   // chance to land before asserting the exact count.
   await new Promise((resolve) => setTimeout(resolve, 150));
   return track.mock.calls.filter(
-    ([name]) => name === "connector.invocation_completed",
+    ([name]) => name === "connection.invoked",
   );
 }
 
@@ -458,7 +458,7 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
     // filter to the proposed connector event.
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(
-      track.mock.calls.filter(([name]) => name === "connector.invocation_completed"),
+      track.mock.calls.filter(([name]) => name === "connection.invoked"),
     ).toHaveLength(0);
 
     const [pendingRequest] = await db.select().from(toolActionRequests);

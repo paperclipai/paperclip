@@ -2,9 +2,9 @@ import { eq } from "drizzle-orm";
 import { toolConnections, toolInvocations, type Db } from "@paperclipai/db";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
 import {
-  trackConnectorConnectionCreated,
-  trackConnectorConnectionUpdated,
-  trackConnectorInvocationCompleted,
+  trackConnectionCreated,
+  trackConnectionUpdated,
+  trackConnectionInvoked,
 } from "@paperclipai/shared/telemetry";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -14,8 +14,8 @@ type ToolInvocationRow = typeof toolInvocations.$inferSelect;
 
 export type ConnectorSetupFlow = "gallery" | "api" | "example" | "composio_sync";
 export type ConnectorChangeSource =
-  | "update_api"
-  | "gallery_setup"
+  | "api"
+  | "gallery"
   | "oauth_callback"
   | "credential_refresh"
   | "archive"
@@ -79,12 +79,12 @@ function isToolPurpose(connection: Pick<ToolConnectionRow, "connectionPurpose">)
 }
 
 /**
- * Emits one proposed `connector.connection_created` event for a tool-purpose
+ * Emits one proposed `connection.created` event for a tool-purpose
  * connection row that a caller already committed. Channel and AI connections
  * never emit. This function never throws; a telemetry failure must never fail
  * a connection setup path.
  */
-export function emitConnectorConnectionCreated(
+export function emitConnectionCreated(
   connection: ToolConnectionRow,
   setupFlow: ConnectorSetupFlow,
 ): void {
@@ -92,7 +92,7 @@ export function emitConnectorConnectionCreated(
     const client = getTelemetryClient();
     if (!client) return;
     if (!isToolPurpose(connection)) return;
-    trackConnectorConnectionCreated(client, {
+    trackConnectionCreated(client, {
       connector_key: connectorKeyForConnection(connection),
       transport: connection.transport,
       auth_kind: connection.authKind,
@@ -103,19 +103,19 @@ export function emitConnectorConnectionCreated(
   } catch (err) {
     logger.warn(
       { err, connectionId: connection.id },
-      "failed to emit connector.connection_created telemetry",
+      "failed to emit connection.created telemetry",
     );
   }
 }
 
 /**
- * Emits one proposed `connector.connection_updated` event when a committed
+ * Emits one proposed `connection.updated` event when a committed
  * write changed a tool-purpose connection's persisted lifecycle state
  * (`status` or `enabled`). Metadata-only saves, health polls, credential
  * rotation, and catalog refreshes do not change either field and therefore
  * never emit. This function never throws.
  */
-export function emitConnectorConnectionUpdated(
+export function emitConnectionUpdated(
   connection: ToolConnectionRow,
   previous: Pick<ToolConnectionRow, "status" | "enabled">,
   changeSource: ConnectorChangeSource,
@@ -130,7 +130,7 @@ export function emitConnectorConnectionUpdated(
     ) {
       return;
     }
-    trackConnectorConnectionUpdated(client, {
+    trackConnectionUpdated(client, {
       connector_key: connectorKeyForConnection(connection),
       transport: connection.transport,
       auth_kind: connection.authKind,
@@ -143,14 +143,16 @@ export function emitConnectorConnectionUpdated(
   } catch (err) {
     logger.warn(
       { err, connectionId: connection.id },
-      "failed to emit connector.connection_updated telemetry",
+      "failed to emit connection.updated telemetry",
     );
   }
 }
 
 /**
- * Emits one proposed `connector.invocation_completed` event for an invocation
- * a caller already wrote to a terminal status. Never await it: like
+ * Emits one proposed `connection.invoked` event for an invocation
+ * a caller already wrote to a terminal status. Despite the name, this is a
+ * completion event: it records finished invocation attempts and their
+ * terminal status, never invocation starts. Never await it: like
  * `agent.task_run`, this is best-effort background work and must not delay
  * the caller's own response or lifecycle writes.
  *
@@ -175,14 +177,14 @@ export function emitConnectorConnectionUpdated(
  * replay that re-writes a terminal status emits again. Deduplication state
  * is out of scope for this proposal.
  */
-export async function emitConnectorInvocationCompleted(
+export async function emitConnectionInvoked(
   db: Db,
   invocationId: string,
 ): Promise<void> {
   try {
     const client = getTelemetryClient();
     if (!client) return;
-    if (!client.isRegisteredEventName("connector.invocation_completed")) return;
+    if (!client.isRegisteredEventName("connection.invoked")) return;
 
     const joined = await db
       .select({ invocation: toolInvocations, connection: toolConnections })
@@ -209,7 +211,7 @@ export async function emitConnectorInvocationCompleted(
         ? Math.max(0, Math.round((completedAtMs - startedAtMs) / 1000))
         : undefined;
 
-    trackConnectorInvocationCompleted(client, {
+    trackConnectionInvoked(client, {
       connector_key: connectorKeyForConnection(connection),
       transport: connection.transport,
       status: invocation.status,
@@ -219,7 +221,7 @@ export async function emitConnectorInvocationCompleted(
   } catch (err) {
     logger.warn(
       { err, invocationId },
-      "failed to emit connector.invocation_completed telemetry",
+      "failed to emit connection.invoked telemetry",
     );
   }
 }

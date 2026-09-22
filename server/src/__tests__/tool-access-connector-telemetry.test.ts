@@ -40,11 +40,11 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported
 type Db = ReturnType<typeof createDb>;
 
 function createdEvents() {
-  return track.mock.calls.filter(([name]) => name === "connector.connection_created");
+  return track.mock.calls.filter(([name]) => name === "connection.created");
 }
 
 function updatedEvents() {
-  return track.mock.calls.filter(([name]) => name === "connector.connection_updated");
+  return track.mock.calls.filter(([name]) => name === "connection.updated");
 }
 
 async function createCompany(db: Db) {
@@ -251,7 +251,7 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
     expect(events).toHaveLength(1);
     expect(events[0]?.[1]).toMatchObject({
       connector_key: "custom",
-      change_source: "update_api",
+      change_source: "api",
       previous_enabled: true,
       enabled: false,
       previous_status: "active",
@@ -272,7 +272,7 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
 
     await svc.updateConnection(parent.id, { enabled: false });
     let events = updatedEvents();
-    // Parent transition (update_api) + child cascade (composio_sync).
+    // Parent transition (api) + child cascade (composio_sync).
     expect(events).toHaveLength(2);
     const childEvent = events.find(
       ([, dims]) => (dims as { change_source: string }).change_source === "composio_sync",

@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TelemetryClient } from "./client.js";
 import { resolveTelemetryConfig } from "./config.js";
 import {
-  trackConnectorConnectionCreated,
-  trackConnectorConnectionUpdated,
-  trackConnectorInvocationCompleted,
+  trackConnectionCreated,
+  trackConnectionUpdated,
+  trackConnectionInvoked,
 } from "./events.js";
 import type { TelemetryState } from "./types.js";
 
@@ -29,7 +29,7 @@ function makeClient(config?: { enabled?: boolean }) {
 }
 
 function trackAllProposedConnectorEvents(client: TelemetryClient) {
-  trackConnectorConnectionCreated(client, {
+  trackConnectionCreated(client, {
     connector_key: "github",
     transport: "mcp_remote",
     auth_kind: "oauth",
@@ -37,17 +37,17 @@ function trackAllProposedConnectorEvents(client: TelemetryClient) {
     status: "active",
     enabled: true,
   });
-  trackConnectorConnectionUpdated(client, {
+  trackConnectionUpdated(client, {
     connector_key: "github",
     transport: "mcp_remote",
     auth_kind: "oauth",
-    change_source: "update_api",
+    change_source: "api",
     previous_status: "draft",
     status: "active",
     previous_enabled: false,
     enabled: true,
   });
-  trackConnectorInvocationCompleted(client, {
+  trackConnectionInvoked(client, {
     connector_key: "github",
     transport: "mcp_remote",
     status: "succeeded",
@@ -92,9 +92,9 @@ describe("proposed connector events against the real TelemetryClient", () => {
 
   it("reports the three connector event names as unregistered", () => {
     const { client } = makeClient();
-    expect(client.isRegisteredEventName("connector.connection_created")).toBe(false);
-    expect(client.isRegisteredEventName("connector.connection_updated")).toBe(false);
-    expect(client.isRegisteredEventName("connector.invocation_completed")).toBe(false);
+    expect(client.isRegisteredEventName("connection.created")).toBe(false);
+    expect(client.isRegisteredEventName("connection.updated")).toBe(false);
+    expect(client.isRegisteredEventName("connection.invoked")).toBe(false);
     expect(client.isRegisteredEventName("project.created")).toBe(true);
   });
 

@@ -153,7 +153,7 @@ export function trackAgentTaskRun(
   });
 }
 
-export function trackConnectorConnectionCreated(
+export function trackConnectionCreated(
   client: TelemetryClient,
   dims: {
     connector_key: RawDimension<"custom">;
@@ -166,20 +166,20 @@ export function trackConnectorConnectionCreated(
 ): void {
   client.track(
     // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure which catalog connectors installations create connections for
-    "connector.connection_created",
+    "connection.created",
     dims,
   );
 }
 
-export function trackConnectorConnectionUpdated(
+export function trackConnectionUpdated(
   client: TelemetryClient,
   dims: {
     connector_key: RawDimension<"custom">;
     transport: RawDimension<"mcp_remote" | "rest_api" | "local_stdio">;
     auth_kind: RawDimension<"oauth" | "api_key" | "none">;
     change_source: RawDimension<
-      | "update_api"
-      | "gallery_setup"
+      | "api"
+      | "gallery"
       | "oauth_callback"
       | "credential_refresh"
       | "archive"
@@ -194,12 +194,12 @@ export function trackConnectorConnectionUpdated(
 ): void {
   client.track(
     // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure connector lifecycle transitions (configured, paused, archived) after creation
-    "connector.connection_updated",
+    "connection.updated",
     dims,
   );
 }
 
-export function trackConnectorInvocationCompleted(
+export function trackConnectionInvoked(
   client: TelemetryClient,
   dims: {
     connector_key: RawDimension<"custom">;
@@ -217,8 +217,8 @@ export function trackConnectorInvocationCompleted(
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure whether connected connectors are successfully used and where invocations fail
-    "connector.invocation_completed",
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure whether connected connectors are successfully used and where invocations fail; records completed invocation attempts and their terminal status, never invocation starts
+    "connection.invoked",
     dims,
   );
 }

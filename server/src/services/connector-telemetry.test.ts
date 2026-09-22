@@ -14,9 +14,9 @@ vi.mock("../telemetry.js", () => ({
 
 const {
   connectorKeyForConnection,
-  emitConnectorConnectionCreated,
-  emitConnectorConnectionUpdated,
-  emitConnectorInvocationCompleted,
+  emitConnectionCreated,
+  emitConnectionUpdated,
+  emitConnectionInvoked,
   invocationOrigin,
 } = await import("./connector-telemetry.js");
 
@@ -119,10 +119,10 @@ describe("invocationOrigin", () => {
   });
 });
 
-describe("emitConnectorConnectionCreated", () => {
+describe("emitConnectionCreated", () => {
   it("emits catalog identity and lifecycle state for tool connections", () => {
-    emitConnectorConnectionCreated(connectionRow(), "gallery");
-    expect(track).toHaveBeenCalledWith("connector.connection_created", {
+    emitConnectionCreated(connectionRow(), "gallery");
+    expect(track).toHaveBeenCalledWith("connection.created", {
       connector_key: "github",
       transport: "mcp_remote",
       auth_kind: "oauth",
@@ -133,40 +133,40 @@ describe("emitConnectorConnectionCreated", () => {
   });
 
   it("never emits for channel or AI connections", () => {
-    emitConnectorConnectionCreated(connectionRow({ connectionPurpose: "channel" }), "api");
+    emitConnectionCreated(connectionRow({ connectionPurpose: "channel" }), "api");
     expect(track).not.toHaveBeenCalled();
   });
 
   it("is a no-op without an initialized telemetry client", () => {
     telemetryClient = null;
-    expect(() => emitConnectorConnectionCreated(connectionRow(), "gallery")).not.toThrow();
+    expect(() => emitConnectionCreated(connectionRow(), "gallery")).not.toThrow();
   });
 
   it("swallows client failures instead of failing the setup path", () => {
     track.mockImplementation(() => {
       throw new Error("sink offline");
     });
-    expect(() => emitConnectorConnectionCreated(connectionRow(), "gallery")).not.toThrow();
+    expect(() => emitConnectionCreated(connectionRow(), "gallery")).not.toThrow();
   });
 });
 
-describe("emitConnectorConnectionUpdated", () => {
+describe("emitConnectionUpdated", () => {
   it("stays silent when the committed write left status and enabled unchanged", () => {
-    emitConnectorConnectionUpdated(
+    emitConnectionUpdated(
       connectionRow(),
       { status: "active", enabled: true },
-      "update_api",
+      "api",
     );
     expect(track).not.toHaveBeenCalled();
   });
 
   it("emits the transition when lifecycle status changes", () => {
-    emitConnectorConnectionUpdated(
+    emitConnectionUpdated(
       connectionRow(),
       { status: "draft", enabled: true },
       "oauth_callback",
     );
-    expect(track).toHaveBeenCalledWith("connector.connection_updated", {
+    expect(track).toHaveBeenCalledWith("connection.updated", {
       connector_key: "github",
       transport: "mcp_remote",
       auth_kind: "oauth",
@@ -179,10 +179,10 @@ describe("emitConnectorConnectionUpdated", () => {
   });
 
   it("emits when only the enabled flag flips", () => {
-    emitConnectorConnectionUpdated(
+    emitConnectionUpdated(
       connectionRow({ enabled: false }),
       { status: "active", enabled: true },
-      "update_api",
+      "api",
     );
     expect(track).toHaveBeenCalledTimes(1);
     expect(track.mock.calls[0]?.[1]).toMatchObject({
@@ -192,19 +192,19 @@ describe("emitConnectorConnectionUpdated", () => {
   });
 
   it("never emits for non-tool connections even on lifecycle changes", () => {
-    emitConnectorConnectionUpdated(
+    emitConnectionUpdated(
       connectionRow({ connectionPurpose: "channel" }),
       { status: "draft", enabled: true },
-      "update_api",
+      "api",
     );
     expect(track).not.toHaveBeenCalled();
   });
 });
 
-describe("emitConnectorInvocationCompleted", () => {
+describe("emitConnectionInvoked", () => {
   it("emits terminal outcome, origin, and duration from the committed row", async () => {
-    await emitConnectorInvocationCompleted(fakeDb(invocationRow(), connectionRow()), "inv-1");
-    expect(track).toHaveBeenCalledWith("connector.invocation_completed", {
+    await emitConnectionInvoked(fakeDb(invocationRow(), connectionRow()), "inv-1");
+    expect(track).toHaveBeenCalledWith("connection.invoked", {
       connector_key: "github",
       transport: "mcp_remote",
       status: "succeeded",
@@ -214,7 +214,7 @@ describe("emitConnectorInvocationCompleted", () => {
   });
 
   it("omits duration when the invocation never recorded a start time", async () => {
-    await emitConnectorInvocationCompleted(
+    await emitConnectionInvoked(
       fakeDb(invocationRow({ startedAt: null, status: "denied" }), connectionRow()),
       "inv-1",
     );
@@ -223,7 +223,7 @@ describe("emitConnectorInvocationCompleted", () => {
   });
 
   it("ignores in-flight statuses so approval waits never count as failures", async () => {
-    await emitConnectorInvocationCompleted(
+    await emitConnectionInvoked(
       fakeDb(invocationRow({ status: "awaiting_approval" }), connectionRow()),
       "inv-1",
     );
@@ -231,11 +231,11 @@ describe("emitConnectorInvocationCompleted", () => {
   });
 
   it("ignores invocations without a connection or with a non-tool connection", async () => {
-    await emitConnectorInvocationCompleted(
+    await emitConnectionInvoked(
       fakeDb(invocationRow({ connectionId: null }), connectionRow()),
       "inv-1",
     );
-    await emitConnectorInvocationCompleted(
+    await emitConnectionInvoked(
       fakeDb(invocationRow(), connectionRow({ connectionPurpose: "channel" })),
       "inv-1",
     );
@@ -244,7 +244,7 @@ describe("emitConnectorInvocationCompleted", () => {
 
   it("resolves without emitting when the invocation row is missing", async () => {
     await expect(
-      emitConnectorInvocationCompleted(fakeDb(null, null), "inv-missing"),
+      emitConnectionInvoked(fakeDb(null, null), "inv-missing"),
     ).resolves.toBeUndefined();
     expect(track).not.toHaveBeenCalled();
   });
@@ -252,17 +252,17 @@ describe("emitConnectorInvocationCompleted", () => {
   it("reads nothing from the database while the event name is unregistered", async () => {
     isRegisteredEventName.mockReturnValue(false);
     const db = fakeDb(invocationRow(), connectionRow());
-    await emitConnectorInvocationCompleted(db, "inv-1");
+    await emitConnectionInvoked(db, "inv-1");
     expect(db.selectCalls()).toBe(0);
     expect(track).not.toHaveBeenCalled();
     expect(isRegisteredEventName).toHaveBeenCalledWith(
-      "connector.invocation_completed",
+      "connection.invoked",
     );
   });
 
   it("loads the invocation and connection with a single read once registered", async () => {
     const db = fakeDb(invocationRow(), connectionRow());
-    await emitConnectorInvocationCompleted(db, "inv-1");
+    await emitConnectionInvoked(db, "inv-1");
     expect(db.selectCalls()).toBe(1);
     expect(track).toHaveBeenCalledTimes(1);
   });
