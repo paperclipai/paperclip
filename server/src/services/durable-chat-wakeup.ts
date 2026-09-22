@@ -161,7 +161,17 @@ export async function authorizeFailedChatRunRetryWake(
 
 /** Prevent automatic recovery from treating committed-but-unadmitted input as
  * an ordinary stranded task. A receipt is historical admission evidence even
- * if its run subsequently fails or is cancelled; skipped was never admitted. */
+ * if its run subsequently fails or is cancelled; skipped was never admitted.
+ *
+ * A `failed` row only holds the task while it could still have belonged to it.
+ * Admission requires `issue.assigneeAgentId === action.payload.agentId`, so a
+ * failed row bound to a different agent can never be admitted for this task —
+ * it is structurally inert, not pending input. One real path produces such rows:
+ * a card carried into a thread by a bridge agent (the endpoint owner) and
+ * answered by the board leaves an `inbound_wakeup` bound to that bridge agent
+ * against the report's task. Settling it `failed` used to hold every later
+ * non-chat wake on the task, including `issue_blockers_resolved`, which strands
+ * the tree. `preparing`/`issued`/`processing` rows always hold: they are live. */
 export function unadmittedChatWakeupCondition(
   issueId: SQLWrapper,
   companyId: SQLWrapper,
@@ -178,6 +188,15 @@ export function unadmittedChatWakeupCondition(
           and chat_admission.company_id = chat_unadmitted.company_id
           and chat_admission.agent_id::text = chat_unadmitted.payload->>'agentId'
           and chat_admission.status <> 'skipped'
+      )
+      and (
+        chat_unadmitted.status <> 'failed'
+        or chat_unadmitted.payload->>'agentId' = (
+          select chat_hold_issue.assignee_agent_id::text
+          from issues chat_hold_issue
+          where chat_hold_issue.id = ${issueId}
+            and chat_hold_issue.company_id = ${companyId}
+        )
       )
       and (chat_unadmitted.status <> 'failed' or not exists (
         select 1 from chat_actions chat_later

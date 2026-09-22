@@ -52,7 +52,11 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import {
+  isOpenCodeProviderAdmissionError,
+  isOpenCodeUnknownSessionError,
+  parseOpenCodeJsonl,
+} from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -743,17 +747,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const initial = await runAttempt(sessionId);
       const initialFailed =
         !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
-      if (
-        sessionId &&
-        initialFailed &&
-        isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-      ) {
-        await onLog(
-          "stdout",
-          `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-        );
-        const retry = await runAttempt(null);
-        return toResult(retry, true);
+      if (sessionId && initialFailed) {
+        if (isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)) {
+          await onLog(
+            "stdout",
+            `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+          );
+          const retry = await runAttempt(null);
+          return toResult(retry, true);
+        }
+        // A provider admission failure (e.g. "failed to read request body",
+        // "Too many images", or "spawn E2BIG") means the saved session body
+        // itself is the problem: every resume of that poisoned session fails
+        // identically. Rotate to a fresh session so the agent recovers instead
+        // of burning its bounded retry budget on a body the provider will never
+        // accept. `clearSession` makes the cleared session durable for the task.
+        if (
+          isOpenCodeProviderAdmissionError(
+            initial.proc.stdout,
+            initial.rawStderr,
+          )
+        ) {
+          await onLog(
+            "stdout",
+            `[paperclip] OpenCode provider rejected the resumed session body; retrying on a fresh session and clearing the poisoned session.\n`,
+          );
+          const retry = await runAttempt(null);
+          return toResult(retry, true);
+        }
       }
 
       return toResult(initial);

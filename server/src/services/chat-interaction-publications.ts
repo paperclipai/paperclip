@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   chatActions,
   chatConversations,
   chatEndpoints,
@@ -31,6 +32,34 @@ export const CHAT_QUESTION_ACTION_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 export const TELEGRAM_CALLBACK_DATA_LIMIT_BYTES = 64;
 
 type ChatPublicationDb = Pick<Db, "select" | "insert" | "update">;
+
+/**
+ * The idempotency key of a terminal acknowledgement for one card.
+ *
+ * It is scoped to the *conversation*, not just the endpoint, because a single
+ * endpoint can carry several conversations (for example two `#general` threads
+ * for the same task). Keying only by endpoint made the second thread's
+ * acknowledgement a no-op under the `(company_id, idempotency_key)` unique
+ * index, so the board could answer in thread B and never hear back. Every
+ * conversation that actually received the card gets its own acknowledgement.
+ */
+export function interactionResolutionPublicationKey(input: {
+  interactionId: string;
+  endpointId: string;
+  conversationId: string;
+}): string {
+  return `interaction-resolution:${input.interactionId}:${input.endpointId}:${input.conversationId}`;
+}
+
+/** True when `idempotencyKey` is the terminal acknowledgement for this binding. */
+export function isInteractionResolutionPublicationKey(input: {
+  idempotencyKey: string;
+  interactionId: string;
+  endpointId: string;
+  conversationId: string;
+}): boolean {
+  return input.idempotencyKey === interactionResolutionPublicationKey(input);
+}
 
 function terminalNativeInteractionCopy(
   interaction: IssueThreadInteraction,
@@ -184,6 +213,79 @@ export function nativeTelegramConfirmation(
   return interaction;
 }
 
+/**
+ * Resolves which non-creator agents may carry a pending interaction card on
+ * their own endpoint. Two cases qualify, and nothing else:
+ *
+ * 1. A manager in the creator's `reportsTo` chain of command.
+ * 2. The company's CEO, who is the board's single point of contact and already
+ *    holds company-wide authority, so carrying a report's gate here does not
+ *    widen authority — it only lets that authority be exercised from chat.
+ *
+ * The endpoint's `assignedAgentId` still has to match one of these ids, the
+ * resolver policy on the interaction is unchanged, and the per-endpoint
+ * idempotency key means a bridged card is never duplicated. When no manager or
+ * CEO exists the set is empty, so the endpoint filter fails closed.
+ */
+async function resolveBridgedManagerAgentIds(
+  db: ChatPublicationDb,
+  interaction: IssueThreadInteraction,
+  _conversations: Array<typeof chatConversations.$inferSelect>,
+): Promise<Set<string>> {
+  if (!interaction.createdByAgentId) return new Set();
+  const companyAgents = await db
+    .select({ id: agents.id, reportsTo: agents.reportsTo, role: agents.role })
+    .from(agents)
+    .where(eq(agents.companyId, interaction.companyId));
+  const byId = new Map(companyAgents.map((agent) => [agent.id, agent]));
+  const bridged = new Set<string>();
+  let cursor = byId.get(interaction.createdByAgentId)?.reportsTo ?? null;
+  for (let depth = 0; cursor && depth < 50; depth += 1) {
+    const ancestor = byId.get(cursor);
+    if (!ancestor) break;
+    bridged.add(ancestor.id);
+    cursor = ancestor.reportsTo;
+  }
+  for (const agent of companyAgents) {
+    if (agent.role === "ceo") bridged.add(agent.id);
+  }
+  bridged.delete(interaction.createdByAgentId);
+  return bridged;
+}
+
+/**
+ * The `#general` thread menu for a pending binary confirmation. Discord has no
+ * Approve/Reject buttons, so the card carries numbered choices that a linked
+ * user resolves with a bare `1`/`2` reply in the bound thread. The server maps
+ * only these numbered choices; every other reply stays ordinary thread input.
+ */
+function numberedConfirmationText(
+  interaction: RequestConfirmationInteraction,
+  taskUrl: string | null,
+): string {
+  const lines = [
+    interaction.payload.detailsMarkdown?.trim() ?? interaction.payload.prompt,
+    "",
+    numberedConfirmationBody(interaction),
+  ];
+  if (taskUrl) lines.push("", `Or open in Paperclip: ${taskUrl}`);
+  return lines.join("\n");
+}
+
+function numberedConfirmationBody(
+  interaction: RequestConfirmationInteraction,
+): string {
+  return [
+    "Reply in this thread with just the number:",
+    `1 — ${interaction.payload.acceptLabel ?? "Approve"}`,
+    `2 — ${interaction.payload.rejectLabel ?? "Reject"}${
+      interaction.payload.rejectRequiresReason
+        ? " (add your reason after the number)"
+        : ""
+    }`,
+  ].join("\n");
+}
+
 function textForQuestionInteraction(
   interaction: AskUserQuestionsInteraction,
   taskUrl: string | null,
@@ -281,6 +383,18 @@ export async function enqueueIssueInteractionChatPublications(
     );
   if (bindings.length === 0) return [];
 
+  // An agent speaks only through an endpoint it owns. The one deliberate
+  // exception is the owner bridge: a task's assignee can be managed by another
+  // agent, and that direct manager's endpoint may carry the gate so the
+  // conversation stays in one thread. The bridge mirrors the task binding on
+  // the conversation; it never lets an unrelated agent speak, and it does not
+  // widen the resolver policy, which is still enforced by the interaction.
+  const bridgedManagerIds = await resolveBridgedManagerAgentIds(
+    db,
+    interaction,
+    bindings.map((binding) => binding.conversation),
+  );
+
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);
   const question =
     interaction.kind === "ask_user_questions"
@@ -288,7 +402,11 @@ export async function enqueueIssueInteractionChatPublications(
       : null;
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
   for (const { conversation, endpoint } of bindings) {
-    if (endpoint.assignedAgentId !== interaction.createdByAgentId) continue;
+    const ownsEndpoint = endpoint.assignedAgentId === interaction.createdByAgentId;
+    const bridgedManager =
+      endpoint.assignedAgentId !== null &&
+      bridgedManagerIds.has(endpoint.assignedAgentId);
+    if (!ownsEndpoint && !bridgedManager) continue;
     const formDraft =
       interaction.kind === "ask_user_questions" &&
       (endpoint.provider === "slack" ||
@@ -371,10 +489,17 @@ export async function enqueueIssueInteractionChatPublications(
                 },
               ]
             : [];
+    // Providers without native confirmation actions render the binary gate as
+    // numbered text choices; the linked user's bare `1`/`2` thread reply is
+    // mapped back to accept/reject by the inbound handler.
+    const linkOnlyConfirmation =
+      interaction.kind === "request_confirmation" && confirmation === null;
     const text =
       interaction.kind === "ask_user_questions"
         ? textForQuestionInteraction(interaction, taskUrl)
-        : genericInteractionText(taskUrl);
+        : linkOnlyConfirmation
+          ? numberedConfirmationText(interaction, taskUrl)
+          : genericInteractionText(taskUrl);
     const payload = projectSafeChatPublication({
       classification: "external",
       source: "issue_interaction",
@@ -402,7 +527,9 @@ export async function enqueueIssueInteractionChatPublications(
             interaction.kind === "ask_user_questions"
               ? (question?.helpText ?? undefined)
               : interaction.kind === "request_confirmation"
-                ? (interaction.payload.detailsMarkdown ?? undefined)
+                ? linkOnlyConfirmation
+                  ? numberedConfirmationBody(interaction)
+                  : (interaction.payload.detailsMarkdown ?? undefined)
                 : "Open the task in Paperclip to review and respond.",
           actions,
         },
@@ -491,6 +618,117 @@ export async function enqueueIssueInteractionChatPublications(
 }
 
 /**
+ * Where a settled card must be acknowledged. Mirrored cards carry their own
+ * endpoint/conversation through their publication row; a card delivered without
+ * one resolves the same conversations the enqueue path would have used.
+ */
+type InteractionSettlementTarget = {
+  endpointId: string;
+  conversationId: string;
+  cardKind: "confirmation" | "question" | "status";
+  cardTitle: string;
+};
+
+/**
+ * Decides where a settled card must be acknowledged.
+ *
+ * A card mirrored by `enqueueIssueInteractionChatPublications` always leaves an
+ * interaction-keyed publication row, so settlement addresses exactly the
+ * conversations that received it — and stays silent when that row was never
+ * provider-visible, because the card was never delivered.
+ *
+ * A card with no mirror row has no durable record of where (or whether) it was
+ * delivered. Settlement must fail closed rather than broadcast a resolution to
+ * every live conversation bound to the task: a task can carry several threads,
+ * and only one of them may have shown the card. The resolution conversation is
+ * acknowledged by its own mirror when the card went through the publication
+ * pipeline.
+ */
+export function selectInteractionSettlementTargets<T extends { endpointId: string; conversationId: string }>(input: {
+  /** Whether any `interaction:{id}:{endpointId}` publication row exists. */
+  hasMirroredOriginal: boolean;
+  /** Mirrored rows that were actually delivered to the provider. */
+  providerVisibleTargets: T[];
+}): T[] {
+  return input.hasMirroredOriginal ? input.providerVisibleTargets : [];
+}
+
+/**
+ * Live task conversations eligible to receive an internal continuation wake for
+ * a card that was delivered without a mirrored `interaction:` publication row.
+ *
+ * Settlement never uses these targets: a terminal external publication must
+ * address only the conversation that actually showed the card, and that binding
+ * lives on the mirrored row. This resolver exists solely so the assignee agent
+ * still wakes when the board answers a card that has no durable delivery row.
+ */
+async function resolveInteractionSettlementTargets(
+  db: ChatPublicationDb,
+  interaction: IssueThreadInteraction,
+): Promise<InteractionSettlementTarget[]> {
+  const bridgedManagerIds = await resolveBridgedManagerAgentIds(
+    db,
+    interaction,
+    [],
+  );
+  const rows = await db
+    .select({
+      conversation: chatConversations,
+      endpoint: chatEndpoints,
+    })
+    .from(chatConversations)
+    .innerJoin(
+      chatEndpoints,
+      and(
+        eq(chatEndpoints.companyId, chatConversations.companyId),
+        eq(chatEndpoints.id, chatConversations.endpointId),
+        eq(chatEndpoints.publicationMode, "automatic"),
+      ),
+    )
+    .where(
+      and(
+        eq(chatConversations.companyId, interaction.companyId),
+        eq(chatConversations.issueId, interaction.issueId),
+        inArray(chatConversations.state, ["active", "waiting"]),
+        inArray(chatEndpoints.status, ["active", "verifying"]),
+      ),
+    );
+  const cardKind: "confirmation" | "question" =
+    interaction.kind === "request_confirmation" ? "confirmation" : "question";
+  // Match the mirrored-card title so a fallback follow-up reads the same as the
+  // card it settles: confirmations are titled by their prompt, questions by the
+  // native question prompt.
+  let cardTitle: string;
+  if (interaction.kind === "request_confirmation") {
+    cardTitle = interaction.payload.prompt;
+  } else if (interaction.kind === "ask_user_questions") {
+    cardTitle =
+      nativeChatQuestion(interaction)?.prompt ??
+      interaction.payload.title ??
+      interaction.title ??
+      "Input needed";
+  } else {
+    cardTitle = interaction.title ?? "Input needed";
+  }
+  const targets: InteractionSettlementTarget[] = [];
+  for (const { conversation, endpoint } of rows) {
+    const ownsEndpoint =
+      endpoint.assignedAgentId === interaction.createdByAgentId;
+    const bridgedManager =
+      endpoint.assignedAgentId !== null &&
+      bridgedManagerIds.has(endpoint.assignedAgentId);
+    if (!ownsEndpoint && !bridgedManager) continue;
+    targets.push({
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      cardKind,
+      cardTitle,
+    });
+  }
+  return targets;
+}
+
+/**
  * Settles every delivered question or confirmation card. Providers without a
  * native callback receive the same actionless terminal edit/follow-up as
  * providers with buttons, so an "Open in Paperclip" prompt never remains
@@ -525,7 +763,6 @@ export async function enqueueTerminalIssueInteractionChatPublications(
       publication.idempotencyKey ===
       `interaction:${interaction.id}:${publication.endpointId}`,
   );
-  if (originals.length === 0) return [];
 
   await db
     .update(chatActions)
@@ -598,6 +835,18 @@ export async function enqueueTerminalIssueInteractionChatPublications(
       original.state === "delivery_unknown" ||
       original.state === "published",
   );
+  const mirroredTargets: InteractionSettlementTarget[] = providerVisibleOriginals
+    .filter((original) => Boolean(original.payload.card))
+    .map((original) => ({
+      endpointId: original.endpointId,
+      conversationId: original.conversationId,
+      cardKind: original.payload.card!.kind,
+      cardTitle: original.payload.card!.title,
+    }));
+  const settlementTargets = selectInteractionSettlementTargets({
+    hasMirroredOriginal: originals.length > 0,
+    providerVisibleTargets: mirroredTargets,
+  });
   const planTarget =
     interaction.kind === "request_confirmation" &&
     interaction.payload.target?.type === "issue_document" &&
@@ -621,7 +870,17 @@ export async function enqueueTerminalIssueInteractionChatPublications(
         (interaction.status === "accepted" ||
           interaction.status === "answered")) ||
       rejectedPlanNeedsRevision);
-  if (continuationWakeRequired && currentOriginals.length > 0) {
+  // The wake follows the card's original delivery binding when one exists —
+  // including a card that was cancelled before it became provider-visible, which
+  // the assignee must still learn about. Only a card with no original row at all
+  // resolves the live task conversations, and only for this internal wake: an
+  // external settlement publication must never broadcast to unrelated threads.
+  const courierWakeTargets =
+    continuationWakeRequired && currentOriginals.length === 0
+      ? await resolveInteractionSettlementTargets(db, interaction)
+      : [];
+  const wakeBinding = currentOriginals[0] ?? courierWakeTargets[0] ?? null;
+  if (continuationWakeRequired && wakeBinding) {
     const issue = await db
       .select({
         assigneeAgentId: issues.assigneeAgentId,
@@ -644,7 +903,6 @@ export async function enqueueTerminalIssueInteractionChatPublications(
       interaction.resolvedByUserId ??
       interaction.resolvedByAgentId ??
       "system:interaction-resolution";
-    const wakeBinding = currentOriginals[0]!;
     if (
       issue?.assigneeAgentId &&
       issue.status !== "done" &&
@@ -705,16 +963,19 @@ export async function enqueueTerminalIssueInteractionChatPublications(
   const copy = terminalNativeInteractionCopy(interaction);
   if (!copy) return [];
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
-  for (const original of providerVisibleOriginals) {
-    if (!original.payload.card) continue;
+  for (const target of settlementTargets) {
     const rows = await db
       .insert(chatPublications)
       .values({
         companyId: interaction.companyId,
-        endpointId: original.endpointId,
-        conversationId: original.conversationId,
+        endpointId: target.endpointId,
+        conversationId: target.conversationId,
         issueId: interaction.issueId,
-        idempotencyKey: `interaction-resolution:${interaction.id}:${original.endpointId}`,
+        idempotencyKey: interactionResolutionPublicationKey({
+          interactionId: interaction.id,
+          endpointId: target.endpointId,
+          conversationId: target.conversationId,
+        }),
         payload: projectSafeChatPublication({
           classification: "external",
           source: "issue_interaction",
@@ -722,8 +983,8 @@ export async function enqueueTerminalIssueInteractionChatPublications(
           interaction: {
             id: interaction.id,
             card: {
-              kind: original.payload.card.kind,
-              title: original.payload.card.title,
+              kind: target.cardKind,
+              title: target.cardTitle,
               body: copy.body,
               actions: [],
             },

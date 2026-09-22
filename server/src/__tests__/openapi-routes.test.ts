@@ -475,6 +475,20 @@ describe("openapi routes", () => {
       expect(operation.tags).toContain("chat-channels");
     }
 
+    for (const routePath of [
+      "/api/chat-endpoints/{endpointId}/agent-messages",
+      "/api/chat-endpoints/{endpointId}/agent-threads",
+    ]) {
+      const operation = spec.paths[routePath].post;
+      expect(operation["x-paperclip-authorization"]).toEqual({
+        actor: "agent",
+        heartbeatBound: true,
+        taskBound: true,
+      });
+      expect(operation.responses["201"]).toBeDefined();
+      expect(operation.tags).toContain("chat-channels");
+    }
+
     const create = spec.paths["/api/companies/{companyId}/chat-endpoints"].post;
     expect(create.responses["201"]).toBeDefined();
     expect(create.requestBody.content["application/json"].schema).toMatchObject(

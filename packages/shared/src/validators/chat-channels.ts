@@ -174,6 +174,72 @@ export const publishChatPublicationSchema = z.union([
   publishChatBoardMessageSchema,
 ]);
 
+/**
+ * Agent-initiated outbound send. The caller is an agent-authenticated run, so
+ * the body carries only the destination selector and the message text; the
+ * server binds endpoint/run/agent authority and the publication pipeline. A
+ * `conversationId` replies into an existing thread/DM; a `resourceId` posts to
+ * an enabled channel/thread resource (for example `#general`).
+ */
+export const publishAgentChatMessageSchema = z
+  .object({
+    body: multilineTextSchema.pipe(z.string().trim().min(1).max(100_000)),
+    idempotencyKey: z.string().trim().min(16).max(200),
+    conversationId: z.string().uuid().optional(),
+    resourceId: z.string().uuid().optional(),
+    principalId: z.string().uuid().optional(),
+    attachmentIds: z
+      .array(z.string().uuid())
+      .max(20)
+      .refine((ids) => new Set(ids).size === ids.length, {
+        message: "Attachment ids must be unique",
+      })
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const destinations = [
+      value.conversationId,
+      value.resourceId,
+      value.principalId,
+    ].filter((entry) => entry !== undefined);
+    if (destinations.length !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["conversationId"],
+        message:
+          "Exactly one of conversationId, resourceId, or principalId is required",
+      });
+    }
+    if (value.attachmentIds && !value.conversationId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["attachmentIds"],
+        message: "Attachments require an existing conversationId",
+      });
+    }
+  });
+
+/**
+ * Agent-initiated thread creation. The agent posts one root message into an
+ * enabled channel resource; the provider thread is created from that message
+ * and a conversation is bound so later replies share the thread.
+ *
+ * `issueId` binds the new thread to a named Paperclip task instead of the
+ * calling run's own task. It is gated server-side to that task's assignee or a
+ * manager in its chain of command, so a manager can open a thread for a
+ * report's ticket and keep the conversation in one place.
+ */
+export const createAgentChatThreadSchema = z
+  .object({
+    resourceId: z.string().uuid(),
+    body: multilineTextSchema.pipe(z.string().trim().min(1).max(100_000)),
+    idempotencyKey: z.string().trim().min(16).max(200),
+    title: z.string().trim().min(1).max(200).optional(),
+    issueId: z.string().uuid().optional(),
+  })
+  .strict();
+
 export const resolveChatPublicationSchema = z
   .object({
     action: z.enum(["mark_delivered", "retry_anyway", "cancel"]),

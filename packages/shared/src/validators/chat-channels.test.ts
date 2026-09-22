@@ -1,11 +1,82 @@
 import { describe, expect, it } from "vitest";
 import {
   configureChatEndpointSchema,
+  createAgentChatThreadSchema,
   microsoftTeamsCredentialIdSchema,
+  publishAgentChatMessageSchema,
   resolveChatActionSchema,
   resolveChatPublicationSchema,
   chatPublicationStateSchema,
 } from "./chat-channels.js";
+
+const agentMessageBase = {
+  body: "Hello from the assigned agent",
+  idempotencyKey: "agent-send-0000000001",
+  resourceId: "11111111-1111-4111-8111-111111111111",
+};
+
+describe("agent chat send validation", () => {
+  it("accepts exactly one destination", () => {
+    expect(
+      publishAgentChatMessageSchema.safeParse(agentMessageBase).success,
+    ).toBe(true);
+    expect(
+      publishAgentChatMessageSchema.safeParse({
+        ...agentMessageBase,
+        conversationId: "22222222-2222-4222-8222-222222222222",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires a destination and a body", () => {
+    expect(
+      publishAgentChatMessageSchema.safeParse({
+        body: agentMessageBase.body,
+        idempotencyKey: agentMessageBase.idempotencyKey,
+      }).success,
+    ).toBe(false);
+    expect(
+      publishAgentChatMessageSchema.safeParse({
+        ...agentMessageBase,
+        body: "   ",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects attachments without an existing conversation", () => {
+    expect(
+      publishAgentChatMessageSchema.safeParse({
+        ...agentMessageBase,
+        attachmentIds: ["33333333-3333-4333-8333-333333333333"],
+      }).success,
+    ).toBe(false);
+    expect(
+      publishAgentChatMessageSchema.safeParse({
+        ...agentMessageBase,
+        resourceId: undefined,
+        conversationId: "22222222-2222-4222-8222-222222222222",
+        attachmentIds: ["33333333-3333-4333-8333-333333333333"],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("validates the thread-creation request", () => {
+    expect(
+      createAgentChatThreadSchema.safeParse({
+        resourceId: "11111111-1111-4111-8111-111111111111",
+        body: "Root message",
+        idempotencyKey: "agent-thread-0000000001",
+      }).success,
+    ).toBe(true);
+    expect(
+      createAgentChatThreadSchema.safeParse({
+        resourceId: "not-a-uuid",
+        body: "Root message",
+        idempotencyKey: "agent-thread-0000000001",
+      }).success,
+    ).toBe(false);
+  });
+});
 
 describe("Microsoft Teams chat credential validation", () => {
   it("normalizes canonical Entra application and tenant UUIDs", () => {

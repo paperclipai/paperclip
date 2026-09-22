@@ -99,3 +99,30 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     haystack,
   );
 }
+
+/**
+ * Provider admission failures caused by an oversized/poisoned request body.
+ *
+ * When a saved OpenCode session grows large (for example because image
+ * binaries or long tool output entered its history), every resumed wake
+ * replays that history to the model provider. The provider rejects the
+ * request before reading it and returns a non-retryable 400 such as
+ * `failed to read request body` or `Too many images were provided`. The
+ * command may also fail to spawn once the serialized session body exceeds
+ * the OS argv/env limit (`spawn E2BIG`). Retrying the identical saved session
+ * produces the identical failure, so the run must rotate to a fresh session
+ * instead of replaying the poisoned one.
+ */
+export function isOpenCodeProviderAdmissionError(
+  stdout: string,
+  stderr: string,
+): boolean {
+  const haystack = `${stdout}\n${stderr}`;
+  if (!haystack.trim()) return false;
+  return (
+    /failed to read request body/i.test(haystack) ||
+    /invalid_request_error[\s\S]{0,200}request body/i.test(haystack) ||
+    /too many images were provided/i.test(haystack) ||
+    /\bspawn\s+E2BIG\b/i.test(haystack)
+  );
+}

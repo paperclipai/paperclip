@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import {
+  isOpenCodeProviderAdmissionError,
+  isOpenCodeUnknownSessionError,
+  parseOpenCodeJsonl,
+} from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +77,40 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+
+  it("detects provider admission failures that require a fresh session", () => {
+    expect(
+      isOpenCodeProviderAdmissionError("failed to read request body (ref: abc)", ""),
+    ).toBe(true);
+    expect(
+      isOpenCodeProviderAdmissionError(
+        "",
+        "Too many images were provided, we currently limit the number of images per conversation to 60",
+      ),
+    ).toBe(true);
+    expect(isOpenCodeProviderAdmissionError("spawn E2BIG", "")).toBe(true);
+    expect(
+      isOpenCodeProviderAdmissionError(
+        JSON.stringify({
+          type: "error",
+          error: {
+            name: "APIError",
+            data: {
+              message: "failed to read request body (ref: 8ba04c1b-228f-4d72)",
+              statusCode: 400,
+              isRetryable: false,
+            },
+          },
+        }),
+        "",
+      ),
+    ).toBe(true);
+    expect(isOpenCodeProviderAdmissionError("all good", "")).toBe(false);
+    expect(isOpenCodeProviderAdmissionError("", "")).toBe(false);
+    // An unknown-session error must not be classified as an admission failure.
+    expect(
+      isOpenCodeProviderAdmissionError("ProviderError: unknown session id", ""),
+    ).toBe(false);
   });
 });

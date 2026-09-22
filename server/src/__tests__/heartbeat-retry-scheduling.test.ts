@@ -282,6 +282,43 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).where(eq(heartbeatRuns.id, scheduled.run!.id));
     expect(await heartbeat.scheduleBoundedRetry(scheduled.run!.id, { now, random: () => 0 })).toMatchObject({ outcome: "retry_exhausted" });
   });
+
+  it("rotates to a fresh session when the provider rejects the resumed session body", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        stdout: JSON.stringify({
+          type: "error",
+          error: {
+            name: "APIError",
+            data: {
+              message: "failed to read request body (ref: 8ba04c1b-228f-4d72)",
+              statusCode: 400,
+              isRetryable: false,
+            },
+          },
+        }),
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    const contextSnapshot = scheduled.run.contextSnapshot as Record<string, unknown>;
+    expect(contextSnapshot.forceFreshSession).toBe(true);
+    expect(contextSnapshot.providerSessionRotated).toBe(true);
+  });
+
   it("records pre-provider quota rejection, schedules the reset-time retry, and leaves the agent idle", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
