@@ -3,7 +3,7 @@ import http2 from "node:http2";
 import net from "node:net";
 import { duplexPair, type Duplex } from "node:stream";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -524,6 +524,104 @@ describe("sandbox adapter execution targets", () => {
       }
     },
   );
+
+  it.each([false, true])("launches a large environment without oversized exec arguments (streamed=%s)", async (streamOutputViaSession) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-large-process-env-"));
+    cleanupDirs.push(rootDir);
+    const value = "x".repeat(110_000);
+    const childPath = path.join(rootDir, "child.mjs");
+    await writeFile(childPath, 'process.stdout.write(process.env.LARGE_CONTEXT ?? "missing");\n');
+    const delegate = createLocalSandboxRunner();
+    let checkedPrivatePayload = false;
+    const runner = {
+      execute: async (input: Parameters<typeof delegate.execute>[0]) => {
+        // Linux limits each argument and environment string to 128 KiB on
+        // systems with 4 KiB pages. Enforce that boundary on macOS too.
+        const strings = [...(input.args ?? []), ...Object.entries(input.env ?? {}).map(([k, v]) => `${k}=${v}`)];
+        if (strings.some((text) => Buffer.byteLength(text) >= 131_072)) {
+          return { exitCode: 127, stdout: "", stderr: "argument list too long: env\n", timedOut: false, signal: null, pid: null, startedAt: null };
+        }
+        if (input.env?.PAPERCLIP_PROCESS_SESSION_DIR || input.args?.[1]?.includes("nohup node")) {
+          const sessionRoot = path.join(runtimeRootDir, "process-sessions");
+          const entries = await readdir(sessionRoot, { withFileTypes: true });
+          const sessionDir = path.join(sessionRoot, entries.find((entry) => entry.isDirectory())!.name);
+          expect((await stat(sessionDir)).mode & 0o777).toBe(0o700);
+          expect((await stat(path.join(sessionDir, "command.b64"))).mode & 0o777).toBe(0o600);
+          checkedPrivatePayload = true;
+        }
+        return delegate.execute(input);
+      },
+    };
+    const runtimeRootDir = path.join(rootDir, ".paperclip-runtime");
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "large-process-env", adapterKey: "acpx", runtimeRootDir,
+      target: { kind: "remote", transport: "sandbox", providerKey: "local-test", remoteCwd: rootDir, runner },
+      command: process.execPath, args: [childPath], cwd: rootDir,
+      env: { LARGE_CONTEXT: value }, timeoutSec: 10, streamOutputViaSession,
+    });
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "", true);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe(value);
+      expect(checkedPrivatePayload).toBe(true);
+      const sessionRoot = path.join(runtimeRootDir, "process-sessions");
+      const sessionDirs = (await readdir(sessionRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory());
+      for (const entry of sessionDirs) {
+        await expect(readFile(path.join(sessionRoot, entry.name, "command.b64"))).rejects.toThrow();
+      }
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("logs a streamed wrapper launch failure before forwarding its exit", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-wrapper-launch-error-"));
+    cleanupDirs.push(rootDir);
+    const delegate = createLocalSandboxRunner();
+    const logs: string[] = [];
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "wrapper-launch-error", adapterKey: "acpx", runtimeRootDir: rootDir,
+      target: {
+        kind: "remote", transport: "sandbox", providerKey: "local-test", remoteCwd: rootDir,
+        runner: { execute: async (input) => input.useSession
+          ? { exitCode: 127, stdout: "", stderr: "argument list too long: env\n", timedOut: false, signal: null, pid: null, startedAt: null }
+          : delegate.execute(input) },
+      },
+      command: process.execPath, args: [], cwd: rootDir, env: {}, timeoutSec: 5,
+      streamOutputViaSession: true,
+      onLog: async (stream, chunk) => { if (stream === "stderr") logs.push(chunk); },
+    });
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "", true);
+      expect(result.code).toBe(127);
+      expect(logs).toContain("argument list too long: env\n");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("removes an incomplete private command payload when upload fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-payload-upload-error-"));
+    cleanupDirs.push(rootDir);
+    const delegate = createLocalSandboxRunner();
+    await expect(startAdapterExecutionTargetProcessSessionBridge({
+      runId: "payload-upload-error", adapterKey: "acpx", runtimeRootDir: rootDir,
+      target: {
+        kind: "remote", transport: "sandbox", providerKey: "local-test", remoteCwd: rootDir,
+        runner: { execute: async (input) => {
+          if (input.args?.[1]?.includes("command.b64.paperclip-upload.b64") && input.args[1].includes(">>")) {
+            throw new Error("Upload interrupted");
+          }
+          return delegate.execute(input);
+        } },
+      },
+      command: process.execPath, args: [], cwd: rootDir,
+      env: { LARGE_CONTEXT: "x".repeat(110_000) }, timeoutSec: 5,
+      streamOutputViaSession: true,
+    })).rejects.toThrow("Upload interrupted");
+    const entries = await readdir(path.join(rootDir, "process-sessions"), { withFileTypes: true });
+    expect(entries.filter((entry) => entry.isDirectory())).toEqual([]);
+  });
 
   it("test_process_session_poll_exec_parents_to_run_context", async () => {
     // The poll timer runs run-time execs for the whole run. Its `sandbox.exec`
