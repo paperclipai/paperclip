@@ -1740,6 +1740,14 @@ async function startServerWithDatabaseTeardown(
             logger.error({ err }, "periodic secret proposal expiry sweep failed");
           }));
 
+        trackHeartbeatSchedulerWork(secretProposals.sweepOrphaned()
+          .then((expired) => {
+            if (expired > 0) logger.warn({ expired }, "periodic secret proposal sweep expired proposals whose approval card was already gone");
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic secret proposal orphan sweep failed");
+          }));
+
         trackHeartbeatSchedulerWork(connectionDeliveries.sweepPending().catch((err) => logger.error({ err }, "connection continuation delivery failed")));
         trackHeartbeatSchedulerWork(app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "tool review recovery failed")));
         trackHeartbeatSchedulerWork(app.locals.toolActionDeliveries.sweepPending().catch((err: unknown) => logger.error({ err }, "tool review delivery sweep failed")));

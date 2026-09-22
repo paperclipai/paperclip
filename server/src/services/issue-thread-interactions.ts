@@ -106,6 +106,9 @@ import {
 } from "./issues.js";
 import { questionResponseDeliveryValues } from "./question-response-delivery.js";
 import {
+  SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+} from "./secret-proposals.js";
+import {
   cancelPendingIssueInteractionChatPublications,
   enqueueIssueInteractionChatPublications,
   enqueueTerminalIssueInteractionChatPublications,
@@ -935,11 +938,23 @@ function buildStaleTargetResult(
   } as const;
 }
 
-function buildSupersededByNewerRequestResult(replacementInteractionId: string) {
+function buildSupersededByNewerRequestResult(
+  replacementInteractionId: string,
+  row?: IssueThreadInteractionRow,
+) {
   return {
     version: 1,
     outcome: "superseded_by_newer_request",
     supersededByInteractionId: replacementInteractionId,
+    ...(row && linkedSecretProposalId(row)
+      ? {
+          secretProposal: {
+            version: 1 as const,
+            status: "expired" as const,
+            updatedAt: new Date().toISOString(),
+          },
+        }
+      : {}),
   } as const;
 }
 
@@ -1140,6 +1155,11 @@ async function resolveLinkedSecretProposal(
     actor: InteractionActor;
     reason?: string | null;
     now: Date;
+    // Sweeps expire cards in bulk and must not roll back one card because a
+    // human resolved its proposal out of band (approve/reject from the queue
+    // does not always go through the card). Only human-initiated resolutions
+    // treat an already-resolved proposal as a conflict.
+    tolerateResolved?: boolean;
   },
 ) {
   const proposalId = linkedSecretProposalId(interaction);
@@ -1164,7 +1184,10 @@ async function resolveLinkedSecretProposal(
       ),
     )
     .returning();
-  if (!proposal) throw conflict("Linked secret proposal is no longer pending");
+  if (!proposal) {
+    if (outcome.tolerateResolved) return;
+    throw conflict("Linked secret proposal is no longer pending");
+  }
   const actorType = outcome.actor.userId
     ? ("user" as const)
     : outcome.actor.agentId
@@ -3251,6 +3274,7 @@ export function issueThreadInteractionService(
               status: "expired",
               result: buildSupersededByNewerRequestResult(
                 replacementInteractionId,
+                row,
               ),
               resolvedByAgentId: null,
               resolvedByUserId: null,
@@ -3270,6 +3294,17 @@ export function issueThreadInteractionService(
             fromStatuses: ["pending", "approved"],
             actor: {},
             now,
+          });
+          // A superseded card must not leave its secret proposal pending: the
+          // card is the only surface that asks a human to decide it, so an
+          // orphaned proposal is a decision nobody is shown. Couple the
+          // lifecycles here rather than relying on the 14-day proposal expiry.
+          await resolveLinkedSecretProposal(tx as unknown as Db, updatedRow, {
+            status: "expired",
+            actor: {},
+            reason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+            now,
+            tolerateResolved: true,
           });
           await enqueueTerminalIssueInteractionChatPublications(
             tx as unknown as Db,
@@ -3574,6 +3609,18 @@ export function issueThreadInteractionService(
               fromStatuses: ["pending", "approved"],
               actor,
               now,
+            });
+            // The sibling filter matches on kind, not payload, so this sweep can
+            // also catch a pending secret-proposal card even though the request
+            // that triggered it carries no proposal. Resolve the linked proposal
+            // here: the card is the only surface that asks a human to decide it,
+            // and an orphaned proposal is a decision nobody is shown.
+            await resolveLinkedSecretProposal(tx as unknown as Db, supersededRow, {
+              status: "expired",
+              actor,
+              reason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+              now,
+              tolerateResolved: true,
             });
           }
           await cancelPendingIssueInteractionChatPublications(

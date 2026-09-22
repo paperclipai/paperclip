@@ -28,6 +28,16 @@ const PENDING_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_PROPOSAL_LIST_LIMIT = 100;
 const DEFAULT_EXPIRY_SWEEP_LIMIT = 100;
 
+// A pending proposal is only decidable while its approval card is open, because
+// the card is the surface that asks a human. These reasons record *why* a
+// proposal died without a decision, so a card that an infrastructure event
+// killed is not confused with one the human let lapse (PENDING_EXPIRY_MS).
+export const SECRET_PROPOSAL_CARD_SUPERSEDED_REASON =
+  "Superseded by a newer request before the secret proposal was resolved";
+export const SECRET_PROPOSAL_CARD_LOST_REASON =
+  "Approval card expired before the secret proposal was resolved";
+const SECRET_PROPOSAL_LAPSED_REASON = "Pending proposal expired";
+
 export type SecretProposalTerminalStatus = "approved" | "rejected" | "withdrawn" | "expired";
 
 export type ProposalRunContext = {
@@ -854,7 +864,7 @@ export function createSecretProposalsService(db: Db) {
     now = new Date(),
     limit = DEFAULT_EXPIRY_SWEEP_LIMIT,
     expireProposal: (companyId: string, proposalId: string) => Promise<unknown> =
-      (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: "Pending proposal expired" }),
+      (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: SECRET_PROPOSAL_LAPSED_REASON }),
   ) {
     const expired = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
       .from(companySecretProposals)
@@ -874,5 +884,42 @@ export function createSecretProposalsService(db: Db) {
     return expiredCount;
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
+  // Backstop for the invariant "no proposal stays pending behind a dead card".
+  // Every card-expiry path is supposed to resolve its linked proposal (the
+  // supersede sweep, issue close, withdrawal), but a card can also die through
+  // a path this service does not own — a bulk expiry after a host restart, a
+  // deleted addressee, a stale document target. Nothing surfaces those, so
+  // sweep them instead of waiting out PENDING_EXPIRY_MS: a proposal whose card
+  // is terminal is a decision the human was never shown.
+  async function sweepOrphaned(
+    limit = DEFAULT_EXPIRY_SWEEP_LIMIT,
+    expireProposal: (companyId: string, proposalId: string) => Promise<unknown> =
+      (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: SECRET_PROPOSAL_CARD_LOST_REASON }),
+  ) {
+    const orphans = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
+      .from(companySecretProposals)
+      .innerJoin(issueThreadInteractions, and(
+        eq(issueThreadInteractions.id, companySecretProposals.interactionId),
+        eq(issueThreadInteractions.companyId, companySecretProposals.companyId),
+      ))
+      .where(and(
+        eq(companySecretProposals.status, "pending"),
+        inArray(issueThreadInteractions.status, ["expired", "cancelled"]),
+      ))
+      .orderBy(companySecretProposals.createdAt)
+      .limit(limit);
+    let expiredCount = 0;
+    for (const proposal of orphans) {
+      try {
+        await expireProposal(proposal.companyId, proposal.id);
+        expiredCount += 1;
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 409) continue;
+        throw error;
+      }
+    }
+    return expiredCount;
+  }
+
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, sweepOrphaned };
 }
