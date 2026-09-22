@@ -53,6 +53,15 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  /**
+   * True when the caller's deployment assumes `local-board` for every request
+   * (`local_trusted`). Callers on an authenticated deployment must leave this
+   * false: there the sentinel cannot be authenticated as, so naming it as a
+   * stage participant produces a stage that no actor can ever advance.
+   * Defaults to false — failing towards "no dead end" rather than towards a
+   * stage nobody can reach.
+   */
+  localBoardIsActable?: boolean;
 };
 
 type TransitionResult = {
@@ -75,6 +84,13 @@ const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigne
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
 const STAGE_DECISION_COMMENT_HINT = "Include the decision comment in the same PATCH request; prior comments are not considered.";
 export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
+
+/**
+ * The bootstrap board identity. It is a real `users` row, but outside a
+ * `local_trusted` deployment no credential resolves to it — see
+ * `isUnreachableUserId`.
+ */
+const LOCAL_BOARD_SENTINEL_USER_ID = "local-board";
 
 function normalizeMonitorNotes(notes: string | null | undefined) {
   if (typeof notes !== "string") return null;
@@ -449,15 +465,36 @@ function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
 }
 
 /**
+ * True when no credential can authenticate as `userId`. The stage guard
+ * compares the caller's identity to `currentParticipant` exactly, so a stage
+ * naming an unauthenticatable user refuses every actor — humans, agents and
+ * instance admins alike — and no API path can advance it again.
+ *
+ * `local-board` is actable only where the deployment assumes it for every
+ * request. On an authenticated deployment it is a users row left behind by the
+ * bootstrap, and the board claim deliberately never re-points historical
+ * `responsibleUserId` values at the claiming human, so it reaches here as a
+ * stale sentinel.
+ */
+function isUnreachableUserId(
+  userId: string | null | undefined,
+  localBoardIsActable: boolean,
+): boolean {
+  return userId === LOCAL_BOARD_SENTINEL_USER_ID && !localBoardIsActable;
+}
+
+/**
  * The human a review stage escalates to when agents exhaust their
  * changes-requested rounds. Without one the loop keeps handing back to the
- * return assignee (pre-existing behavior) rather than stalling the stage.
+ * return assignee (pre-existing behavior) rather than stalling the stage —
+ * which is also the correct answer when the only candidate is a sentinel no
+ * credential can assume.
  */
-function reviewEscalationUserId(issue: IssueLike): string | null {
-  const responsible = issue.responsibleUserId?.trim();
-  if (responsible) return responsible;
-  const creator = issue.createdByUserId?.trim();
-  if (creator) return creator;
+function reviewEscalationUserId(issue: IssueLike, localBoardIsActable: boolean): string | null {
+  for (const candidate of [issue.responsibleUserId, issue.createdByUserId]) {
+    const userId = candidate?.trim();
+    if (userId && !isUnreachableUserId(userId, localBoardIsActable)) return userId;
+  }
   return null;
 }
 
@@ -661,6 +698,7 @@ function canAutoSkipPendingStage(input: {
 
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
+  const localBoardIsActable = input.localBoardIsActable ?? false;
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentAssignee = assigneePrincipal(input.issue);
   const actor = actorPrincipal(input.actor);
@@ -720,9 +758,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     // participant would silently undo the escalation on the next unrelated
     // PATCH, so the hold is sticky until the escalated human decides — their
     // own decisions fall through to the participant decision branch below.
+    //
+    // A hold is only meaningful while some actor can satisfy it. If the
+    // recorded participant is unreachable, stickiness stops being a guard and
+    // becomes a dead end, so the stage falls through to re-selecting a
+    // configured participant — the repair path for rows already stranded by
+    // an earlier escalation to the sentinel.
     const escalatedHold =
       currentParticipant.type === "user" &&
       !stageHasParticipant(activeStage, currentParticipant) &&
+      !isUnreachableUserId(currentParticipant.userId, localBoardIsActable) &&
       (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy);
     if (escalatedHold && !principalsEqual(currentParticipant, actor)) {
       // An empty patch would not override the caller's own requested fields,
@@ -866,7 +911,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         const actorIsHuman = actor?.type === "user";
         const nextRounds = actorIsHuman ? 0 : (existingState.changesRequestedCount ?? 0) + 1;
         if (!actorIsHuman && nextRounds >= resolveMaxReviewRounds(input.policy)) {
-          const escalationUserId = reviewEscalationUserId(input.issue);
+          const escalationUserId = reviewEscalationUserId(input.issue, localBoardIsActable);
           if (escalationUserId) {
             // Rounds exhausted: keep the stage pending but hand it to the
             // responsible human instead of bouncing back to the implementer.

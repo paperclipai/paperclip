@@ -9415,6 +9415,7 @@ export function issueRoutes(
                 userId: actor.actorType === "user" ? actor.actorId : null,
               },
               allowBoardOverride: req.actor.type === "board",
+              localBoardIsActable: req.actor.source === "local_implicit",
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
@@ -13168,6 +13169,7 @@ export function issueRoutes(
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
         allowBoardOverride: req.actor.type === "board",
+        localBoardIsActable: req.actor.source === "local_implicit",
         commentBody,
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
         monitorExplicitlyUpdated:
@@ -17599,6 +17601,7 @@ export function issueRoutes(
             agentId: actor.agentId ?? null,
             userId: actor.actorType === "user" ? actor.actorId : null,
           },
+          localBoardIsActable: req.actor.source === "local_implicit",
           commentBody: req.body.body,
         });
         const decisionId = transition.decision ? randomUUID() : null;

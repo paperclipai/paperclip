@@ -3648,6 +3648,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               agentId: input.actor.agentId ?? null,
               userId: input.actor.actorType === "user" ? input.actor.actorId : null,
             },
+            // A reconcile actor carries no deployment source, and this path
+            // never escalates — it only restores a status. Take the
+            // conservative reading: a stage held for the board sentinel is
+            // unreachable, so re-point it at a configured participant rather
+            // than let the restore fail on a guard nothing can satisfy.
+            localBoardIsActable: false,
             commentBody: null,
           });
           const { issueService } = await import("./issues.js");
