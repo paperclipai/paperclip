@@ -13,10 +13,20 @@
  *
  * NOTE: paperclip-server runs OUTSIDE the cluster, so we cannot set ownerReferences
  * on the Sandbox CR (the owner would need to be an in-cluster resource). The
- * release path is explicit delete via sandboxCrOrchestrator.release().
+ * release path is explicit delete via the Sandbox CR orchestrator's release().
  */
 
+import { SANDBOX_GROUP, type SandboxApiVersion } from "./sandbox-api-version.js";
+
 export interface BuildSandboxCrManifestInput {
+  /**
+   * Served Sandbox API version to address the cluster with, resolved from
+   * discovery (see sandbox-api-version.ts). The manifest body is the same
+   * either way: `spec.podTemplate` is required and identically shaped in both
+   * versions, and this builder sets neither the v1alpha1 `spec.replicas` nor
+   * the v1beta1 `spec.operatingMode` that replaced it.
+   */
+  apiVersion: SandboxApiVersion;
   namespace: string;
   sandboxName: string;
   adapterType: string;
@@ -40,7 +50,7 @@ export function buildSandboxCrManifest(
     "paperclip.io/role": "agent",
   };
   return {
-    apiVersion: "agents.x-k8s.io/v1alpha1",
+    apiVersion: `${SANDBOX_GROUP}/${input.apiVersion}`,
     kind: "Sandbox",
     metadata: {
       name: input.sandboxName,
