@@ -23,6 +23,10 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Kubernetes",
       description:
         "Dispatches agent runs in per-tenant Kubernetes namespaces. Default backend (sandbox-cr, alpha) uses kubernetes-sigs/agent-sandbox for multi-command exec; fallback backend (job) uses stable batch/v1 Job for clusters without agent-sandbox installed.",
+      // The driver implements onEnvironmentResumeLease; paperclip-server only
+      // reaches it when this flag is set. Reuse still has to be turned on per
+      // environment through the `reuseLease` config key below.
+      supportsReusableLeases: true,
       configSchema: {
         type: "object",
         properties: {
@@ -107,6 +111,12 @@ const manifest: PaperclipPluginManifestV1 = {
             enum: ["sandbox-cr", "job"],
             description:
               "sandbox-cr (default, alpha — requires kubernetes-sigs/agent-sandbox installed) | job (stable fallback — batch/v1 Job, one-shot entrypoint, no multi-command exec)",
+          },
+          reuseLease: {
+            type: "boolean",
+            description:
+              "Keep the sandbox pod alive on release so the next run resumes it instead of paying a cold provision. Requires backend `sandbox-cr`; the pod keeps running (and holding namespace quota) until the lease is destroyed. Leases that carried a task-scoped egress grant are always torn down. Default false.",
+            default: false,
           },
         },
         anyOf: [
