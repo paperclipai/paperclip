@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import plugin from "../../src/plugin.js";
+import manifest from "../../src/manifest.js";
+import { HOST_MAX_RPC_TIMEOUT_MS } from "../../src/types.js";
 
 describe("plugin", () => {
   it("exports the kubernetes driver", () => {
@@ -58,6 +60,42 @@ describe("plugin", () => {
     });
     expect(result.ok).toBe(true);
     expect(result.normalizedConfig?.backend).toBe("job");
+  });
+
+  // paperclip-server reads `timeoutMs` off the normalized driver config to size
+  // the RPC budget for lease lifecycle calls. A key the schema does not declare
+  // is stripped during normalization, so an operator-set value would never
+  // reach the server.
+  it("validateConfig round-trips timeoutMs into normalizedConfig", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, timeoutMs: 180_000 },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.normalizedConfig?.timeoutMs).toBe(180_000);
+  });
+
+  // A validation warning would not reach the operator: the server only
+  // propagates warnings inside the error payload of a REJECTED config
+  // (validatePluginEnvironmentDriverConfig), and drops them on success. A
+  // timeout the host cannot honor therefore has to fail the save.
+  it("validateConfig rejects a timeoutMs above the host RPC ceiling", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, timeoutMs: 1_800_000 },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors?.[0]).toMatch(/15 minutes/);
+  });
+
+  it("the driver manifest advertises timeoutMs with the ceiling the host enforces", () => {
+    const configSchema = manifest.environmentDrivers?.[0]?.configSchema as {
+      properties?: Record<string, { type?: string; maximum?: number }>;
+    };
+    expect(configSchema.properties?.timeoutMs?.type).toBe("integer");
+    // Keep the operator-facing JSON Schema in step with the zod schema, so the
+    // form cannot offer a value the provider then rejects.
+    expect(configSchema.properties?.timeoutMs?.maximum).toBe(HOST_MAX_RPC_TIMEOUT_MS);
   });
 
   it("validateConfig rejects unknown backend value", async () => {
