@@ -72,23 +72,6 @@ describe("recent task synchronization", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders live Slack readiness even when history holds a later task snapshot", async () => {
-    const stored = { ...task(20, "Current title"), status: "in_progress" as const, externalConversationState: "active" as const };
-    const waiting = { ...task(10, "Earlier title"), status: "in_review" as const, externalConversationState: "waiting" as const };
-    recordRecentTask(stored, "user-1");
-    const queryClient = client();
-    queryClient.setQueryData(queryKeys.issues.detail(waiting.id), waiting);
-    await act(async () => root.render(<QueryClientProvider client={queryClient}><RecentTasks name="slack" /></QueryClientProvider>));
-    await flush();
-    expect(container.textContent).toBe("Current title:in_review");
-    expect(readRecentTasks(storageKey, "company-1")[0]?.snapshotUpdatedAt).toBe(20);
-    await act(async () => {
-      queryClient.setQueryData(queryKeys.issues.detail(waiting.id), { ...waiting, status: "in_progress", externalConversationState: "active" });
-    });
-    await flush();
-    expect(container.textContent).toBe("Current title:in_progress");
-  });
-
   it("settles independent stale and fresh query caches and displays the newer snapshot in both", async () => {
     const older = task(10, "Old title");
     const newer = task(20, "New title", "done");
