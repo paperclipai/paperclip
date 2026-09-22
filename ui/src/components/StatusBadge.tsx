@@ -83,7 +83,7 @@ export function AgentStatusCapsule({ status }: { status: string }) {
  * Distinct from the generic {@link StatusBadge} so run/goal/approval badges are
  * unaffected.
  */
-export function IssueStatusBadge({ status }: { status: string }) {
+export function IssueStatusBadge({ status, issueId }: { status: string; issueId?: string | null }) {
   const cssVar = taskStatusVar[status] ?? taskStatusVarDefault;
   return (
     <span
@@ -93,7 +93,7 @@ export function IssueStatusBadge({ status }: { status: string }) {
       )}
       style={scStyle(cssVar)}
     >
-      <StatusGlyph status={status} size="sm" />
+      <StatusGlyph status={status} issueId={issueId} size="sm" />
       {sentenceCaseStatus(status)}
     </span>
   );

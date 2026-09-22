@@ -3,6 +3,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { StatusIcon } from "./StatusIcon";
+import { AgentActivityTestProvider } from "../context/AgentActivityProvider";
 
 /**
  * StatusIcon renders the unified {@link StatusGlyph} (one shape per status) at
@@ -84,6 +85,60 @@ describe("StatusIcon", () => {
       />,
     );
     expect(html).toContain("Blocked · review stalled on PAP-2279");
+  });
+
+  it("spins an in-progress task only while an agent is working it (PAP-640)", () => {
+    const working = renderToStaticMarkup(
+      <AgentActivityTestProvider activeIssueIds={new Set(["issue-1"])}>
+        <StatusIcon status="in_progress" issueId="issue-1" />
+      </AgentActivityTestProvider>,
+    );
+    expect(working).toContain("motion-safe:animate-spin");
+
+    // Same task, still in progress, but nobody is executing it right now.
+    const idle = renderToStaticMarkup(
+      <AgentActivityTestProvider activeIssueIds={new Set()}>
+        <StatusIcon status="in_progress" issueId="issue-1" />
+      </AgentActivityTestProvider>,
+    );
+    expect(idle).not.toContain("animate-spin");
+  });
+
+  it("keeps animating when the live-run window is truncated (PAP-640)", () => {
+    // Over 50 concurrent runs the company live-run page hides the rest, so a
+    // missing issue is unknown, not idle. Fall back to the old always-animate
+    // rendering rather than claim a busy task is sitting still.
+    const truncated = renderToStaticMarkup(
+      <AgentActivityTestProvider activeIssueIds={new Set(["other-issue"])} coverageComplete={false}>
+        <StatusIcon status="in_progress" issueId="issue-1" />
+      </AgentActivityTestProvider>,
+    );
+    expect(truncated).toContain("motion-safe:animate-spin");
+
+    // Still only the in-progress status, and still nothing without an issue.
+    const otherStatus = renderToStaticMarkup(
+      <AgentActivityTestProvider activeIssueIds={new Set()} coverageComplete={false}>
+        <StatusIcon status="todo" issueId="issue-1" />
+      </AgentActivityTestProvider>,
+    );
+    expect(otherStatus).not.toContain("animate-spin");
+    const legend = renderToStaticMarkup(
+      <AgentActivityTestProvider activeIssueIds={new Set()} coverageComplete={false}>
+        <StatusIcon status="in_progress" />
+      </AgentActivityTestProvider>,
+    );
+    expect(legend).not.toContain("animate-spin");
+  });
+
+  it("keeps the status picker's own option glyphs still", () => {
+    // The picker lists statuses, not tasks — no issue id, so nothing spins.
+    const html = renderToStaticMarkup(
+      <AgentActivityTestProvider activeIssueIds={new Set(["issue-1"])}>
+        <StatusIcon status="in_progress" issueId="issue-1" onChange={() => {}} showLabel />
+      </AgentActivityTestProvider>,
+    );
+    // The trigger glyph (the real task) spins; nothing else in the markup does.
+    expect(html.match(/animate-spin/g) ?? []).toHaveLength(1);
   });
 
   it("uses an accessible native button for the icon-only picker trigger", () => {

@@ -977,6 +977,7 @@ function IssueDetailLoadingState({
             <>
               <StatusIcon
                 status={headerSeed.status}
+                issueId={headerSeed.id}
                 blockerAttention={headerSeed.blockerAttention}
               />
               {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
@@ -3708,19 +3709,21 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const breadcrumbIdentifier =
     issue?.identifier ?? issueHeaderSeed?.identifier ?? undefined;
   const breadcrumbStatus = issue?.status;
+  const breadcrumbIssueId = issue?.id;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour
   // depend on status (+ covered state), and its accessible label is derived
   // from the blocker counts — so the key signs over the full blockerAttention,
   // not just `state`, to avoid a stale label when counts change.
   const breadcrumbStatusKey = breadcrumbStatus
-    ? `${breadcrumbStatus}|${JSON.stringify(breadcrumbBlockerAttention ?? null)}`
+    ? `${breadcrumbStatus}|${breadcrumbIssueId ?? ""}|${JSON.stringify(breadcrumbBlockerAttention ?? null)}`
     : undefined;
   const breadcrumbStatusLeading = useMemo(
     () =>
       breadcrumbStatus ? (
         <StatusIcon
           status={breadcrumbStatus}
+          issueId={breadcrumbIssueId}
           className="size-3"
           blockerAttention={breadcrumbBlockerAttention}
         />
@@ -6844,6 +6847,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const issueStatusControl = (
     <StatusIcon
       status={issue.status}
+      issueId={issue.id}
       size="lg"
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}

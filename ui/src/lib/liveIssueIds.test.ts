@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { LiveRunForIssue } from "../api/heartbeats";
-import { collectLiveIssueIds, collectSubtreeLiveCounts } from "./liveIssueIds";
+import type { LiveRunCoverageByCompany } from "./liveIssueIds";
+import {
+  collectLiveIssueIds,
+  collectSubtreeLiveCounts,
+  INITIAL_LIVE_RUN_COVERAGE,
+  isCompanyLiveRunCoverageComplete,
+  isLiveRunCoverageComplete,
+  LIVE_RUNS_PAGE_LIMIT,
+  trackLiveRunCoverage,
+} from "./liveIssueIds";
 
 function liveRun(overrides: Partial<LiveRunForIssue>): LiveRunForIssue {
   return {
@@ -18,6 +27,85 @@ function liveRun(overrides: Partial<LiveRunForIssue>): LiveRunForIssue {
     ...overrides,
   };
 }
+
+describe("isLiveRunCoverageComplete", () => {
+  function runsOfLength(length: number): LiveRunForIssue[] {
+    return Array.from({ length }, (_, index) => liveRun({ id: `run-${index}`, issueId: `issue-${index}` }));
+  }
+
+  it("treats a short page as the whole truth", () => {
+    expect(isLiveRunCoverageComplete(runsOfLength(0))).toBe(true);
+    expect(isLiveRunCoverageComplete(runsOfLength(LIVE_RUNS_PAGE_LIMIT - 1))).toBe(true);
+  });
+
+  it("treats a full page as possibly truncated", () => {
+    // The route clamps `limit` to the page size, so a full page means there may
+    // be live runs this client never saw — absence stops proving inactivity.
+    expect(isLiveRunCoverageComplete(runsOfLength(LIVE_RUNS_PAGE_LIMIT))).toBe(false);
+    expect(isLiveRunCoverageComplete(runsOfLength(LIVE_RUNS_PAGE_LIMIT + 10))).toBe(false);
+  });
+
+  it("counts an unloaded response as complete so nothing animates while loading", () => {
+    expect(isLiveRunCoverageComplete(undefined)).toBe(true);
+    expect(isLiveRunCoverageComplete(null)).toBe(true);
+  });
+});
+
+describe("trackLiveRunCoverage", () => {
+  function runsOfLength(length: number): LiveRunForIssue[] {
+    return Array.from({ length }, (_, index) => liveRun({ id: `run-${index}`, issueId: `issue-${index}` }));
+  }
+
+  const COMPANY = "company-1";
+  const OTHER = "company-2";
+
+  function verdict(coverage: LiveRunCoverageByCompany, companyId: string | null): boolean {
+    return isCompanyLiveRunCoverageComplete(coverage, companyId);
+  }
+
+  it("keeps a complete window complete", () => {
+    const short = trackLiveRunCoverage(INITIAL_LIVE_RUN_COVERAGE, COMPANY, runsOfLength(3));
+    expect(verdict(short, COMPANY)).toBe(true);
+    expect(verdict(trackLiveRunCoverage(short, COMPANY, undefined), COMPANY)).toBe(true);
+  });
+
+  it("holds the truncated verdict after events shrink the cached page", () => {
+    // A full page means runs we never saw. `removeRunFromList` then drops a
+    // finished run from that same array without any refetch — the shorter list
+    // says nothing about the runs the page hid, so the verdict must not flip.
+    const truncated = trackLiveRunCoverage(INITIAL_LIVE_RUN_COVERAGE, COMPANY, runsOfLength(LIVE_RUNS_PAGE_LIMIT));
+    expect(verdict(truncated, COMPANY)).toBe(false);
+    expect(verdict(trackLiveRunCoverage(truncated, COMPANY, runsOfLength(LIVE_RUNS_PAGE_LIMIT - 1)), COMPANY)).toBe(false);
+    expect(verdict(trackLiveRunCoverage(truncated, COMPANY, runsOfLength(0)), COMPANY)).toBe(false);
+    expect(verdict(trackLiveRunCoverage(truncated, COMPANY, undefined), COMPANY)).toBe(false);
+  });
+
+  it("judges each company on its own page rather than the one before it", () => {
+    // The provider outlives a company switch. A busy company must not leave the
+    // next one animating every in-progress icon.
+    const truncated = trackLiveRunCoverage(INITIAL_LIVE_RUN_COVERAGE, COMPANY, runsOfLength(LIVE_RUNS_PAGE_LIMIT));
+    const switched = trackLiveRunCoverage(truncated, OTHER, runsOfLength(2));
+    expect(verdict(switched, OTHER)).toBe(true);
+    // A full page in the new company latches there, on its own evidence.
+    expect(verdict(trackLiveRunCoverage(switched, OTHER, runsOfLength(LIVE_RUNS_PAGE_LIMIT)), OTHER)).toBe(false);
+  });
+
+  it("remembers a company's truncated verdict when you come back to it", () => {
+    // React Query can still hold that company's array, and lifecycle events may
+    // have shortened it below the cap while we were away. Re-reading the length
+    // would call that shortened page complete without any fresh read.
+    const truncated = trackLiveRunCoverage(INITIAL_LIVE_RUN_COVERAGE, COMPANY, runsOfLength(LIVE_RUNS_PAGE_LIMIT));
+    const away = trackLiveRunCoverage(truncated, OTHER, runsOfLength(2));
+    const back = trackLiveRunCoverage(away, COMPANY, runsOfLength(LIVE_RUNS_PAGE_LIMIT - 1));
+    expect(verdict(back, COMPANY)).toBe(false);
+    expect(verdict(back, OTHER)).toBe(true);
+  });
+
+  it("returns the same map when nothing changed, so the context value is stable", () => {
+    const first = trackLiveRunCoverage(INITIAL_LIVE_RUN_COVERAGE, COMPANY, runsOfLength(3));
+    expect(trackLiveRunCoverage(first, COMPANY, runsOfLength(4))).toBe(first);
+  });
+});
 
 describe("collectLiveIssueIds", () => {
   it("keeps only runs linked to issues", () => {

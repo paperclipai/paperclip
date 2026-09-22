@@ -203,6 +203,7 @@ export const AgentRunCard = memo(function AgentRunCard({
               <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
                 <StatusGlyph
                   status={issue?.status ?? "backlog"}
+                  issueId={run.issueId}
                   size="md"
                   className="self-center"
                   title={issue ? `Task ${issue.status.replace(/_/g, " ")}` : undefined}

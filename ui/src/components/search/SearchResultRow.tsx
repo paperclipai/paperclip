@@ -178,7 +178,7 @@ function SearchResultRowImpl({
       data-result-type="issue"
     >
       <div className="mt-1 shrink-0">
-        <StatusIcon status={issue.status} />
+        <StatusIcon status={issue.status} issueId={issue.id} />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-1">

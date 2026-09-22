@@ -769,6 +769,19 @@ export function DesignGuide() {
             <StatusIcon status={status} onChange={setStatus} />
             <span className="text-sm">Click the icon to change status (current: {status})</span>
           </div>
+          {/* PAP-640: the in-progress glyph spins only while an agent is
+              actually working the task — pass the task's `issueId` and it
+              animates for exactly as long as that task has a live run. */}
+          <div className="flex items-center gap-4 mt-2">
+            <span className="flex items-center gap-1.5">
+              <StatusIcon status="in_progress" animated />
+              <span className="text-xs text-muted-foreground">in_progress · agent working</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <StatusIcon status="in_progress" />
+              <span className="text-xs text-muted-foreground">in_progress · idle between runs</span>
+            </span>
+          </div>
         </SubSection>
 
         {/* PAP-411: PriorityIcon showcase gated behind SHOW_TASK_PRIORITY_UI per board decision. */}

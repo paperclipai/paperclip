@@ -176,7 +176,7 @@ export function IssueQuicklookCard({
     <div className={cn("space-y-2", compact && "space-y-1.5")}>
       <div className="flex items-center gap-1">
         <div className="flex min-w-0 flex-1 items-center gap-1">
-          <StatusGlyph status={issue.status} size="md" title={statusLabel(issue.status)} />
+          <StatusGlyph status={issue.status} issueId={issue.id} size="md" title={statusLabel(issue.status)} />
           <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>

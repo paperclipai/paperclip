@@ -1667,7 +1667,7 @@ function LatestRunCard({
           <StatusBadge status={run.status} />
           {task ? (
             <>
-              <StatusGlyph status={task.status} size="sm" />
+              <StatusGlyph status={task.status} issueId={task.id} size="sm" />
               <span className="font-mono text-xs text-muted-foreground">
                 {task.identifier ?? task.id.slice(0, 8)}
               </span>

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-colors";
+import { useIsAgentWorkingOnIssue } from "../context/AgentActivityProvider";
 
 /**
  * Unified task status glyph — the single source-of-truth icon for every
@@ -22,9 +23,11 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  *   in_review → circle-dot · done → circle-check · blocked → circle-minus ·
  *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
  *
- * The in-progress animation represents task workflow status, independently of
- * run execution. It remains between runs until the task status changes; live
- * indicators and run details report whether an agent is currently executing.
+ * The in-progress glyph only spins while an agent is actually working on that
+ * task (PAP-640): pass the issue's `issueId` and the glyph animates exactly
+ * while that issue has a queued/running run, then settles to the static open
+ * circle between runs. Surfaces with no issue in hand (status pickers, filters,
+ * legends) render it static; `animated` forces the motion for showcases.
  *
  * Colour comes from the `--status-task-icon-*` CSS vars (AA-tuned, mode-aware;
  * see `index.css`). The glyph paints in `currentColor`, and the component
@@ -76,19 +79,31 @@ interface StatusGlyphProps {
   className?: string;
   /** Accessible label; when set the SVG gets `role="img"`, else it's decorative. */
   title?: string;
+  /**
+   * Issue this glyph stands for. Supplies the in-progress spin: the glyph
+   * animates only while that issue has an agent actively working on it.
+   */
+  issueId?: string | null;
+  /**
+   * Force the in-progress animation on/off, bypassing agent activity. For
+   * showcases and callers that already know the issue is being worked on.
+   */
+  animated?: boolean;
 }
 
-export function StatusGlyph({ status, size = "md", className, title }: StatusGlyphProps) {
+export function StatusGlyph({ status, size = "md", className, title, issueId, animated }: StatusGlyphProps) {
   const px = SIZE_PX[size];
   const Icon = STATUS_ICON[status] ?? STATUS_ICON_DEFAULT;
   const cssVar = taskStatusIconVar[status] ?? taskStatusIconVarDefault;
+  const agentWorking = useIsAgentWorkingOnIssue(issueId);
+  const spin = status === "in_progress" && (animated ?? agentWorking);
   const a11y = title
     ? ({ role: "img", "aria-label": title } as const)
     : ({ "aria-hidden": true } as const);
   return (
     <Icon
       size={px}
-      className={cn("inline-block shrink-0 align-middle", status === "in_progress" && "motion-safe:animate-spin", className)}
+      className={cn("inline-block shrink-0 align-middle", spin && "motion-safe:animate-spin", className)}
       style={{ color: `var(${cssVar})` } as CSSProperties}
       {...a11y}
     >

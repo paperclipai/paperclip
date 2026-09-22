@@ -577,7 +577,7 @@ function WatchedIssueRow({ issue }: { issue: CompanySearchIssueSummary }) {
       >
         {issue.identifier ?? issue.id.slice(0, 8)}
       </Link>
-      <IssueStatusBadge status={issue.status} />
+      <IssueStatusBadge status={issue.status} issueId={issue.id} />
       <span className="min-w-0 flex-1 truncate">{issue.title}</span>
       <span className="shrink-0 text-muted-foreground">{relativeTime(issue.updatedAt)}</span>
     </div>

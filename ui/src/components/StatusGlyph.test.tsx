@@ -3,6 +3,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { StatusGlyph } from "./StatusGlyph";
+import { AgentActivityTestProvider } from "../context/AgentActivityProvider";
 import { taskStatusIconVar } from "../lib/status-colors";
 
 /**
@@ -64,11 +65,45 @@ describe("StatusGlyph", () => {
     }
   });
 
-  it("animates only in-progress task icons and respects reduced motion", () => {
+  it("leaves every status still when no agent is working the task (PAP-640)", () => {
     for (const status of Object.keys(taskStatusIconVar)) {
-      const html = renderToStaticMarkup(<StatusGlyph status={status} />);
+      // No issue id and no provider: nothing is known to be executing.
+      expect(renderToStaticMarkup(<StatusGlyph status={status} />)).not.toContain("animate-spin");
+      // An issue id that isn't in the working set stays still too.
+      expect(
+        renderToStaticMarkup(
+          <AgentActivityTestProvider activeIssueIds={new Set(["other-issue"])}>
+            <StatusGlyph status={status} issueId="issue-1" />
+          </AgentActivityTestProvider>,
+        ),
+      ).not.toContain("animate-spin");
+    }
+  });
+
+  it("animates only the in-progress icon while an agent works that issue, and respects reduced motion", () => {
+    for (const status of Object.keys(taskStatusIconVar)) {
+      const html = renderToStaticMarkup(
+        <AgentActivityTestProvider activeIssueIds={new Set(["issue-1"])}>
+          <StatusGlyph status={status} issueId="issue-1" />
+        </AgentActivityTestProvider>,
+      );
       expect(html.includes("motion-safe:animate-spin")).toBe(status === "in_progress");
     }
+  });
+
+  it("lets `animated` force the in-progress spin on or off", () => {
+    expect(renderToStaticMarkup(<StatusGlyph status="in_progress" animated />)).toContain(
+      "motion-safe:animate-spin",
+    );
+    expect(
+      renderToStaticMarkup(
+        <AgentActivityTestProvider activeIssueIds={new Set(["issue-1"])}>
+          <StatusGlyph status="in_progress" issueId="issue-1" animated={false} />
+        </AgentActivityTestProvider>,
+      ),
+    ).not.toContain("animate-spin");
+    // Never for other statuses, however it is forced.
+    expect(renderToStaticMarkup(<StatusGlyph status="todo" animated />)).not.toContain("animate-spin");
   });
 
   it("uses the same circle radius and stroke for the spinner as other task icons", () => {

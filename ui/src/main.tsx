@@ -8,6 +8,7 @@ import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
+import { AgentActivityProvider } from "./context/AgentActivityProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
@@ -71,19 +72,21 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
               <EditorAutocompleteProvider>
                 <ToastProvider>
                   <LiveUpdatesProvider>
-                    <TooltipProvider>
-                      <CompanyAwareBreadcrumbProvider>
-                        <SidebarProvider>
-                          <PanelProvider>
-                            <PluginLauncherProvider>
-                              <DialogProvider>
-                                <App />
-                              </DialogProvider>
-                            </PluginLauncherProvider>
-                          </PanelProvider>
-                        </SidebarProvider>
-                      </CompanyAwareBreadcrumbProvider>
-                    </TooltipProvider>
+                    <AgentActivityProvider>
+                      <TooltipProvider>
+                        <CompanyAwareBreadcrumbProvider>
+                          <SidebarProvider>
+                            <PanelProvider>
+                              <PluginLauncherProvider>
+                                <DialogProvider>
+                                  <App />
+                                </DialogProvider>
+                              </PluginLauncherProvider>
+                            </PanelProvider>
+                          </SidebarProvider>
+                        </CompanyAwareBreadcrumbProvider>
+                      </TooltipProvider>
+                    </AgentActivityProvider>
                   </LiveUpdatesProvider>
                 </ToastProvider>
               </EditorAutocompleteProvider>

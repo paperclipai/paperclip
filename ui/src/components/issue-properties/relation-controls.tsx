@@ -40,7 +40,7 @@ export function RemovableIssueReferencePill({
   );
   const content = (
     <>
-      <StatusIcon status={issue.status} className="h-3 w-3 shrink-0" />
+      <StatusIcon status={issue.status} issueId={issue.id} className="h-3 w-3 shrink-0" />
       <span className="truncate">{issueLabel}</span>
     </>
   );

@@ -157,6 +157,7 @@ function WaitingChipLink({
     >
       <StatusGlyph
         status={blocker.status}
+        issueId={blocker.id}
         size="sm"
         title={`${waitingTaskStatusLabel(blocker.status)} status`}
       />

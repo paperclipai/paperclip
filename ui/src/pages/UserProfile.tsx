@@ -315,7 +315,7 @@ export function UserProfile() {
                     <span className="font-mono text-xs text-muted-foreground">{issue.identifier ?? issue.id.slice(0, 8)}</span>
                     <span className="truncate text-sm">{issue.title}</span>
                     <span className="flex items-center gap-3 sm:justify-end">
-                      <IssueStatusBadge status={issue.status} />
+                      <IssueStatusBadge status={issue.status} issueId={issue.id} />
                       <span className="text-xs tabular-nums text-muted-foreground">{relativeTime(issue.updatedAt)}</span>
                     </span>
                   </Link>

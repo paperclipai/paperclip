@@ -35,7 +35,7 @@ export function IssueReferencePill({
   );
   const content = (
     <>
-      {issue.status ? <StatusIcon status={issue.status} className="h-3 w-3 shrink-0" /> : null}
+      {issue.status ? <StatusIcon status={issue.status} issueId={issue.id} className="h-3 w-3 shrink-0" /> : null}
       {children !== undefined ? children : <span className="min-w-0 truncate">{issue.identifier ?? issue.title}</span>}
     </>
   );
