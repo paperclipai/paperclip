@@ -353,8 +353,8 @@ The valid action-path primitives are:
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery action that names the owner and action needed to restore liveness
 
-A bounded review-path recovery for an external-chat task retains the source
-run's admitted message IDs. It does not inherit checkout or authorization
+A bounded review-path recovery for a task from a supported external-chat
+provider retains the source run's admitted message IDs. It does not inherit checkout or authorization
 markers. Before dispatch, Paperclip verifies the recovery run's task ownership
 and current conversation, endpoint, and principal access for every message.
 Missing message references or revoked access still prevent execution.

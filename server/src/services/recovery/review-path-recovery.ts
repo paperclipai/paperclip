@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { CHAT_PROVIDERS, type IssueReviewAttention } from "@paperclipai/shared";
+import type { IssueReviewAttention } from "@paperclipai/shared";
+import { boundExternalChatProvider } from "../native-runtime/external-chat-provider.js";
 import { extractWakeCommentIds } from "../../modules/run-dispatch/index.js";
 import { withRecoveryContext } from "./status-only-context.js";
 
@@ -102,9 +103,7 @@ export function decideIssueReviewPathRecovery(input: {
   if (input.existingWake) return { kind: "skip", reason: "review-path recovery wake already exists" };
 
   const source = readNonEmptyString(context.source) ?? "heartbeat.review_path_disposition";
-  const chatCommentIds = CHAT_PROVIDERS.some(
-    (provider) => source === `chat:${provider}` || source === `chat:${provider}:recovery`,
-  ) ? extractWakeCommentIds(context) : [];
+  const chatCommentIds = boundExternalChatProvider(source) ? extractWakeCommentIds(context) : [];
 
   const payload = withRecoveryContext({
     issueId: input.issueId,

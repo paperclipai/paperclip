@@ -122,19 +122,22 @@ describe("review-path recovery", () => {
     },
   );
 
-  it("does not replay comments for a non-chat recovery", () => {
-    const decision = decideIssueReviewPathRecovery({
-      issueId: "issue-1",
-      sourceRunId: "run-1",
-      assigneeAgentId: "agent-1",
-      contextSnapshot: { source: "issue.comment", wakeCommentIds: ["comment-1"] },
-      reviewAttention: stalled,
-      existingWake: false,
-    });
-    expect(decision.kind).toBe("enqueue");
-    if (decision.kind !== "enqueue") return;
-    expect(decision.contextSnapshot).not.toHaveProperty("wakeCommentIds");
-  });
+  it.each(["issue.comment", "chat:agentmail", "chat:agentmail:recovery"])(
+    "does not carry a chat batch for unsupported source %s",
+    (source) => {
+      const decision = decideIssueReviewPathRecovery({
+        issueId: "issue-1",
+        sourceRunId: "run-1",
+        assigneeAgentId: "agent-1",
+        contextSnapshot: { source, wakeCommentIds: ["comment-1"] },
+        reviewAttention: stalled,
+        existingWake: false,
+      });
+      expect(decision.kind).toBe("enqueue");
+      if (decision.kind !== "enqueue") return;
+      expect(decision.contextSnapshot).not.toHaveProperty("wakeCommentIds");
+    },
+  );
 
   it("does not requeue when the bounded recovery run also ends pathless", () => {
     const decision = decideIssueReviewPathRecovery({
