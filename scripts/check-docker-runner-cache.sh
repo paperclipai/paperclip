@@ -4,8 +4,7 @@
 # External access: the baseline build anonymously reads the public BuildKit
 # cache at ghcr.io/paperclipai/paperclip:buildcache-{amd64,arm64} (see
 # RUNNER_CHECK_SEED_CACHE below). No credentials are used or required, and
-# nothing is pushed. This supersedes the "no external cache" note in
-# .github/workflows/docker-runner-check.yml, which CI bots cannot edit.
+# nothing is pushed.
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-runner-cache.XXXXXX")"
