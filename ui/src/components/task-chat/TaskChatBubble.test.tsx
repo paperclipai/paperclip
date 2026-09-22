@@ -94,6 +94,16 @@ describe("TaskChatBubble attachment chips", () => {
     expect(container.textContent).toContain("PDF");
   });
 
+  it("shows a video thumbnail on attachment chips while retaining the full-chip link", () => {
+    renderMessage("[clip.mp4](/api/attachments/clip/content)", "agent", [
+      attachment({ id: "clip", originalFilename: "clip.mp4", contentType: "video/mp4" }),
+    ]);
+    const group = container.querySelector('[data-testid="task-chat-bubble-attachments"]');
+    expect(group?.querySelector("video")?.getAttribute("src")).toBe("/api/attachments/clip/content");
+    expect(group?.querySelector("video")?.autoplay).toBe(false);
+    expect(group?.querySelector("a")?.getAttribute("href")).toBe("/api/attachments/clip/content");
+  });
+
   it("leaves messages without file references untouched", () => {
     renderMessage("Just words and a [normal link](https://example.com).");
 

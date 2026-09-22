@@ -181,7 +181,10 @@ describe("TaskChatProtocolCard", () => {
     expect(container.textContent).toContain("Open gallery");
   });
 
-  it.each(["image/png", "video/webm"])("opens %s artifacts in the task gallery", (contentType) => {
+  it.each([
+    ["image/png", "compact"], ["video/webm", "compact"],
+    ["image/png", "gallery"], ["video/webm", "gallery"],
+  ] as const)("opens %s artifacts from the %s presentation in the task gallery", (contentType, variant) => {
     const openGallery = vi.fn(() => true);
     const contentPath = "/api/attachments/media/content";
     flushSync(() => root.render(
@@ -189,7 +192,7 @@ describe("TaskChatProtocolCard", () => {
         <RichWorkProductCard
           workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath } })}
           href={contentPath}
-          variant="compact"
+          variant={variant}
         />
       </IssueGalleryContext.Provider>,
     ));

@@ -1,3 +1,5 @@
+import { ArtifactPreview } from "@/components/artifacts/ArtifactCard";
+import { isVideoLikeOutput } from "@/lib/issue-output";
 import { AgentAvatar, type AvatarAgent } from "../AgentAvatar";
 import { useCallback, useContext, useState, type ReactNode } from "react";
 import { useEmailComment } from "@/components/EmailMessageCard";
@@ -308,10 +310,11 @@ function TaskChatBubbleContent({
               const kind = fileKindForAttachment(ref);
               const KindIcon = kind.icon;
               const size = formatFileSize(ref.byteSize);
+              const video = isVideoLikeOutput(ref.contentType, ref.name);
               return (
                 <Attachment key={ref.url} size="sm">
-                  <AttachmentMedia>
-                    <KindIcon aria-hidden />
+                  <AttachmentMedia className={video ? "aspect-video group-data-[size=sm]/attachment:w-20" : undefined}>
+                    {video ? <ArtifactPreview artifact={{ title: ref.name, contentPath: ref.openPath ?? ref.url, mediaKind: "video" }} /> : <KindIcon aria-hidden />}
                   </AttachmentMedia>
                   <AttachmentContent>
                     <AttachmentTitle className="max-w-48">

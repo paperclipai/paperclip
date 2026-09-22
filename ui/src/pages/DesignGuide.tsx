@@ -1,3 +1,4 @@
+import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
 import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
 import { SetupWizardNavigation, SetupWizardFooter } from "../components/SetupWizard";
 import { RemoteMcpDesignExample } from "@/features/connections/remote-mcp/RemoteMcpDesignExample";
@@ -2305,6 +2306,14 @@ export function DesignGuide() {
           <InlineBanner tone="info" compact>
             Compact variant for embedding inside dialogs and modals.
           </InlineBanner>
+        </div>
+      </Section>
+
+      <Section title="Media artifacts">
+        <p className="text-sm text-muted-foreground">Images and videos use gallery tiles. The whole tile opens the task gallery; files and links keep compact, fully clickable rows. Task/Artifact Gallery in Storybook covers playable videos, mixed files, narrow panels, and unavailable previews.</p>
+        <div className="grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2">
+          <MediaArtifactCard id="design-image" title="Launch artwork" contentPath="/announcement-preview.svg" contentType="image/svg+xml" originalFilename="launch.svg" detail="Image" />
+          <MediaArtifactCard id="design-video" title="Video preview unavailable" contentPath="" contentType="video/mp4" originalFilename="preview.mp4" detail="Video" />
         </div>
       </Section>
 
