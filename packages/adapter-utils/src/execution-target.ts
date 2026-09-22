@@ -3059,18 +3059,29 @@ void pollStdin().catch((error) => void writeEvent({ type: "error", message: erro
 // Shared by both wrappers. Refuse a symlink and remove the private envelope
 // before creating the child; no launch payload file belongs to the agent.
 const PROCESS_SESSION_READ_COMMAND = `
-let commandPayload = process.env.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
-if (!commandPayload) {
-  const payloadPath = path.posix.join(sessionDir, "command.b64");
-  const handle = await fs.open(payloadPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-  try {
-    commandPayload = await handle.readFile("utf8");
-  } finally {
-    await handle.close();
-    await fs.rm(payloadPath, { force: true });
+let config;
+try {
+  let commandPayload = process.env.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+  if (!commandPayload) {
+    const payloadPath = path.posix.join(sessionDir, "command.b64");
+    const handle = await fs.open(payloadPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      commandPayload = await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+      await fs.rm(payloadPath, { force: true });
+    }
   }
+  config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8"));
+} catch {
+  // No child exists yet. Emit a terminal event on both transports and attest
+  // shutdown, instead of letting a detached polled wrapper fail silently.
+  // Parse errors can quote credential bytes, so use a fixed diagnostic.
+  await writeEvent({ type: "error", message: "Failed to read sandbox process session command payload." });
+  await writeEvent({ type: "shutdownAck" });
+  await new Promise((resolve) => process.stdout.write("", resolve));
+  process.exit(1);
 }
-const config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8"));
 `;
 
 // Streamed variant: the wrapper writes each output frame as one newline-

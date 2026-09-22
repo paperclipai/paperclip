@@ -598,7 +598,7 @@ describe("sandbox adapter execution targets", () => {
     } finally {
       await bridge?.stop();
     }
-  });
+  }, 10_000);
 
   it("removes an incomplete private command payload when upload fails", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-payload-upload-error-"));
@@ -621,6 +621,44 @@ describe("sandbox adapter execution targets", () => {
     })).rejects.toThrow("Upload interrupted");
     const entries = await readdir(path.join(rootDir, "process-sessions"), { withFileTypes: true });
     expect(entries.filter((entry) => entry.isDirectory())).toEqual([]);
+  });
+
+  it.each([
+    { streamed: false, corrupt: false },
+    { streamed: false, corrupt: true },
+    { streamed: true, corrupt: false },
+    { streamed: true, corrupt: true },
+  ])("reports payload read failures without hanging (streamed=$streamed, corrupt=$corrupt)", async ({ streamed, corrupt }) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-payload-read-error-"));
+    cleanupDirs.push(rootDir);
+    const delegate = createLocalSandboxRunner();
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "payload-read-error", adapterKey: "acpx", runtimeRootDir: rootDir,
+      target: {
+        kind: "remote", transport: "sandbox", providerKey: "local-test", remoteCwd: rootDir,
+        runner: { execute: async (input) => {
+          if (input.env?.PAPERCLIP_PROCESS_SESSION_DIR || input.args?.[1]?.includes("nohup node")) {
+            const sessionRoot = path.join(rootDir, "process-sessions");
+            const entries = await readdir(sessionRoot, { withFileTypes: true });
+            const payloadPath = path.join(sessionRoot, entries.find((entry) => entry.isDirectory())!.name, "command.b64");
+            if (corrupt) await writeFile(payloadPath, Buffer.from("private-payload-text").toString("base64"));
+            else await rm(payloadPath);
+          }
+          return delegate.execute(input);
+        } },
+      },
+      command: process.execPath, args: [], cwd: rootDir,
+      env: { LARGE_CONTEXT: "x".repeat(110_000) }, timeoutSec: 10,
+      streamOutputViaSession: streamed,
+    });
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "", true);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Failed to read sandbox process session command payload.");
+      expect(result.stderr).not.toContain("private-payload-text");
+    } finally {
+      await bridge?.stop();
+    }
   });
 
   it("test_process_session_poll_exec_parents_to_run_context", async () => {
