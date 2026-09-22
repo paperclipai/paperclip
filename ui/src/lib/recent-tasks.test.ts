@@ -61,6 +61,14 @@ describe("recent task persistence", () => {
     expect(readRecentTasks(storageKey, "company-1")[0]?.externalConversationState).toBe("active");
   });
 
+  it("keeps readiness and task status together when a turn settles at the same timestamp", () => {
+    const task = { ...issue("1"), status: "in_progress" as const, externalConversationState: "active" as const };
+    recordRecentTask(task, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...task, status: "in_review", externalConversationState: "waiting" }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({ status: "in_review", externalConversationState: "waiting" });
+  });
+
   it("publishes same-tab updates", () => {
     const listener = vi.fn();
     window.addEventListener(RECENT_TASKS_UPDATED_EVENT, listener);

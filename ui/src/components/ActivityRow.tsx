@@ -41,7 +41,8 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
     ? (heartbeatAgentId ? entityNameMap.get(`agent:${heartbeatAgentId}`) : null)
     : entityNameMap.get(`${event.entityType}:${event.entityId}`);
 
-  const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`);
+  const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`)
+    ?? (event.entityType === "issue" && typeof event.details?.issueTitle === "string" ? event.details.issueTitle : undefined);
 
   const link = isHeartbeatEvent && heartbeatAgentId
     ? `/agents/${heartbeatAgentId}/runs/${event.entityId}`

@@ -160,7 +160,7 @@ export const AgentRunCard = memo(function AgentRunCard({
 }: {
   companyId: string;
   run: LiveRunForIssue;
-  issue?: Pick<Issue, "identifier" | "title" | "status">;
+  issue?: Pick<Issue, "identifier" | "title" | "status" | "externalConversationState">;
   transcript?: TranscriptEntry[];
   hasOutput?: boolean;
   showTranscript?: boolean;
@@ -172,6 +172,7 @@ export const AgentRunCard = memo(function AgentRunCard({
   const timestamp = run.finishedAt
     ? `Finished ${relativeTime(run.finishedAt)}`
     : run.startedAt ? `Started ${relativeTime(run.startedAt)}` : `Queued ${relativeTime(run.createdAt)}`;
+  const taskStatus = issue?.status === "in_review" && issue.externalConversationState === "waiting" ? "idle" : issue?.status ?? "backlog";
   const taskTitle = issue?.title ?? (issueLoadFailed ? "Task unavailable" : "Loading task…");
 
   return (
@@ -202,10 +203,10 @@ export const AgentRunCard = memo(function AgentRunCard({
             <span className="flex min-w-0 items-baseline gap-2">
               <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
                 <StatusGlyph
-                  status={issue?.status ?? "backlog"}
+                  status={taskStatus}
                   size="md"
                   className="self-center"
-                  title={issue ? `Task ${issue.status.replace(/_/g, " ")}` : undefined}
+                  title={issue ? `Task ${taskStatus.replace(/_/g, " ")}` : undefined}
                 />
                 <span className="truncate">{taskTitle}</span>
               </span>

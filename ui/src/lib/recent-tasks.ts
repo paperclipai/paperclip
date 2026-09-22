@@ -116,7 +116,7 @@ export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnaps
   if (snapshotUpdatedAt === entry.snapshotUpdatedAt) {
     return issue.externalConversationState !== undefined
       && issue.externalConversationState !== entry.externalConversationState
-      ? { ...entry, externalConversationState: issue.externalConversationState }
+      ? { ...entry, status: issue.status, externalConversationState: issue.externalConversationState }
       : entry;
   }
   return {

@@ -93,7 +93,8 @@ export async function settleSlackConversation(db: Db, companyId: string, issueId
     activity = (await persistActivity(tx as unknown as Db, {
       companyId, actorType: "system", actorId: "slack-conversation", action: "issue.updated",
       entityType: "issue", entityId: issueId, runId: run.id,
-      details: { status: "in_review", externalConversationState: "waiting", conversationId: binding.conversation.id },
+      details: { status: "in_review", externalConversationState: "waiting", conversationId: binding.conversation.id,
+        issueTitle: issue.title, issueIdentifier: issue.identifier },
     })).publication;
     return true;
   });
