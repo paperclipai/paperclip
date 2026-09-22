@@ -11973,6 +11973,7 @@ describeEmbeddedPostgres("tool access service", () => {
           details: expect.objectContaining({
             code: "oauth_reauthorization_required",
           }),
+          status: 422,
         },
       );
     }
@@ -12245,7 +12246,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(updated.config)).not.toContain("m2m-access-token");
   });
 
-  it("fails expired OAuth credentials without a refresh token and returns reconnect links", async () => {
+  it.each(["catalog", "catalog/refresh", "health-check"])("returns reconnect instructions on %s for expired OAuth without a refresh token", async (path) => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv(
       "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
@@ -12328,7 +12329,7 @@ describeEmbeddedPostgres("tool access service", () => {
         actorId: "board",
       }),
     ).rejects.toMatchObject({
-      status: 502,
+      status: 422,
       details: expect.objectContaining({
         code: "oauth_refresh_missing",
         setupUrl: `/apps/${connect.connectionId}/permissions`,
@@ -12336,6 +12337,18 @@ describeEmbeddedPostgres("tool access service", () => {
         connection: expect.objectContaining({ healthStatus: "failed" }),
       }),
     });
+    await db.delete(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connect.connectionId));
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const app = createRouteApp(db, boardSessionActor(company.id, "owner", "board"));
+    const url = `/api/tool-connections/${connect.connectionId}/${path}`;
+    const response = await (path === "catalog" ? request(app).get(url) : request(app).post(url));
+    expect(response.status).toBe(422);
+    expect(response.body).toMatchObject({
+      code: "oauth_refresh_missing",
+      error: "OAuth credentials have expired and need to be reconnected.",
+      details: { setupUrl: `/apps/${connect.connectionId}/permissions`, reconnectUrl: `/apps/${connect.connectionId}/permissions` },
+    });
+    expect(capture).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
     const auditRows = await db
       .select()

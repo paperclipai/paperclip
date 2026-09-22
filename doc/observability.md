@@ -483,6 +483,10 @@ These fields contain build identifiers; they add no tenant or user identity.
   refreshing its catalog returns 422 with `oauth_challenge` and the existing
   setup/reconnect links. Other upstream failures still return 502 and are
   reported, including an unexplained upstream HTTP 400.
+- Expired OAuth credentials without a refresh token, or a rejected refresh token
+  that requires reauthorization. Discovery and health checks return 422 with
+  `oauth_refresh_missing` or `oauth_reauthorization_required` and the existing
+  reconnect instructions. Unexpected refresh failures remain reportable.
 - Slack's explicit response that its app has not enabled MCP access. Discovery
   and health checks return 422 with `slack_mcp_access_disabled` and setup
   instructions. This requires Slack's exact MCP endpoint and known error;
