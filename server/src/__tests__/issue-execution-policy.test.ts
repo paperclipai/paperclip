@@ -2208,6 +2208,25 @@ describe("review round circuit breaker", () => {
     });
   });
 
+  it("keeps a stage held on the sentinel where the deployment assumes it", () => {
+    expect(() =>
+      applyIssueExecutionPolicyTransition({
+        deploymentMode: "local_trusted",
+        issue: reviewPendingIssue(
+          { assigneeAgentId: null, assigneeUserId: localBoardSentinelUserId },
+          {
+            currentParticipant: { type: "user", userId: localBoardSentinelUserId },
+            changesRequestedCount: 3,
+          },
+        ),
+        policy,
+        requestedStatus: "todo",
+        requestedAssigneePatch: { assigneeAgentId: coderAgentId },
+        actor: { userId: boardUserId },
+      }),
+    ).toThrow("Only the escalated reviewer can advance the current execution stage");
+  });
+
   it("still holds the stage for a reachable escalated human", () => {
     expect(() =>
       applyIssueExecutionPolicyTransition({
