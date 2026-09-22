@@ -373,6 +373,15 @@ context the other kept default integrations add: the host name, the
 runtime version, and the dependency list. See "Default capture set"
 below.
 
+### Run failure context
+
+Terminal run failures also carry the run and task IDs, adapter, error code,
+run status, and redacted error message. Their fingerprint is the error code
+and adapter. These fields are passed directly to that event's capture call.
+They do not change the ambient Sentry scope, whose isolation is unavailable
+without an OpenTelemetry context manager. Later, unrelated exceptions must
+not inherit a previous run's identity or fingerprint.
+
 ### Browser data
 
 The browser sends no page URL, no referrer, no user agent, and no
