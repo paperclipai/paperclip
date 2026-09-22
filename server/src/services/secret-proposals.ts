@@ -1,5 +1,5 @@
 import { withAgentAppearance } from "@paperclipai/shared";
-import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, lte, notExists, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -27,6 +27,9 @@ const MAX_SECRET_VALUE_BYTES = 64 * 1024;
 const PENDING_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_PROPOSAL_LIST_LIMIT = 100;
 const DEFAULT_EXPIRY_SWEEP_LIMIT = 100;
+// A scheduler tick drains the orphan backlog in pages of DEFAULT_EXPIRY_SWEEP_LIMIT
+// and stops here, so one tick stays finite on a large backlog.
+const ORPHAN_SWEEP_MAX_PASSES = 20;
 
 // A pending proposal is only decidable while its approval card is open, because
 // the card is the surface that asks a human. These reasons record *why* a
@@ -868,7 +871,21 @@ export function createSecretProposalsService(db: Db) {
   ) {
     const expired = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
       .from(companySecretProposals)
-      .where(and(eq(companySecretProposals.status, "pending"), lte(companySecretProposals.expiresAt, now)))
+      .where(and(
+        eq(companySecretProposals.status, "pending"),
+        lte(companySecretProposals.expiresAt, now),
+        // A row whose card is already terminal belongs to sweepOrphaned, which
+        // records the card loss. Keeping the two sweeps disjoint makes the
+        // recorded reason independent of which one commits first: both run in
+        // the same scheduler tick and neither honours the other's ordering.
+        notExists(db.select({ one: sql`1` })
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, companySecretProposals.interactionId),
+            eq(issueThreadInteractions.companyId, companySecretProposals.companyId),
+            inArray(issueThreadInteractions.status, ["expired", "cancelled"]),
+          ))),
+      ))
       .orderBy(companySecretProposals.expiresAt)
       .limit(limit);
     let expiredCount = 0;
@@ -896,27 +913,35 @@ export function createSecretProposalsService(db: Db) {
     expireProposal: (companyId: string, proposalId: string) => Promise<unknown> =
       (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: SECRET_PROPOSAL_CARD_LOST_REASON }),
   ) {
-    const orphans = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
-      .from(companySecretProposals)
-      .innerJoin(issueThreadInteractions, and(
-        eq(issueThreadInteractions.id, companySecretProposals.interactionId),
-        eq(issueThreadInteractions.companyId, companySecretProposals.companyId),
-      ))
-      .where(and(
-        eq(companySecretProposals.status, "pending"),
-        inArray(issueThreadInteractions.status, ["expired", "cancelled"]),
-      ))
-      .orderBy(companySecretProposals.createdAt)
-      .limit(limit);
     let expiredCount = 0;
-    for (const proposal of orphans) {
-      try {
-        await expireProposal(proposal.companyId, proposal.id);
-        expiredCount += 1;
-      } catch (error) {
-        if (error instanceof HttpError && error.status === 409) continue;
-        throw error;
+    // The scheduler tick calls this once per interval, so one page is not
+    // enough: a backlog larger than the page would leave rows pending past the
+    // interval the invariant promises. Drain in bounded passes instead, and
+    // stop on the first short page. Each pass sees the rows the previous one
+    // resolved, so the bound is a page count, not a retry of the same rows.
+    for (let pass = 0; pass < ORPHAN_SWEEP_MAX_PASSES; pass += 1) {
+      const orphans = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
+        .from(companySecretProposals)
+        .innerJoin(issueThreadInteractions, and(
+          eq(issueThreadInteractions.id, companySecretProposals.interactionId),
+          eq(issueThreadInteractions.companyId, companySecretProposals.companyId),
+        ))
+        .where(and(
+          eq(companySecretProposals.status, "pending"),
+          inArray(issueThreadInteractions.status, ["expired", "cancelled"]),
+        ))
+        .orderBy(companySecretProposals.createdAt)
+        .limit(limit);
+      for (const proposal of orphans) {
+        try {
+          await expireProposal(proposal.companyId, proposal.id);
+          expiredCount += 1;
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 409) continue;
+          throw error;
+        }
       }
+      if (orphans.length < limit) break;
     }
     return expiredCount;
   }

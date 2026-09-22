@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -103,7 +103,12 @@ describeEmbeddedPostgres("secret proposal orphan sweep", () => {
 
   async function insertProposal(
     fixture: Awaited<ReturnType<typeof seed>>,
-    overrides: { interactionId?: string | null; expiresAt?: Date; configPath?: string } = {},
+    overrides: {
+      interactionId?: string | null;
+      expiresAt?: Date;
+      configPath?: string;
+      proposerAgentId?: string;
+    } = {},
   ) {
     const id = randomUUID();
     await db.insert(companySecretProposals).values({
@@ -114,9 +119,9 @@ describeEmbeddedPostgres("secret proposal orphan sweep", () => {
       justification: "Soak env for the resident runner",
       secretId: fixture.secretId,
       targetType: "agent",
-      targetId: fixture.agentId,
+      targetId: overrides.proposerAgentId ?? fixture.agentId,
       configPath: overrides.configPath ?? "env.THARSIA_DATABASE_URL",
-      proposedByAgentId: fixture.agentId,
+      proposedByAgentId: overrides.proposerAgentId ?? fixture.agentId,
       originIssueId: fixture.issueId,
       originRunId: fixture.heartbeatRunId,
       interactionId: overrides.interactionId ?? null,
@@ -307,6 +312,73 @@ describeEmbeddedPostgres("secret proposal orphan sweep", () => {
     expect(await pendingProposalsBehindDeadCards()).toBe(0);
   });
 
+  // The product caps one agent at 20 pending proposals, so a backlog that
+  // outgrows the sweep page needs more than one proposer. The sweep itself is
+  // company-wide and does not care which agent asked.
+  async function insertExtraAgents(fixture: Awaited<ReturnType<typeof seed>>, extra: number) {
+    const ids: string[] = [];
+    for (let index = 0; index < extra; index += 1) {
+      const id = randomUUID();
+      await db.insert(agents).values({
+        id,
+        companyId: fixture.companyId,
+        name: `Proposer ${index + 1}`,
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        permissions: {},
+        status: "idle",
+      });
+      ids.push(id);
+    }
+    return ids;
+  }
+
+  it("drains an orphan backlog larger than one sweep page in a single call", async () => {
+    const fixture = await seed();
+    const proposers = [fixture.agentId, ...(await insertExtraAgents(fixture, 5))];
+    const orphanTotal = 101;
+    for (let index = 0; index < orphanTotal; index += 1) {
+      const proposalId = await insertProposal(fixture, {
+        configPath: `env.THARSIA_BULK_${index}`,
+        proposerAgentId: proposers[index % proposers.length],
+      });
+      await insertCard(fixture, { status: "cancelled", proposalId });
+    }
+    expect(await pendingProposalsBehindDeadCards()).toBe(orphanTotal);
+
+    const secretProposals = createSecretProposalsService(db as never);
+    // One call is one scheduler tick. A single page of 100 would leave a row
+    // pending past the interval the invariant promises.
+    expect(await secretProposals.sweepOrphaned()).toBe(orphanTotal);
+
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+    const stillPending = await db
+      .select({ value: count() })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.status, "pending"));
+    expect(Number(stillPending[0]?.value ?? 0)).toBe(0);
+  });
+
+  it("records card loss when the lapse and the card death are both eligible", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture, { expiresAt: new Date(Date.now() - 60_000) });
+    await insertCard(fixture, { status: "cancelled", proposalId });
+
+    const secretProposals = createSecretProposalsService(db as never);
+    // Production starts both sweeps in the same tick, the lapse sweep first.
+    // The eligibility sets are disjoint, so the recorded reason does not depend
+    // on which one wins.
+    expect(await secretProposals.sweepExpired()).toBe(0);
+    expect(await secretProposals.sweepOrphaned()).toBe(1);
+
+    expect(await proposalRow(proposalId)).toMatchObject({
+      status: "expired",
+      resolutionReason: SECRET_PROPOSAL_CARD_LOST_REASON,
+    });
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+  });
+
   it("keeps a superseded card's proposal resolvable when a human already approved it", async () => {
     const fixture = await seed();
     const older = new Date("2026-07-01T12:00:00.000Z");
@@ -342,8 +414,9 @@ describeEmbeddedPostgres("secret proposal orphan sweep", () => {
     expect(await pendingProposalsBehindDeadCards()).toBe(1);
 
     const secretProposals = createSecretProposalsService(db as never);
-    expect(await secretProposals.sweepOrphaned()).toBe(1);
+    // Production order: the lapse sweep runs first on the same tick.
     expect(await secretProposals.sweepExpired()).toBe(1);
+    expect(await secretProposals.sweepOrphaned()).toBe(1);
 
     const orphan = await proposalRow(orphanProposalId);
     const lapsed = await proposalRow(lapsedProposalId);
