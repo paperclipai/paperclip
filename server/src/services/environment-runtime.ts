@@ -938,6 +938,9 @@ async function buildEnvironmentSecretMetadataForLeaseFingerprint(input: {
       version: resolvedVersion,
       provider: secret.provider,
       providerVersionRef: versionRow?.providerVersionRef ?? null,
+      valueFingerprint: versionRow
+        ? versionRow.fingerprintSha256 ?? versionRow.valueSha256
+        : null,
       outcome: versionRow ? "success" : "failure",
     });
   }
@@ -1042,6 +1045,7 @@ function reusableSandboxLeaseScopeMatches(input: {
   config: Record<string, unknown>;
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   allowLegacyRuntimeFingerprint?: boolean;
+  environmentHasSecretRefs?: boolean;
 }): boolean {
   if ((!input.executionWorkspaceId && !input.issueId) || !input.agentId) return false;
   const scope = input.lease.metadata?.reusableSandboxLease;
@@ -1063,6 +1067,12 @@ function reusableSandboxLeaseScopeMatches(input: {
     if (storedLeaseFingerprint) {
       return storedLeaseFingerprint === expectedLeaseFingerprint;
     }
+    // Legacy lease (created before value-aware lease fingerprints existed): it
+    // only carries the secret-blind runtimeFingerprint. For a secret-bearing
+    // environment we must NEVER fall through to the runtime-only match, or an
+    // in-place secret value change would be invisible and we'd serve a stale
+    // credential from the reused sandbox. Force a fresh, value-aware lease.
+    if (input.environmentHasSecretRefs) return false;
     if (!input.allowLegacyRuntimeFingerprint) return false;
   }
 
@@ -1874,6 +1884,13 @@ function createSandboxEnvironmentDriver(
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
+        // Hoisted out of the filter: whether this environment references any
+        // secrets gates the secret-blind legacy runtime fallback below. One DB
+        // read per acquire, never per candidate lease.
+        const environmentHasSecretRefs =
+          reusableCandidateLeases.length > 0
+            ? (await collectEnvironmentSecretRefs({ db, environment: input.environment })).length > 0
+            : false;
         const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
           reusableSandboxLeaseScopeMatches({
             lease,
@@ -1886,6 +1903,7 @@ function createSandboxEnvironmentDriver(
             provider: parsed.config.provider,
             config: providerConfigForLease,
             leaseFingerprint,
+            environmentHasSecretRefs,
             allowLegacyRuntimeFingerprint:
               lease.status === "active" &&
               input.heartbeatRunId !== null &&
@@ -2232,6 +2250,13 @@ function createSandboxEnvironmentDriver(
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
+      // Hoisted out of the filter: whether this environment references any
+      // secrets gates the secret-blind legacy runtime fallback below. One DB
+      // read per acquire, never per candidate lease.
+      const environmentHasSecretRefs =
+        reusableCandidateLeases.length > 0
+          ? (await collectEnvironmentSecretRefs({ db, environment: input.environment })).length > 0
+          : false;
       const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
         reusableSandboxLeaseScopeMatches({
           lease,
@@ -2244,6 +2269,7 @@ function createSandboxEnvironmentDriver(
           provider: parsed.config.provider,
           config: providerConfigForLease,
           leaseFingerprint,
+          environmentHasSecretRefs,
           allowLegacyRuntimeFingerprint:
             lease.status === "active" &&
             input.heartbeatRunId !== null &&
