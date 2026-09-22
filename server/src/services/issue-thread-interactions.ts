@@ -3268,6 +3268,13 @@ export function issueThreadInteractionService(
       const expired: IssueThreadInteraction[] = [];
       for (const { row, replacementInteractionId } of supersededRows) {
         const updated = await db.transaction(async (tx) => {
+          // Lock the linked proposal before the card. The queue approve/reject
+          // paths in secret-proposals take proposal -> interaction while holding
+          // no issue row, so locking the card first lets a concurrent approval
+          // and this sweep hold one row of the pair each and wait for the other.
+          // Taking the proposal first keeps the shared lifecycle order
+          // (issue -> proposal -> interaction) here too.
+          await lockLinkedSecretProposal(tx as unknown as Db, row);
           const [updatedRow] = await tx
             .update(issueThreadInteractions)
             .set({
@@ -3582,6 +3589,33 @@ export function issueThreadInteractionService(
             data.kind === "ask_user_questions"
               ? buildSupersededByNewerInteractionResult(row.id)
               : buildSupersededByNewerRequestResult(row.id);
+          const supersededPredicate = and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, data.kind),
+            eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row.id),
+          );
+          // Lock the linked proposals before the sibling update locks the cards.
+          // The queue approve/reject paths in secret-proposals take
+          // proposal -> interaction while holding no issue row, so a card-first
+          // order here inverts the shared lifecycle order (issue -> proposal ->
+          // interaction) and the two deadlock on a concurrent approval. Read the
+          // candidates without locking them: the update below still decides which
+          // cards actually expire and still reports them.
+          const supersededCandidates = await tx
+            .select({
+              id: issueThreadInteractions.id,
+              companyId: issueThreadInteractions.companyId,
+              kind: issueThreadInteractions.kind,
+              payload: issueThreadInteractions.payload,
+            })
+            .from(issueThreadInteractions)
+            .where(supersededPredicate);
+          for (const candidate of supersededCandidates) {
+            await lockLinkedSecretProposal(tx as unknown as Db, candidate);
+          }
           const supersededRows = await tx
             .update(issueThreadInteractions)
             .set({
@@ -3592,16 +3626,7 @@ export function issueThreadInteractionService(
               resolvedAt: now,
               updatedAt: now,
             })
-            .where(
-              and(
-                eq(issueThreadInteractions.companyId, issue.companyId),
-                eq(issueThreadInteractions.issueId, issue.id),
-                eq(issueThreadInteractions.kind, data.kind),
-                eq(issueThreadInteractions.createdByAgentId, actor.agentId),
-                eq(issueThreadInteractions.status, "pending"),
-                ne(issueThreadInteractions.id, row.id),
-              ),
-            )
+            .where(supersededPredicate)
             .returning();
           for (const supersededRow of supersededRows) {
             await resolveLinkedToolActionRequests(tx, supersededRow, {

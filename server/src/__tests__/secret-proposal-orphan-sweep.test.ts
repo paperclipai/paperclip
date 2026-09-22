@@ -401,6 +401,132 @@ describeEmbeddedPostgres("secret proposal orphan sweep", () => {
     expect((await proposalRow(proposalId))?.status).toBe("approved");
   });
 
+  // A queue approval (secret-proposals) locks the proposal row first and only
+  // then reflects the outcome on the card, and it holds no issue row while it
+  // does. A supersede pass that locks the card first therefore leaves the two
+  // holding one row of the pair each, and Postgres aborts one of them. These two
+  // tests assert the order the lifecycle documents (issue -> proposal ->
+  // interaction) on each of the two supersede paths, by holding the proposal
+  // row in one transaction and watching what the pass has taken when it queues
+  // behind that row.
+  async function assertPassWaitsOnTheProposalBeforeLockingTheCard(
+    proposalId: string,
+    cardId: string,
+    startPass: () => Promise<unknown>,
+  ) {
+    let resolveHolderPid!: (pid: number) => void;
+    const holderPidReady = new Promise<number>((resolve) => {
+      resolveHolderPid = resolve;
+    });
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM company_secret_proposals WHERE id = ${proposalId} FOR UPDATE`);
+      const [backend] = (await tx.execute(sql`SELECT pg_backend_pid() AS pid`)) as unknown as Array<{ pid: number }>;
+      resolveHolderPid(backend.pid);
+      await holderReleased;
+    });
+    const holderPid = await holderPidReady;
+
+    let pass: Promise<unknown> | null = null;
+    try {
+      pass = startPass();
+      // Asserted right below; keep a rejection from tripping the runner first.
+      pass.catch(() => {});
+
+      // Poll until Postgres reports the pass blocked behind the holder, rather
+      // than guessing how long that takes.
+      let passQueuedOnTheProposal = false;
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        const rows = (await db.execute(
+          sql`SELECT 1 FROM pg_stat_activity WHERE ${holderPid} = ANY(pg_blocking_pids(pid))`,
+        )) as unknown as Array<unknown>;
+        if (rows[0]) {
+          passQueuedOnTheProposal = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(passQueuedOnTheProposal).toBe(true);
+
+      // The pass is queued on the proposal. If it had taken the card first, the
+      // card row would already carry its uncommitted write and this no-wait
+      // probe would be refused; the order under test makes the card still free.
+      const probe = await db
+        .transaction(async (tx) => {
+          await tx.execute(sql`SELECT 1 FROM issue_thread_interactions WHERE id = ${cardId} FOR UPDATE NOWAIT`);
+        })
+        .then(() => null)
+        .catch((error: unknown) => error);
+      expect(String((probe as { cause?: unknown })?.cause ?? probe)).not.toMatch(/could not obtain lock/i);
+    } finally {
+      // Release and settle the pass even when an assertion above fails, so
+      // neither stays parked inside a lock past this test and corrupts teardown.
+      releaseHolder();
+      await holder;
+      if (pass) await Promise.allSettled([pass]);
+    }
+    // Returned in an object: an async function that returned `pass` directly
+    // would adopt it, and the caller would get the pass's *value* instead.
+    return { pass };
+  }
+
+  it("takes the proposal lock before the sibling card lock when a create supersedes", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture);
+    const cardId = await insertCard(fixture, { status: "pending", proposalId });
+    const interactions = issueThreadInteractionService(db as never);
+
+    const { pass: superseded } = await assertPassWaitsOnTheProposalBeforeLockingTheCard(proposalId, cardId, () =>
+      interactions.create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        {
+          kind: "request_confirmation",
+          title: "Merge the linked pull request?",
+          summary: null,
+          payload: { version: 1, prompt: "Merge the linked pull request?" },
+        },
+        { agentId: fixture.agentId },
+      ),
+    );
+
+    await expect(superseded).resolves.toBeDefined();
+    expect(await proposalRow(proposalId)).toMatchObject({
+      status: "expired",
+      resolutionReason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+    });
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+  });
+
+  it("takes the proposal lock before the card lock in the supersede sweep", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture);
+    const cardId = await insertCard(fixture, {
+      status: "pending",
+      createdAt: new Date("2026-07-01T12:00:00.000Z"),
+      proposalId,
+    });
+    await insertCard(fixture, {
+      status: "pending",
+      createdAt: new Date("2026-07-01T13:00:00.000Z"),
+      prompt: "Re-raised ask",
+    });
+    const interactions = issueThreadInteractionService(db as never);
+
+    const { pass: swept } = await assertPassWaitsOnTheProposalBeforeLockingTheCard(proposalId, cardId, () =>
+      interactions.sweepSupersededPendingRequestConfirmations(),
+    );
+
+    await expect(swept).resolves.toEqual({ expired: 1 });
+    expect(await proposalRow(proposalId)).toMatchObject({
+      status: "expired",
+      resolutionReason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+    });
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+  });
+
   it("records a card death and a human lapse under different reasons", async () => {
     const fixture = await seed();
     const orphanProposalId = await insertProposal(fixture, { configPath: "env.THARSIA_NATS_URL" });
