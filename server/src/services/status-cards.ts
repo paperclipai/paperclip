@@ -772,7 +772,7 @@ export function statusCardService(
       idempotencyKey: `status-card-update:${card.id}:${fingerprintHash}`,
       onDeduplicated: (reason) => { deduplicated = reason === "idempotency_key"; },
     });
-    const reopened = deduplicated && TERMINAL_ISSUE_STATUSES.has(created.status)
+    const reopened = deduplicated && (TERMINAL_ISSUE_STATUSES.has(created.status) || created.status === "blocked")
       ? await issuesSvc.update(created.id, { status: "todo", assigneeAgentId: summarizerAgentId })
       : created;
     const generationIssue = await issuesSvc.update(reopened!.id, {

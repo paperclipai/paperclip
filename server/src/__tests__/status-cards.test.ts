@@ -902,6 +902,95 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(await db.select().from(issues)).toHaveLength(1);
   });
 
+  it("revives a deduplicated blocked update task on refresh, not only on recompile", async () => {
+    // Regression: the compile path revives a deduplicated task that is terminal
+    // *or* `blocked`; the refresh path only revives terminal ones. A refresh that
+    // dedupes onto a task the Summarizer blocked therefore re-claims that task
+    // while leaving it `blocked` — and hidden, so its owner's timer heartbeat can
+    // never select it. The card reads healthy and the route queues a wake for a
+    // task that cannot run.
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const app = createApp(db, localBoardActor());
+    const created = await request(app)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Engineer work in flight" });
+    const cardId = created.body.id as string;
+    const compileIssueId = created.body.generatingIssueId as string;
+
+    // The query watches a status the card's own generation tasks never hold
+    // (`todo` on create, `blocked` when they stall), so blocking them does not
+    // move the snapshot the refresh's dedupe key is built from.
+    const run = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: run.id }).where(eq(issues.id, compileIssueId));
+    const queryWrite = await request(createApp(db, agentActor(company.id, summarizer.id, run.id)))
+      .put(`/api/status-cards/${cardId}/query`)
+      .send({
+        queries: [{ scope: "issues", status: ["in_progress"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
+        title: "Engineer work in flight",
+        changeSummary: "Compiled one bounded in-flight query.",
+        generationIssueId: compileIssueId,
+      });
+    expect(queryWrite.status).toBe(200);
+
+    const service = statusCardService(db);
+
+    // The setup task stalls as blocked: the stalled-generation hook releases the
+    // card's claim, but the task row itself stays blocked.
+    await issueService(db).update(compileIssueId, { status: "blocked" });
+    expect(await service.getById(cardId)).toMatchObject({ generatingIssueId: null });
+
+    // A manual refresh claims a fresh update task for the current snapshot.
+    const first = await request(app).post(`/api/status-cards/${cardId}/refresh`).send({});
+    expect(first.status).toBe(202);
+    expect(first.body.alreadyGenerating).toBe(false);
+    const updateIssueId = first.body.generatingIssue.id as string;
+    expect(updateIssueId).not.toBe(compileIssueId);
+
+    // That update task stalls the same way, releasing the claim once more.
+    await issueService(db).update(updateIssueId, { status: "blocked" });
+    expect(await service.getById(cardId)).toMatchObject({ generatingIssueId: null });
+
+    // The next refresh rebuilds the same fingerprint, so it dedupes by idempotency
+    // key onto that very blocked task. It has to revive it the way compile does —
+    // otherwise the card re-claims a hidden task that nothing can ever run.
+    const second = await request(app).post(`/api/status-cards/${cardId}/refresh`).send({});
+    expect(second.status).toBe(202);
+    expect(second.body.alreadyGenerating).toBe(false);
+    expect(second.body.generatingIssue.id).toBe(updateIssueId);
+    expect(second.body.generatingIssue.status).toBe("todo");
+    expect(await service.getById(cardId)).toMatchObject({ generatingIssueId: updateIssueId });
+    // Revived, not duplicated.
+    expect(await db.select().from(issues)).toHaveLength(2);
+
+    // Reviving is only worth anything if the task can then *finish*. The
+    // stalled-generation hook closed this task's ledger row as failed when it
+    // blocked, so pin down that completing it reconciles that same row rather
+    // than orphaning the update or writing a second one.
+    const finishRun = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: finishRun.id }).where(eq(issues.id, updateIssueId));
+    const summaryWrite = await request(createApp(db, agentActor(company.id, summarizer.id, finishRun.id)))
+      .put(`/api/status-cards/${cardId}/summary`)
+      .send({
+        markdown: "## In flight\n\nOne bounded summary for the revived task.",
+        title: "Engineer work in flight",
+        changeSummary: "Wrote the revived task's summary.",
+        generationIssueId: updateIssueId,
+      });
+    expect(summaryWrite.status).toBe(200);
+    expect(await service.getById(cardId)).toMatchObject({ generatingIssueId: null, state: "active" });
+    const ledger = await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.cardId, cardId));
+    // One row per generation task: the stalled setup task keeps its own failed
+    // row, and the revived update task reconciles the row the first refresh
+    // opened for it — a single row, not a second one appended next to it.
+    const revivedRows = ledger.filter((row) => row.generationIssueId === updateIssueId);
+    expect(ledger.filter((row) => row.kind !== "compile")).toHaveLength(2);
+    expect(revivedRows).toHaveLength(1);
+    expect(revivedRows[0]).toMatchObject({ status: "ok", finishedAt: expect.any(Date) });
+    expect(revivedRows[0]!.runId).toBe(finishRun.id);
+  });
+
   it("rejects status-card writes from the wrong agent, issue, or run", async () => {
     const company = await seedCompany();
     await enableStatusCards();
