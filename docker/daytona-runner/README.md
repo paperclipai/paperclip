@@ -31,6 +31,15 @@ provider manifest, and remote controller version checks aligned.
 
 ## Build and verify
 
+Run `pnpm --filter @paperclipai/paperclip-runner test:opencode:qualification`
+after installing dependencies to exercise the actual pinned OpenCode executable.
+It checks health/version, session creation and retrieval, SSE messages, an async
+prompt, and session deletion against a loopback mock provider. It uses an
+isolated home, starts no paid model request, and retires its process group.
+Set `PAPERCLIP_TEST_OPENCODE_BINARY` to the materialized Linux executable when
+qualifying an assembled provider pack.
+
+
 The fleet image is currently amd64-only because the pinned Cursor and GitHub CLI
 checksums cover amd64.
 

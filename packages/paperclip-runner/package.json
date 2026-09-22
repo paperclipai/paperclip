@@ -159,7 +159,8 @@
     "browser:dev": "pnpm run build:typescript && pnpm run build:runner-binaries && vite --config vite.config.ts",
     "browser:preview": "vite preview --config vite.config.ts",
     "verify": "pnpm run build && pnpm run typecheck && pnpm run check:replay-goldens && pnpm run test && pnpm run test:sdk && pnpm run test:scenarios && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run test:browser:sdk && pnpm run test:browser:scenarios && pnpm run check:forbidden-imports && pnpm run check:tracked-imports && pnpm run check:numbered-milestones && pnpm run check:package-boundaries && pnpm run check:clean-consumers && pnpm run docs:validate && pnpm run check:conformance-parity && pnpm run check:replay-parity && pnpm run trace:conformance && pnpm run replay:fixture && pnpm run trace:local-runner -- --quiet",
-    "verify:rootless": "bash scripts/verify-rootless-linux.sh"
+    "verify:rootless": "bash scripts/verify-rootless-linux.sh",
+    "test:opencode:qualification": "PAPERCLIP_OPENCODE_QUALIFY=1 node --test scripts/qualify-opencode-runtime.test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.73.0",
