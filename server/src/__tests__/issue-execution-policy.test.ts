@@ -1,6 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
-import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
+import {
+  applyIssueExecutionPolicyTransition as applyStageTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.ts";
+import type { DeploymentMode, IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
+
+/**
+ * Cases here mostly exercise stage selection, not deployment reachability, so
+ * they take the strict deployment: the board sentinel is unreachable unless a
+ * case says the deployment assumes it. The production call sites cannot omit
+ * the field — `StageTransitionInput` requires it — so this default exists only
+ * to keep the unrelated cases readable. Reachability of the sentinel *given* a
+ * deployment is covered by the middleware/route plumbing suite.
+ */
+function applyIssueExecutionPolicyTransition(
+  input: Omit<Parameters<typeof applyStageTransition>[0], "deploymentMode"> & {
+    deploymentMode?: DeploymentMode;
+  },
+) {
+  return applyStageTransition({ deploymentMode: "authenticated", ...input });
+}
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
 const qaAgentId = "22222222-2222-4222-8222-222222222222";
@@ -2088,6 +2108,7 @@ describe("review round circuit breaker", () => {
 
   it("does not hand the stage to the board sentinel on an authenticated deployment", () => {
     const result = applyIssueExecutionPolicyTransition({
+      deploymentMode: "authenticated",
       issue: reviewPendingIssue(
         {
           responsibleUserId: localBoardSentinelUserId,
@@ -2113,8 +2134,9 @@ describe("review round circuit breaker", () => {
     });
   });
 
-  it("escalates to the sentinel where the deployment assumes it", () => {
+  it("escalates to the sentinel when the deployment is local_trusted", () => {
     const result = applyIssueExecutionPolicyTransition({
+      deploymentMode: "local_trusted",
       issue: reviewPendingIssue(
         {
           responsibleUserId: localBoardSentinelUserId,
@@ -2127,7 +2149,6 @@ describe("review round circuit breaker", () => {
       requestedAssigneePatch: {},
       actor: { agentId: qaAgentId },
       commentBody: "Round three feedback — still not converging",
-      localBoardIsActable: true,
     });
 
     expect(result.patch.assigneeUserId).toBe(localBoardSentinelUserId);

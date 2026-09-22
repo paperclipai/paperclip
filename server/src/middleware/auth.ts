@@ -212,6 +212,20 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+/**
+ * The deployment an actor was resolved on, for callers that must decide
+ * something about the deployment rather than about the credential.
+ *
+ * An actor with no stamp did not come through `actorMiddleware` — a test
+ * harness or an internal call. Read that as `authenticated`: the strict
+ * reading makes the board sentinel unreachable, which refuses an escalation,
+ * where the lenient reading would park a stage on a participant that nothing
+ * on a real deployment can satisfy.
+ */
+export function deploymentModeOfActor(actor: { deploymentMode?: DeploymentMode }): DeploymentMode {
+  return actor.deploymentMode ?? "authenticated";
+}
+
 const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
 
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
@@ -219,7 +233,17 @@ const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
-    req.actor =
+    // Every actor that leaves this middleware carries the deployment it was
+    // resolved on. A bearer credential replaces the whole actor object below —
+    // `source` becomes `agent_key`/`agent_jwt` even under `local_trusted` — so
+    // stamping the deployment at each assignment is what keeps a deployment
+    // fact from being lost the moment `source` stops being `local_implicit`.
+    // Never assign `req.actor` directly inside this middleware.
+    const setActor = (actor: Request["actor"]) => {
+      req.actor = { ...actor, deploymentMode: opts.deploymentMode };
+    };
+
+    setActor(
       opts.deploymentMode === "local_trusted"
         ? {
             type: "board",
@@ -229,12 +253,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             isInstanceAdmin: true,
             source: "local_implicit",
           }
-        : { type: "none", source: "none" };
+        : { type: "none", source: "none" },
+    );
 
     // Routine ingress authenticates its own bearer/signature. Never interpret
     // webhook credentials as agent keys or attach an ambient browser session.
     if (req.method === "POST" && publicRoutineWebhookPath.test(req.path)) {
-      req.actor = { type: "none", source: "none" };
+      setActor({ type: "none", source: "none" });
       next();
       return;
     }
@@ -260,10 +285,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
-          req.actor = {
+          setActor({
             ...cloudTenantActor,
             runId: runIdHeader ?? undefined,
-          };
+          });
           next();
           return;
         }
@@ -287,7 +312,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               .then((rows) => rows[0] ?? null),
             loadActiveUserCompanyMemberships(db, userId),
           ]);
-          req.actor = {
+          setActor({
             type: "board",
             userId,
             sessionId: session.session.id,
@@ -298,7 +323,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",
-          };
+          });
           next();
           return;
         }
@@ -319,7 +344,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
         await boardAuth.touchBoardApiKey(boardKey.id);
-        req.actor = {
+        setActor({
           type: "board",
           userId: boardKey.userId,
           userName: access.user?.name ?? null,
@@ -330,7 +355,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           keyId: boardKey.id,
           runId: runIdHeader || undefined,
           source: "board_key",
-        };
+        });
         next();
         return;
       }
@@ -419,7 +444,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         userId: onBehalfOfUserId,
       });
 
-      req.actor = {
+      setActor({
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
@@ -430,7 +455,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         identityContextId: identityRun?.activeIdentityContextId ?? null,
         onBehalfOfMemberships,
         source: "agent_jwt",
-      };
+      });
       next();
       return;
     }
@@ -474,7 +499,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    req.actor = {
+    setActor({
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
@@ -487,7 +512,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       }),
       runId: runIdHeader || undefined,
       source: "agent_key",
-    };
+    });
 
     next();
   };

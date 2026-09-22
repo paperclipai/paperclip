@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  DeploymentMode,
   IssueExecutionDecision,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorPolicy,
@@ -53,15 +54,22 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
-  /**
-   * True when the caller's deployment assumes `local-board` for every request
-   * (`local_trusted`). Callers on an authenticated deployment must leave this
-   * false: there the sentinel cannot be authenticated as, so naming it as a
-   * stage participant produces a stage that no actor can ever advance.
-   * Defaults to false — failing towards "no dead end" rather than towards a
-   * stage nobody can reach.
-   */
-  localBoardIsActable?: boolean;
+};
+
+/**
+ * A transition that can move a stage, and therefore needs to know whether the
+ * board sentinel is a reachable participant on this deployment.
+ *
+ * `deploymentMode` is deliberately required and deliberately not derived from
+ * the actor: reachability is a property of the deployment, not of the
+ * credential the caller happened to present. Deriving it from the actor's
+ * `source` breaks under `local_trusted`, where `actorMiddleware` starts the
+ * request as `local_implicit` and replaces it with `agent_key`/`agent_jwt` the
+ * moment a valid bearer arrives — the sentinel stays assertable, but the
+ * derivation says otherwise.
+ */
+type StageTransitionInput = TransitionInput & {
+  deploymentMode: DeploymentMode;
 };
 
 type TransitionResult = {
@@ -91,6 +99,20 @@ export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
  * `isUnreachableUserId`.
  */
 const LOCAL_BOARD_SENTINEL_USER_ID = "local-board";
+
+/**
+ * Whether `local-board` is a participant some actor can actually satisfy on
+ * this deployment.
+ *
+ * `local_trusted` is the only mode where `actorMiddleware` assumes the board
+ * for every request that arrives without a bearer, so it is the only mode
+ * where the sentinel is reachable. Everything else must answer false. This
+ * reads the deployment alone: an `agent_key` or `agent_jwt` request on a
+ * `local_trusted` instance is still a `local_trusted` request.
+ */
+export function isLocalBoardActableInDeployment(deploymentMode: DeploymentMode): boolean {
+  return deploymentMode === "local_trusted";
+}
 
 function normalizeMonitorNotes(notes: string | null | undefined) {
   if (typeof notes !== "string") return null;
@@ -696,9 +718,9 @@ function canAutoSkipPendingStage(input: {
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
 }
 
-function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
+function applyIssueExecutionStageTransition(input: StageTransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
-  const localBoardIsActable = input.localBoardIsActable ?? false;
+  const localBoardIsActable = isLocalBoardActableInDeployment(input.deploymentMode);
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentAssignee = assigneePrincipal(input.issue);
   const actor = actorPrincipal(input.actor);
@@ -1259,7 +1281,7 @@ export function buildIssueMonitorClearedPatch(input: {
   };
 }
 
-export function applyIssueExecutionPolicyTransition(input: TransitionInput): TransitionResult {
+export function applyIssueExecutionPolicyTransition(input: StageTransitionInput): TransitionResult {
   const stageResult = applyIssueExecutionStageTransition(input);
   const monitorPatch = applyMonitorTransition(input, stageResult.patch);
   Object.assign(stageResult.patch, monitorPatch);

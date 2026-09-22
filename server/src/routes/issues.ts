@@ -145,6 +145,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
+import { deploymentModeOfActor } from "../middleware/auth.js";
 import * as serviceIndex from "../services/index.js";
 import {
   accessService,
@@ -9415,7 +9416,7 @@ export function issueRoutes(
                 userId: actor.actorType === "user" ? actor.actorId : null,
               },
               allowBoardOverride: req.actor.type === "board",
-              localBoardIsActable: req.actor.source === "local_implicit",
+              deploymentMode: deploymentModeOfActor(req.actor),
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
@@ -13169,7 +13170,7 @@ export function issueRoutes(
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
         allowBoardOverride: req.actor.type === "board",
-        localBoardIsActable: req.actor.source === "local_implicit",
+        deploymentMode: deploymentModeOfActor(req.actor),
         commentBody,
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
         monitorExplicitlyUpdated:
@@ -17601,7 +17602,7 @@ export function issueRoutes(
             agentId: actor.agentId ?? null,
             userId: actor.actorType === "user" ? actor.actorId : null,
           },
-          localBoardIsActable: req.actor.source === "local_implicit",
+          deploymentMode: deploymentModeOfActor(req.actor),
           commentBody: req.body.body,
         });
         const decisionId = transition.decision ? randomUUID() : null;
