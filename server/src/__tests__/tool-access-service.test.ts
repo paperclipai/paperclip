@@ -85,6 +85,7 @@ import {
 } from "../services/tool-gateway.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
+import * as sentry from "../sentry.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { invalidatePaperclipCloudConnectorCapabilities, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 
@@ -13758,7 +13759,7 @@ describeEmbeddedPostgres("tool access service", () => {
         name: "Sign-in app",
       });
 
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(422);
     expect(res.body).toMatchObject({
       error: "This app needs you to sign in.",
       details: expect.objectContaining({ code: "oauth_challenge" }),
@@ -13766,6 +13767,77 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
   });
+
+  it.each([
+    ["catalog", 401, 'Bearer realm="app"', 422, false],
+    ["catalog/refresh", 401, 'Bearer realm="app"', 422, false],
+    ["catalog", 400, null, 502, true],
+    ["catalog/refresh", 400, null, 502, true],
+    ["catalog", 503, null, 502, true],
+    ["catalog/refresh", 503, null, 502, true],
+  ] as const)(
+    "classifies %s upstream HTTP %i without hiding provider failures",
+    async (path, upstreamStatus, challenge, expectedStatus, reportable) => {
+      const company = await createCompany(db);
+      const [application] = await db
+        .insert(toolApplications)
+        .values({
+          companyId: company.id,
+          applicationKey: `catalog-status-${randomUUID()}`,
+          name: "Catalog status fixture",
+          type: "mcp_http",
+          status: "active",
+        })
+        .returning();
+      const [connection] = await db
+        .insert(toolConnections)
+        .values({
+          companyId: company.id,
+          applicationId: application!.id,
+          name: "Catalog status fixture",
+          uid: `test/${randomUUID()}`,
+          transport: "mcp_remote",
+          status: "draft",
+          enabled: false,
+          config: { url: "https://catalog-status.example.test/mcp" },
+          transportConfig: { url: "https://catalog-status.example.test/mcp" },
+          credentialSecretRefs: [],
+        })
+        .returning();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+        new Response(JSON.stringify({ error: "upstream request rejected" }), {
+          status: upstreamStatus,
+          headers: challenge ? { "www-authenticate": challenge } : {},
+        }),
+      );
+      const capture = vi
+        .spyOn(sentry, "captureException")
+        .mockImplementation(() => {});
+      const app = createRouteApp(db);
+      const url = `/api/tool-connections/${connection!.id}/${path}`;
+      const res = await (path === "catalog"
+        ? request(app).get(url)
+        : request(app).post(url));
+
+      expect(res.status).toBe(expectedStatus);
+      if (challenge) {
+        expect(res.body).toMatchObject({
+          error: "This app needs you to sign in.",
+          code: "oauth_challenge",
+          details: {
+            code: "oauth_challenge",
+            setupUrl: expect.any(String),
+            reconnectUrl: expect.any(String),
+          },
+        });
+      }
+      expect(capture).toHaveBeenCalledTimes(reportable ? 1 : 0);
+      await expect(
+        db.select().from(toolCatalogEntries)
+          .where(eq(toolCatalogEntries.connectionId, connection!.id)),
+      ).resolves.toHaveLength(0);
+    },
+  );
 
   it.each([
     [
@@ -13833,7 +13905,7 @@ describeEmbeddedPostgres("tool access service", () => {
         .post(`/api/companies/${company.id}/tools/apps/connect`)
         .send({ link: "https://8.8.8.8/mcp", name: "Redirect OAuth MCP" });
 
-      expect(res.status).toBe(502);
+      expect(res.status).toBe(422);
       expect(fetchMock).toHaveBeenCalledWith(
         "https://8.8.8.8/.well-known/oauth-protected-resource",
         expect.objectContaining({ redirect: "manual" }),

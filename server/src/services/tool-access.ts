@@ -2803,6 +2803,7 @@ function healthFailureHttpStatus(failure: {
   code: string;
 }): number {
   if (failure.status === "missing_secret") return 422;
+  if (failure.code === "oauth_challenge") return 422;
   if (failure.code === "user_authorization_required") return 422;
   if (failure.code === "composio_broker_retired") return 422;
   if (failure.code === "tool_connection_transport_unsupported") return 422;
@@ -6903,7 +6904,7 @@ export function toolAccessService(
             })
             .where(eq(toolConnections.id, connection.id));
         }
-        throw new HttpError(502, "This app needs you to sign in.", {
+        throw unprocessable("This app needs you to sign in.", {
           code: "oauth_challenge",
           status: response.status,
           setupUrl: connectionSetupUrl(connection),

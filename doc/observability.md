@@ -479,6 +479,10 @@ These fields contain build identifiers; they add no tenant or user identity.
 
 - A Zod validation error, which answers 400.
 - Each `HttpError` below status 500, such as 401, 403, 404, 409, and 422.
+- A remote app's recognized OAuth sign-in challenge. Connecting an app or
+  refreshing its catalog returns 422 with `oauth_challenge` and the existing
+  setup/reconnect links. Other upstream failures still return 502 and are
+  reported, including an unexplained upstream HTTP 400.
 - A performance trace and a profile, because `tracesSampleRate` is 0.
 
 ### Operator responsibilities
