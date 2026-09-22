@@ -17,7 +17,7 @@ import trail from "../fixtures/artifact-media/paper-trail.mp4?url";
 import manilaImage from "../fixtures/artifact-media/manila-ledger.png?url";
 import nightImage from "../fixtures/artifact-media/night-pills.png?url";
 
-const issue = createIssue({ id: "artifact-gallery-story", identifier: "PAP-18506", title: "Explore Paperclip Ships styles", status: "done" });
+const issue = createIssue({ id: "artifact-gallery-story", identifier: "DEMO-101", title: "Explore Paperclip Ships styles", status: "done" });
 const date = new Date("2026-09-22T18:03:00Z");
 const media = [["Paper Trail", trail], ["Big Type", type], ["Ticket Board", tickets], ["Night Pills", night], ["Manila Ledger", manila]];
 function product(title: string, index: number, overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
@@ -70,7 +70,7 @@ function GalleryStory({ scenario = "videos", width = 480 }: { scenario?: Scenari
         <main className="min-h-screen bg-background p-6 text-foreground">
           <div className="mx-auto flex max-w-6xl flex-wrap items-start gap-8">
             <div className="flex min-w-0 flex-1 flex-col gap-3" style={{ minWidth: 240 }}>
-              <p className="font-mono text-xs text-muted-foreground">PAP-18506 · Design review</p>
+              <p className="font-mono text-xs text-muted-foreground">Media artifacts · Design review</p>
               <h1 className="text-xl font-semibold">Paperclip Ships artifacts</h1>
               <p className="max-w-md text-sm text-muted-foreground">Eight video outputs across two runs. Compare previews at a glance, then click anywhere on a tile to watch it.</p>
               <p className="max-w-md text-xs text-muted-foreground">Illustrative offline clips inspired by the task’s five style directions. These stories use the production artifact components.</p>
