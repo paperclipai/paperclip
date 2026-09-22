@@ -40,7 +40,9 @@ export function queueIssueAssignmentWakeup(input: {
   rethrowOnError?: boolean;
   durableChatRequest?: DurableChatWakeupRequest;
 }) {
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  // Blocked issues are waiting on their unblock owner or an external
+  // dependency. Routine assignment mutations must not restart their assignee.
+  if (!input.issue.assigneeAgentId || input.issue.status === "backlog" || input.issue.status === "blocked") return;
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {

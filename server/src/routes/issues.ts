@@ -14552,6 +14552,7 @@ export function issueRoutes(
           assigneeChanged &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
+          issue.status !== "blocked" &&
           // Restoring an assignee on completed work is not a reopen request.
           // Explicit reopen/resume transitions are already reflected in issue.status.
           !isClosedIssueStatus(issue.status) &&

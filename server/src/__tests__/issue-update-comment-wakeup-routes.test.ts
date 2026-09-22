@@ -261,7 +261,11 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
-    mockIssueService.getDependencyReadiness.mockResolvedValue({ unresolvedBlockerCount: 1 });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      unresolvedBlockerCount: 1,
+      blockerIssueIds: [],
+      isDependencyReady: false,
+    });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
@@ -305,6 +309,41 @@ describe("issue update comment wakeups", () => {
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     },
   );
+
+  it("does not wake an assignee when a blocked issue is reassigned without being unblocked", async () => {
+    const existing = makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: null });
+    const updated = makeIssue({ status: "blocked", assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ assigneeAgentId: ASSIGNEE_AGENT_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "blocked", assigneeAgentId: ASSIGNEE_AGENT_ID });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes the assignee when a blocked issue is explicitly moved to todo", async () => {
+    const existing = makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: null });
+    const updated = makeIssue({ status: "todo", assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "todo", assigneeAgentId: ASSIGNEE_AGENT_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "todo", assigneeAgentId: ASSIGNEE_AGENT_ID });
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
+      reason: "issue_assigned",
+      payload: expect.objectContaining({ issueId: existing.id }),
+    }));
+  });
 
   it.each([false, true])("still wakes explicitly reopened work (reassigned: %s)", async (reassigned) => {
     const existing = makeIssue({ status: "done", assigneeAgentId: PREVIOUS_AGENT_ID, assigneeUserId: null });
