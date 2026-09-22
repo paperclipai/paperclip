@@ -43,6 +43,13 @@ describe("FeedCard", () => {
     container.remove();
   });
 
+  it.each([["waiting", "moved to idle"], [null, "moved to in review"]])("distinguishes waiting from review (%s)", (state, verb) => {
+    const root = createRoot(container);
+    act(() => root.render(<FeedCard event={{ ...event, details: { status: "in_review", externalConversationState: state } }} agentMap={new Map()} entityNameMap={new Map()} entityTitleMap={new Map()} />));
+    expect(container.querySelector('[data-fc="verb"]')?.textContent).toBe(verb);
+    act(() => root.unmount());
+  });
+
   it("uses the whole visible card as the entity link", () => {
     const root = createRoot(container);
     act(() => {

@@ -1,3 +1,6 @@
+import express from "express";
+import request from "supertest";
+import { issueRoutes } from "../routes/issues.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -85,6 +88,21 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(results.results.find((result) => result.issue?.id === f.issueId)?.issue?.externalConversationState).toBe("waiting");
     expect((await issueService(db).list(f.companyId, { q: "you there" }))[0]?.externalConversationState).toBe("waiting");
     expect((await issueService(db).listReviewAttention(f.companyId, [{ id: f.issueId, companyId: f.companyId, status: "in_review" }])).get(f.issueId)?.state).toBe("none");
+  });
+
+  it("preserves waiting state in compact list responses used by the Inbox", async () => {
+    const f = await fixture();
+    await settle(f);
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: true };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as any));
+    const response = await request(app).get(`/api/companies/${f.companyId}/issues`)
+      .query({ view: "compact", q: "you there" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toEqual([expect.objectContaining({ id: f.issueId, status: "in_review", externalConversationState: "waiting" })]);
   });
 
   it("reconciles an already-answered conversation without another model run", async () => {

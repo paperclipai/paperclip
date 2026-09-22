@@ -2977,6 +2977,7 @@ class AutoApprovalIssueMissingError extends Error {
 
 function toCompactIssue(issue: any): CompactIssue {
   return {
+    externalConversationState: issue.externalConversationState ?? null,
     id: issue.id,
     companyId: issue.companyId,
     projectId: issue.projectId,

@@ -869,6 +869,7 @@ export interface Issue {
 
 export type CompactIssue = Pick<
   Issue,
+  | "externalConversationState"
   | "id"
   | "companyId"
   | "projectId"

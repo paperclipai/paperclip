@@ -46,6 +46,7 @@ function formatVerb(
       return "opened";
     case "issue.updated": {
       const status = details?.status;
+      if (status === "in_review" && details?.externalConversationState === "waiting") return "moved to idle";
       if (typeof status === "string") return `moved to ${humanize(status)}`;
       const priority = details?.priority;
       if (typeof priority === "string") return `set priority to ${humanize(priority)} on`;
