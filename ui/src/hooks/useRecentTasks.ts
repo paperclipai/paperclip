@@ -78,7 +78,17 @@ export function useRecentTasks({
   const refreshedEntries = entries.map((entry) => {
     const issue = issueById.get(entry.id);
     if (!issue || issue.companyId !== companyId || issue.hiddenAt) return entry;
-    return mergeRecentTaskSnapshot(entry, issue);
+    const snapshot = mergeRecentTaskSnapshot(entry, issue);
+    // Readiness is a live server projection, not the versioned title/status
+    // snapshot used to keep history ordered across tabs. An older persisted
+    // snapshot must not hide the current verified Slack waiting state.
+    return issue.externalConversationState !== undefined
+      ? {
+          ...snapshot,
+          externalConversationState: issue.externalConversationState,
+          ...(issue.externalConversationState !== null ? { status: issue.status } : {}),
+        }
+      : snapshot;
   });
   const queryRevision = detailQueries
     .map((query) => `${query.dataUpdatedAt}:${query.errorUpdatedAt}:${query.status}`)
