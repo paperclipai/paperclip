@@ -634,8 +634,13 @@ Deletion is metered because it is the one issue write no later write can walk
 back, and because an unassigned issue is deletable by any agent that can see it —
 leaving it uncapped meant a loop could clear every unassigned issue in a company
 while a priority edit was capped at 20. Deletion also keeps the stricter
-ownership boundary: unlike a PATCH, it is refused outright on an issue assigned
-to another agent.
+ownership boundary: unlike a PATCH it does not take the default-open
+`allowVisibleIssueWrite` path, so a peer's issue is not deletable merely because
+it is visible and unclaimed. That is a narrower rule than a blanket refusal — two
+exemptions in the ownership guard still reach deletion: an unassigned issue, and
+an assignee the actor manages in the reporting chain (`allow_manager_chain`). A
+manager deleting a direct report's issue is therefore expected behaviour, and is
+bounded by the cap rather than by ownership.
 
 Issue **creation** is deliberately outside the counter. It has no target issue to
 attribute an attempt against, it is additive and reversible by a later cancel or

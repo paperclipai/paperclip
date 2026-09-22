@@ -1733,6 +1733,51 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.remove).not.toHaveBeenCalled();
   });
 
+  // TES-2179. Deletion does not take the default-open `allowVisibleIssueWrite`
+  // path a PATCH takes, so a peer's issue stays undeletable even once it is out
+  // of progress and plainly visible.
+  it("refuses deleting a peer's assigned issue and never reaches remove", async () => {
+    const owned = makeIssue({ assigneeAgentId: ownerAgentId, status: "todo" });
+    mockIssueService.getById.mockResolvedValue(owned);
+    mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.remove.mockResolvedValue(owned);
+
+    const res = await request(await createApp(peerActor())).delete(`/api/issues/${issueId}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.remove).not.toHaveBeenCalled();
+  });
+
+  // TES-2179. The counterpart to the refusal above: that boundary is narrower
+  // than "another agent's issue is never deletable". A manager holding
+  // `tasks:manage_active_checkouts` over the assignee (`allow_manager_chain`)
+  // reaches deletion, and is bounded by the cap rather than by ownership.
+  it("allows a manager to delete a direct report's issue and charges the cap", async () => {
+    const owned = makeIssue({ assigneeAgentId: ownerAgentId, status: "todo" });
+    mockIssueService.getById.mockResolvedValue(owned);
+    mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.remove.mockResolvedValue(owned);
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason:
+        input.action === "tasks:manage_active_checkouts"
+          ? "allow_manager_chain"
+          : "allow_explicit_grant",
+      explanation: "Allowed by test manager chain.",
+    }));
+
+    const res = await request(await createApp(peerActor())).delete(`/api/issues/${issueId}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.remove).toHaveBeenCalledWith(issueId);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ targetIssueId: issueId, kind: "update" }),
+    );
+  });
+
   it.each([
     ["board", "board"],
     ["a company user", { userId: "board-user" }],
