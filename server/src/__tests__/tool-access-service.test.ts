@@ -13768,6 +13768,55 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
   });
 
+  it.each(["catalog", "catalog/refresh", "health-check"])(
+    "explains disabled Slack MCP access on %s without reporting a server error",
+    async (path) => {
+      const company = await createCompany(db);
+      const [application] = await db.insert(toolApplications).values({
+        companyId: company.id,
+        applicationKey: `slack-setup-${randomUUID()}`,
+        name: "Slack setup fixture",
+        type: "mcp_http",
+        status: "active",
+      }).returning();
+      const [connection] = await db.insert(toolConnections).values({
+        companyId: company.id,
+        applicationId: application!.id,
+        name: "Slack setup fixture",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
+        status: "draft",
+        enabled: false,
+        config: { url: "https://mcp.slack.com/mcp" },
+        transportConfig: { url: "https://mcp.slack.com/mcp" },
+      }).returning();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: null, error: {
+          code: -32600,
+          message: "App is not enabled for Slack MCP server access. Please enable it here: https://api.slack.com/apps/fixture/mcp",
+        } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      ));
+      const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+      const app = createRouteApp(db);
+      const url = `/api/tool-connections/${connection!.id}/${path}`;
+      const response = await (path === "catalog" ? request(app).get(url) : request(app).post(url));
+      expect(response.status).toBe(422);
+      expect(response.body).toMatchObject({
+        code: "slack_mcp_access_disabled",
+        error: "Slack MCP access is disabled for this app. Ask the Slack app owner to enable MCP access, then refresh this connection.",
+        details: { code: "slack_mcp_access_disabled", setupUrl: expect.any(String) },
+      });
+      expect(JSON.stringify(response.body)).not.toContain("api.slack.com/apps/fixture");
+      expect(capture).not.toHaveBeenCalled();
+      const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+      expect(updated?.healthStatus).toBe("error");
+      expect(updated?.healthMessage).toBe(response.body.error);
+      await expect(db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connection!.id)))
+        .resolves.toHaveLength(0);
+    },
+  );
+
   it.each([
     ["catalog", 401, 'Bearer realm="app"', 422, false],
     ["catalog/refresh", 401, 'Bearer realm="app"', 422, false],

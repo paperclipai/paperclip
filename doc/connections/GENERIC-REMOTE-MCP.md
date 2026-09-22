@@ -62,6 +62,14 @@ back that step while retaining the established draft identity.
 Later health checks still require the user's authorization and return an
 actionable `422` error when it is missing.
 
+### Slack app access
+
+If Slack reports that MCP access is disabled for the app, ask the Slack app
+owner to enable MCP access in the app's Slack settings, then refresh the
+connection. Signing in alone does not enable that app setting. Paperclip shows
+this as a setup error and keeps the connection available for retry. See
+[Slack's MCP app requirements](https://docs.slack.dev/ai/slack-mcp-server/#app-identity).
+
 ### Advanced authentication
 
 Collapsed by default. Open it when the server's docs are specific:
