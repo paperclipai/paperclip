@@ -164,3 +164,28 @@ Validation on 2026-09-23:
 - Real provider webhook delivery is still pending a publicly reachable callback.
   Fireflies’ live V2 settings offer a **Meeting Summarized** subscription and a
   **Test Webhook** step. No production meeting completion has been tested.
+
+## UI review in Storybook
+
+Open **PR reviews → Fireflies and app webhooks** (`fireflies-pr.stories.tsx`).
+The 27 stories use production components and simulated data; they do not authorize
+accounts or send provider requests.
+
+| Changed surface | Story coverage |
+| --- | --- |
+| Catalog definition and branded artwork | Fireflies catalog; artwork in dark/light themes; Access, OAuth, API-key, and retry screens |
+| Preserved action restrictions | Permissions with Allowed, Ask first, and Off examples |
+| `TriggerWizard.tsx` | Shared app choice, HTTPS warning, signing secret/bearer copy, four verification states, save/resume, hidden-secret rotation, legacy drafts, mobile and light theme |
+| `RoutineTriggers.tsx` | Saved app-webhook settings, rotated secret/agent instructions, rejected delivery |
+| `RoutineTriggerCard.tsx` | Advanced card with `app_webhook` and no timestamp replay window |
+| `editable-sections.production.tsx` | Advanced creation with shared signing-mode description |
+
+```sh
+pnpm storybook
+pnpm build-storybook
+pnpm exec playwright test --config tests/storybook-visual/fireflies-pr.config.ts
+```
+
+The browser check loads every review story, runs its interaction assertions, and
+checks the mobile setup footer and horizontal overflow. The existing webhook
+stories also retain coverage of the shared flow outside this PR review group.
