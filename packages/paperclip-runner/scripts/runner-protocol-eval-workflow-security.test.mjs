@@ -13,6 +13,21 @@ const trustedPrWorkflowPath = resolve(
   ".github/workflows/pr-trusted.yml",
 );
 
+test("Grok subscription credentials require explicit catalog selection and observed auth evidence", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  const paid = workflow.slice(workflow.indexOf("    steps: &direct_eval_steps"), workflow.indexOf("  eval_shard_1:"));
+  assert.match(workflow, /grok_authentication:\n[\s\S]*?type: choice\n[\s\S]*?default: api_key/u);
+  assert.match(workflow, /--grok-authentication "\$GROK_AUTHENTICATION"/u);
+  assert.ok(paid.includes("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: ${{ matrix.credentialName == 'PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET' && secrets.GROK_AUTH_JSON || '' }}"));
+  assert.ok(paid.includes("XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}"));
+  assert.match(paid, /--summary-path cell-output\/roster-summary\.json/u);
+  assert.match(paid, /JSON\.parse\(readFileSync\("cell-output\/roster-summary\.json", "utf8"\)\)\.authenticationMode/u);
+  assert.match(paid, /authenticationMode !== expected/u);
+  for (const job of [workflow.slice(0, workflow.indexOf("  eval_shard_0:")), workflow.slice(workflow.indexOf("  report:"))]) {
+    assert.doesNotMatch(job, /secrets\.GROK_AUTH_JSON/u);
+  }
+});
+
 test("direct live eval workflow keeps paid execution behind stable actor authorization", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   assert.match(workflow, /^\s{2}authorize:/mu);
