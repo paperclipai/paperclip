@@ -366,7 +366,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     const connection = { id: "conn-inline-oauth", status: "draft", credentialPolicy: "per_user", authKind: "oauth" };
     connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [], auth: { kind: "oauth" } });
-    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug={provider} requestedAgentId="agent-1" interactionId="intent-inline" onComplete={onComplete} onPhaseChange={onPhaseChange} />);
+    const root = await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug={provider} requestedAgentId="agent-1" interactionId="intent-inline" onComplete={onComplete} onPhaseChange={onPhaseChange} />);
     await passAccessStep();
     await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://provider.example/mcp"));
     await act(async () => buttonByText("Connect")!.click());
@@ -388,6 +388,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenLastCalledWith("company-1", expect.objectContaining({ resumeConnectionId: connection.id }));
     await act(async () => message(window.location.origin, "intent-inline", "connected"));
     expect(onComplete).toHaveBeenCalledWith({ resolvedByCallback: true });
+    await act(async () => root.unmount());
+    mountedRoot = null;
+    expect(popup.close).toHaveBeenCalled();
   });
 
   it("inline aggregator saves and resumes a draft without storing credentials in browser storage", async () => {

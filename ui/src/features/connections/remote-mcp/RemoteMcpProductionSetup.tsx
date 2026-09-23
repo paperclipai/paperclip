@@ -35,6 +35,10 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
   const accessDraftKey = `paperclip:mcp-access-draft:${selectedCompanyId}:${interactionId || providerId}`;
   const intentDraftKey = `paperclip:mcp-intent-draft:${selectedCompanyId}:${interactionId}`;
   const popup = useRef<Window | null>(null);
+  useEffect(() => () => {
+    popup.current?.close();
+    popup.current = null;
+  }, []);
   const [showChoices, setShowChoices] = useState(!connection && !forceNewConnection && existingConnections.length > 0 && Boolean(onUseExisting));
   const [choicePending, setChoicePending] = useState<string | null>(null);
   const [choiceError, setChoiceError] = useState<string | null>(null);
