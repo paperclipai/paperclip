@@ -48797,12 +48797,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toEqual([{ state: "processed" }]);
   });
 
-  it("rechecks linked authority and channel reach before admitting a provider-confirmed Slack task", async () => {
-    for (const authorizationChange of [
-      "link_revoked",
-      "viewer",
-      "resource_disabled",
-    ] as const) {
+  // Each authorization case owns its service lifecycle. The global recovery
+  // worker must not see active fixtures from an earlier loop iteration.
+  it.each([
+    "link_revoked",
+    "viewer",
+    "resource_disabled",
+  ] as const)(
+    "rechecks linked authority and channel reach before admitting a provider-confirmed Slack task (%s)",
+    async (authorizationChange) => {
       const fixture = await seedCompany();
       const { endpoint, runtime, service, wakeup } =
         await configuredSlackEndpoint(fixture, {
@@ -48950,8 +48953,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         `must-not-create-${authorizationChange}`,
       );
       await service.shutdown();
-    }
-  });
+    },
+  );
 
   it("recovers a provider-confirmed Slack starter after restart but rechecks revoked reach", async () => {
     const fixture = await seedCompany();
@@ -49296,7 +49299,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     const providerRuntime = runtime.endpoints.get(endpoint.id);
     if (!providerRuntime) throw new Error("Expected Slack provider runtime");
-    const transportAttempts = vi.fn();
+    const transportAttempts = vi.fn(() => Date.now());
     providerRuntime.postHook = async () => {
       transportAttempts();
     };
@@ -49307,6 +49310,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     await service.processPendingDeliveries();
     expect(transportAttempts).toHaveBeenCalledTimes(1);
+    const recoveryFinishedAt = Date.now();
     const [deferred] = await db
       .select()
       .from(chatActions)
@@ -49325,9 +49329,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         retryAt: expect.any(String),
       },
     });
-    expect(
-      new Date(String(deferred!.result?.retryAt)).getTime(),
-    ).toBeGreaterThan(Date.now() + 25_000);
+    // Anchor the 30-second provider delay to the transport attempt. Other
+    // recovery work and the database read must not consume assertion slack.
+    const retryAt = new Date(String(deferred!.result?.retryAt)).getTime();
+    const attemptedAt = transportAttempts.mock.results[0]!.value;
+    expect(retryAt).toBeGreaterThanOrEqual(attemptedAt + 30_000);
+    expect(retryAt).toBeLessThanOrEqual(recoveryFinishedAt + 30_000);
 
     await service.processPendingDeliveries();
     expect(transportAttempts).toHaveBeenCalledTimes(1);
