@@ -284,6 +284,7 @@ interface IssueChatMessageContext {
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
     rememberAction?: boolean,
+    rejectProposalIds?: string[],
   ) => Promise<void> | void;
   onRejectInteraction?: (
     interaction:
@@ -681,6 +682,7 @@ interface IssueChatThreadProps {
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
     rememberAction?: boolean,
+    rejectProposalIds?: string[],
   ) => Promise<void> | void;
   onRejectInteraction?: (
     interaction:

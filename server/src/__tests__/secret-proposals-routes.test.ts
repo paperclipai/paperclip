@@ -1737,4 +1737,56 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(rows.map((row) => row.status)).toEqual(["rejected", "rejected", "rejected"]);
     expect(await db.select().from(companySecretBindings)).toHaveLength(0);
   });
+
+  it("resolves the card when the decision names a binding that does not carry it", async () => {
+    const fixture = await seedRun();
+    const { created } = await seedGroupFixture(fixture, ["env.SIB_A", "env.SIB_B"]);
+    const members = await db.select().from(companySecretProposals);
+    const sibling = members.find((member) => member.id !== created.body.id)!;
+
+    // The card belongs to one member of the group. Naming a different member is
+    // a valid way to decide the same ask, and it must close the card the human
+    // is looking at: a 200 that leaves the card pending tells the approver the
+    // decision did not land, and leaves the proposal's own card unresolvable.
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${sibling.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(200);
+    const [card] = await db.select().from(issueThreadInteractions);
+    expect(card).toMatchObject({ status: "accepted" });
+    expect((await db.select().from(companySecretProposals)).map((member) => member.status))
+      .toEqual(["approved", "approved"]);
+  });
+
+  it("approves a group from concurrent decisions that name different members", async () => {
+    const fixture = await seedRun();
+    const { created } = await seedGroupFixture(fixture, [
+      "env.RACE_A",
+      "env.RACE_B",
+      "env.RACE_C",
+      "env.RACE_D",
+    ]);
+    const members = await db.select().from(companySecretProposals);
+    const app = createBoardApp(fixture);
+
+    // Each decision names a different member, so every transaction reaches for a
+    // different row first. Taking the addressed row before the group would let
+    // two of them hold one row each and wait for the other, which PostgreSQL
+    // aborts with 40P01. The group must be locked in one order, first.
+    const responses = await Promise.all(
+      members.map((member) =>
+        request(app)
+          .post(`/api/companies/${fixture.companyId}/secret-proposals/${member.id}/approve`)
+          .send({})
+      ),
+    );
+
+    expect(responses.every((response) => response.status < 500)).toBe(true);
+    const rows = await db.select().from(companySecretProposals);
+    expect(rows.every((row) => row.status === "approved")).toBe(true);
+    const [card] = await db.select().from(issueThreadInteractions);
+    expect(card).toMatchObject({ status: "accepted" });
+    expect(created.body.interactionId).toBe(card!.id);
+  });
 });

@@ -1056,19 +1056,32 @@ export function createSecretProposalsService(db: Db) {
   }) {
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      const proposal = await requirePending(companyId, proposalId, txDb, true);
-      assertNotExpired(proposal);
-      await input.assertCanResolve?.(proposal, txDb);
-      await assertBindingSnapshotCurrent(proposal, txDb, true);
-      if (!proposal.groupId) {
+      // Which rows to lock is read without a lock. The group lock must be the
+      // first row lock this transaction takes, and it must be taken in asc(id)
+      // order: locking the addressed row first lets two approvals that name
+      // different members of one group hold one row each and wait for the other,
+      // which PostgreSQL aborts with 40P01. Every decision below reads the rows
+      // this lock returned.
+      const addressed = await getById(companyId, proposalId, txDb);
+      if (!addressed) throw notFound("Secret proposal not found");
+
+      if (!addressed.groupId) {
+        const proposal = await requirePending(companyId, proposalId, txDb, true);
+        assertNotExpired(proposal);
+        await input.assertCanResolve?.(proposal, txDb);
+        await assertBindingSnapshotCurrent(proposal, txDb, true);
         if (input.rejectProposalIds?.length) {
           throw badRequest("rejectProposalIds requires a grouped binding proposal");
         }
         return applyApproval(txDb, proposal, input);
       }
 
-      const pendingMembers = (await lockResolutionSet(txDb, companyId, proposal))
-        .filter((member) => member.status === "pending");
+      const members = await lockResolutionSet(txDb, companyId, addressed);
+      const proposal = members.find((member) => member.id === proposalId);
+      if (!proposal) throw notFound("Secret proposal not found");
+      if (proposal.status !== "pending") throw conflict("Only pending proposals can be resolved");
+      assertNotExpired(proposal);
+      const pendingMembers = members.filter((member) => member.status === "pending");
       const rejectIds = new Set(input.rejectProposalIds ?? []);
       for (const id of rejectIds) {
         if (!pendingMembers.some((member) => member.id === id)) {
@@ -1094,7 +1107,11 @@ export function createSecretProposalsService(db: Db) {
           reason: input.rejectReason ?? "Rejected while approving the rest of the group",
         });
       }
-      await reflectGroupOutcomeOnInteraction(txDb, proposal, {
+      // The card belongs to one member, and the approver need not have named it.
+      // Reflecting on the addressed row would return early on a sibling whose
+      // interactionId is null, leaving the card pending after a 200.
+      const anchor = members.find((member) => member.interactionId) ?? proposal;
+      await reflectGroupOutcomeOnInteraction(txDb, anchor, {
         resolvedByUserId: input.resolvedByUserId,
         reason: input.rejectReason ?? null,
         bindings: [...approved, ...rejected].map((member) => ({

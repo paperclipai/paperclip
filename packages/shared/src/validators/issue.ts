@@ -2013,6 +2013,13 @@ export const acceptIssueThreadInteractionSchema = z
       .array(z.string().trim().min(1).max(120))
       .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
       .optional(),
+    // Bindings of a grouped secret proposal the accepting user declines. The
+    // card accepts the ask and drops these in the same decision, so a human can
+    // keep six keys and refuse the seventh without a second card.
+    rejectProposalIds: z
+      .array(z.string().trim().min(1).max(120))
+      .max(SECRET_PROPOSAL_BINDING_GROUP_LIMIT)
+      .optional(),
   })
   .superRefine((value, ctx) => {
     const seenClientKeys = new Set<string>();
