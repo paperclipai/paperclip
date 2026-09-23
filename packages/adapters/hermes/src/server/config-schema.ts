@@ -2,7 +2,8 @@ import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
 
 import {
   DEFAULT_GRACE_SEC,
-  DEFAULT_TIMEOUT_SEC,
+  DEFAULT_MAX_TURNS_PER_RUN,
+  DEFAULT_SCALED_TIMEOUT_SEC,
   VALID_PROVIDERS,
 } from "../shared/constants.js";
 
@@ -35,7 +36,7 @@ export function getConfigSchema(): AdapterConfigSchema {
         key: "timeoutSec",
         label: "Timeout seconds",
         type: "number",
-        default: DEFAULT_TIMEOUT_SEC,
+        default: DEFAULT_SCALED_TIMEOUT_SEC,
       },
       {
         key: "graceSec",
@@ -48,6 +49,7 @@ export function getConfigSchema(): AdapterConfigSchema {
         key: "maxTurnsPerRun",
         label: "Max turns per run",
         type: "number",
+        default: DEFAULT_MAX_TURNS_PER_RUN,
         hint: "Optional Hermes --max-turns limit for tool-calling iterations.",
       },
       {
