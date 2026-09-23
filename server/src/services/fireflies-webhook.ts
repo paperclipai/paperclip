@@ -26,7 +26,7 @@ export function verifyFirefliesWebhook(input: {
   }
   const value = body as Record<string, unknown>;
   if (typeof value.event !== "string" || !value.event.trim() || value.event.length > 120
-    || typeof value.meeting_id !== "string" || !value.meeting_id.trim() || value.meeting_id.length > 256
+    || typeof value.meeting_id !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(value.meeting_id)
     || typeof value.timestamp !== "number" || !Number.isSafeInteger(value.timestamp)
     || value.timestamp <= 0 || !Number.isFinite(new Date(value.timestamp).getTime())
     || (value.client_reference_id != null && (typeof value.client_reference_id !== "string" || value.client_reference_id.length > 1024))) {

@@ -45,8 +45,10 @@ Suggested routine instructions:
 > task. Summarize decisions and action items in the task, with owners and due
 > dates when available. Highlight unresolved questions.
 
-The generated task includes validated `meeting_id`, `event`, `timestamp`, and
-optional `client_reference_id` metadata. The agent uses its normal authorized
+The generated task includes validated `meeting_id`, `event`, and `timestamp`
+in a delimited data block. Meeting IDs permit only ASCII letters, digits,
+underscores, and hyphens. The optional free-form `client_reference_id` stays in
+the stored delivery metadata and is excluded from task instructions. The agent uses its normal authorized
 connection to retrieve meeting content. A webhook never grants connection access.
 
 Fireflies normally sends events for meetings owned by the configuring account
