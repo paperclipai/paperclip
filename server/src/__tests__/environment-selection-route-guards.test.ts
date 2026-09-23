@@ -111,6 +111,17 @@ vi.mock("../services/environments.js", () => ({
   environmentService: () => mockEnvironmentService,
 }));
 
+// `routes/issues.ts` reads the instance settings straight from this module, not
+// from `services/index.js`. Selecting an environment travels in
+// `executionWorkspaceSettings`, which the isolated-workspaces gate refuses while
+// it is off — these cases are about the environment guards, so run them gate-on.
+vi.mock("../services/instance-settings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/instance-settings.js")>()),
+  instanceSettingsService: () => ({
+    getExperimental: vi.fn(async () => ({ enableIsolatedWorkspaces: true })),
+  }),
+}));
+
 vi.mock("../services/secrets.js", () => ({
   secretService: () => mockSecretService,
 }));

@@ -682,6 +682,98 @@ function hasOwn(record: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
+const EXECUTION_WORKSPACE_FIELDS = [
+  "executionWorkspaceId",
+  "executionWorkspacePreference",
+  "executionWorkspaceSettings",
+] as const;
+
+/** Key-order-independent, so a re-sent settings blob still compares equal. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entryValue]) => entryValue !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`).join(",")}}`;
+}
+
+/** Treats `undefined` and `null` as the same absent value, as the column does. */
+function isSameExecutionWorkspaceValue(requested: unknown, stored: unknown) {
+  const requestedIsAbsent = requested === null || requested === undefined;
+  const storedIsAbsent = stored === null || stored === undefined;
+  if (requestedIsAbsent || storedIsAbsent) return requestedIsAbsent && storedIsAbsent;
+  return stableStringify(requested) === stableStringify(stored);
+}
+
+/**
+ * Normalizes a requested or stored value to the form the column would hold.
+ *
+ * `executionWorkspaceSettings` goes through the same parse `issueService.update`
+ * applies before writing, so the comparison below is against what would actually
+ * land: `{}` collapses to `null`, unknown keys drop, and `environmentId` is not
+ * retained (the service calls this without `includeEnvironmentId`). Comparing
+ * the raw request instead would refuse no-op writes that the strip would have
+ * swallowed harmlessly.
+ */
+function normalizeExecutionWorkspaceField(field: string, value: unknown) {
+  if (field === "executionWorkspaceSettings") return parseIssueExecutionWorkspaceSettings(value);
+  return value ?? null;
+}
+
+/**
+ * Names the execution-workspace fields in a PATCH body that the
+ * isolated-workspaces gate cannot honour.
+ *
+ * `issueService.update` deletes all three fields while the gate is off, before
+ * they reach reference validation or the row. The strip itself is deliberate —
+ * the internal shared-workspace binding depends on it — but it used to be
+ * silent, so a caller pointing a task at a workspace got HTTP 200 and an empty
+ * change receipt while nothing moved, and only a re-read revealed it.
+ *
+ * A field is unhonourable when the request asks the stored value to *change*,
+ * because that is the write the strip would swallow. Two shapes are therefore
+ * honoured and pass through:
+ *
+ * - **Re-sending the value the row already holds.** Nothing changes whether or
+ *   not it is stripped, which keeps a client that round-trips a fetched issue
+ *   back into a PATCH working.
+ * - **Asking for `shared_workspace` as the preference.** That is the posture the
+ *   gate produces, and the project picker posts it on every project change
+ *   (`ui/src/components/issue-properties/IssueProperties.tsx`, via
+ *   `defaultExecutionWorkspaceModeForProject`, which falls through to
+ *   `shared_workspace` for a project with no execution-workspace policy).
+ *   Refusing it would break moving a task between projects on a
+ *   default-configured instance.
+ *
+ * The second allowance is deliberately narrow, and deliberately not extended to
+ * `executionWorkspaceId`. A null id is honoured only when the row is already
+ * null, so clearing a binding the runtime wrote via `bindRuntimeSharedWorkspace`
+ * — which bypasses the strip — is refused rather than silently ignored. That is
+ * the exact failure this endpoint is being fixed for, and a loud refusal beats a
+ * 200 that detaches nothing.
+ *
+ * Two residual cases are known and accepted rather than claimed away:
+ * `resolveExecutionWorkspaceMode` returns `agent_default`, not
+ * `shared_workspace`, when an assignee override sets `useProjectWorkspace:
+ * false`; and a project whose policy was configured while the gate was on makes
+ * the picker post `isolated_workspace`, which is refused. Both answer loudly.
+ */
+function unhonourableExecutionWorkspaceFields(
+  body: Record<string, unknown>,
+  existing: Record<string, unknown>,
+) {
+  return EXECUTION_WORKSPACE_FIELDS.filter((field) => {
+    if (!hasOwn(body, field)) return false;
+    const requested = normalizeExecutionWorkspaceField(field, body[field]);
+    if (field === "executionWorkspacePreference" && requested === "shared_workspace") return false;
+    return !isSameExecutionWorkspaceValue(
+      requested,
+      normalizeExecutionWorkspaceField(field, existing[field]),
+    );
+  });
+}
+
 async function auditAgentIssueCreateAttributionSpoof(input: {
   db: Db;
   req: Request;
@@ -12784,6 +12876,27 @@ export function issueRoutes(
         { allowVisibleIssueWrite: true },
       );
       if (!issueMutationAccess) return;
+      // Refuse execution-workspace values the gate will strip, rather than
+      // answering 200 with an empty change receipt. Checked after the 404/403
+      // gates, and only when the body actually names one of the fields, so an
+      // ordinary PATCH takes no extra settings read.
+      const unhonourableWorkspaceFields = unhonourableExecutionWorkspaceFields(
+        readObject(req.body),
+        readObject(existing),
+      );
+      if (
+        unhonourableWorkspaceFields.length > 0 &&
+        !(await instanceSettings.getExperimental()).enableIsolatedWorkspaces
+      ) {
+        throw unprocessable(
+          `Isolated execution workspaces are disabled on this instance, so ${unhonourableWorkspaceFields.join(", ")} cannot be set`,
+          {
+            code: "isolated_workspaces_disabled",
+            fields: unhonourableWorkspaceFields,
+            setting: "enableIsolatedWorkspaces",
+          },
+        );
+      }
       if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
       const issueMutationAuthorizationReason =
         req.actor.type === "agent"

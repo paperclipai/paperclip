@@ -42,6 +42,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
     },
   })),
   listCompanyIds: vi.fn(async () => ["company-1"]),
+  // These cases PATCH execution-workspace fields to exercise the change receipt
+  // and the activity details, not the isolated-workspaces gate — which refuses
+  // those fields while it is off.
+  getExperimental: vi.fn(async () => ({ enableIsolatedWorkspaces: true })),
 }));
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),

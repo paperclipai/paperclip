@@ -79,6 +79,17 @@ function registerServiceMocks() {
     heartbeatService: () => mockHeartbeatService,
   }));
 
+  // `routes/issues.ts` reads the instance settings straight from this module,
+  // not from `services/index.js`. This suite moves an issue onto a new
+  // execution workspace, which the isolated-workspaces gate refuses while it is
+  // off — that gate is covered by its own suite, so run these cases with it on.
+  vi.doMock("../services/instance-settings.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../services/instance-settings.js")>()),
+    instanceSettingsService: () => ({
+      getExperimental: vi.fn(async () => ({ enableIsolatedWorkspaces: true })),
+    }),
+  }));
+
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
   }));
