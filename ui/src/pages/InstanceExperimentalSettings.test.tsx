@@ -3,6 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { INSTANCE_FEATURE_KEYS } from "@paperclipai/shared";
 import type {
   InstanceExperimentalSettings as InstanceExperimentalSettingsPayload,
   InstanceExperimentalSettingsWithManaged,
@@ -968,6 +969,17 @@ describe("InstanceExperimentalSettings — card ordering and headings (PAP-393)"
     expect(sections.at(-1)?.textContent).toContain("Goals Sidebar Link");
   });
 
+  it("alphabetizes cards by their displayed title within each section", async () => {
+    setWorktreeRuntimeMeta(true);
+    await renderPage({ ...defaultExperimentalSettings(), enableIsolatedWorkspaces: true });
+
+    for (const section of container.querySelectorAll("section")) {
+      const titles = [...section.querySelectorAll("h3")].map((heading) => heading.textContent ?? "");
+      expect(titles.length).toBeGreaterThan(1);
+      expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" })));
+    }
+  });
+
   it("renders setting cards without a background color", async () => {
     await renderPage(defaultExperimentalSettings());
 
@@ -1001,11 +1013,15 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
     root = null;
     queryClient?.clear();
     container.remove();
+    setWorktreeRuntimeMeta(false);
     vi.clearAllMocks();
   });
 
-  async function renderPage(hiddenSettings?: string[]) {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue(defaultExperimentalSettings());
+  async function renderPage(
+    hiddenSettings?: string[],
+    settings: InstanceExperimentalSettingsWithManaged = defaultExperimentalSettings(),
+  ) {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue(settings);
     root = createRoot(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(queryKeys.health, {
@@ -1028,6 +1044,41 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
     expect(container.textContent).not.toContain("Enable Environments");
     expect(container.textContent).toContain("Beta skills");
     expect(container.textContent).not.toContain("Show the Apps navigation");
+  });
+
+  it("keeps only permitted controls in alphabetical order, including when hidden features are enabled", async () => {
+    setWorktreeRuntimeMeta(true);
+    const visible = new Set(["enableExternalObjects", "enableMcpAggregators", "enableSimplifiedEnglishInteractions"]);
+    await renderPage(
+      INSTANCE_FEATURE_KEYS.filter((key) => !visible.has(key)).map((key) => `instance.experimental.${key}`),
+      {
+        ...defaultExperimentalSettings(),
+        enableIsolatedWorkspaces: true,
+        enableIsolatedWorkspacesByDefault: true,
+        enablePaperclipDeveloperMode: true,
+        managedKeys: {
+          enableIsolatedWorkspacesByDefault: { managed: true, managedBy: "paperclip-cloud" },
+        },
+      },
+    );
+
+    expect([...container.querySelectorAll("h3")].map((heading) => heading.textContent)).toEqual([
+      "Enable External Objects",
+      "MCP aggregators",
+      "Simplified English Interactions",
+    ]);
+    expect([...container.querySelectorAll("section h2")].map((heading) => heading.textContent)).toEqual([
+      "Experimental features",
+    ]);
+    expect(container.querySelectorAll('button[role="switch"]')).toHaveLength(3);
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("retains a section when one of its controls is visible", async () => {
+    const visible = new Set(["enablePaperclipDeveloperMode", "enableGoalsSidebarLink"]);
+    await renderPage(INSTANCE_FEATURE_KEYS.filter((key) => !visible.has(key)).map((key) => `instance.experimental.${key}`));
+    expect(container.querySelector('[aria-labelledby="developer-mode-heading"] h3')?.textContent).toBe("Paperclip Developer Mode");
+    expect(container.querySelector('[aria-labelledby="legacy-heading"] h3')?.textContent).toBe("Goals Sidebar Link");
   });
 
   it("shows every toggle when nothing is hidden", async () => {
