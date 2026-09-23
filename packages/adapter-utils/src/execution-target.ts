@@ -658,6 +658,74 @@ export function formatAdapterExecutionTimeoutStartLogLine(
   );
 }
 
+/**
+ * `MAX_ARG_STRLEN`: 32 x `PAGE_SIZE`, which is 131,072 bytes when the page size
+ * is 4 KiB. This caps one `argv`/`envp` string and is independent of `ARG_MAX`,
+ * which caps the whole block.
+ */
+const MAX_SINGLE_ARG_STRING_BYTES = 32 * 4096;
+
+/**
+ * What one `NAME=value` environment entry costs against
+ * `MAX_SINGLE_ARG_STRING_BYTES`: the kernel counts the name, the `=`, the value
+ * and the terminating NUL against the same budget, so a value a few bytes short
+ * of the limit still fails once it carries a name.
+ */
+function envEntryArgBytes(key: string, value: string): number {
+  return Buffer.byteLength(key, "utf8") + 1 + Buffer.byteLength(value, "utf8") + 1;
+}
+
+/**
+ * One-line start-of-run statement of the spawn environment's size. Callers
+ * prefix with `[paperclip] ` and append a newline.
+ *
+ * `execve` rejects an oversized `envp` string with `E2BIG` before the child
+ * exists, so the child can never report what it was not handed and the run's
+ * only trace is the error text. Naming the largest entry and its cost up front
+ * makes that failure readable from the run log alone.
+ *
+ * Names and byte counts only. The spawn environment carries resolved secret
+ * values, so reporting values here would write credentials into the run log.
+ */
+export function formatSpawnEnvSizeStartLogLine(
+  env: Record<string, string>,
+): string {
+  let totalBytes = 0;
+  let largestKey: string | null = null;
+  let largestBytes = 0;
+  let overLimitCount = 0;
+  let entryCount = 0;
+  for (const [key, value] of Object.entries(env)) {
+    const entryBytes = envEntryArgBytes(key, value);
+    entryCount += 1;
+    totalBytes += entryBytes;
+    // Ties break on the name so the same environment always logs the same line.
+    if (
+      entryBytes > largestBytes ||
+      (entryBytes === largestBytes && largestKey !== null && key < largestKey)
+    ) {
+      largestKey = key;
+      largestBytes = entryBytes;
+    }
+    if (entryBytes > MAX_SINGLE_ARG_STRING_BYTES) overLimitCount += 1;
+  }
+  if (largestKey === null) return "Spawn environment: empty.";
+
+  const total = `${entryCount} ${entryCount === 1 ? "entry" : "entries"}, ${totalBytes} bytes total`;
+  if (overLimitCount > 0) {
+    const others = overLimitCount > 1 ? ` (${overLimitCount} entries over it)` : "";
+    return (
+      `Spawn environment: ${total}; largest "${largestKey}" needs ${largestBytes} bytes, ` +
+      `over the ${MAX_SINGLE_ARG_STRING_BYTES}-byte MAX_ARG_STRLEN limit${others}. ` +
+      `A local spawn fails with E2BIG while any entry is over it.`
+    );
+  }
+  return (
+    `Spawn environment: ${total}; largest "${largestKey}" needs ${largestBytes} bytes, ` +
+    `within the ${MAX_SINGLE_ARG_STRING_BYTES}-byte MAX_ARG_STRLEN limit.`
+  );
+}
+
 function requireSandboxRunner(target: AdapterSandboxExecutionTarget): CommandManagedRuntimeRunner {
   if (target.runner) return target.runner;
   throw new Error(

@@ -30,6 +30,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  formatSpawnEnvSizeStartLogLine,
   parseAdapterExecutionTarget,
   postedIssueCommentLogMarker,
   resolveAdapterExecutionTargetTimeout,
@@ -2034,6 +2035,66 @@ describe("sandbox adapter execution targets", () => {
     ).toBe(
       "Adapter execution timeout: none (explicitly disabled via adapterConfig.timeoutSec; set it to a positive value to add one).",
     );
+  });
+
+  it("reports the spawn environment size and names its largest entry", () => {
+    expect(formatSpawnEnvSizeStartLogLine({ A: "12", BB: "1234567" })).toBe(
+      'Spawn environment: 2 entries, 16 bytes total; largest "BB" needs 11 bytes, within the 131072-byte MAX_ARG_STRLEN limit.',
+    );
+    // Counts include the `=`, the terminating NUL and the `NAME=` prefix the
+    // kernel charges against the same budget: A=12 -> 5, BB=1234567 -> 11.
+    expect(formatSpawnEnvSizeStartLogLine({ A: "12" })).toBe(
+      'Spawn environment: 1 entry, 5 bytes total; largest "A" needs 5 bytes, within the 131072-byte MAX_ARG_STRLEN limit.',
+    );
+    expect(formatSpawnEnvSizeStartLogLine({})).toBe("Spawn environment: empty.");
+  });
+
+  it("counts a byte over the limit as over it, and a byte under as under", () => {
+    // The kernel measures the whole `NAME=value` string, so the room left for a
+    // value is the limit minus the name, the `=` and the NUL. An implementation
+    // that measured the value alone would pass the value at exactly the limit and
+    // report the entry as fitting, which is the off-by-one that made a payload
+    // sitting on `MAX_ARG_STRLEN` still fail `spawn`.
+    const key = "PAPERCLIP_WAKE_PAYLOAD_JSON";
+    const maxValueBytes = 131_072 - Buffer.byteLength(key, "utf8") - 2;
+    expect(formatSpawnEnvSizeStartLogLine({ [key]: "v".repeat(maxValueBytes) })).toBe(
+      `Spawn environment: 1 entry, 131072 bytes total; largest "${key}" needs 131072 bytes, ` +
+        `within the 131072-byte MAX_ARG_STRLEN limit.`,
+    );
+    expect(formatSpawnEnvSizeStartLogLine({ [key]: "v".repeat(maxValueBytes + 1) })).toBe(
+      `Spawn environment: 1 entry, 131073 bytes total; largest "${key}" needs 131073 bytes, ` +
+        `over the 131072-byte MAX_ARG_STRLEN limit. A local spawn fails with E2BIG while any entry is over it.`,
+    );
+  });
+
+  it("counts every entry over the limit and reports the largest one", () => {
+    const line = formatSpawnEnvSizeStartLogLine({
+      SMALL: "x",
+      BIG_ONE: "v".repeat(140_000),
+      BIG_TWO: "v".repeat(200_000),
+    });
+    expect(line).toContain('largest "BIG_TWO" needs 200009 bytes');
+    expect(line).toContain("(2 entries over it)");
+  });
+
+  it("never puts an environment value in the spawn size line", () => {
+    // The spawn env carries resolved secret values. A line that reported them
+    // would write credentials into the run log, so assert on the values
+    // themselves rather than on the shape of the message. Both branches are
+    // checked because only the over-limit one names an entry's cost, and that is
+    // where a value would be easiest to add.
+    const within = formatSpawnEnvSizeStartLogLine({
+      SOME_TOKEN: "sk-live-do-not-log-me",
+      PATH: "/usr/bin",
+    });
+    expect(within).not.toContain("sk-live-do-not-log-me");
+    expect(within).toContain("SOME_TOKEN");
+
+    const over = formatSpawnEnvSizeStartLogLine({
+      SOME_TOKEN: `sk-live-do-not-log-me${"v".repeat(200_000)}`,
+    });
+    expect(over).not.toContain("sk-live-do-not-log-me");
+    expect(over).toContain("SOME_TOKEN");
   });
 
   it("uses the caller timeout override when installing a missing sandbox command", async () => {
