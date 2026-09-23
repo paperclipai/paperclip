@@ -711,14 +711,42 @@ function isSameExecutionWorkspaceValue(requested: unknown, stored: unknown) {
  *
  * `executionWorkspaceSettings` goes through the same parse `issueService.update`
  * applies before writing, so the comparison below is against what would actually
- * land: `{}` collapses to `null`, unknown keys drop, and `environmentId` is not
- * retained (the service calls this without `includeEnvironmentId`). Comparing
- * the raw request instead would refuse no-op writes that the strip would have
- * swallowed harmlessly.
+ * land rather than against raw request text. The parse keeps only the keys it
+ * recognises, and it returns `{}` — not `null` — for a blob whose every key is
+ * dropped. `{ environmentId }` is exactly that blob, since the service calls the
+ * parse without `includeEnvironmentId`, so the empty result is collapsed to
+ * `null` here; otherwise it could never match a stored `null` and issue
+ * environment selection, a different feature behind a different flag, would be
+ * refused as an isolated-workspaces violation.
  */
 function normalizeExecutionWorkspaceField(field: string, value: unknown) {
-  if (field === "executionWorkspaceSettings") return parseIssueExecutionWorkspaceSettings(value);
-  return value ?? null;
+  if (field !== "executionWorkspaceSettings") return value ?? null;
+  const parsed = parseIssueExecutionWorkspaceSettings(value);
+  return parsed && Object.keys(parsed).length > 0 ? parsed : null;
+}
+
+/**
+ * Whether a normalized value names exactly the state the gate produces: no
+ * execution workspace of the task's own, running on the shared checkout.
+ *
+ * Such a request is asking for what it is going to get, so it is honoured even
+ * though the strip drops it. This matters well beyond tidiness — the project
+ * picker posts all three keys on *every* project change
+ * (`ui/src/components/issue-properties/IssueProperties.tsx`), and refusing them
+ * would turn "move a task to another project" into a 422 on a
+ * default-configured instance, a worse regression than the bug being fixed.
+ *
+ * `executionWorkspaceId` admits only `null`, never a real id: pointing a task at
+ * a workspace is precisely the write this endpoint was silently swallowing.
+ */
+function isGatedExecutionWorkspaceBaseline(field: string, normalized: unknown) {
+  if (normalized === null) return true;
+  if (field === "executionWorkspacePreference") return normalized === "shared_workspace";
+  if (field === "executionWorkspaceSettings") {
+    return (normalized as Record<string, unknown>).mode === "shared_workspace" &&
+      Object.keys(normalized as Record<string, unknown>).length === 1;
+  }
+  return false;
 }
 
 /**
@@ -731,33 +759,30 @@ function normalizeExecutionWorkspaceField(field: string, value: unknown) {
  * silent, so a caller pointing a task at a workspace got HTTP 200 and an empty
  * change receipt while nothing moved, and only a re-read revealed it.
  *
- * A field is unhonourable when the request asks the stored value to *change*,
- * because that is the write the strip would swallow. Two shapes are therefore
- * honoured and pass through:
+ * A field is unhonourable when the request asks for something the gate withholds
+ * *and* the row does not already say it. Two shapes therefore pass through:
  *
+ * - **The gate's own baseline** — see `isGatedExecutionWorkspaceBaseline`. The
+ *   caller is asking for the state it is going to get either way.
  * - **Re-sending the value the row already holds.** Nothing changes whether or
  *   not it is stripped, which keeps a client that round-trips a fetched issue
- *   back into a PATCH working.
- * - **Asking for `shared_workspace` as the preference.** That is the posture the
- *   gate produces, and the project picker posts it on every project change
- *   (`ui/src/components/issue-properties/IssueProperties.tsx`, via
- *   `defaultExecutionWorkspaceModeForProject`, which falls through to
- *   `shared_workspace` for a project with no execution-workspace policy).
- *   Refusing it would break moving a task between projects on a
- *   default-configured instance.
+ *   back into a PATCH working, and keeps a task whose workspace the runtime
+ *   bound past the strip (`bindRuntimeSharedWorkspace`) editable.
  *
- * The second allowance is deliberately narrow, and deliberately not extended to
- * `executionWorkspaceId`. A null id is honoured only when the row is already
- * null, so clearing a binding the runtime wrote via `bindRuntimeSharedWorkspace`
- * — which bypasses the strip — is refused rather than silently ignored. That is
- * the exact failure this endpoint is being fixed for, and a loud refusal beats a
- * 200 that detaches nothing.
+ * What is left refused is the write the ticket was opened for: naming a real
+ * `executionWorkspaceId`, or a preference or settings blob asking for an
+ * isolated workspace, a worktree strategy, or any other posture the gate has no
+ * way to deliver.
  *
- * Two residual cases are known and accepted rather than claimed away:
+ * Two residuals are known and accepted rather than claimed away. A PATCH that
+ * only moves `environmentId` inside the settings blob still passes here and is
+ * still swallowed by the strip — that is the pre-existing interaction between
+ * this gate and issue environments, which `selectEnvironmentExecutionWorkspaceSettings`
+ * handles separately, not something this guard introduces. And
  * `resolveExecutionWorkspaceMode` returns `agent_default`, not
  * `shared_workspace`, when an assignee override sets `useProjectWorkspace:
- * false`; and a project whose policy was configured while the gate was on makes
- * the picker post `isolated_workspace`, which is refused. Both answer loudly.
+ * false`, so the baseline allowance is not a promise about the mode a task
+ * ultimately runs in.
  */
 function unhonourableExecutionWorkspaceFields(
   body: Record<string, unknown>,
@@ -766,7 +791,7 @@ function unhonourableExecutionWorkspaceFields(
   return EXECUTION_WORKSPACE_FIELDS.filter((field) => {
     if (!hasOwn(body, field)) return false;
     const requested = normalizeExecutionWorkspaceField(field, body[field]);
-    if (field === "executionWorkspacePreference" && requested === "shared_workspace") return false;
+    if (isGatedExecutionWorkspaceBaseline(field, requested)) return false;
     return !isSameExecutionWorkspaceValue(
       requested,
       normalizeExecutionWorkspaceField(field, existing[field]),

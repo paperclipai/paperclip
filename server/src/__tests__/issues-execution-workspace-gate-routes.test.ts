@@ -219,20 +219,22 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
   });
 
   /**
-   * `shared_workspace` is allowed as the gate's own posture, but that allowance
-   * is scoped to the preference. A mode carried in the settings blob still has
-   * to match the row, because the blob also carries strategy and egress keys the
-   * gate has no way to honour.
+   * A bare `{ mode: "shared_workspace" }` is the gate's own posture expressed in
+   * the settings blob, and the picker posts exactly it for a project that has an
+   * execution-workspace policy configured. It is honoured — but only bare: the
+   * next case shows the same mode stops being honourable the moment the blob
+   * also carries something the gate cannot deliver.
    */
-  it("does not extend the shared_workspace allowance to the settings blob", async () => {
+  it("accepts a bare shared_workspace settings blob", async () => {
     const seeded = await seed({ isolatedWorkspaces: false });
 
     const res = await patch(seeded, {
+      projectId: seeded.otherProjectId,
       executionWorkspaceSettings: { mode: "shared_workspace" },
     });
 
-    expect(res.status).toBe(422);
-    expect(JSON.stringify(res.body)).toContain("executionWorkspaceSettings");
+    expect(res.status).toBe(200);
+    expect(res.body.projectId).toBe(seeded.otherProjectId);
   });
 
   /**
@@ -256,19 +258,72 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
   });
 
   /**
-   * ...and the mirror image: with a binding already stored, clearing it *is* a
-   * change, so it is refused rather than silently ignored.
+   * The picker again, but against a row that already carries a workspace the
+   * runtime bound past the strip — `heartbeat.ts` patches `executionWorkspaceId`
+   * through `issuesSvc.update` with `bindRuntimeSharedWorkspace`, so *any* task
+   * that has run once holds one, gate or no gate. An earlier revision of this
+   * guard refused `executionWorkspaceId: null` whenever the row held an id,
+   * which meant a task could be moved between projects only until the first
+   * time it ran. Null is the gate's baseline and is honoured regardless of what
+   * the row holds.
    */
-  it("refuses clearing a stored workspace id, and the binding survives", async () => {
+  it("accepts the picker's body against a row the runtime already bound", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeWorkspaceBinding: true });
 
-    const res = await patch(seeded, { executionWorkspaceId: null });
-
-    expect(res.status).toBe(422);
-    expect(JSON.stringify(res.body)).toContain("executionWorkspaceId");
-    expect(await storedWorkspaceFields(seeded)).toMatchObject({
-      executionWorkspaceId: seeded.workspaceId,
+    const res = await patch(seeded, {
+      title: "Renamed",
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "shared_workspace",
+      executionWorkspaceSettings: null,
     });
+
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe("Renamed");
+  });
+
+  /**
+   * The same body *with* a project change is still refused — but by
+   * "Execution workspace must belong to the selected project", a validation that
+   * predates this guard and fires on the binding left in the row. Pinned so the
+   * distinction stays visible: this guard must not be what refuses it, or a
+   * later reader would read the 422 as the gate check being over-broad and
+   * loosen the wrong code. That a runtime-bound task cannot be moved between
+   * projects while the gate is off is pre-existing and out of scope here.
+   */
+  it("is not the reason a project move with a stale binding is refused", async () => {
+    const seeded = await seed({ isolatedWorkspaces: false, storeWorkspaceBinding: true });
+
+    const res = await patch(seeded, {
+      projectId: seeded.otherProjectId,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "shared_workspace",
+      executionWorkspaceSettings: null,
+    });
+
+    expect(JSON.stringify(res.body)).not.toContain("isolated_workspaces_disabled");
+  });
+
+  /**
+   * Selecting an issue environment travels inside the settings blob and is a
+   * different feature behind a different flag. The parse drops `environmentId`
+   * (the service does not pass `includeEnvironmentId`) and returns `{}` rather
+   * than `null`, so an earlier revision compared `{}` against a stored `null`,
+   * decided they differed, and refused environment selection as an
+   * isolated-workspaces violation.
+   *
+   * The id here is not seeded, so the request still fails on "Environment not
+   * found" — which is the point: the refusal must come from environment
+   * validation downstream, never from this guard.
+   */
+  it("does not refuse an environment-only settings payload as a gate violation", async () => {
+    const seeded = await seed({ isolatedWorkspaces: false });
+
+    const res = await patch(seeded, {
+      title: "Renamed",
+      executionWorkspaceSettings: { environmentId: randomUUID() },
+    });
+
+    expect(JSON.stringify(res.body)).not.toContain("isolated_workspaces_disabled");
   });
 
   it("leaves a PATCH that names none of the gated fields alone", async () => {
