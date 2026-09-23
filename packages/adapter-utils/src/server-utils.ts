@@ -162,10 +162,22 @@ export function isPaperclipRuntimeEnvKey(key: string): boolean {
 
 // PAPERCLIP_API_KEY is never accepted from adapter/user config env: the
 // harness-minted run token is the only source of Paperclip API identity.
-// Other PAPERCLIP_*-named config keys are allowed as long as Paperclip has
-// not assigned the same key for the run (runtime vars always win).
+// Server signing secrets must also stay off worker config/env even when they
+// use the PAPERCLIP_* prefix. Other PAPERCLIP_*-named config keys are allowed
+// as long as Paperclip has not assigned the same key for the run (runtime
+// vars always win).
+export function isServerSigningSecretEnvKey(key: string): boolean {
+  return key === "PAPERCLIP_AGENT_JWT_SECRET" || key === "BETTER_AUTH_SECRET";
+}
+
 export function isForbiddenConfigEnvKey(key: string): boolean {
-  return key === "PAPERCLIP_API_KEY";
+  return key === "PAPERCLIP_API_KEY" || isServerSigningSecretEnvKey(key);
+}
+
+export function stripServerSigningSecretsFromEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  delete env.PAPERCLIP_AGENT_JWT_SECRET;
+  delete env.BETTER_AUTH_SECRET;
+  return env;
 }
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -3407,6 +3419,7 @@ export function sanitizeInheritedPaperclipEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
+  stripServerSigningSecretsFromEnv(env);
   for (const key of Object.keys(env)) {
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
@@ -4601,6 +4614,7 @@ export async function runChildProcess(
       ...sanitizeInheritedPaperclipEnv(process.env),
       ...opts.env,
     };
+    stripServerSigningSecretsFromEnv(rawMerged);
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".

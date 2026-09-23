@@ -586,6 +586,52 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("done");
   });
 
+  it("does not forward server signing secrets after adapters re-inject process.env", async () => {
+    const previousJwt = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const previousBetter = process.env.BETTER_AUTH_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "synthetic-signing-master";
+    process.env.BETTER_AUTH_SECRET = "synthetic-better-auth";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          "process.stdout.write(JSON.stringify({jwt:Object.hasOwn(process.env,'PAPERCLIP_AGENT_JWT_SECRET'),better:Object.hasOwn(process.env,'BETTER_AUTH_SECRET'),bearer:Object.hasOwn(process.env,'PAPERCLIP_API_KEY'),agent:process.env.PAPERCLIP_AGENT_ID==='agent-1'}))",
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            PAPERCLIP_AGENT_JWT_SECRET: "synthetic-signing-master-from-opts",
+            BETTER_AUTH_SECRET: "synthetic-better-from-opts",
+            PAPERCLIP_API_KEY: "synthetic-run-bearer",
+            PAPERCLIP_AGENT_ID: "agent-1",
+          },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+      expect(result.exitCode).toBe(0);
+      const probe = JSON.parse(result.stdout) as {
+        jwt: boolean;
+        better: boolean;
+        bearer: boolean;
+        agent: boolean;
+      };
+      expect(probe.jwt).toBe(false);
+      expect(probe.better).toBe(false);
+      expect(probe.bearer).toBe(true);
+      expect(probe.agent).toBe(true);
+    } finally {
+      if (previousJwt === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousJwt;
+      if (previousBetter === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = previousBetter;
+    }
+  });
+
   it("waits for onSpawn before sending stdin to the child", async () => {
     const spawnDelayMs = 150;
     const startedAt = Date.now();
@@ -3731,6 +3777,22 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
     // The harness-minted run token is the only PAPERCLIP_API_KEY source;
     // a configured value is dropped even when Paperclip has not set one.
     expect(env.PAPERCLIP_API_KEY).toBeUndefined();
+  });
+
+  it("never accepts the agent signing master from config env", () => {
+    const env: Record<string, string> = {};
+
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
+        PAPERCLIP_AGENT_JWT_SECRET: "synthetic-signing-master",
+        BETTER_AUTH_SECRET: "synthetic-better-auth",
+      },
+      workspaceCwd: null,
+    });
+
+    expect(env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
+    expect(env.BETTER_AUTH_SECRET).toBeUndefined();
   });
 });
 
