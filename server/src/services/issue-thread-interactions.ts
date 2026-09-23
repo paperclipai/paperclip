@@ -3604,6 +3604,11 @@ export function issueThreadInteractionService(
           // interaction) and the two deadlock on a concurrent approval. Read the
           // candidates without locking them: the update below still decides which
           // cards actually expire and still reports them.
+          //
+          // Order by id so an overlapping candidate set is always locked in the
+          // same sequence: a multi-row lock taken in the planner's row order is
+          // only as stable as the plan, and two passes can then take two shared
+          // proposals in opposite orders.
           const supersededCandidates = await tx
             .select({
               id: issueThreadInteractions.id,
@@ -3612,7 +3617,8 @@ export function issueThreadInteractionService(
               payload: issueThreadInteractions.payload,
             })
             .from(issueThreadInteractions)
-            .where(supersededPredicate);
+            .where(supersededPredicate)
+            .orderBy(asc(issueThreadInteractions.id));
           for (const candidate of supersededCandidates) {
             await lockLinkedSecretProposal(tx as unknown as Db, candidate);
           }
