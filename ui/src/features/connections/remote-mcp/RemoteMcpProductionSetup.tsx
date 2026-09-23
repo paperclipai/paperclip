@@ -4,7 +4,7 @@ import { REMOTE_MCP_CONNECTOR_METHODS, type ToolConnection } from "@paperclipai/
 import { agentsApi } from "@/api/agents";
 import { toolsApi } from "@/api/tools";
 import { useCompany } from "@/context/CompanyContext";
-import { useNavigate } from "@/lib/router";
+import { useNavigate, useSearchParams } from "@/lib/router";
 import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { queryKeys } from "@/lib/queryKeys";
@@ -27,6 +27,8 @@ export function RemoteMcpProductionSetup({ providerId, connection }: {
   const provider = remoteMcpProviders[providerId];
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const oauthOutcome = connection ? searchParams.get("oauth") : null;
   const queries = useQueryClient();
   const accessDraftKey = `paperclip:mcp-access-draft:${selectedCompanyId}:${providerId}`;
   const savedConnection = useRef(connection);
@@ -37,7 +39,7 @@ export function RemoteMcpProductionSetup({ providerId, connection }: {
     setupComplete: Boolean(connection && connection.status !== "draft"),
     url: typeof connection?.config?.url === "string" ? connection.config?.url : provider.defaultUrl,
     auth: connection?.config?.mcpAuthMode === "bearer" ? "bearer" : connection?.authKind === "api_key" ? "headers" : provider.supportsBrowserAuth ? "auto" : "none",
-    token: "", headers: [], advanced: false, connectStatus: "idle", connected: false,
+    token: "", headers: [], advanced: false, connectStatus: oauthOutcome === "denied" ? "cancelled" : oauthOutcome === "failed" ? "oauth_failed" : "idle", connected: false,
     identity: null, allAgents: true, agentIds: [], permissions: {}, tools: [], notice: connection?.authKind === "api_key" ? "Saved credentials are retained when these fields are left blank. Enter a replacement only to change them." : null, refreshing: false,
     ...(!connection ? readAccessDraft(accessDraftKey) : {}),
   }));
@@ -93,7 +95,7 @@ export function RemoteMcpProductionSetup({ providerId, connection }: {
       }
       if (saveDraft) { navigate("/apps"); return; }
       if (result.auth?.kind === "oauth") {
-        const oauth = await toolsApi.startOAuth(result.connectionId, { asCurrentUser: state.grantKind === "user" });
+        const oauth = await toolsApi.startOAuth(result.connectionId, { asCurrentUser: result.connection.credentialPolicy === "per_user" });
         const target = resolveAuthorizationTarget(oauth.authorizationUrl);
         if (!target.ok) throw new Error(target.message);
         authorizationUrl.current = target.url;
@@ -129,5 +131,5 @@ export function RemoteMcpProductionSetup({ providerId, connection }: {
     refresh: () => {}, reconnect: () => edit({ step: "connect" }), disconnect: () => {},
   };
   if (connection && !installs.data) return <div className="space-y-3 p-8"><p>{installs.isError ? "Could not load saved access. Retry before changing this connection." : "Loading saved access…"}</p>{installs.isError && <button type="button" className="text-primary underline" onClick={() => void installs.refetch()}>Try again</button>}</div>;
-  return <RemoteMcpConnectionSetup provider={provider} connectionId={savedConnection.current?.id ?? ""} state={state} actions={actions} agents={agents.data ?? []} />;
+  return <RemoteMcpConnectionSetup provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;
 }

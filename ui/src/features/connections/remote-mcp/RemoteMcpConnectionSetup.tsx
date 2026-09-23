@@ -25,9 +25,10 @@ function FieldHelp({ label, children }: { label: string; children: ReactNode }) 
 
 /** Controlled presentation shared by provider setup, configuration imports and review stories.
  * Authentication, persistence and calls belong to the controller, never these views. */
-export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, connectionId }: {
+export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, connectionId, fixedGrantKind }: {
   provider: RemoteMcpProvider;
   connectionId: string;
+  fixedGrantKind?: RemoteMcpSetupState["grantKind"];
   state: RemoteMcpSetupState;
   actions: RemoteMcpSetupActions;
   agents: { id: string; name: string }[];
@@ -49,6 +50,7 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
   const footer = (children: ReactNode) => <SetupWizardFooter onSaveExit={a.saveExit} disabled={busy}>{children}</SetupWizardFooter>;
 
   const error = s.connectStatus === "invalid_url" ? { title: "Enter a valid MCP URL", body: "Paste the complete server URL, including https:// or http://. A dashboard page is not an MCP endpoint." }
+    : s.connectStatus === "oauth_failed" ? { title: `${provider.name} couldn’t connect`, body: "Authorization did not complete. Your saved connection is still here, so you can try again." }
     : s.connectStatus === "rejected" ? { title: "Credentials were rejected", body: `Check or replace the credentials from ${provider.name}, then reconnect. Your agent access and tool choices are preserved.` }
     : s.connectStatus === "unreachable" ? { title: "Paperclip could not reach this server", body: "Check that the endpoint is running and reachable from Paperclip, then try again. Your draft is still here." }
     : null;
@@ -61,7 +63,7 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
     <main className="space-y-6">
         {s.notice && <p role="status" className="text-sm text-muted-foreground">{s.notice}</p>}
 
-        {s.step === "access" && <AccessStepContent agents={agents} authKind="oauth" grantKind={s.grantKind} setGrantKind={(grantKind) => { if (grantKind !== "agent") change({ grantKind }); }}
+        {s.step === "access" && <AccessStepContent agents={agents} authKind="oauth" grantKinds={fixedGrantKind ? [fixedGrantKind] : undefined} grantKind={s.grantKind} setGrantKind={(grantKind) => { if (grantKind !== "agent") change({ grantKind }); }}
           installChoice={s.allAgents ? "all" : "specific"} setInstallChoice={(choice) => change({ allAgents: choice === "all" })}
           installAgentIds={new Set(s.agentIds)} setInstallAgentIds={(ids) => change({ agentIds: [...ids] })}
           submitLabel={s.setupComplete ? "Done" : "Continue"} onBack={s.setupComplete ? a.finish : a.saveExit} onContinue={s.setupComplete ? a.finish : () => a.navigate("connect")} />}

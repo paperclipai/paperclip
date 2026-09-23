@@ -21,6 +21,7 @@ export const Connecting: Story = { args: { scenario: "connecting" } };
 export const BrowserSignInPending: Story = { args: { scenario: "sign_in" } };
 export const ReturnedFromSignIn: Story = { args: { scenario: "returned" } };
 export const SignInCancelled: Story = { args: { scenario: "cancelled" } };
+export const AuthorizationFailed: Story = { args: { scenario: "oauth_failed" } };
 export const InvalidUrl: Story = { args: { scenario: "invalid_url" } };
 export const RejectedCredentials: Story = { args: { scenario: "rejected" } };
 export const UnreachableEndpoint: Story = { args: { scenario: "unreachable" } };

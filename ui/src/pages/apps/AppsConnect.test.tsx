@@ -22,6 +22,7 @@ vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: {
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const getConnectionMock = vi.hoisted(() => vi.fn());
+const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
@@ -66,6 +67,7 @@ vi.mock("@/api/tools", () => ({
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     getConnection: (id: string) => getConnectionMock(id),
+    getConnectionInstalls: (id: string) => getConnectionInstallsMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
     startOAuth: (connectionId: string, input?: unknown) => startOAuthMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
@@ -255,6 +257,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
+    getConnectionInstallsMock.mockResolvedValue({ installs: [{ targetType: "company", targetId: "company-1" }] });
     startOAuthMock.mockResolvedValue({
       connectionId: "conn-notion",
       provider: "notion",
@@ -325,6 +328,52 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Enable MCP aggregators");
     expect(connectAppMock).not.toHaveBeenCalled();
     expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["arcade", "composio", "executor"])("explains a failed %s OAuth return and retries the same saved draft", async (provider) => {
+    const draft = { id: "conn-oauth-draft", companyId: "company-1", status: "draft", authKind: "oauth", credentialPolicy: "shared", config: { sourceTemplateKey: provider, connectionMethodKey: "mcp", url: "https://example.com/mcp" } };
+    mockSearch.value = `source=${provider}&resume=${draft.id}&oauth=failed&code=oauth_callback_failed&error_description=untrusted-provider-message`;
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    getConnectionMock.mockResolvedValue(draft);
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
+    await render();
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("Authorization did not complete"));
+    expect(container.textContent).not.toContain("untrusted-provider-message");
+    expect(buttonByText("Try again")).toBeTruthy();
+    await act(async () => buttonByText("Try again")!.click());
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(draft.id, { asCurrentUser: false }));
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: draft.id }));
+    expect(navigateTopLevelMock).toHaveBeenCalled();
+  });
+
+  it("explains a declined Composio OAuth return without discarding the draft", async () => {
+    mockSearch.value = "source=composio&resume=conn-oauth-draft&oauth=denied&code=oauth_authorization_denied";
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    getConnectionMock.mockResolvedValue({ id: "conn-oauth-draft", status: "draft", authKind: "oauth", config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp", url: "https://connect.composio.dev/mcp" } });
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Connection cancelled. Your setup details are preserved"));
+    expect(buttonByText("Try again")).toBeTruthy();
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["shared", "Any human in the organization", false],
+    ["per_user", "Just me", true],
+  ])("retains the %s identity when returning to Access after an OAuth return", async (credentialPolicy, identityLabel, asCurrentUser) => {
+    const draft = { id: "conn-oauth-draft", status: "draft", authKind: "oauth", credentialPolicy, config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp", url: "https://connect.composio.dev/mcp" } };
+    mockSearch.value = `source=composio&resume=${draft.id}&oauth=denied`;
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    getConnectionMock.mockResolvedValue(draft);
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
+    await render();
+    await vi.waitFor(() => expect(buttonByText("Back")).toBeTruthy());
+    await act(async () => buttonByText("Back")!.click());
+    expect(container.textContent).toContain(identityLabel);
+    expect(container.querySelector('[role="radiogroup"][aria-label="Which humans can use this credential?"]')).toBeNull();
+    await act(async () => buttonByText("Continue")!.click());
+    await act(async () => buttonByText("Try again")!.click());
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(draft.id, { asCurrentUser }));
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: draft.id, grantKind: asCurrentUser ? "user" : "organization" }));
   });
 
   it("shows only MCP URL setup on the BYO page", async () => {
