@@ -2,7 +2,8 @@
  * The small, non-sensitive portion of a native runner configuration that may
  * follow an agent when it hires a teammate. Keep this list closed: adapter
  * configuration also contains instructions paths, environment bindings, and
- * provider identity that must remain owned by the new agent.
+ * provider session identity that must remain owned by the new agent. A company
+ * profile reference may be reused; the hire route revalidates its qualification.
  */
 export const INHERITABLE_NATIVE_RUNNER_CONFIG_KEYS = [
   "provider",
@@ -65,5 +66,15 @@ export function inheritNativeRunnerAdapterConfig(adapterConfig: unknown): Record
       )
     : undefined;
   if (limits && Object.keys(limits).length > 0) inherited.invocationLimits = limits;
+  // Copy only the selected provider's company profile reference, never a live
+  // provider session or the profile contents. The route still checks company
+  // ownership, enablement, retention, and current qualification before hiring.
+  const profileKey = source.provider === "claude_managed"
+    ? "managedProfileId"
+    : source.provider === "aws_agentcore" ? "agentCoreProfileId" : null;
+  if (profileKey) {
+    const profileId = source[profileKey];
+    if (typeof profileId === "string" && profileId.trim()) inherited[profileKey] = profileId;
+  }
   return inherited;
 }

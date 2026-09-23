@@ -514,6 +514,23 @@ describeEmbeddedPostgres("hired agent provider credential inheritance", () => {
     expect(res.body.approval.payload.adapterConfig.invocationLimits).toEqual({ maxIterations: 3 });
   });
 
+  it.each([
+    ["claude_managed", "managedProfileId", "managedAgentsRetentionAcknowledged", "Managed Agent"],
+    ["aws_agentcore", "agentCoreProfileId", "agentCoreRetentionAcknowledged", "Remote Agent"],
+  ])("revalidates the inherited %s company profile before creating a hire", async (provider, profileKey, retentionKey, label) => {
+    const companyId = await seedCompany();
+    const parent = await seedParentAgent(companyId, "paperclip_runner", {});
+    await db.update(agents).set({ adapterConfig: {
+      provider, [profileKey]: randomUUID(), [retentionKey]: true,
+    } }).where(eq(agents.id, parent.id));
+    const res = await hire(agentActor(companyId, parent.id), companyId, {
+      name: "Missing Profile Child", role: "engineer", adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe(`${label} profile not found`);
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(1);
+  });
+
   it("validates and preserves an inherited caller default environment", async () => {
     const companyId = await seedCompany();
     const parent = await seedParentAgent(companyId, "paperclip_runner", {});
