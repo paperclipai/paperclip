@@ -10852,9 +10852,33 @@ async function createRunnerdBackendWithinSessionClaim(
       remotePrepared = true;
       return;
     }
-    // A resumed sandbox may already contain the exact controller-owned binary.
-    // Do not upload it every turn, but never treat compatible metadata alone as
-    // proof of artifact identity (especially for an explicit operator override).
+    // Compatibility metadata does not prove artifact identity. Reuse only the
+    // exact controller-owned bytes when the controller artifact is available.
+    const matchesControllerRunnerArtifact = async (executable: string): Promise<boolean> => {
+      const expected = createHash("sha256")
+        .update(readFileSync(controllerRunnerBinary))
+        .digest("hex");
+      try {
+        const probe = await remoteCommandRunner.execute({
+          command: "sh",
+          args: [
+            "-c",
+            'test -x "$1" || exit 1; if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi',
+            "paperclip-runner-artifact",
+            executable,
+          ],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        return probe.exitCode === 0 && !probe.timedOut &&
+          /^[a-f0-9]{64}\s/.test(probe.stdout) &&
+          probe.stdout.trim().split(/\s+/)[0] === expected;
+      } catch {
+        // An unavailable checksum uses the verified staging path.
+        return false;
+      }
+    };
     let runnerArtifactPrepared = false;
     if (
       sandboxLeaseAcquisition?.outcome === "resumed" &&
@@ -10863,32 +10887,7 @@ async function createRunnerdBackendWithinSessionClaim(
       runnerArtifactPrepared = await measureNativeRunnerSpan(
         input.trace,
         "runner.artifact.verify_retained",
-        async () => {
-          const expected = createHash("sha256")
-            .update(readFileSync(controllerRunnerBinary))
-            .digest("hex");
-          try {
-            const probe = await remoteCommandRunner.execute({
-              command: "sh",
-              args: [
-                "-c",
-                'test -x "$1" || exit 1; if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi',
-                "paperclip-runner-artifact",
-                remoteBinary,
-              ],
-              cwd: remoteTarget.remoteCwd,
-              bypassSession: true,
-              timeoutMs: 10_000,
-            });
-            return probe.exitCode === 0 && !probe.timedOut &&
-              /^[a-f0-9]{64}\s/.test(probe.stdout) &&
-              probe.stdout.trim().split(/\s+/)[0] === expected;
-          } catch {
-            // Missing binaries, checksum tools, or a failed probe use the
-            // ordinary verified staging path; none authorizes cached execution.
-            return false;
-          }
-        },
+        () => matchesControllerRunnerArtifact(remoteBinary),
       );
     }
     const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
@@ -10905,6 +10904,10 @@ async function createRunnerdBackendWithinSessionClaim(
             "runner.artifact.verify_preinstalled",
             () => verifyRemoteRunner(requiredMode, preinstalledRunner),
           );
+          if (existsSync(controllerRunnerBinary) &&
+              !await matchesControllerRunnerArtifact(preinstalledRunner)) {
+            throw new Error("runner_remote_preinstalled_artifact_mismatch");
+          }
           await measureNativeRunnerSpan(
             input.trace,
             "runner.artifact.link",
