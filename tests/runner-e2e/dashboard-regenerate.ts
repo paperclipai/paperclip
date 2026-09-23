@@ -96,7 +96,9 @@ export async function regenerateRunnerDashboard(input: {
     results,
   });
   // A rendering refresh must not inherit the renderer's checkout or CI event.
-  const retainedSource = results.find((result) => result.source)?.source;
+  const retainedSource = results.find((result) =>
+    result.source?.sha || result.source?.ref || result.source?.workflowRunUrl,
+  )?.source;
   campaign.source = normalized.source ?? {
     sha: retainedSource?.sha ?? null,
     ref: retainedSource?.ref ?? null,
