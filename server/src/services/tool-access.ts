@@ -7525,14 +7525,14 @@ export function toolAccessService(
     if (!refreshOptions.skipDefaultProfileSync || preserveMcpAccess) {
       await enableCatalogEntriesByDefault({
         connection: updatedConnection,
-        newCatalogEntryIds: refreshOptions.enableAllByDefault && !isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)
-          ? activeEntries.map((entry) => entry.id)
-          : activeEntries
-              .filter((entry) => {
-                const previous = existingByName.get(entry.toolName);
-                return !previous || previous.status === "quarantined";
-              })
-              .map((entry) => entry.id),
+        // Discovery must not re-enable actions the operator turned Off,
+        // including curated MCP connections during API-key replacement.
+        newCatalogEntryIds: activeEntries
+          .filter((entry) => {
+            const previous = existingByName.get(entry.toolName);
+            return !previous || previous.status === "quarantined";
+          })
+          .map((entry) => entry.id),
         activeCatalogEntryIds: activeEntries.map((entry) => entry.id),
         restoreDraftDefaults: refreshOptions.restoreDraftDefaults || preserveMcpAccess,
         actor,
