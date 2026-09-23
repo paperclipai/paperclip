@@ -799,6 +799,17 @@ type PaperclipWakeRecovery = {
 export type PaperclipExternalChatProvider =
   "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon";
 
+/**
+ * The reason a serialized copy of the payload was reduced before it reached the
+ * child process.
+ */
+export type PaperclipWakePayloadTruncation = {
+  reason: "exec_string_limit";
+  continuationMessagesOmitted: number;
+  commentBodiesOmitted: number;
+  issueDescriptionOmitted: boolean;
+};
+
 type PaperclipWakePayload = {
   executionContinuation: ExecutionContinuationEnvelope | null;
   reason: string | null;
@@ -843,6 +854,7 @@ type PaperclipWakePayload = {
   missingCount: number;
   truncated: boolean;
   fallbackFetchNeeded: boolean;
+  payloadTruncated: PaperclipWakePayloadTruncation | null;
 };
 
 function normalizePaperclipWakeRecovery(
@@ -1912,7 +1924,125 @@ export function normalizePaperclipWakePayload(
     missingCount: asNumber(commentWindow.missingCount, 0),
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
+    payloadTruncated: null,
   };
+}
+
+/**
+ * Linux caps one argv or envp string at `MAX_ARG_STRLEN` - 32 x `PAGE_SIZE`,
+ * which is 131,072 bytes on a 4 KiB page host - independently of `ARG_MAX`. The
+ * payload travels as a single environment string, so a payload at or above that
+ * size makes `execve` fail with `E2BIG` before the child process exists. The run
+ * then dies in seconds, the board shows nothing, and the retry rebuilds the same
+ * oversized string. The payload embeds the task comment thread, so it only grows:
+ * an issue that crosses the line stops waking its assignee for good. Keep every
+ * serialized copy safely below the kernel limit.
+ */
+export const MAX_PAPERCLIP_WAKE_PAYLOAD_BYTES = 96 * 1024;
+
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+/**
+ * Reduce the payload until it fits the per-string exec limit. The full history
+ * stays available over the API, so the environment copy sheds the bulky parts
+ * first and records what it dropped. Returns null when even the smallest form
+ * does not fit, which leaves the caller to run without the environment copy
+ * rather than fail the spawn.
+ */
+function fitPaperclipWakePayloadToExecLimit(
+  normalized: PaperclipWakePayload,
+  maxBytes: number,
+  serialize: (payload: PaperclipWakePayload) => string,
+): string | null {
+  let candidate = normalized;
+  const fits = (payload: PaperclipWakePayload) =>
+    byteLength(serialize(payload)) <= maxBytes;
+  if (fits(candidate)) return serialize(candidate);
+
+  let truncation: PaperclipWakePayloadTruncation = {
+    reason: "exec_string_limit",
+    continuationMessagesOmitted: 0,
+    commentBodiesOmitted: 0,
+    issueDescriptionOmitted: false,
+  };
+  const mark = (
+    next: PaperclipWakePayload,
+    reduction: PaperclipWakePayloadTruncation,
+  ): PaperclipWakePayload => ({
+    ...next,
+    truncated: true,
+    fallbackFetchNeeded: true,
+    payloadTruncated: reduction,
+  });
+
+  // 1. The continuation history is the part that grows with the thread, and the
+  // full text stays reachable over the API. Halve the retained newest tail so an
+  // unbounded thread converges in a few rounds instead of one per message.
+  const enabledContinuation = candidate.executionContinuation;
+  const messages = enabledContinuation?.messages ?? [];
+  let keep = messages.length;
+  while (keep > 0) {
+    keep = Math.floor(keep / 2);
+    truncation = {
+      ...truncation,
+      continuationMessagesOmitted: messages.length - keep,
+    };
+    candidate = mark(
+      {
+        ...candidate,
+        executionContinuation: {
+          ...enabledContinuation!,
+          messages: messages.slice(messages.length - keep),
+        },
+      },
+      truncation,
+    );
+    if (fits(candidate)) return serialize(candidate);
+  }
+
+  // 2. Then the comment bodies of this wake's batch.
+  if (candidate.comments.some((comment) => comment.body !== "")) {
+    truncation = {
+      ...truncation,
+      commentBodiesOmitted: candidate.comments.length,
+    };
+    candidate = mark(
+      {
+        ...candidate,
+        comments: candidate.comments.map((comment) => ({
+          ...comment,
+          body: "",
+          bodyTruncated: true,
+        })),
+      },
+      truncation,
+    );
+    if (fits(candidate)) return serialize(candidate);
+  }
+
+  // 3. Then the two long prose fields. The agent recovers all three over the API.
+  if (candidate.issue?.description || candidate.executionContinuation?.objective) {
+    truncation = { ...truncation, issueDescriptionOmitted: true };
+    candidate = mark(
+      {
+        ...candidate,
+        issue: candidate.issue
+          ? { ...candidate.issue, description: null, descriptionTruncated: false }
+          : null,
+        executionContinuation: candidate.executionContinuation
+          ? { ...candidate.executionContinuation, objective: "" }
+          : null,
+      },
+      truncation,
+    );
+    if (fits(candidate)) return serialize(candidate);
+  }
+
+  // 4. Something else is oversized. Omit the environment copy rather than hand
+  // execve a string the kernel rejects.
+  return null;
 }
 
 export function stringifyPaperclipWakePayload(
@@ -1922,21 +2052,28 @@ export function stringifyPaperclipWakePayload(
     // section already carries the issue description; the env-var copy should
     // stay complete.
     omitIssueDescription?: boolean;
+    maxBytes?: number;
   } = {},
 ): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
-  if (options.omitIssueDescription === true && normalized.issue) {
-    return JSON.stringify({
-      ...normalized,
-      issue: {
-        ...normalized.issue,
-        description: null,
-        descriptionTruncated: false,
-      },
-    });
-  }
-  return JSON.stringify(normalized);
+  const serialize =
+    options.omitIssueDescription === true && normalized.issue
+      ? (payload: PaperclipWakePayload) =>
+          JSON.stringify({
+            ...payload,
+            issue: {
+              ...payload.issue!,
+              description: null,
+              descriptionTruncated: false,
+            },
+          })
+      : (payload: PaperclipWakePayload) => JSON.stringify(payload);
+  return fitPaperclipWakePayloadToExecLimit(
+    normalized,
+    options.maxBytes ?? MAX_PAPERCLIP_WAKE_PAYLOAD_BYTES,
+    serialize,
+  );
 }
 
 export function isPaperclipRecoveryWakePayload(value: unknown): boolean {

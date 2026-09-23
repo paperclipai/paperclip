@@ -2959,6 +2959,120 @@ describe("renderPaperclipWakePrompt", () => {
   });
 });
 
+describe("wake payload exec-string limit", () => {
+  // Linux caps one argv or envp string at MAX_ARG_STRLEN: 32 x 4096 = 131,072
+  // bytes. The payload is one environment string, so a longer one makes execve
+  // fail with E2BIG before the child process exists.
+  const MAX_ARG_STRLEN = 131_072;
+
+  const continuationMessage = (index: number, body: string) => ({
+    id: `comment-${index}`,
+    authorType: "agent",
+    authorId: "agent-1",
+    createdByRunId: null,
+    body,
+    createdAt: "2026-09-23T07:00:00.000Z",
+    updatedAt: "2026-09-23T07:00:00.000Z",
+    deleted: false,
+    sourceTrust: null,
+  });
+
+  // A thread that has been discussed for long enough to cross the limit.
+  const longThread = (count: number) => ({
+    reason: "issue_commented",
+    executionContinuation: {
+      version: 1,
+      companyId: "company-1",
+      issueId: "issue-1",
+      trigger: {
+        reason: "issue_commented",
+        interactionId: null,
+        sourceRunId: null,
+      },
+      originCommentIds: [],
+      objective: "o".repeat(4_000),
+      messages: Array.from({ length: count }, (_, index) =>
+        continuationMessage(index, "x".repeat(600)),
+      ),
+      interactionOutcomes: [],
+      completedWork: null,
+      unresolvedInteractionIds: [],
+      coverage: {
+        kind: "full_task_history",
+        throughCommentId: null,
+        summaryThroughCommentId: null,
+      },
+    },
+    issue: {
+      id: "issue-1",
+      identifier: "PAP-1",
+      title: "Long thread",
+      description: "d".repeat(4_000),
+      descriptionTruncated: false,
+      status: "in_progress",
+    },
+    commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+    comments: [],
+    fallbackFetchNeeded: false,
+  });
+
+  it("keeps the environment copy under the per-string exec limit", () => {
+    const serialized = stringifyPaperclipWakePayload(longThread(400));
+
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized!, "utf8")).toBeLessThan(MAX_ARG_STRLEN);
+  });
+
+  it("keeps the newest messages and states what it dropped", () => {
+    const payload = JSON.parse(
+      stringifyPaperclipWakePayload(longThread(400)) ?? "{}",
+    );
+    const kept = payload.executionContinuation.messages;
+
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.at(-1).id).toBe("comment-399");
+    expect(payload.payloadTruncated.reason).toBe("exec_string_limit");
+    expect(
+      payload.payloadTruncated.continuationMessagesOmitted,
+    ).toBeGreaterThan(0);
+    // The agent must learn to fetch the rest over the API.
+    expect(payload.truncated).toBe(true);
+    expect(payload.fallbackFetchNeeded).toBe(true);
+  });
+
+  it("returns null rather than a string the kernel would reject", () => {
+    // An oversized field the reduction ladder cannot shrink still must not
+    // reach execve: the caller runs without the environment copy instead.
+    const oversized = {
+      ...longThread(4),
+      agentMessage: { text: "m".repeat(200_000), source: null },
+    };
+
+    expect(stringifyPaperclipWakePayload(oversized)).toBeNull();
+  });
+
+  it("leaves a payload that already fits unchanged", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2",
+        title: "Short thread",
+        description: "Do the thing.",
+        descriptionTruncated: false,
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+    const serialized = stringifyPaperclipWakePayload(payload);
+
+    expect(JSON.parse(serialized ?? "{}").payloadTruncated).toBeNull();
+    expect(serialized).not.toContain("exec_string_limit");
+  });
+});
+
 describe("WATCHDOG_DEFAULT_MANDATE", () => {
   it("states the watchdog must verify stopped work instead of trusting agent claims", () => {
     expect(WATCHDOG_DEFAULT_MANDATE).toContain(
