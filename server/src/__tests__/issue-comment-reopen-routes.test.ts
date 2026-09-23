@@ -1,4 +1,6 @@
 import express from "express";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
@@ -2633,33 +2635,85 @@ describe.sequential("issue comment reopen routes", () => {
     },
   );
 
-  it.each(["invalid", "wrong agent", "wrong company"])(
-    "rejects comment and PATCH writes with a %s run",
-    async () => {
+  it.each([
+    { label: "missing header", runId: undefined, runOverrides: {}, sourceMissing: false },
+    { label: "malformed header", runId: "invalid", runOverrides: {}, sourceMissing: false },
+    { label: "missing run", runOverrides: null, sourceMissing: false },
+    { label: "wrong run", runOverrides: { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }, sourceMissing: false },
+    { label: "wrong agent", runOverrides: { agentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }, sourceMissing: false },
+    { label: "wrong company", runOverrides: { companyId: "other-company" }, sourceMissing: false },
+    { label: "valid run without source", runOverrides: {}, sourceMissing: true },
+  ])(
+    "composes real run validation with comment and PATCH denial for $label",
+    async (testCase) => {
       mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-      mockObserveCrossIssueInfluence.mockRejectedValue(
-        new HttpError(
-          403,
-          "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
-          { code: "cross_issue_influence_run_context_required" },
-        ),
+      const actual = await vi.importActual<typeof import("../services/cross-issue-influence-limit.js")>(
+        "../services/cross-issue-influence-limit.js",
       );
-      const actor = agentActor("44444444-4444-4444-8444-444444444444");
+      mockObserveCrossIssueInfluence.mockImplementation(actual.observeCrossIssueInfluence);
+      mockCrossIssueInfluenceRunContextError.mockImplementation(actual.crossIssueInfluenceRunContextError);
+      const actor = {
+        ...agentActor("44444444-4444-4444-8444-444444444444"),
+        runId: "runId" in testCase ? testCase.runId : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      };
+      const run = testCase.runOverrides === null ? null : {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        agentId: actor.agentId,
+        responsibleUserId: null,
+        contextSnapshot: {},
+        ...testCase.runOverrides,
+      };
+      const scopedRunSelect = vi.fn(() => ({
+        from: () => ({
+          where: (condition: SQL) => {
+            // Check the entire predicate and bindings, not a canned denial.
+            // This fake does not prove PostgreSQL locking or concurrency.
+            const query = new PgDialect().sqlToQuery(condition);
+            expect(query.sql).toBe(
+              '("heartbeat_runs"."id" = $1 and "heartbeat_runs"."company_id" = $2 and "heartbeat_runs"."agent_id" = $3)',
+            );
+            expect(query.params).toEqual([actor.runId, "company-1", actor.agentId]);
+            const matches = run && run.id === query.params[0]
+              && run.companyId === query.params[1] && run.agentId === query.params[2];
+            return {
+              for: (mode: string) => {
+                expect(mode).toBe("update");
+                return Promise.resolve(matches ? [run] : []);
+              },
+            };
+          },
+        }),
+      }));
+      mockDb.transaction.mockImplementation(async (callback) => callback({
+        ...mockTx,
+        select: scopedRunSelect,
+      } as typeof mockTx));
+      const app = await installActor(createApp(), actor);
 
-      const commentRes = await request(await installActor(createApp(), actor))
+      const commentRes = await request(app)
         .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
         .send({ body: "cross-issue write" });
-      const updateRes = await request(await installActor(createApp(), actor))
+      const updateRes = await request(app)
         .patch("/api/issues/11111111-1111-4111-8111-111111111111")
         .send({ title: "cross-issue write" });
 
       for (const res of [commentRes, updateRes]) {
         expect(res.status).toBe(403);
-        expect(res.body.details).toEqual({
-          code: "cross_issue_influence_run_context_required",
-        });
+        if (testCase.sourceMissing) {
+          expect(res.body.details.code).toBe("cross_issue_influence_source_issue_required");
+          expect(res.body.details.sanctionedPath).toContain("new issue-scoped run");
+          expect(res.body.error).toContain("persisted source issue");
+          expect(res.body.error).not.toMatch(/X-Paperclip-Run-Id|PAPERCLIP_RUN_ID/);
+        } else {
+          expect(res.body.details.code).toBe("cross_issue_influence_run_context_required");
+          expect(res.body.details.sanctionedPath).toContain("X-Paperclip-Run-Id");
+          expect(res.body.details.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+        }
       }
-      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(2);
+      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(actor.runId ? 2 : 0);
+      expect(scopedRunSelect).toHaveBeenCalledTimes("runId" in testCase ? 0 : 2);
+      expect(mockTxInsertValues).not.toHaveBeenCalled();
       expect(mockIssueService.update).not.toHaveBeenCalled();
       expect(mockIssueService.addComment).not.toHaveBeenCalled();
     },
