@@ -652,6 +652,9 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_released",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+/** Leave the finishing run's cleanup time to settle before reconsidering a
+ * stage handoff that admission recorded as blocked. The gate is re-read each pass. */
+const READMIT_STAGE_HANDOFF_AFTER_MS = 30_000;
 const EXTERNAL_ATTACHMENT_OMISSIONS_KEY = "externalAttachmentOmissions";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const ACCEPTED_PLAN_CONVERSION_SKILL_KEY =
@@ -10461,6 +10464,98 @@ export function heartbeatService(
     }
   }
 
+  /**
+   * Re-admit an execution-stage handoff that admission recorded as blocked.
+   *
+   * When a stage decision moves a task to its next participant, the finishing
+   * run can still hold its environment lease for a moment. Admission then sees
+   * `execution_owner_active` and records the handoff wake as a `skipped`
+   * execution wait. That receipt is terminal, and the cleanup path re-promotes
+   * only the finishing agent's own deferred wakes, so the next participant is
+   * never started. This pass rebuilds that exact stage wake once the gate is
+   * gone and the task still waits on the same stage and participant. Ordinary
+   * admission decides the result, so every gate still applies.
+   */
+  async function readmitBlockedStageHandoffs() {
+    if ((await getSchedulingSuppression()).suppressed) return;
+    const waits = await db.select({ wake: agentWakeupRequests })
+      .from(agentWakeupRequests)
+      .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
+      .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
+      .where(and(
+        eq(agentWakeupRequests.status, "skipped"),
+        eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
+        sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'recoveryActionId' is null`,
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'readmittedAt' is null`,
+        // The task must still wait on the same stage and participant.
+        sql`${issues.executionState}->>'status' = 'pending'`,
+        sql`${issues.executionState}->>'currentStageId' = ${agentWakeupRequests.payload}->'executionStage'->>'stageId'`,
+        sql`${issues.executionState}->'currentParticipant'->>'agentId' = ${agentWakeupRequests.agentId}::text`,
+        isNull(issues.executionRunId),
+        notInArray(issues.status, ["done", "cancelled"]),
+        lte(agentWakeupRequests.updatedAt, new Date(Date.now() - READMIT_STAGE_HANDOFF_AFTER_MS)),
+      ))
+      .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
+    const seen = new Set<string>();
+    for (const { wake } of waits) {
+      const payload = parseObject(wake.payload);
+      const issueId = readNonEmptyString(payload.issueId);
+      const executionStage = parseObject(payload.executionStage);
+      if (!issueId || seen.has(`${wake.agentId}:${issueId}`)) continue;
+      seen.add(`${wake.agentId}:${issueId}`);
+      if (await getExecutionBlocker(db, wake.companyId, issueId)) continue;
+      // Claim the receipt by its own age, as `readmitUnblockedExecutionWaits`
+      // does, so a concurrent pass cannot rebuild the same handoff. The receipt
+      // is retired only after admission answers, so an interrupted server
+      // leaves it for a later pass instead of losing the handoff.
+      const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
+        eq(agentWakeupRequests.status, "skipped"),
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'readmittedAt' is null`,
+        lte(agentWakeupRequests.updatedAt, new Date(Date.now() - READMIT_STAGE_HANDOFF_AFTER_MS)),
+      )).returning({ id: agentWakeupRequests.id });
+      if (!claimed) continue;
+      const reason = executionStage.stageType === "approval"
+        ? "execution_approval_requested" : "execution_review_requested";
+      const { executionWait: _receipt, ...wakePayload } = payload;
+      const interruptedRunId = readNonEmptyString(payload.interruptedRunId);
+      // A replacement committed before an interruption carries this key; a later
+      // pass then only retires the receipt instead of starting a second run.
+      const readmitKey = `stage-handoff-readmit:${wake.id}`;
+      const [alreadyAdmitted] = await db.select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, wake.companyId),
+          eq(agentWakeupRequests.agentId, wake.agentId),
+          eq(agentWakeupRequests.idempotencyKey, readmitKey),
+        )).limit(1);
+      try {
+        if (!alreadyAdmitted) await enqueueWakeup(wake.agentId, {
+          source: "assignment", triggerDetail: "system", reason, payload: wakePayload,
+          requestedByActorType: (wake.requestedByActorType ?? undefined) as WakeupOptions["requestedByActorType"],
+          requestedByActorId: wake.requestedByActorId,
+          contextSnapshot: {
+            issueId, taskId: issueId, wakeReason: reason, source: "issue.execution_stage", executionStage,
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+          issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+          idempotencyKey: readmitKey,
+        });
+      } catch (err) {
+        // The receipt is still unretired, so a later pass reconsiders this handoff.
+        logger.warn({ err, wakeId: wake.id }, "failed to re-admit a blocked execution-stage handoff");
+        continue;
+      }
+      // Admission has answered. Retire the receipt so no later pass rebuilds it.
+      await db.update(agentWakeupRequests).set({
+        updatedAt: new Date(),
+        payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{executionWait,readmittedAt}', to_jsonb(${new Date().toISOString()}::text))`,
+      }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId)));
+    }
+  }
+
   async function hasUnsafeTextProjectionDatabase() {
     if (!unsafeTextProjectionPromise) {
       unsafeTextProjectionPromise = db
@@ -19298,6 +19393,7 @@ export function heartbeatService(
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments();
+    await readmitBlockedStageHandoffs();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
       .from(agentWakeupRequests).innerJoin(companies, eq(companies.id, agentWakeupRequests.companyId))
@@ -29461,6 +29557,7 @@ export function heartbeatService(
     resumeRemoteStopComments,
     resumeQueuedCommentInterrupt,
     resumeExecutionWaitComments,
+    readmitBlockedStageHandoffs,
 
     sweepStaleIssueLocks,
 
