@@ -1283,6 +1283,7 @@ export interface RequestConfirmationToolActionPayload {
 
 export interface RequestConfirmationSecretProposalPayload {
   version: 1;
+  /** Anchor proposal. For a grouped ask this is the first binding of the group. */
   proposalId: string;
   sourceSecretLabel: string;
   configPath: string;
@@ -1290,6 +1291,19 @@ export interface RequestConfirmationSecretProposalPayload {
   targetAgentName: string;
   justification: string;
   expiresAt: string;
+  /**
+   * Present only on a grouped ask: every binding the one card covers, so the
+   * card can list them and a decision can name the ones it declines. Absent on
+   * a single-binding ask, whose payload is unchanged.
+   */
+  proposalIds?: string[];
+  bindings?: RequestConfirmationSecretProposalBinding[];
+}
+
+export interface RequestConfirmationSecretProposalBinding {
+  proposalId: string;
+  sourceSecretLabel: string;
+  configPath: string;
 }
 
 /**
@@ -1313,6 +1327,8 @@ export interface RequestConfirmationSecretProposalResult {
   status: "executed" | "failed" | "rejected" | "withdrawn" | "expired";
   errorCode?: string | null;
   updatedAt: string;
+  /** Per-binding outcome of a grouped ask, so the card can show which key was declined. */
+  bindings?: Array<{ proposalId: string; configPath: string | null; status: string }>;
 }
 
 /**

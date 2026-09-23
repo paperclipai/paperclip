@@ -288,6 +288,7 @@ import {
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
+  SECRET_PROPOSAL_BINDING_GROUP_LIMIT,
 } from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -3231,19 +3232,44 @@ const createAgentSecretProposalSchema = z
       configPath: z.string().min(1),
       justification: z.string().min(1),
     }),
+    // One ask covering several bindings for one agent. It raises one approval
+    // card, one expiry and one resolution instead of one per key.
+    z.object({
+      kind: z.literal("binding_group"),
+      targetAgentId: z.string().guid().optional(),
+      bindings: z
+        .array(
+          z.object({
+            secretId: z.string().guid().optional(),
+            sourceConfigPath: z.string().min(1).optional(),
+            secretProposalId: z.string().guid().optional(),
+            configPath: z.string().min(1),
+          }),
+        )
+        .min(1)
+        .max(SECRET_PROPOSAL_BINDING_GROUP_LIMIT),
+      justification: z.string().min(1),
+    }),
   ])
   .superRefine((value, ctx) => {
-    if (
-      value.kind === "binding" &&
-      [value.secretId, value.sourceConfigPath, value.secretProposalId].filter(
-        (reference) => Boolean(reference),
-      ).length !== 1
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "Provide exactly one of secretId, sourceConfigPath, or secretProposalId",
-      });
+    const entries =
+      value.kind === "binding"
+        ? [value]
+        : value.kind === "binding_group"
+          ? value.bindings
+          : [];
+    for (const entry of entries) {
+      if (
+        [entry.secretId, entry.sourceConfigPath, entry.secretProposalId].filter(
+          (reference) => Boolean(reference),
+        ).length !== 1
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "Provide exactly one of secretId, sourceConfigPath, or secretProposalId",
+        });
+      }
     }
   });
 
@@ -3256,6 +3282,11 @@ const approveSecretProposalSchema = z.object({
       providerConfigId: z.string().guid().optional().nullable(),
     })
     .optional(),
+  // Bindings of a grouped ask that the approver declines. The rest are approved
+  // in the same transaction, so one key can be dropped without discarding the
+  // others and without a second decision.
+  rejectProposalIds: z.array(z.string().guid()).max(SECRET_PROPOSAL_BINDING_GROUP_LIMIT).optional(),
+  rejectReason: z.string().min(1).optional(),
 });
 
 const rejectSecretProposalSchema = z.object({ reason: z.string().min(1) });
@@ -3264,7 +3295,8 @@ registry.registerPath({
   method: "post",
   path: "/api/agents/me/secret-proposals",
   tags: ["secrets"],
-  summary: "Propose a company secret or agent secret binding",
+  summary:
+    "Propose a company secret, one agent binding, or several bindings as a single ask",
   request: { body: jsonBody(createAgentSecretProposalSchema) },
   responses: {
     201: r.ok(),

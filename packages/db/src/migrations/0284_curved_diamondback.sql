@@ -1,0 +1,3 @@
+ALTER TABLE "company_secret_proposals" ADD COLUMN "group_id" uuid;--> statement-breakpoint
+CREATE INDEX "company_secret_proposals_group_idx" ON "company_secret_proposals" USING btree ("group_id");--> statement-breakpoint
+ALTER TABLE "company_secret_proposals" ADD CONSTRAINT "company_secret_proposals_group_check" CHECK ("company_secret_proposals"."group_id" is null or "company_secret_proposals"."kind" = 'binding');

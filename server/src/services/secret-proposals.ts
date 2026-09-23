@@ -1,5 +1,6 @@
-import { withAgentAppearance } from "@paperclipai/shared";
-import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { SECRET_PROPOSAL_BINDING_GROUP_LIMIT, withAgentAppearance } from "@paperclipai/shared";
+import { and, asc, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -103,7 +104,7 @@ export function createSecretProposalsService(db: Db) {
 
   type CreationQuotaInput = { companyId: string; agentId: string; runId: string; issueId: string | null };
 
-  async function creationQuotaDenial(dbClient: Db, input: CreationQuotaInput) {
+  async function creationQuotaDenial(dbClient: Db, input: CreationQuotaInput, creating = 1) {
     const [pending, recent] = await Promise.all([
       dbClient.select({ value: count() }).from(companySecretProposals).where(and(
         eq(companySecretProposals.companyId, input.companyId),
@@ -116,19 +117,22 @@ export function createSecretProposalsService(db: Db) {
         gte(companySecretProposals.createdAt, new Date(Date.now() - 60_000)),
       )).then((rows) => Number(rows[0]?.value ?? 0)),
     ]);
-    const denial = pending >= MAX_PENDING_PROPOSALS_PER_AGENT
+    // Both caps bound rows, and a group writes one row per binding. Counting the
+    // whole batch keeps the bound honest: a group that fits only by being one
+    // card would otherwise raise the number of undecided rows an agent can hold.
+    const denial = pending + creating > MAX_PENDING_PROPOSALS_PER_AGENT
       ? { code: "pending_cap", message: `Agents may have at most ${MAX_PENDING_PROPOSALS_PER_AGENT} pending secret proposals` }
-      : recent >= MAX_PROPOSALS_PER_MINUTE
+      : recent + creating > MAX_PROPOSALS_PER_MINUTE
         ? { code: "rate_limit", message: `Agents may create at most ${MAX_PROPOSALS_PER_MINUTE} secret proposals per minute` }
         : null;
     return denial ? { ...denial, pending, recent } : null;
   }
 
-  async function createWithinQuota<T>(input: CreationQuotaInput, create: (txDb: Db) => Promise<T>) {
+  async function createWithinQuota<T>(input: CreationQuotaInput, create: (txDb: Db) => Promise<T>, creating = 1) {
     const result = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${input.companyId}), hashtext(${input.agentId}))`);
-      const denial = await creationQuotaDenial(txDb, input);
+      const denial = await creationQuotaDenial(txDb, input, creating);
       if (denial) {
         await logActivity(txDb, {
           companyId: input.companyId,
@@ -169,10 +173,13 @@ export function createSecretProposalsService(db: Db) {
     });
   }
 
+  // One card per ask. A grouped ask raises one card for its anchor and lists
+  // every binding it covers, because the human decides the group, not the rows:
+  // seven cards asking about seven keys is the cost this grouping removes.
   async function createBindingInteraction(
     txDb: Db,
     proposal: Proposal,
-    sourceSecretLabel: string,
+    members: Array<{ proposal: Proposal; sourceSecretLabel: string; configPath: string }>,
   ) {
     if (!proposal.originIssueId || !proposal.targetId || !proposal.configPath) return proposal;
     const target = await txDb
@@ -182,6 +189,9 @@ export function createSecretProposalsService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!target) throw notFound("Target agent not found");
 
+    const anchorLabel = members.find((member) => member.proposal.id === proposal.id)?.sourceSecretLabel
+      ?? proposal.configPath;
+    const grouped = members.length > 1;
     const [interaction] = await txDb
       .insert(issueThreadInteractions)
       .values({
@@ -196,28 +206,44 @@ export function createSecretProposalsService(db: Db) {
         effectiveResolverPolicySource: "governed_action",
         idempotencyKey: `secret-proposal:${proposal.id}`,
         sourceRunId: proposal.originRunId,
-        title: "Confirm secret binding",
-        summary: `Bind ${sourceSecretLabel} to ${target.name} as ${proposal.configPath}`,
+        title: grouped ? `Confirm ${members.length} secret bindings` : "Confirm secret binding",
+        summary: grouped
+          ? `Bind ${members.length} secrets to ${target.name}`
+          : `Bind ${anchorLabel} to ${target.name} as ${proposal.configPath}`,
         createdByAgentId: proposal.proposedByAgentId,
         addresseeAgentId: null,
         payload: {
           version: 1,
-          prompt: `Bind secret ${sourceSecretLabel} to ${target.name} as ${proposal.configPath}?`,
-          acceptLabel: "Create binding",
+          prompt: grouped
+            ? `Bind ${members.length} secrets to ${target.name}?`
+            : `Bind secret ${anchorLabel} to ${target.name} as ${proposal.configPath}?`,
+          acceptLabel: grouped ? "Create bindings" : "Create binding",
           rejectLabel: "Reject",
           rejectRequiresReason: true,
-          rejectReasonLabel: "Why should this binding not be created?",
+          rejectReasonLabel: grouped
+            ? "Why should these bindings not be created?"
+            : "Why should this binding not be created?",
           allowDeclineReason: true,
           supersedeOnUserComment: false,
           secretProposal: {
             version: 1,
             proposalId: proposal.id,
-            sourceSecretLabel,
+            sourceSecretLabel: anchorLabel,
             configPath: proposal.configPath,
             targetAgentId: proposal.targetId,
             targetAgentName: target.name,
             justification: proposal.justification,
             expiresAt: proposal.expiresAt.toISOString(),
+            ...(grouped
+              ? {
+                  proposalIds: members.map((member) => member.proposal.id),
+                  bindings: members.map((member) => ({
+                    proposalId: member.proposal.id,
+                    sourceSecretLabel: member.sourceSecretLabel,
+                    configPath: member.configPath,
+                  })),
+                }
+              : {}),
           },
         },
       })
@@ -356,47 +382,52 @@ export function createSecretProposalsService(db: Db) {
     );
   }
 
-  async function createBinding(context: Pick<ProposalRunContext, "companyId" | "heartbeatRunId">, input: {
+  type BindingEntryInput = {
     secretId?: string | null;
     sourceConfigPath?: string | null;
     secretProposalId?: string | null;
-    targetAgentId?: string | null;
     configPath: string;
-    justification: string;
-    bindingTargetPolicy: "self_and_reports";
-  }) {
-    const referenceCount = [input.secretId, input.sourceConfigPath, input.secretProposalId]
+  };
+  type BindingTargetInput = { targetAgentId?: string | null };
+  type BindingProposalContext = Pick<ProposalRunContext, "companyId" | "heartbeatRunId">;
+
+  function assertBindingEntryShape(entry: BindingEntryInput) {
+    const referenceCount = [entry.secretId, entry.sourceConfigPath, entry.secretProposalId]
       .filter((value) => Boolean(value)).length;
     if (referenceCount !== 1) {
       throw badRequest(
         "Binding proposals require exactly one of secretId, sourceConfigPath, or secretProposalId",
       );
     }
-    if (!CONFIG_PATH_RE.test(input.configPath)) throw unprocessable("configPath must use env.<KEY> or access.<ALIAS>");
-    if (input.sourceConfigPath && !CONFIG_PATH_RE.test(input.sourceConfigPath)) {
+    if (!CONFIG_PATH_RE.test(entry.configPath)) throw unprocessable("configPath must use env.<KEY> or access.<ALIAS>");
+    if (entry.sourceConfigPath && !CONFIG_PATH_RE.test(entry.sourceConfigPath)) {
       throw unprocessable("sourceConfigPath must use env.<KEY> or access.<ALIAS>");
     }
-    if (!input.justification.trim()) throw unprocessable("Justification is required");
-    if (input.justification.trim().length > 20_000) throw unprocessable("Justification must be at most 20000 characters");
-    const { run, originIssueId } = await loadRunContext(db, context);
-    const targetAgentId = input.targetAgentId ?? run.agentId;
-    const [proposerAncestors, targetAncestors] = await Promise.all([
-      ancestorIds(db, context.companyId, run.agentId),
-      ancestorIds(db, context.companyId, targetAgentId),
-    ]);
-    if (!bindingTargetAllowed(run.agentId, targetAgentId, targetAncestors)) {
-      throw forbidden("Binding proposals may target only the proposing agent or its reports");
-    }
-    let resolvedSecretId = input.secretId ?? null;
+  }
+
+  function assertBindingJustification(justification: string) {
+    if (!justification.trim()) throw unprocessable("Justification is required");
+    if (justification.trim().length > 20_000) throw unprocessable("Justification must be at most 20000 characters");
+  }
+
+  // Resolves the secret a binding entry points at, without the dependency row:
+  // a secretProposalId reference is resolved inside the creating transaction,
+  // where its pending row is locked.
+  async function resolveBindingEntrySecret(
+    context: BindingProposalContext,
+    run: { agentId: string; responsibleUserId: string | null },
+    entry: BindingEntryInput,
+  ) {
+    let resolvedSecretId = entry.secretId ?? null;
     let sourceSecretLabel: string | null = null;
-    if (input.sourceConfigPath) {
+    if (entry.sourceConfigPath) {
       const sourceBinding = await db.select({ secretId: companySecretBindings.secretId })
         .from(companySecretBindings)
         .where(and(
           eq(companySecretBindings.companyId, context.companyId),
           eq(companySecretBindings.targetType, "agent"),
           eq(companySecretBindings.targetId, run.agentId),
-          eq(companySecretBindings.configPath, input.sourceConfigPath),
+          eq(companySecretBindings.configPath, entry.sourceConfigPath),
         ))
         .then((rows) => rows[0] ?? null);
       if (sourceBinding) {
@@ -416,7 +447,7 @@ export function createSecretProposalsService(db: Db) {
             eq(userSecretDeclarations.companyId, context.companyId),
             eq(userSecretDeclarations.targetType, "agent"),
             eq(userSecretDeclarations.targetId, run.agentId),
-            eq(userSecretDeclarations.configPath, input.sourceConfigPath),
+            eq(userSecretDeclarations.configPath, entry.sourceConfigPath),
           ))
           .then((rows) => rows[0] ?? null);
         resolvedSecretId = sourceDeclaration?.secretId ?? null;
@@ -428,7 +459,7 @@ export function createSecretProposalsService(db: Db) {
         eq(companySecrets.id, resolvedSecretId),
         eq(companySecrets.companyId, context.companyId),
       )).then((rows) => rows[0] ?? null);
-      const sourceBindingAllowsUserSecret = Boolean(input.sourceConfigPath) && secret?.scope === "user";
+      const sourceBindingAllowsUserSecret = Boolean(entry.sourceConfigPath) && secret?.scope === "user";
       if (
         !secret
         || secret.status === "deleted"
@@ -438,22 +469,57 @@ export function createSecretProposalsService(db: Db) {
       }
       sourceSecretLabel = secret.name;
     }
+    return { resolvedSecretId, sourceSecretLabel };
+  }
+
+  // Labels a secretProposalId entry from its dependency row and locks that row.
+  // Callers hold the creating transaction, so the dependency cannot be resolved
+  // between the check and the insert.
+  async function resolveBindingEntryDependency(
+    txDb: Db,
+    companyId: string,
+    entry: BindingEntryInput,
+  ) {
+    if (!entry.secretProposalId) return null;
+    const dependency = await txDb.select().from(companySecretProposals).where(and(
+      eq(companySecretProposals.id, entry.secretProposalId),
+      eq(companySecretProposals.companyId, companyId),
+    )).for("update").then((rows) => rows[0] ?? null);
+    if (!dependency || dependency.kind !== "secret") throw notFound("Secret proposal not found");
+    if (dependency.status !== "pending") {
+      throw unprocessable(
+        "Prerequisite secret proposal is no longer pending; use secretId to reference an approved secret",
+      );
+    }
+    return dependency.proposedName;
+  }
+
+  async function createBinding(context: BindingProposalContext, input: {
+    secretId?: string | null;
+    sourceConfigPath?: string | null;
+    secretProposalId?: string | null;
+    targetAgentId?: string | null;
+    configPath: string;
+    justification: string;
+    bindingTargetPolicy: "self_and_reports";
+  }) {
+    assertBindingEntryShape(input);
+    assertBindingJustification(input.justification);
+    const { run, originIssueId } = await loadRunContext(db, context);
+    const targetAgentId = input.targetAgentId ?? run.agentId;
+    const [proposerAncestors, targetAncestors] = await Promise.all([
+      ancestorIds(db, context.companyId, run.agentId),
+      ancestorIds(db, context.companyId, targetAgentId),
+    ]);
+    if (!bindingTargetAllowed(run.agentId, targetAgentId, targetAncestors)) {
+      throw forbidden("Binding proposals may target only the proposing agent or its reports");
+    }
+    const { resolvedSecretId, sourceSecretLabel: resolvedLabel } = await resolveBindingEntrySecret(context, run, input);
     return createWithinQuota(
       { companyId: context.companyId, agentId: run.agentId, runId: run.id, issueId: originIssueId },
       async (txDb) => {
-        if (input.secretProposalId) {
-          const dependency = await txDb.select().from(companySecretProposals).where(and(
-            eq(companySecretProposals.id, input.secretProposalId),
-            eq(companySecretProposals.companyId, context.companyId),
-          )).for("update").then((rows) => rows[0] ?? null);
-          if (!dependency || dependency.kind !== "secret") throw notFound("Secret proposal not found");
-          if (dependency.status !== "pending") {
-            throw unprocessable(
-              "Prerequisite secret proposal is no longer pending; use secretId to reference an approved secret",
-            );
-          }
-          sourceSecretLabel = dependency.proposedName;
-        }
+        const dependencyLabel = await resolveBindingEntryDependency(txDb, context.companyId, input);
+        const sourceSecretLabel = dependencyLabel ?? resolvedLabel;
         const proposal = await txDb.insert(companySecretProposals).values({
           companyId: context.companyId,
           kind: "binding",
@@ -473,8 +539,96 @@ export function createSecretProposalsService(db: Db) {
         }).returning().then((rows) => rows[0]);
         await recordCreated(proposal, txDb);
         if (!sourceSecretLabel) throw conflict("Binding proposal source secret label is unavailable");
-        return createBindingInteraction(txDb, proposal, sourceSecretLabel);
+        return createBindingInteraction(txDb, proposal, [{
+          proposal,
+          sourceSecretLabel,
+          configPath: input.configPath,
+        }]);
       },
+    );
+  }
+
+  // One ask for N bindings. Every binding stays its own proposal row, so the
+  // config-path validation, the secret reference and its foreign key, the
+  // chain-of-command snapshot and the per-binding audit entry are unchanged.
+  // What the group adds is the unit the human decides: one card, one expiry,
+  // one resolution, with each binding still separately rejectable.
+  async function createBindingGroup(context: BindingProposalContext, input: {
+    bindings: BindingEntryInput[];
+    targetAgentId?: string | null;
+    justification: string;
+    bindingTargetPolicy: "self_and_reports";
+  }) {
+    if (input.bindings.length === 0) throw badRequest("A binding group requires at least one binding");
+    if (input.bindings.length > SECRET_PROPOSAL_BINDING_GROUP_LIMIT) {
+      throw unprocessable(`A binding group may carry at most ${SECRET_PROPOSAL_BINDING_GROUP_LIMIT} bindings`);
+    }
+    assertBindingJustification(input.justification);
+    const seen = new Set<string>();
+    for (const entry of input.bindings) {
+      assertBindingEntryShape(entry);
+      if (seen.has(entry.configPath)) throw unprocessable(`Duplicate configPath in binding group: ${entry.configPath}`);
+      seen.add(entry.configPath);
+    }
+    const { run, originIssueId } = await loadRunContext(db, context);
+    const targetAgentId = input.targetAgentId ?? run.agentId;
+    const [proposerAncestors, targetAncestors] = await Promise.all([
+      ancestorIds(db, context.companyId, run.agentId),
+      ancestorIds(db, context.companyId, targetAgentId),
+    ]);
+    if (!bindingTargetAllowed(run.agentId, targetAgentId, targetAncestors)) {
+      throw forbidden("Binding proposals may target only the proposing agent or its reports");
+    }
+    const resolved: Array<{
+      entry: BindingEntryInput;
+      resolvedSecretId: string | null;
+      sourceSecretLabel: string | null;
+    }> = [];
+    for (const entry of input.bindings) {
+      resolved.push({
+        entry,
+        ...(await resolveBindingEntrySecret(context, run, entry)),
+      });
+    }
+    const groupId = randomUUID();
+    // One expiry for the whole group: they are one ask, so they lapse together
+    // and a re-raised ask is again one card rather than one per binding.
+    const expiresAt = new Date(Date.now() + PENDING_EXPIRY_MS);
+    return createWithinQuota(
+      { companyId: context.companyId, agentId: run.agentId, runId: run.id, issueId: originIssueId },
+      async (txDb) => {
+        const members: Array<{ proposal: Proposal; sourceSecretLabel: string; configPath: string }> = [];
+        let anchor: Proposal | null = null;
+        for (const { entry, resolvedSecretId, sourceSecretLabel: resolvedLabel } of resolved) {
+          const dependencyLabel = await resolveBindingEntryDependency(txDb, context.companyId, entry);
+          const sourceSecretLabel = dependencyLabel ?? resolvedLabel;
+          if (!sourceSecretLabel) throw conflict("Binding proposal source secret label is unavailable");
+          const proposal = await txDb.insert(companySecretProposals).values({
+            companyId: context.companyId,
+            kind: "binding",
+            justification: input.justification.trim(),
+            secretId: resolvedSecretId,
+            secretProposalId: entry.secretProposalId ?? null,
+            targetType: "agent",
+            targetId: targetAgentId,
+            configPath: entry.configPath,
+            groupId,
+            bindingTargetPolicySnapshot: input.bindingTargetPolicy,
+            proposerAncestorIdsSnapshot: proposerAncestors,
+            targetAncestorIdsSnapshot: targetAncestors,
+            proposedByAgentId: run.agentId,
+            originIssueId,
+            originRunId: run.id,
+            expiresAt,
+          }).returning().then((rows) => rows[0]);
+          await recordCreated(proposal, txDb);
+          anchor ??= proposal;
+          members.push({ proposal, sourceSecretLabel, configPath: entry.configPath });
+        }
+        if (!anchor) throw conflict("Binding group is empty");
+        return createBindingInteraction(txDb, anchor, members);
+      },
+      input.bindings.length,
     );
   }
 
@@ -616,6 +770,10 @@ export function createSecretProposalsService(db: Db) {
     resolvedByUserId: string;
     createdSecretId?: string | null;
     appliedBindingConfigPath?: string | null;
+    // A grouped ask reflects its whole outcome on the one card once, at the end
+    // of the group's resolution, so a member does not mark the card accepted
+    // while its siblings are still undecided.
+    reflectInteraction?: boolean;
   }) {
     const now = new Date();
     const updated = await txDb.update(companySecretProposals).set({
@@ -648,9 +806,11 @@ export function createSecretProposalsService(db: Db) {
         ciphertextScrubbed: true,
       },
     });
-    await reflectProposalLifecycleOnInteraction(txDb, proposal, "approved", {
-      resolvedByUserId: input.resolvedByUserId,
-    });
+    if (input.reflectInteraction !== false) {
+      await reflectProposalLifecycleOnInteraction(txDb, proposal, "approved", {
+        resolvedByUserId: input.resolvedByUserId,
+      });
+    }
     return updated;
   }
 
@@ -714,10 +874,184 @@ export function createSecretProposalsService(db: Db) {
     });
   }
 
+  // The row set a resolution acts on: one proposal on its own, or every member
+  // of its group. Locked in id order so two paths that resolve the same group
+  // take the same locks in the same sequence.
+  async function lockResolutionSet(txDb: Db, companyId: string, proposal: Proposal) {
+    return txDb.select().from(companySecretProposals).where(and(
+      eq(companySecretProposals.companyId, companyId),
+      proposal.groupId
+        ? eq(companySecretProposals.groupId, proposal.groupId)
+        : eq(companySecretProposals.id, proposal.id),
+    )).orderBy(asc(companySecretProposals.id)).for("update");
+  }
+
+  // The rows a past decision covered, read after the fact: one proposal on its
+  // own, or every member of its group.
+  async function resolutionSet(companyId: string, proposal: Proposal) {
+    if (!proposal.groupId) return [proposal];
+    return db.select().from(companySecretProposals).where(and(
+      eq(companySecretProposals.companyId, companyId),
+      eq(companySecretProposals.groupId, proposal.groupId),
+    )).orderBy(asc(companySecretProposals.id));
+  }
+
+  async function rejectPending(txDb: Db, proposal: Proposal, input: {
+    resolvedByUserId?: string | null;
+    reason?: string | null;
+  }) {
+    if (proposal.status !== "pending") throw conflict("Proposal is no longer pending");
+    const now = new Date();
+    const [updated] = await txDb.update(companySecretProposals).set({
+      status: "rejected",
+      resolvedByUserId: input.resolvedByUserId ?? null,
+      resolvedAt: now,
+      resolutionReason: input.reason ?? null,
+      valueCiphertext: null,
+      ciphertextScrubbedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(companySecretProposals.id, proposal.id),
+      eq(companySecretProposals.status, "pending"),
+    )).returning();
+    if (!updated) throw conflict("Proposal is no longer pending");
+    await logActivity(txDb, {
+      companyId: proposal.companyId,
+      actorType: input.resolvedByUserId ? "user" as const : "system" as const,
+      actorId: input.resolvedByUserId ?? "system",
+      action: "secret.proposal.rejected",
+      entityType: "company_secret_proposal",
+      entityId: proposal.id,
+      agentId: proposal.proposedByAgentId,
+      runId: proposal.originRunId,
+      details: {
+        ciphertextScrubbed: true,
+        issueId: proposal.originIssueId,
+        reason: input.reason ?? null,
+        ...(proposal.groupId ? { groupId: proposal.groupId } : {}),
+      },
+    });
+    return updated;
+  }
+
+  // One card, one outcome. The group is written up once, after every binding in
+  // it is resolved, so a member does not mark the card accepted while its
+  // siblings are still undecided.
+  async function reflectGroupOutcomeOnInteraction(
+    txDb: Db,
+    anchor: Proposal,
+    outcome: {
+      resolvedByUserId: string;
+      reason?: string | null;
+      bindings: Array<{ proposalId: string; configPath: string | null; status: string }>;
+    },
+  ) {
+    if (!anchor.interactionId) return;
+    const current = await txDb
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.id, anchor.interactionId),
+        eq(issueThreadInteractions.companyId, anchor.companyId),
+      ))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    const accepted = outcome.bindings.some((binding) => binding.status === "approved");
+    // Mirror the single-proposal rule: a card still awaiting a decision is
+    // written, and an accepted card may still receive the executed outcome the
+    // card-accepting path records. Any other terminal card keeps its own result.
+    if (!current) return;
+    if (current.status !== "pending" && !(accepted && current.status === "accepted")) return;
+    const payload = asRecord(current.payload);
+    if (asRecord(payload.secretProposal).proposalId !== anchor.id) return;
+
+    const now = new Date();
+    const currentResult = asRecord(current.result);
+    await txDb
+      .update(issueThreadInteractions)
+      .set({
+        status: accepted ? "accepted" : "rejected",
+        result: {
+          ...currentResult,
+          version: 1,
+          outcome: accepted ? "accepted" : "rejected",
+          ...(outcome.reason ? { reason: outcome.reason } : {}),
+          secretProposal: {
+            version: 1,
+            status: accepted ? "executed" : "rejected",
+            updatedAt: now.toISOString(),
+            bindings: outcome.bindings,
+          },
+        },
+        resolvedByUserId: outcome.resolvedByUserId,
+        resolvedAt: current.resolvedAt ?? now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(issueThreadInteractions.id, current.id),
+        inArray(issueThreadInteractions.status, accepted ? ["pending", "accepted"] : ["pending"]),
+      ));
+  }
+
+  async function applyApproval(txDb: Db, proposal: Proposal, input: {
+    resolvedByUserId: string;
+    cascade?: boolean;
+    overrides?: { name?: string; description?: string | null; providerConfigId?: string | null };
+  }, options: { reflectInteraction?: boolean } = {}) {
+    if (proposal.kind === "secret") {
+      const created = await applySecretApproval(txDb, proposal, input);
+      return markApproved(txDb, proposal, {
+        resolvedByUserId: input.resolvedByUserId,
+        createdSecretId: created.id,
+        reflectInteraction: options.reflectInteraction,
+      });
+    }
+
+    const companyId = proposal.companyId;
+    let secretId = proposal.secretId;
+    if (proposal.secretProposalId) {
+      const dependency = await getById(companyId, proposal.secretProposalId, txDb, true);
+      if (!dependency || dependency.kind !== "secret") throw notFound("Prerequisite secret proposal not found");
+      if (dependency.status !== "pending") {
+        if (dependency.status !== "approved" || !dependency.createdSecretId) {
+          throw conflict(`Prerequisite secret proposal ${dependency.id} is not approvable`);
+        }
+        secretId = dependency.createdSecretId;
+      } else {
+        if (!input.cascade) {
+          throw conflict(`Binding proposal requires pending secret proposal ${dependency.id}; retry with cascade=true`);
+        }
+        assertNotExpired(dependency);
+        const created = await applySecretApproval(txDb, dependency, input);
+        await markApproved(txDb, dependency, {
+          resolvedByUserId: input.resolvedByUserId,
+          createdSecretId: created.id,
+        });
+        secretId = created.id;
+      }
+    }
+    if (!secretId) throw conflict("Binding proposal has no approved secret");
+    const liveSecret = await secretService(txDb).getById(secretId);
+    if (!liveSecret || liveSecret.companyId !== companyId || liveSecret.status !== "active") {
+      throw conflict("Binding proposal secret is not active");
+    }
+    await applyBindingApproval(txDb, proposal, liveSecret, input.resolvedByUserId);
+    return markApproved(txDb, proposal, {
+      resolvedByUserId: input.resolvedByUserId,
+      appliedBindingConfigPath: proposal.configPath,
+      reflectInteraction: options.reflectInteraction,
+    });
+  }
+
   async function approve(companyId: string, proposalId: string, input: {
     resolvedByUserId: string;
     cascade?: boolean;
     overrides?: { name?: string; description?: string | null; providerConfigId?: string | null };
+    // Bindings of the group the approver declines. They are resolved in the
+    // same transaction as the approvals, so the ask ends whole: the human can
+    // drop one key without discarding the rest and without a second decision.
+    rejectProposalIds?: string[] | null;
+    rejectReason?: string | null;
     assertCanResolve?: (proposal: Proposal, txDb: Db) => Promise<void>;
   }) {
     return db.transaction(async (tx) => {
@@ -726,46 +1060,52 @@ export function createSecretProposalsService(db: Db) {
       assertNotExpired(proposal);
       await input.assertCanResolve?.(proposal, txDb);
       await assertBindingSnapshotCurrent(proposal, txDb, true);
-      if (proposal.kind === "secret") {
-        const created = await applySecretApproval(txDb, proposal, input);
-        return markApproved(txDb, proposal, {
-          resolvedByUserId: input.resolvedByUserId,
-          createdSecretId: created.id,
-        });
+      if (!proposal.groupId) {
+        if (input.rejectProposalIds?.length) {
+          throw badRequest("rejectProposalIds requires a grouped binding proposal");
+        }
+        return applyApproval(txDb, proposal, input);
       }
 
-      let secretId = proposal.secretId;
-      if (proposal.secretProposalId) {
-        const dependency = await getById(companyId, proposal.secretProposalId, txDb, true);
-        if (!dependency || dependency.kind !== "secret") throw notFound("Prerequisite secret proposal not found");
-        if (dependency.status !== "pending") {
-          if (dependency.status !== "approved" || !dependency.createdSecretId) {
-            throw conflict(`Prerequisite secret proposal ${dependency.id} is not approvable`);
-          }
-          secretId = dependency.createdSecretId;
-        } else {
-          if (!input.cascade) {
-            throw conflict(`Binding proposal requires pending secret proposal ${dependency.id}; retry with cascade=true`);
-          }
-          assertNotExpired(dependency);
-          const created = await applySecretApproval(txDb, dependency, input);
-          await markApproved(txDb, dependency, {
-            resolvedByUserId: input.resolvedByUserId,
-            createdSecretId: created.id,
-          });
-          secretId = created.id;
+      const pendingMembers = (await lockResolutionSet(txDb, companyId, proposal))
+        .filter((member) => member.status === "pending");
+      const rejectIds = new Set(input.rejectProposalIds ?? []);
+      for (const id of rejectIds) {
+        if (!pendingMembers.some((member) => member.id === id)) {
+          throw badRequest(`Proposal ${id} is not a pending binding of this group`);
         }
       }
-      if (!secretId) throw conflict("Binding proposal has no approved secret");
-      const liveSecret = await secretService(txDb).getById(secretId);
-      if (!liveSecret || liveSecret.companyId !== companyId || liveSecret.status !== "active") {
-        throw conflict("Binding proposal secret is not active");
+      const approved = pendingMembers.filter((member) => !rejectIds.has(member.id));
+      const rejected = pendingMembers.filter((member) => rejectIds.has(member.id));
+      if (approved.length === 0) {
+        throw badRequest("Approve at least one binding, or reject the proposal");
       }
-      await applyBindingApproval(txDb, proposal, liveSecret, input.resolvedByUserId);
-      return markApproved(txDb, proposal, {
+      for (const member of approved) {
+        assertNotExpired(member);
+        await input.assertCanResolve?.(member, txDb);
+        await assertBindingSnapshotCurrent(member, txDb, true);
+      }
+      for (const member of approved) {
+        await applyApproval(txDb, member, input, { reflectInteraction: false });
+      }
+      for (const member of rejected) {
+        await rejectPending(txDb, member, {
+          resolvedByUserId: input.resolvedByUserId,
+          reason: input.rejectReason ?? "Rejected while approving the rest of the group",
+        });
+      }
+      await reflectGroupOutcomeOnInteraction(txDb, proposal, {
         resolvedByUserId: input.resolvedByUserId,
-        appliedBindingConfigPath: proposal.configPath,
+        reason: input.rejectReason ?? null,
+        bindings: [...approved, ...rejected].map((member) => ({
+          proposalId: member.id,
+          configPath: member.configPath,
+          status: rejectIds.has(member.id) ? "rejected" : "approved",
+        })),
       });
+      const resolved = await getById(companyId, proposal.id, txDb);
+      if (!resolved) throw notFound("Secret proposal not found");
+      return resolved;
     });
   }
 
@@ -778,9 +1118,23 @@ export function createSecretProposalsService(db: Db) {
     if (status === "withdrawn" && proposal.proposedByAgentId !== input.proposerAgentId) {
       throw forbidden("Only the proposer can withdraw this proposal");
     }
+    // Expiry and withdrawal are not decisions about a binding, they are the ask
+    // ceasing to exist, so they take the whole group: a group that lapsed is
+    // re-raised as one ask rather than six rows left hanging behind a dead card.
+    // A rejection is a decision about one binding and stays with that binding.
+    const cascadesToGroup = status === "expired" || status === "withdrawn";
     const now = new Date();
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      const group = proposal.groupId && cascadesToGroup
+        ? await lockResolutionSet(txDb, companyId, proposal)
+        : [];
+      const pendingMembers = group.filter((member) => member.status === "pending");
+      const targets = pendingMembers.length > 0 ? pendingMembers.map((member) => member.id) : [proposalId];
+      // Only the anchor carries the card, and it is not always the row the
+      // caller named. Resolving a sibling still has to close the ask the human
+      // sees, so reflect on whichever member owns it.
+      const anchor = group.find((member) => member.interactionId) ?? proposal;
       const updated = await tx.update(companySecretProposals).set({
         status,
         resolvedByUserId: input.resolvedByUserId ?? null,
@@ -789,9 +1143,13 @@ export function createSecretProposalsService(db: Db) {
         valueCiphertext: null,
         ciphertextScrubbedAt: now,
         updatedAt: now,
-      }).where(and(eq(companySecretProposals.id, proposalId), eq(companySecretProposals.status, "pending")))
-        .returning().then((rows) => rows[0] ?? null);
-      if (!updated) throw conflict("Proposal is no longer pending");
+      }).where(and(inArray(companySecretProposals.id, targets), eq(companySecretProposals.status, "pending")))
+        .returning();
+      const target = updated.find((row) => row.id === proposalId) ?? null;
+      // The addressed proposal is the one the caller asked about: whatever else
+      // the group did, a caller who named a row that was already resolved gets
+      // the same conflict it always got.
+      if (!target) throw conflict("Proposal is no longer pending");
       const dependents = proposal.kind === "secret" && (status === "rejected" || status === "expired" || status === "withdrawn")
         ? await tx.update(companySecretProposals).set({
             status: "rejected",
@@ -809,6 +1167,29 @@ export function createSecretProposalsService(db: Db) {
         : [];
       const actorType = input.resolvedByUserId ? "user" as const : status === "withdrawn" ? "agent" as const : "system" as const;
       const actorId = input.resolvedByUserId ?? input.proposerAgentId ?? "system";
+      const statusReason = input.reason ?? (status === "expired" ? "Pending proposal expired" : null);
+      for (const row of updated) {
+        // The addressed row is logged below with the caller's own detail; a
+        // sibling records that it went with its group.
+        if (row.id === proposalId) continue;
+        await logActivity(txDb, {
+          companyId,
+          actorType,
+          actorId,
+          action: `secret.proposal.${status}`,
+          entityType: "company_secret_proposal",
+          entityId: row.id,
+          agentId: row.proposedByAgentId,
+          runId: row.originRunId,
+          details: {
+            ciphertextScrubbed: true,
+            issueId: row.originIssueId,
+            reason: statusReason,
+            groupId: proposal.groupId,
+            groupAnchorProposalId: proposalId,
+          },
+        });
+      }
       await logActivity(txDb, {
         companyId,
         actorType,
@@ -818,7 +1199,12 @@ export function createSecretProposalsService(db: Db) {
         entityId: proposal.id,
         agentId: proposal.proposedByAgentId,
         runId: proposal.originRunId,
-        details: { ciphertextScrubbed: true, issueId: proposal.originIssueId, reason: input.reason ?? null },
+        details: {
+          ciphertextScrubbed: true,
+          issueId: proposal.originIssueId,
+          reason: statusReason,
+          ...(updated.length > 1 ? { groupSize: updated.length, groupId: proposal.groupId } : {}),
+        },
       });
       for (const dependent of dependents) {
         await logActivity(txDb, {
@@ -842,11 +1228,13 @@ export function createSecretProposalsService(db: Db) {
           reason: dependent.resolutionReason,
         });
       }
-      await reflectProposalLifecycleOnInteraction(txDb, proposal, status, {
+      // The card belongs to the anchor, which is not always the row the caller
+      // named: resolving a sibling still has to close the ask the human sees.
+      await reflectProposalLifecycleOnInteraction(txDb, anchor, status, {
         resolvedByUserId: input.resolvedByUserId,
-        reason: input.reason ?? (status === "expired" ? "Pending proposal expired" : null),
+        reason: statusReason,
       });
-      return updated;
+      return target;
     });
   }
 
@@ -874,5 +1262,5 @@ export function createSecretProposalsService(db: Db) {
     return expiredCount;
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
+  return { getById, view: enrich, createSecret, createBinding, createBindingGroup, listForAgent, listForBoard, resolutionSet, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
 }
