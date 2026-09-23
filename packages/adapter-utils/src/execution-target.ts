@@ -659,17 +659,21 @@ export function formatAdapterExecutionTimeoutStartLogLine(
 }
 
 /**
- * `MAX_ARG_STRLEN`: 32 x `PAGE_SIZE`, which is 131,072 bytes when the page size
- * is 4 KiB. This caps one `argv`/`envp` string and is independent of `ARG_MAX`,
- * which caps the whole block.
+ * `MAX_ARG_STRLEN` on a host whose pages are 4 KiB: 32 x `PAGE_SIZE`. This caps
+ * one `argv`/`envp` string and is independent of `ARG_MAX`, which caps the whole
+ * block.
+ *
+ * The kernel derives the real limit from the page size, and Node reports no page
+ * size, so this is a named reference point rather than a fact about the host the
+ * line is written from. A host with 16 KiB pages allows 524,288 bytes.
  */
-const MAX_SINGLE_ARG_STRING_BYTES = 32 * 4096;
+const MAX_ARG_STRLEN_4KIB_PAGE_BYTES = 32 * 4096;
 
 /**
  * What one `NAME=value` environment entry costs against
- * `MAX_SINGLE_ARG_STRING_BYTES`: the kernel counts the name, the `=`, the value
- * and the terminating NUL against the same budget, so a value a few bytes short
- * of the limit still fails once it carries a name.
+ * `MAX_ARG_STRLEN_4KIB_PAGE_BYTES`: the kernel counts the name, the `=`, the
+ * value and the terminating NUL against the same budget, so a value a few bytes
+ * short of the limit still fails once it carries a name.
  */
 function envEntryArgBytes(key: string, value: string): number {
   return Buffer.byteLength(key, "utf8") + 1 + Buffer.byteLength(value, "utf8") + 1;
@@ -683,6 +687,11 @@ function envEntryArgBytes(key: string, value: string): number {
  * exists, so the child can never report what it was not handed and the run's
  * only trace is the error text. Naming the largest entry and its cost up front
  * makes that failure readable from the run log alone.
+ *
+ * The limit depends on the page size, and Node reports no page size, so the line
+ * names the 4 KiB-page limit and conditions the failure on a host that has it.
+ * An operator on a host with larger pages reads the same measurement, applies
+ * the larger limit, and does not read a failure that does not happen there.
  *
  * Names and byte counts only. The spawn environment carries resolved secret
  * values, so reporting values here would write credentials into the run log.
@@ -707,22 +716,23 @@ export function formatSpawnEnvSizeStartLogLine(
       largestKey = key;
       largestBytes = entryBytes;
     }
-    if (entryBytes > MAX_SINGLE_ARG_STRING_BYTES) overLimitCount += 1;
+    if (entryBytes > MAX_ARG_STRLEN_4KIB_PAGE_BYTES) overLimitCount += 1;
   }
   if (largestKey === null) return "Spawn environment: empty.";
 
   const total = `${entryCount} ${entryCount === 1 ? "entry" : "entries"}, ${totalBytes} bytes total`;
+  const limit = `${MAX_ARG_STRLEN_4KIB_PAGE_BYTES}-byte MAX_ARG_STRLEN limit of a 4 KiB-page host`;
   if (overLimitCount > 0) {
     const others = overLimitCount > 1 ? ` (${overLimitCount} entries over it)` : "";
     return (
       `Spawn environment: ${total}; largest "${largestKey}" needs ${largestBytes} bytes, ` +
-      `over the ${MAX_SINGLE_ARG_STRING_BYTES}-byte MAX_ARG_STRLEN limit${others}. ` +
-      `A local spawn fails with E2BIG while any entry is over it.`
+      `over the ${limit}${others}. On such a host a local spawn fails with E2BIG; ` +
+      `MAX_ARG_STRLEN is 32 x the page size, so a host with larger pages allows proportionally more.`
     );
   }
   return (
     `Spawn environment: ${total}; largest "${largestKey}" needs ${largestBytes} bytes, ` +
-    `within the ${MAX_SINGLE_ARG_STRING_BYTES}-byte MAX_ARG_STRLEN limit.`
+    `within the ${limit}.`
   );
 }
 

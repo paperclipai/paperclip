@@ -2039,12 +2039,12 @@ describe("sandbox adapter execution targets", () => {
 
   it("reports the spawn environment size and names its largest entry", () => {
     expect(formatSpawnEnvSizeStartLogLine({ A: "12", BB: "1234567" })).toBe(
-      'Spawn environment: 2 entries, 16 bytes total; largest "BB" needs 11 bytes, within the 131072-byte MAX_ARG_STRLEN limit.',
+      'Spawn environment: 2 entries, 16 bytes total; largest "BB" needs 11 bytes, within the 131072-byte MAX_ARG_STRLEN limit of a 4 KiB-page host.',
     );
     // Counts include the `=`, the terminating NUL and the `NAME=` prefix the
     // kernel charges against the same budget: A=12 -> 5, BB=1234567 -> 11.
     expect(formatSpawnEnvSizeStartLogLine({ A: "12" })).toBe(
-      'Spawn environment: 1 entry, 5 bytes total; largest "A" needs 5 bytes, within the 131072-byte MAX_ARG_STRLEN limit.',
+      'Spawn environment: 1 entry, 5 bytes total; largest "A" needs 5 bytes, within the 131072-byte MAX_ARG_STRLEN limit of a 4 KiB-page host.',
     );
     expect(formatSpawnEnvSizeStartLogLine({})).toBe("Spawn environment: empty.");
   });
@@ -2059,12 +2059,35 @@ describe("sandbox adapter execution targets", () => {
     const maxValueBytes = 131_072 - Buffer.byteLength(key, "utf8") - 2;
     expect(formatSpawnEnvSizeStartLogLine({ [key]: "v".repeat(maxValueBytes) })).toBe(
       `Spawn environment: 1 entry, 131072 bytes total; largest "${key}" needs 131072 bytes, ` +
-        `within the 131072-byte MAX_ARG_STRLEN limit.`,
+        `within the 131072-byte MAX_ARG_STRLEN limit of a 4 KiB-page host.`,
     );
     expect(formatSpawnEnvSizeStartLogLine({ [key]: "v".repeat(maxValueBytes + 1) })).toBe(
       `Spawn environment: 1 entry, 131073 bytes total; largest "${key}" needs 131073 bytes, ` +
-        `over the 131072-byte MAX_ARG_STRLEN limit. A local spawn fails with E2BIG while any entry is over it.`,
+        `over the 131072-byte MAX_ARG_STRLEN limit of a 4 KiB-page host. ` +
+        `On such a host a local spawn fails with E2BIG; MAX_ARG_STRLEN is 32 x the page size, ` +
+        `so a host with larger pages allows proportionally more.`,
     );
+  });
+
+  it("conditions the failure claim on the 4 KiB page size it measures against", () => {
+    // `MAX_ARG_STRLEN` is 32 x `PAGE_SIZE`, and Node reports no page size, so the
+    // line cannot know the limit of the host it is written from. It must name the
+    // 4 KiB-page limit it compares against and attach the `E2BIG` claim to a host
+    // that has that page size. A 16 KiB-page host allows 524,288 bytes, so an
+    // unqualified "a local spawn fails with E2BIG" is false there — the reason a
+    // review of `d7c7b67b` rejected this line. The within branch makes a weaker
+    // claim but must name the same threshold, or an operator on a larger-page host
+    // reads the byte count with no way to apply the limit that applies to them.
+    const over = formatSpawnEnvSizeStartLogLine({ BIG: "v".repeat(200_000) });
+    expect(over).toContain("of a 4 KiB-page host");
+    expect(over).toContain("On such a host a local spawn fails with E2BIG");
+    expect(over).toContain("a host with larger pages allows proportionally more");
+    // The phrasing this replaced, which asserted the failure unconditionally.
+    expect(over).not.toContain("A local spawn fails with E2BIG while any entry is over it");
+
+    const within = formatSpawnEnvSizeStartLogLine({ SMALL: "1" });
+    expect(within).toContain("of a 4 KiB-page host");
+    expect(within).not.toContain("E2BIG");
   });
 
   it("counts every entry over the limit and reports the largest one", () => {
