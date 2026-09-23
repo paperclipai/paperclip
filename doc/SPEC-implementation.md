@@ -1309,6 +1309,14 @@ issue.
 
 Board can bypass request flow and create agents directly via UI; direct create is still logged as a governance action.
 
+Create requests that include `instructionsBundle` must not also include an
+instructions bundle key in `adapterConfig`. The server rejects that ambiguous
+request before creating the agent, because the two representations cannot be
+stored as one instruction bundle. The onboarding first-agent marker is also
+exclusive with a caller-provided `instructionsBundle` because onboarding owns
+that initial instruction set. The selected adapter must also support managed
+instructions; otherwise, the server rejects the request.
+
 ## 12.2 CEO Strategy Approval
 
 1. CEO posts strategy proposal as `approval(type=approve_ceo_strategy)`.
