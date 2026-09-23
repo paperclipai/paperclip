@@ -121,23 +121,26 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await queuedRuns(f.companyId, f.participantId)).toHaveLength(0);
   });
 
-  it("keeps a handoff that admission refused while the stage is still current", async () => {
+  it("leaves a parked task alone and admits the handoff once it waits again", async () => {
     const f = await seed();
     await heartbeatService(db).wakeup(f.participantId, stageWake(f));
     const [wait] = await db.select().from(agentWakeupRequests)
       .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.agentId, f.participantId)));
     await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "succeeded" })
       .where(eq(environmentLeases.id, f.leaseId));
-    // Selection accepts the task, but admission's guard refuses it: the same
-    // outcome as a concurrent update between selection and admission.
+    // A status admission refuses: repeated passes add no receipts and keep the handoff.
     await db.update(issues).set({ status: "backlog" }).where(eq(issues.id, f.issueId));
-    await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, wait.id));
-    await heartbeatService(db).resumeQueuedRuns();
+    for (let i = 0; i < 3; i += 1) {
+      await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, wait.id));
+      await heartbeatService(db).resumeQueuedRuns();
+    }
     expect(await queuedRuns(f.companyId, f.participantId)).toHaveLength(0);
-    const [kept] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wait.id));
-    expect((kept.payload as { executionWait?: { readmittedAt?: string } }).executionWait?.readmittedAt).toBeUndefined();
+    const wakes = await db.select().from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.agentId, f.participantId)));
+    expect(wakes).toHaveLength(1);
+    expect((wakes[0].payload as { executionWait?: { readmittedAt?: string } }).executionWait?.readmittedAt).toBeUndefined();
 
-    // The task still waits on the stage; the next pass admits the handoff.
+    // The task waits on the stage again; the next pass admits the handoff.
     await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, f.issueId));
     await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, wait.id));
     await heartbeatService(db).resumeQueuedRuns();

@@ -655,6 +655,7 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 /** Leave the finishing run's cleanup time to settle before reconsidering a
  * stage handoff that admission recorded as blocked. The gate is re-read each pass. */
 const READMIT_STAGE_HANDOFF_AFTER_MS = 30_000;
+const STAGE_HANDOFF_READMIT_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
 const EXTERNAL_ATTACHMENT_OMISSIONS_KEY = "externalAttachmentOmissions";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const ACCEPTED_PLAN_CONVERSION_SKILL_KEY =
@@ -10497,7 +10498,8 @@ export function heartbeatService(
         sql`${issues.executionState}->>'currentStageId' = ${agentWakeupRequests.payload}->'executionStage'->>'stageId'`,
         sql`${issues.executionState}->'currentParticipant'->>'agentId' = ${agentWakeupRequests.agentId}::text`,
         isNull(issues.executionRunId),
-        notInArray(issues.status, ["done", "cancelled"]),
+        // Only statuses admission accepts, so a parked task adds no refusals.
+        inArray(issues.status, [...STAGE_HANDOFF_READMIT_STATUSES]),
         lte(agentWakeupRequests.updatedAt, new Date(Date.now() - READMIT_STAGE_HANDOFF_AFTER_MS)),
       ))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
@@ -10554,7 +10556,7 @@ export function heartbeatService(
           },
           // Selection read the task outside the admission lock. Admission must
           // refuse a task whose status, owner or stage changed in between.
-          issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"],
+          issueStateGuard: { assigneeAgentId: wake.agentId, statuses: [...STAGE_HANDOFF_READMIT_STATUSES],
             statusVersion, executionStageId: stageId },
           idempotencyKey: readmitKey,
         });
