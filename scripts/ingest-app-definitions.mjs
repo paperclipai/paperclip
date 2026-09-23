@@ -942,6 +942,7 @@ const categoryBySlug = {
   wix: "content",
   xero: "commerce",
   youcom: "ai",
+  glasser: "data",
   zapier: "productivity",
 };
 const oauthMethodFor = (
@@ -1034,6 +1035,11 @@ const apiKeySpec = {
     prefix: "Bearer ",
     placeholder: "Paste your You.com API key",
   },
+  glasser: {
+    name: "Authorization",
+    prefix: "Bearer ",
+    placeholder: "Paste your Glasser Key (gl_…)",
+  },
 };
 const apiKeyMethodFor = (
   entry,
@@ -1072,6 +1078,20 @@ const apiKeyMethodFor = (
   );
 };
 const specialMethodsFor = (entry) => {
+  if (entry.slug === "glasser") {
+    // Glasser's bearer challenge declares the `mcp` scope (RFC 9728
+    // `scopes_supported: ["mcp"]`); send it on browser sign-in so the token the
+    // authorization server issues is accepted by the MCP resource. Keys are
+    // created on the account's Keys page, not in the docs.
+    return [
+      oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+        defaults: { serverUrl: entry.serverUrl, scopesHint: ["mcp"] },
+      }),
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        consoleLinks: { keys: "https://app.glasser.ai/keys", docs: entry.docsUrl },
+      }),
+    ];
+  }
   // Atlassian's /authv2 rollout only issues GA-tool-compatible tokens when the
   // authorization request includes this reviewed protected-resource scope set.
   // Omitting scope currently yields agent-interface scopes that its own Jira

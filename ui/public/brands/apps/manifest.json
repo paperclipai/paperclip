@@ -485,6 +485,13 @@
       "catalogVisible": true,
       "localAsset": "/brands/apps/railway.svg",
       "darkAsset": "/brands/apps/railway-dark.svg"
+    },
+    {
+      "slug": "glasser",
+      "provider": "Glasser",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/glasser.svg",
+      "darkAsset": "/brands/apps/glasser-dark.svg"
     }
   ]
 }

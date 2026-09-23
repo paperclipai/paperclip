@@ -274,7 +274,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(44);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(45);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -427,15 +427,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 47 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 48 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // the You.com entry added here carries its own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(47);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(48);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 47);
+    ).toHaveProperty("size", 48);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -584,6 +584,28 @@ describe("AppDefinition catalog", () => {
       defaults: { serverUrl: "https://api.you.com/mcp?profile=free" },
     });
     expect(method("youcom", "mcp-free")?.credentialFields).toBeUndefined();
+    expect(
+      APP_DEFINITIONS.find((app) => app.slug === "glasser")?.methods.map(
+        (candidate) => candidate.key,
+      ),
+    ).toEqual(["mcp-oauth", "mcp-api-key"]);
+    expect(method("glasser")?.defaults).toEqual({
+      serverUrl: "https://api.glasser.ai/mcp",
+      scopesHint: ["mcp"],
+    });
+    expect(method("glasser")?.ownershipModes).toEqual(["dcr"]);
+    expect(method("glasser", "mcp-api-key")?.consoleLinks).toEqual({
+      keys: "https://app.glasser.ai/keys",
+      docs: "https://glasser.ai/docs/mcp-server",
+    });
+    expect(method("glasser", "mcp-api-key")).toMatchObject({
+      auth: "api_key",
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+    });
   });
   it("uses discovery-first Notion MCP OAuth metadata", () => {
     const notion = APP_DEFINITIONS.find((app) => app.slug === "notion");
@@ -704,7 +726,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(51);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(52);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "slug": "glasser",
+  "name": "Glasser",
+  "description": "Connect Glasser's provider-hosted MCP server.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/glasser.svg",
+    "darkLogoUrl": "/brands/apps/glasser-dark.svg"
+  },
+  "urlPatterns": [
+    "https://api.glasser.ai/*"
+  ],
+  "docsUrl": "https://glasser.ai/docs/mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://api.glasser.ai/mcp",
+        "scopesHint": [
+          "mcp"
+        ]
+      },
+      "guidanceMd": "Connect Glasser in the browser. A Glasser account for browser sign-in, or a Glasser Key from app.glasser.ai/keys; every run is billed at the endpoint's published price.",
+      "riskTier": "S2",
+      "label": "Sign in with Glasser",
+      "consoleLinks": {
+        "docs": "https://glasser.ai/docs/mcp-server"
+      },
+      "warnings": [
+        "A Glasser account for browser sign-in, or a Glasser Key from app.glasser.ai/keys; every run is billed at the endpoint's published price."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://api.glasser.ai/mcp"
+      },
+      "guidanceMd": "Use a customer-created Glasser key. A Glasser account for browser sign-in, or a Glasser Key from app.glasser.ai/keys; every run is billed at the endpoint's published price.",
+      "riskTier": "S2",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Glasser API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Glasser Key (gl_…)",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://app.glasser.ai/keys",
+        "docs": "https://glasser.ai/docs/mcp-server"
+      },
+      "warnings": [
+        "A Glasser account for browser sign-in, or a Glasser Key from app.glasser.ai/keys; every run is billed at the endpoint's published price."
+      ]
+    }
+  ]
+}
