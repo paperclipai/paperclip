@@ -509,6 +509,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       config: source === "config-url" ? { url: endpoint } : {},
       transportConfig: source === "transport-url" ? { url: endpoint } : source === "transport-serverUrl" ? { serverUrl: endpoint } : {},
     }] });
+    getConnectionMock.mockImplementation(async () => (await listConnectionsMock()).connections[0]);
     await render(undefined, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
     const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
     expect(input?.value).toBe(endpoint);
@@ -528,6 +529,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
     listConnectionsMock.mockResolvedValue({ connections: [{ ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault", config: { url: "https://archive.example.test/mcp" } }] });
+    getConnectionMock.mockImplementation(async () => (await listConnectionsMock()).connections[0]);
     await render(client, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
     const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
     expect(input?.value).toBe("https://archive.example.test/mcp");
