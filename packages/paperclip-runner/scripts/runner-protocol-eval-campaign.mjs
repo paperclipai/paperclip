@@ -415,10 +415,13 @@ export async function aggregateProtocolEvalCampaign({
       throw new Error(`Downloaded artifact names an unexpected cell ${cellId}`);
     if (
       status.caseId !== expected.caseId ||
-      status.rosterFile !== expected.rosterFile ||
-      (expected.authenticationMode !== undefined && status.authenticationMode !== expected.authenticationMode)
+      status.rosterFile !== expected.rosterFile
     ) {
       throw new Error(`Downloaded cell metadata drifted for ${cellId}`);
+    }
+    if (expected.authenticationMode !== undefined &&
+        (status.authenticationMode !== expected.authenticationMode || status.authenticationEvidenceFailure !== undefined)) {
+      throw new Error(`Invalid Grok authentication evidence for ${cellId}; retained cell metadata and attempts require inspection`);
     }
     const attemptRoot = resolve(dirname(statusPath), "runs");
     const attemptIds = [];

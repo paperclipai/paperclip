@@ -161,9 +161,11 @@ test("subscription evidence cannot be substituted with an API or missing authent
   assert.equal(passed.totals.passed, 1);
   assert.equal(passed.results[0].authenticationMode, "subscription");
   assert.equal(passed.rosters[0].authenticationMode, "subscription");
+  await writeFile(join(download, "cell.json"), JSON.stringify({ ...status, authenticationMode: "subscription", authenticationEvidenceFailure: "grok_authentication_evidence_unreadable" }));
+  await assert.rejects(aggregate(), /Invalid Grok authentication evidence/);
   for (const authenticationMode of [undefined, "api_key", "auto"]) {
     await writeFile(join(download, "cell.json"), JSON.stringify({ ...status, authenticationMode }));
-    await assert.rejects(aggregate(), /metadata drifted/);
+    await assert.rejects(aggregate(), /Invalid Grok authentication evidence/);
   }
 });
 

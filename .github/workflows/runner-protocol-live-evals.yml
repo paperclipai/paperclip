@@ -601,10 +601,17 @@ jobs:
           CELL_EXIT_CODE="$status" node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
           let authenticationMode;
+          let authenticationEvidenceFailure;
           if (["XAI_API_KEY", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"].includes(process.env.CREDENTIAL_NAME)) {
-            authenticationMode = JSON.parse(readFileSync("cell-output/roster-summary.json", "utf8")).authenticationMode;
             const expected = process.env.CREDENTIAL_NAME === "XAI_API_KEY" ? "api_key" : "subscription";
-            if (authenticationMode !== expected) throw new Error("Grok authentication evidence mismatch");
+            try {
+              const observed = JSON.parse(readFileSync("cell-output/roster-summary.json", "utf8")).authenticationMode;
+              // Never copy arbitrary provider output into cell metadata or errors.
+              if (["api_key", "subscription"].includes(observed)) authenticationMode = observed;
+              if (authenticationMode !== expected) authenticationEvidenceFailure = "grok_authentication_evidence_mismatch";
+            } catch {
+              authenticationEvidenceFailure = "grok_authentication_evidence_unreadable";
+            }
           }
           writeFileSync("cell-output/cell.json", `${JSON.stringify({
             schema: "paperclip.runner-protocol-eval.cell/v1",
@@ -612,8 +619,10 @@ jobs:
             rosterFile: process.env.ROSTER_FILE,
             caseId: process.env.CASE_ID,
             ...(authenticationMode ? { authenticationMode } : {}),
+            ...(authenticationEvidenceFailure ? { authenticationEvidenceFailure } : {}),
             exitCode: Number(process.env.CELL_EXIT_CODE),
           }, null, 2)}\n`, { mode: 0o600 });
+          if (authenticationEvidenceFailure) throw new Error(authenticationEvidenceFailure);
           NODE
           exit "$status"
 

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
@@ -241,5 +243,43 @@ test("trusted catalog, direct eval, and report orchestration stay on workflow re
     const section = workflow.slice(workflow.indexOf(job), workflow.indexOf(next));
     assert.match(section, /ref: \$\{\{ github\.sha \}\}/u, `${job} must use the trusted workflow revision`);
     assert.doesNotMatch(section, /ref: \$\{\{ needs\.authorize\.outputs\.target_sha \}\}/u, `${job} must not execute target orchestration code`);
+  }
+});
+
+
+test("authentication failures retain cell metadata without leaking malformed summary content", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  const script = workflow.match(/CELL_EXIT_CODE="\$status" node --input-type=module <<'NODE'\n([\s\S]*?)          NODE/u)?.[1];
+  assert.ok(script);
+  const root = await mkdtemp(resolve(tmpdir(), "grok-cell-evidence-"));
+  try {
+    await mkdir(resolve(root, "cell-output"));
+    const summary = resolve(root, "cell-output/roster-summary.json");
+    for (const [content, expectedFailure, expectedMode] of [
+      [undefined, "grok_authentication_evidence_unreadable", undefined],
+      ["{SENSITIVE_SENTINEL", "grok_authentication_evidence_unreadable", undefined],
+      ["null", "grok_authentication_evidence_unreadable", undefined],
+      ['{"authenticationMode":"SENSITIVE_SENTINEL"}', "grok_authentication_evidence_mismatch", undefined],
+      ['{"authenticationMode":"api_key"}', "grok_authentication_evidence_mismatch", "api_key"],
+      ['{"authenticationMode":"subscription"}', undefined, "subscription"],
+    ]) {
+      if (content === undefined) await rm(summary, { force: true });
+      else await writeFile(summary, content);
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+        cwd: root, encoding: "utf8",
+        env: { CREDENTIAL_NAME: "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET", CELL_ID: "cell-1", CASE_ID: "context", ROSTER_FILE: "grok.json", CELL_EXIT_CODE: "7" },
+      });
+      assert.equal(result.status, expectedFailure ? 1 : 0);
+      const retained = await readFile(resolve(root, "cell-output/cell.json"), "utf8");
+      const metadata = JSON.parse(retained);
+      assert.equal(metadata.cellId, "cell-1");
+      assert.equal(metadata.caseId, "context");
+      assert.equal(metadata.exitCode, 7);
+      assert.equal(metadata.authenticationEvidenceFailure, expectedFailure);
+      assert.equal(metadata.authenticationMode, expectedMode);
+      assert.doesNotMatch(retained + result.stdout + result.stderr, /SENSITIVE_SENTINEL/u);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
