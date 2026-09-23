@@ -3018,7 +3018,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = externalChatTurn ? "" : renderPaperclipEnvNote(env);
-  const wakePayloadFileNote = externalChatTurn ? "" : renderWakePayloadFileNote(env);
+  const wakePayloadFileNote = externalChatTurn ? "" : renderWakePayloadFileNote(env, resumedSession);
   const apiAccessNote = externalChatTurn ? "" : renderApiAccessNote(env);
   const prompt = joinPromptSections([
     promptInstructionsPrefix,

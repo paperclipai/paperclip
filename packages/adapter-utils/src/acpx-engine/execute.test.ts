@@ -397,13 +397,18 @@ describe("shared ACPX engine runtime behavior", () => {
     const config = { agent: "custom", agentCommand: "node ./fake-acp.js", cwd: root, stateDir: path.join(root, "state") };
     let sessionParams: unknown;
     const paths: string[] = [];
-    for (const marker of ["first", "resumed"]) {
-      const description = marker + "🙂 complete context ".repeat(40_000);
+    for (const marker of ["first", "resumed", "small"]) {
+      const description = marker + "🙂 complete context ".repeat(marker === "small" ? 1 : 40_000);
       const run = await runExecutor(config, {
         runtime: sessionParams ? { sessionParams } : {},
         context: { taskId: "issue-1", paperclipWake: { issue: { id: "issue-1", identifier: "TEST-1", description } } },
         inspectSession: async (input) => {
           const env = (input.sessionOptions as { env: Record<string, string> }).env;
+          if (marker === "small") {
+            expect(JSON.parse(env.PAPERCLIP_WAKE_PAYLOAD_JSON!).issue.description).toBe(description);
+            expect(env.PAPERCLIP_WAKE_PAYLOAD_PATH).toBeUndefined();
+            return;
+          }
           expect(env.PAPERCLIP_WAKE_PAYLOAD_JSON).toBeUndefined();
           const filePath = env.PAPERCLIP_WAKE_PAYLOAD_PATH!;
           paths.push(filePath);
@@ -411,6 +416,11 @@ describe("shared ACPX engine runtime behavior", () => {
         },
       });
       sessionParams = run.result.sessionParams;
+      if (marker === "small") {
+        expect(String(run.meta[0]?.prompt)).toContain("do not read a previous turn's wake payload file");
+        for (const filePath of paths) expect(String(run.meta[0]?.prompt)).not.toContain(filePath);
+        continue;
+      }
       expect(String(run.meta[0]?.prompt)).toContain(JSON.stringify(paths.at(-1)));
       expect(String(run.meta[0]?.prompt)).toContain("takes precedence over any older wake environment");
       await expect(fs.stat(paths.at(-1)!)).rejects.toMatchObject({ code: "ENOENT" });

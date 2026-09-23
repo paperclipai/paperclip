@@ -47,10 +47,13 @@ export async function prepareWakePayloadEnv(
   if (remoteCommand) {
     directory = `/tmp/paperclip-wake-${randomUUID()}`;
     filePath = `${directory}/payload.json`;
-    // Do not remove a pre-existing path when exclusive creation fails.
+    // A provider can lose the acknowledgement after mkdir succeeds. On that
+    // ambiguous path only remove an empty directory: never recursively remove
+    // a pre-existing path whose exclusive creation was not acknowledged.
     try {
       await remoteCommand(`umask 077 && mkdir -m 700 ${quote(directory)}`);
     } catch {
+      await remoteCommand(`rmdir -- ${quote(directory)}`).catch(() => {});
       throw new Error("Could not create the private wake payload directory.");
     }
     cleanup = async () => { await remoteCommand(`rm -rf -- ${quote(directory)}`); };
@@ -87,8 +90,10 @@ export async function prepareWakePayloadEnv(
   return { env, filePath, cleanup };
 }
 
-export function renderWakePayloadFileNote(env: Record<string, string>): string {
+export function renderWakePayloadFileNote(env: Record<string, string>, resumedSession = false): string {
   const filePath = env[PATH_KEY];
-  if (!filePath) return "";
+  if (!filePath) return resumedSession
+    ? "Use the current wake context in this prompt. A resumed process may retain wake environment variables from an earlier turn; do not read a previous turn's wake payload file."
+    : "";
   return `The complete structured wake payload for this turn is in ${JSON.stringify(filePath)}. Read this JSON file if you need the structured wake context. This turn's path takes precedence over any older wake environment retained by a resumed session. The file is removed when this turn ends.`;
 }

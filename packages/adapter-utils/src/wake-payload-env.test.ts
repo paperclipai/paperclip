@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -72,9 +72,11 @@ describe("lossless wake payload transport", () => {
     await expect(fs.stat(path.dirname(received.path))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.skipIf(process.platform !== "linux")("reproduces Linux E2BIG when the original payload is used as an env entry", async () => {
-    await expect(exec(process.execPath, ["-e", ""], { env: { PAPERCLIP_WAKE_PAYLOAD_JSON: payload } }))
-      .rejects.toMatchObject({ code: "E2BIG" });
+  it.skipIf(process.platform !== "linux")("reproduces Linux E2BIG when the original payload is used as an env entry", () => {
+    // execFile's custom promisify wrapper can throw synchronously on E2BIG.
+    // spawnSync exposes the native launch error without that Promise boundary.
+    const result = spawnSync(process.execPath, ["-e", ""], { env: { PAPERCLIP_WAKE_PAYLOAD_JSON: payload } });
+    expect(result.error).toMatchObject({ code: "E2BIG" });
   });
 
   it("cleans up when the child cannot start", async () => {
@@ -106,11 +108,13 @@ describe("lossless wake payload transport", () => {
   });
 
   it("cleans up after a timeout", async () => {
-    const result = await runChildProcess("timeout-wake", process.execPath, ["-e", "console.log(process.env.PAPERCLIP_WAKE_PAYLOAD_PATH); setInterval(() => {}, 1000)"], {
+    const mkdtemp = vi.spyOn(fs, "mkdtemp");
+    const result = await runChildProcess("timeout-wake", process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       cwd: os.tmpdir(), env: { PAPERCLIP_WAKE_PAYLOAD_JSON: payload }, timeoutSec: 0.2, graceSec: 1, onLog: async () => {},
     });
     expect(result.timedOut).toBe(true);
-    await expect(fs.stat(path.dirname(result.stdout.trim()))).rejects.toMatchObject({ code: "ENOENT" });
+    const directory = await mkdtemp.mock.results[0]!.value;
+    await expect(fs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("delivers exact bytes through bounded remote commands and cleans up after the remote child", async () => {
@@ -149,6 +153,22 @@ describe("lossless wake payload transport", () => {
     await expect(promise).rejects.toThrow(/^Could not deliver the complete wake payload file\.$/);
     expect(directory).not.toBe("");
     await expect(fs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])("safely cleans up an ambiguous directory creation failure (occupied=%s)", async (occupied) => {
+    let directory = "";
+    await expect(prepareWakePayloadEnv({ PAPERCLIP_WAKE_PAYLOAD_JSON: payload }, async (script) => {
+      if (script.startsWith("umask 077 && mkdir")) {
+        directory = script.match(/'(\/tmp\/paperclip-wake-[^']+)'/)![1]!;
+        cleanup.push(() => fs.rm(directory, { recursive: true, force: true }));
+        await fs.mkdir(directory, { mode: 0o700 });
+        if (occupied) await fs.writeFile(path.join(directory, "other-owner"), "preserve this");
+        throw new Error(occupied ? "directory exists" : "acknowledgement lost after mkdir");
+      }
+      return (await exec("sh", ["-c", script])).stdout;
+    })).rejects.toThrow("Could not create the private wake payload directory.");
+    if (occupied) expect(await fs.readFile(path.join(directory, "other-owner"), "utf8")).toBe("preserve this");
+    else await expect(fs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects configured file paths and keeps wake contents out of invocation logs", () => {
