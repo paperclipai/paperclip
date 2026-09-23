@@ -67,6 +67,31 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
 }
 
 describe("runner E2E campaign history", () => {
+  it.each(["workflow_dispatch", null, undefined])("preserves retained source during regeneration (event %s)", async (eventName) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-retained-source-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0]!;
+    const source = {
+      sha: "measured-source-sha", ref: "refs/heads/measured-source",
+      workflowRunUrl: "https://example.test/actions/runs/1",
+    };
+    const retainedResult = { ...result(execution, "passed"), source };
+    const campaign = buildRunnerCampaign({
+      campaignId: "retained-source", generatedAt: retainedResult.finishedAt,
+      expected: [execution.id], results: [retainedResult],
+    });
+    const published = { ...campaign, source: eventName === undefined ? undefined : { ...source, eventName } };
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(published));
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "renderer-sha");
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_REF", "refs/heads/renderer");
+    vi.stubEnv("GITHUB_EVENT_NAME", "push");
+    await regenerateRunnerDashboard({ bundle: root });
+    const regenerated = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(regenerated.source).toEqual({ ...source, eventName: eventName ?? null });
+    expect(regenerated.results).toEqual(campaign.results.map((entry) => ({ ...entry, evidenceValid: true, evidenceErrors: [] })));
+    expect(regenerated.generatedAt).toBe(campaign.generatedAt);
+  });
+
   it("retains incomplete journeys in campaign, suite and history without marking them green", () => {
     const execution = runnerMatrix.find(e => e.suite.id === "first-task")!;
     const incomplete: RunnerE2EResult = {
