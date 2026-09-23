@@ -9,6 +9,10 @@ on:
         description: "Branch in paperclipai/paperclip to test; the trusted workflow still runs from master"
         type: string
         required: false
+      max_parallel:
+        description: "Optional lower concurrency for this campaign (cannot exceed the configured limit)"
+        type: string
+        required: false
       all:
         description: "Run the complete paid matrix when no narrower selector is supplied"
         type: boolean
@@ -286,6 +290,7 @@ jobs:
           SELECT_ID: ${{ inputs.id }}
           MAX_PARALLEL: ${{ vars.RUNNER_E2E_MAX_PARALLEL || needs.authorize.outputs.max_parallel_default }}
           MAX_PARALLEL_LIMIT: ${{ needs.authorize.outputs.max_parallel_limit }}
+          REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}
         run: |
           set -euo pipefail
           args=(--matrix-json)
@@ -345,6 +350,13 @@ jobs:
           if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
             echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 1 through $MAX_PARALLEL_LIMIT for the selected runner." >&2
             exit 1
+          fi
+          if [ -n "${REQUESTED_MAX_PARALLEL:-}" ]; then
+            if ! [[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL" ]; then
+              echo "max_parallel must be an integer from 1 through the configured campaign limit." >&2
+              exit 1
+            fi
+            MAX_PARALLEL="$REQUESTED_MAX_PARALLEL"
           fi
           echo "max_parallel=$MAX_PARALLEL" >> "$GITHUB_OUTPUT"
 

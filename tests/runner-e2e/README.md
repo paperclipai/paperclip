@@ -1011,4 +1011,6 @@ credential name is `XAI_API_KEY`. The Grok `build-revise` cells prepare the same
 pinned Python artifact verifier used by Everyday Workflows, before credentials
 are exposed. With `RUNNER_E2E_AWS_ENABLED=true`, the controller, browser and
 artifact verifier run on the existing EC2 fleet; no developer laptop Docker
-service is required. Keep subscription qualification separate from API-key results.
+service is required. Set the optional `max_parallel` dispatch input to `1` for
+keys with low request limits. It can only lower the configured campaign limit.
+Keep subscription qualification separate from API-key results.
