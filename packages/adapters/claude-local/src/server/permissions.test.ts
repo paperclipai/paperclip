@@ -7,6 +7,9 @@ const SANDBOX_ALLOWED_TOOLS =
   "NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill " +
   "TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write";
 
+const NON_INFRA_DENIED_TOOLS = "mcp__*__exec Bash(rm -rf *)";
+const NON_INFRA_WITHOUT_SSH_DENIED_TOOLS = `${NON_INFRA_DENIED_TOOLS} Bash(ssh *)`;
+
 describe("claude-local remote permission args", () => {
   it("uses the canonical Bash tool grant for remote execution", () => {
     expect(buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: true, targetIsRemote: true })).toEqual([
@@ -37,14 +40,71 @@ describe("claude-local remote permission args", () => {
     expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: true })).toEqual([]);
   });
 
-  it("uses dangerously-skip-permissions for non-root local execution", () => {
+  it("adds the deny-first tool list for a non-infra local role without an SSH mandate", () => {
+    expect(
+      buildClaudeExecutionPermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 1000,
+        agentRole: "qa",
+      }),
+    ).toEqual([
+      "--dangerously-skip-permissions",
+      "--disallowedTools",
+      NON_INFRA_WITHOUT_SSH_DENIED_TOOLS,
+    ]);
+  });
+
+  it("keeps SSH available to non-infra local roles with an ADR-0029 SSH mandate", () => {
+    expect(
+      buildClaudeExecutionPermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 1000,
+        agentRole: "engineer",
+      }),
+    ).toEqual([
+      "--dangerously-skip-permissions",
+      "--disallowedTools",
+      NON_INFRA_DENIED_TOOLS,
+    ]);
+  });
+
+  it("keeps the local infrastructure role on the existing permission path", () => {
+    expect(
+      buildClaudeExecutionPermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 1000,
+        agentRole: "cto",
+      }),
+    ).toEqual(["--dangerously-skip-permissions"]);
+  });
+
+  it("fails safe when the local role is absent or unknown", () => {
     expect(
       buildClaudeExecutionPermissionArgs({
         dangerouslySkipPermissions: true,
         targetIsRemote: false,
         localProcessUid: 1000,
       }),
-    ).toEqual(["--dangerously-skip-permissions"]);
+    ).toEqual([
+      "--dangerously-skip-permissions",
+      "--disallowedTools",
+      NON_INFRA_WITHOUT_SSH_DENIED_TOOLS,
+    ]);
+    expect(
+      buildClaudeExecutionPermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 1000,
+        agentRole: "custom-role",
+      }),
+    ).toEqual([
+      "--dangerously-skip-permissions",
+      "--disallowedTools",
+      NON_INFRA_WITHOUT_SSH_DENIED_TOOLS,
+    ]);
   });
 
   it("uses dangerously-skip-permissions for non-root local probes", () => {
