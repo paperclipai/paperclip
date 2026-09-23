@@ -46,8 +46,8 @@ describe("runner E2E report aggregation", () => {
       env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]) },
     });
     const markdown = await readFile(path.join(output, "summary.md"), "utf8");
-    expect(markdown).toContain(`Tokens: ${tokens}`);
-    expect(markdown).toContain(`Provider-reported LLM cost: ${cost}`);
+    expect(markdown.split("\n").find((line) => line.startsWith("Tokens: "))).toBe(`Tokens: ${tokens}`);
+    expect(markdown.split("\n").find((line) => line.startsWith("Provider-reported LLM cost: "))).toBe(`Provider-reported LLM cost: ${cost}`);
     const dashboard = await readFile(path.join(output, "index.html"), "utf8");
     expect(dashboard).toContain(`<strong>${htmlTokens}</strong><span>Input tokens</span>`);
     if (usage === null) {
