@@ -49305,32 +49305,42 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       retryAfter: 30,
     });
 
-    await service.processPendingDeliveries();
-    expect(transportAttempts).toHaveBeenCalledTimes(1);
-    const [deferred] = await db
-      .select()
-      .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.endpointId, endpoint.id),
-          eq(chatActions.kind, "slash_task_start"),
-        ),
-      );
-    expect(deferred).toMatchObject({
-      status: "queued",
-      result: {
-        code: "slash_task_retry",
-        retryable: true,
-        attemptCount: 1,
-        retryAt: expect.any(String),
-      },
-    });
-    expect(
-      new Date(String(deferred!.result?.retryAt)).getTime(),
-    ).toBeGreaterThan(Date.now() + 25_000);
+    // Freeze Date while the rate limit is received; database work may take time.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const rateLimitAt = Date.now();
+    let deferred: typeof chatActions.$inferSelect | undefined;
+    try {
+      await service.processPendingDeliveries();
+      expect(transportAttempts).toHaveBeenCalledTimes(1);
+      [deferred] = await db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.endpointId, endpoint.id),
+            eq(chatActions.kind, "slash_task_start"),
+          ),
+        );
+      expect(deferred).toMatchObject({
+        status: "queued",
+        result: {
+          code: "slash_task_retry",
+          retryable: true,
+          attemptCount: 1,
+          retryAt: expect.any(String),
+        },
+      });
+      const retryAt = Date.parse(String(deferred!.result?.retryAt));
+      expect(retryAt).toBe(rateLimitAt + 30_000);
 
-    await service.processPendingDeliveries();
-    expect(transportAttempts).toHaveBeenCalledTimes(1);
+      // The former Date.now() + 25s check would fail after this 6s shift.
+      vi.setSystemTime(rateLimitAt + 6_000);
+      expect(retryAt - Date.now()).toBe(24_000);
+      await service.processPendingDeliveries();
+      expect(transportAttempts).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
     await db
       .update(chatActions)
       .set({
