@@ -2923,15 +2923,16 @@ function renderApiAccessNote(env: Record<string, string>): string {
   const lines = [
     "Paperclip API access note:",
     "Use terminal commands with curl to make Paperclip API requests.",
+    "Never pass the credential as a command-line argument: process arguments are world-readable (/proc/<pid>/cmdline, `ps -ww -eo args`), so a token in an argument is exposed to every process on this host for the lifetime of the call. Feed the auth header to curl on stdin with `-H @-` instead -- printf is a shell builtin, so the value never lands in any process's arguments. The skill ships ready-made helpers: `skills/paperclip/scripts/paperclip-api.sh` (pc_api) and `paperclip-api.py`.",
     "Normalize the base URL before adding API paths:",
     `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
     "GET example:",
-    `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_BASE/api/agents/me"`,
+    `  printf 'Authorization: Bearer %s' "$PAPERCLIP_API_KEY" | curl -s -H @- "$PAPERCLIP_API_BASE/api/agents/me"`,
   ];
   if (env.PAPERCLIP_TASK_ID) {
     lines.push(
-      "Scoped issue comment example:",
-      `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments"`,
+      "Scoped issue comment example (only the token goes through stdin; ids and bodies are not secrets):",
+      `  printf 'Authorization: Bearer %s' "$PAPERCLIP_API_KEY" | curl -s -H @- -X POST -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments"`,
     );
   } else {
     lines.push("Use a real issue id from the current context before making issue write requests.");

@@ -1047,15 +1047,16 @@ pnpm --filter @paperclipai/paperclip-runner trace:standalone -- \
 
 First real Paperclip tracer and inspection (against an isolated local dev
 instance with the five `PAPERCLIP_*` identifiers/auth variables already set):
+Use Bash for the process substitution in the curl command.
 
-```sh
+```bash
 pnpm --filter @paperclipai/paperclip-runner trace:standalone -- \
   --target paperclip --scenario happy-path
 
 PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
 PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
 curl -fsS \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H @<(printf 'Authorization: Bearer %s' "$PAPERCLIP_API_KEY") \
   "$PAPERCLIP_API_BASE/api/heartbeat-runs/$PAPERCLIP_RUN_ID/events?after=0&limit=200" \
   | jq '[.[] | select(.sourceEventId != null)] | {count: length, events: map({sourceSeq, sourceEventId, eventType})}'
 ```
