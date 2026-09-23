@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -20,6 +20,8 @@ import {
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
+  MAX_ENV_STRING_VALUE_BYTES,
+  normalizePaperclipWakePayload,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -3073,6 +3075,58 @@ describe("wake payload exec-string limit", () => {
     );
     expect(description.payloadTruncated.issueDescriptionOmitted).toBe(true);
     expect(description.payloadTruncated.objectiveOmitted).toBe(false);
+  });
+
+  it("leaves room for the variable name and the terminator at the hard ceiling", () => {
+    // The kernel counts `NAME=` and the NUL against MAX_ARG_STRLEN, so a ceiling
+    // set to the limit itself leaves no margin and the bound is defeatable at
+    // exactly the size it is meant to prevent.
+    const name = "PAPERCLIP_WAKE_PAYLOAD_JSON=";
+    const overhead = Buffer.byteLength(name, "utf8") + 1;
+
+    expect(overhead).toBeLessThanOrEqual(
+      MAX_ARG_STRLEN - MAX_ENV_STRING_VALUE_BYTES,
+    );
+  });
+
+  it("reduces a payload that sits exactly on the kernel limit", () => {
+    // This is the case that slipped through: a copy exactly the size of
+    // `MAX_ARG_STRLEN` counted as fitting, and then `NAME=` plus the NUL pushed
+    // the environment entry over the edge. The kernel is the authority on the
+    // limit, not arithmetic over it, so the check is a real spawn.
+    const name = "PAPERCLIP_WAKE_PAYLOAD_JSON";
+    const build = (objectiveLength: number) => ({
+      reason: "issue_commented",
+      executionContinuation: {
+        ...longThread(0).executionContinuation,
+        objective: "o".repeat(objectiveLength),
+      },
+      issue: { ...longThread(0).issue, description: null },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+    const serializedLength = (payload: unknown) =>
+      Buffer.byteLength(
+        JSON.stringify(normalizePaperclipWakePayload(payload)),
+        "utf8",
+      );
+    const payload = build(MAX_ARG_STRLEN - serializedLength(build(0)));
+    expect(serializedLength(payload)).toBe(MAX_ARG_STRLEN);
+
+    const serialized = stringifyPaperclipWakePayload(payload, {
+      maxBytes: Number.MAX_VALUE,
+    });
+    expect(serialized).not.toBeNull();
+    expect(
+      Buffer.byteLength(`${name}=${serialized}`, "utf8") + 1,
+    ).toBeLessThan(MAX_ARG_STRLEN);
+
+    const child = spawnSync(process.execPath, ["-e", "0"], {
+      env: { ...process.env, [name]: serialized! },
+    });
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
   });
 
   it("clamps a caller budget that would let the string pass the hard ceiling", () => {

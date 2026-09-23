@@ -1964,13 +1964,18 @@ export function normalizePaperclipWakePayload(
  */
 export const MAX_PAPERCLIP_WAKE_PAYLOAD_BYTES = 96 * 1024;
 
+/** `MAX_ARG_STRLEN`: 32 x `PAGE_SIZE` on a 4 KiB page host. */
+const MAX_ARG_STRLEN_BYTES = 131_072;
+
 /**
  * The kernel counts the `NAME=` prefix and the terminating NUL against
- * `MAX_ARG_STRLEN`, and the caller chooses the variable name, so the value
- * budget stays a margin below the limit. A caller may lower the budget but
- * never raise it past this.
+ * `MAX_ARG_STRLEN`, so a value the size of the limit itself still fails `execve`
+ * once it is placed in the environment. Reserve room for a generous variable
+ * name on top of both. A caller may lower the budget but never raise it past this.
  */
-const MAX_ENV_STRING_VALUE_BYTES = 128 * 1024;
+const ENV_ENTRY_OVERHEAD_BYTES = 64;
+export const MAX_ENV_STRING_VALUE_BYTES =
+  MAX_ARG_STRLEN_BYTES - ENV_ENTRY_OVERHEAD_BYTES;
 
 function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
