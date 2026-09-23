@@ -12,15 +12,14 @@ import { getTelemetryClient } from "../telemetry.js";
 type ToolConnectionRow = typeof toolConnections.$inferSelect;
 type ToolInvocationRow = typeof toolInvocations.$inferSelect;
 
-export type ConnectorSetupFlow = "gallery" | "api" | "example" | "composio_sync";
+export type ConnectorSetupFlow = "gallery" | "api" | "example";
 export type ConnectorChangeSource =
   | "api"
   | "gallery"
   | "oauth_callback"
   | "credential_refresh"
   | "archive"
-  | "example"
-  | "composio_sync";
+  | "example";
 
 /**
  * Terminal `tool_invocations.status` values. `pending`, `authorized`,

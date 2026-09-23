@@ -159,7 +159,7 @@ export function trackConnectionCreated(
     connector_key: RawDimension<"custom">;
     transport: RawDimension<"mcp_remote" | "rest_api" | "local_stdio">;
     auth_kind: RawDimension<"oauth" | "api_key" | "none">;
-    setup_flow: RawDimension<"gallery" | "api" | "example" | "composio_sync">;
+    setup_flow: RawDimension<"gallery" | "api" | "example">;
     status: RawDimension<"draft" | "active" | "disabled" | "archived">;
     enabled: boolean;
   },
@@ -184,7 +184,6 @@ export function trackConnectionUpdated(
       | "credential_refresh"
       | "archive"
       | "example"
-      | "composio_sync"
     >;
     previous_status: RawDimension<"draft" | "active" | "disabled" | "archived">;
     status: RawDimension<"draft" | "active" | "disabled" | "archived">;

@@ -14883,6 +14883,10 @@ export function toolAccessService(
       stateRow.connectionId,
       stateRow.companyId,
     );
+    const preCloudCallbackLifecycle = {
+      status: connection.status,
+      enabled: connection.enabled,
+    };
     // The connection lifecycle, not the incidental presence of its app profile,
     // distinguishes setup from reauthorization. New connections and connections
     // revived after removal are drafts until this callback completes. A profile
@@ -15244,6 +15248,10 @@ export function toolAccessService(
           .where(eq(issueThreadInteractions.id, stateRow.interactionId));
       }
     });
+    // The transaction above committed the connection's lifecycle write; a
+    // Paperclip Cloud connector callback is the managed variant of an OAuth
+    // callback completion.
+    emitConnectionUpdated(connection, preCloudCallbackLifecycle, "oauth_callback");
     if (githubMetadata) {
       const [githubGrant] = await db
         .select({ id: connectionGrants.id })
@@ -16155,6 +16163,10 @@ export function toolAccessService(
     if (requestingAgentId)
       await assertAgentsInCompany(companyId, [requestingAgentId]);
     let connection = await getConnectionRow(connectionId, companyId);
+    const preFinalizeLifecycle = {
+      status: connection.status,
+      enabled: connection.enabled,
+    };
     if (connection.authKind !== "oauth")
       throw badRequest("This connection does not use browser sign-in");
     if (connection.status === "archived")
@@ -16464,6 +16476,12 @@ export function toolAccessService(
       for (const secretId of personalSecretIds) await secrets.remove(secretId);
     }
 
+    // Both identity branches above commit their own lifecycle write (draft ->
+    // active) before `finishGalleryAppConnection` re-reads the row, so that
+    // step alone would never observe this transition. This is the OAuth
+    // access-finalization step of the same gallery setup flow (Apps and inline
+    // task cards both reach it), hence `gallery`.
+    emitConnectionUpdated(connection, preFinalizeLifecycle, "gallery");
     const catalog = await db
       .select()
       .from(toolCatalogEntries)

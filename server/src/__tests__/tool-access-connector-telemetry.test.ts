@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   companies,
+  companyMemberships,
   companySecretBindings,
   companySecretVersions,
   companySecrets,
@@ -12,12 +16,12 @@ import {
   secretAccessEvents,
   toolApplications,
   toolCatalogEntries,
+  toolConnectionInstalls,
   toolConnections,
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
 } from "@paperclipai/db";
-import type { ComposioClient } from "../services/composio.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -31,6 +35,7 @@ vi.mock("../telemetry.js", () => ({
 
 const { toolAccessService } = await import("../services/tool-access.js");
 const { secretService } = await import("../services/secrets.js");
+const { instanceSettingsService } = await import("../services/instance-settings.js");
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -48,7 +53,7 @@ function updatedEvents() {
 }
 
 async function createCompany(db: Db) {
-  return db
+  const company = await db
     .insert(companies)
     .values({
       name: `Lifecycle telemetry ${randomUUID()}`,
@@ -56,16 +61,66 @@ async function createCompany(db: Db) {
     })
     .returning()
     .then((rows) => rows[0]!);
+  await db.insert(companyMemberships).values({
+    companyId: company.id,
+    principalType: "user",
+    principalId: actor.actorId,
+    status: "active",
+    membershipRole: "admin",
+  });
+  return company;
 }
 
-async function createComposioParentAndChild(db: Db, companyId: string) {
-  const secrets = secretService(db);
-  const apiKey = await secrets.create(companyId, {
-    name: `Composio test key ${randomUUID().slice(0, 8)}`,
-    key: `tool_app.${randomUUID()}.credentials_apiKey`,
-    provider: "local_encrypted",
-    value: "composio-test-key",
-  });
+const actor = {
+  actorType: "user" as const,
+  actorId: "lifecycle-telemetry-user",
+  actorSource: "local_implicit" as const,
+};
+
+const mcpTool = (name: string) => ({
+  name,
+  description: name,
+  inputSchema: { type: "object", properties: {} },
+  annotations: { readOnlyHint: true },
+});
+
+/**
+ * Minimal remote MCP server: answers initialize, the initialized notification,
+ * and tools/list. Mirrors the fixture the remote-connector lifecycle tests use
+ * so the direct Composio MCP path here is the real gallery path, not a stub.
+ */
+function remoteMcpFixture() {
+  const requests: { url: string; headers: Headers }[] = [];
+  const remoteHttpRequest = async (url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as { id: number; method: string };
+    requests.push({ url, headers: new Headers(init.headers) });
+    if (body.method === "initialize") {
+      return Response.json(
+        {
+          id: body.id,
+          jsonrpc: "2.0",
+          result: { protocolVersion: "2025-06-18", capabilities: {} },
+        },
+        { headers: { "Mcp-Session-Id": "session" } },
+      );
+    }
+    if (body.method === "notifications/initialized")
+      return new Response(null, { status: 202 });
+    return Response.json({
+      id: body.id,
+      jsonrpc: "2.0",
+      result: { tools: [mcpTool("read"), mcpTool("ask")] },
+    });
+  };
+  return { requests, remoteHttpRequest };
+}
+
+/**
+ * Retained legacy broker records (#13758): a `rest_api` parent keyed to the
+ * catalog slug and a `provider: composio` child. Master keeps such rows only
+ * for inspection and explicit removal; they cannot execute or reconnect.
+ */
+async function insertRetiredComposioRecords(db: Db, companyId: string) {
   const [application] = await db
     .insert(toolApplications)
     .values({ companyId, name: "Composio", type: "rest_api", status: "active" })
@@ -75,7 +130,7 @@ async function createComposioParentAndChild(db: Db, companyId: string) {
     .values({
       companyId,
       applicationId: application!.id,
-      name: "Composio",
+      name: "Composio (legacy broker)",
       uid: `composio/${randomUUID()}`,
       transport: "rest_api",
       authKind: "api_key",
@@ -83,34 +138,8 @@ async function createComposioParentAndChild(db: Db, companyId: string) {
       enabled: true,
       config: { sourceTemplateKey: "composio" },
       transportConfig: { sourceTemplateKey: "composio" },
-      credentialRefs: [
-        {
-          name: "credentials.apiKey",
-          secretId: apiKey.id,
-          version: "latest",
-          placement: "header",
-          key: "x-api-key",
-          prefix: null,
-        },
-      ],
-      credentialSecretRefs: [
-        {
-          secretId: apiKey.id,
-          versionSelector: "latest",
-          configPath: "credentials.apiKey",
-          required: true,
-          label: "Composio API key",
-        },
-      ],
     })
     .returning();
-  await db.insert(companySecretBindings).values({
-    companyId,
-    secretId: apiKey.id,
-    targetType: "tool_connection",
-    targetId: parent!.id,
-    configPath: "credentials.apiKey",
-  });
   const [child] = await db
     .insert(toolConnections)
     .values({
@@ -134,55 +163,22 @@ async function createComposioParentAndChild(db: Db, companyId: string) {
   return { parent: parent!, child: child! };
 }
 
-function fakeComposioClient(accountStatus: () => string): ComposioClient {
-  return {
-    validateApiKey: vi.fn(async () => undefined),
-    listToolkits: vi.fn(async () => ({
-      items: [{ slug: "github", name: "GitHub" }],
-    })),
-    listAuthConfigs: vi.fn(async () => ({ items: [] })),
-    createConnectLink: vi.fn(async () => ({
-      link_token: "link",
-      redirect_url: "https://composio.test/link",
-      expires_at: new Date().toISOString(),
-    })),
-    listConnectedAccounts: vi.fn(async () => ({
-      items: [
-        {
-          id: "account-github",
-          user_id: "paperclip:test",
-          status: accountStatus(),
-          toolkit: { slug: "github" },
-          auth_config: {
-            id: "auth-github",
-            auth_scheme: "OAUTH2",
-            is_composio_managed: true,
-          },
-        },
-      ],
-    })),
-    deleteConnectedAccount: vi.fn(async () => undefined),
-    createSession: vi.fn(async () => ({
-      session_id: "session",
-      mcp: { url: "https://composio.test/mcp" },
-    })),
-    resumeSession: vi.fn(async () => ({
-      session_id: "session",
-      mcp: { url: "https://composio.test/mcp" },
-    })),
-  } as unknown as ComposioClient;
-}
-
 describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
   let db!: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null =
     null;
+  let keyDir: string | null = null;
 
   beforeAll(async () => {
+    keyDir = await mkdtemp(join(tmpdir(), "lifecycle-telemetry-secrets-"));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(keyDir, "key"));
     tempDb = await startEmbeddedPostgresTestDatabase(
       "paperclip-lifecycle-telemetry-",
     );
     db = createDb(tempDb.connectionString);
+    await instanceSettingsService(db).updateExperimental({
+      enableMcpAggregators: true,
+    });
   }, 30_000);
 
   afterEach(async () => {
@@ -193,17 +189,21 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
     await db.delete(toolProfiles);
     await db.delete(toolCatalogEntries);
     await db.delete(connectionGrants);
+    await db.delete(toolConnectionInstalls);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    vi.unstubAllEnvs();
+    if (keyDir) await rm(keyDir, { recursive: true, force: true });
   });
 
   function service(options: Parameters<typeof toolAccessService>[1] = {}) {
@@ -263,119 +263,231 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
     expect(updatedEvents()).toHaveLength(0);
   }, 30_000);
 
-  it("composio parent pause emits child transitions from committed rows and stays silent on the no-op repeat", async () => {
+  it("direct Composio MCP setup from the gallery emits catalog identity only, never the session URL", async () => {
     const company = await createCompany(db);
-    const { parent, child } = await createComposioParentAndChild(db, company.id);
+    const remote = remoteMcpFixture();
     const svc = service({
-      composioClientFactory: () => fakeComposioClient(() => "ACTIVE"),
+      deploymentMode: "local_trusted",
+      deploymentExposure: "private",
+      remoteHttpRequest: remote.remoteHttpRequest,
     });
-
-    await svc.updateConnection(parent.id, { enabled: false });
-    let events = updatedEvents();
-    // Parent transition (api) + child cascade (composio_sync).
-    expect(events).toHaveLength(2);
-    const childEvent = events.find(
-      ([, dims]) => (dims as { change_source: string }).change_source === "composio_sync",
-    );
-    expect(childEvent?.[1]).toMatchObject({
-      connector_key: "custom",
-      previous_enabled: true,
-      enabled: false,
-    });
-    await expect(
-      db.select().from(toolConnections).then((rows) =>
-        rows.find((row) => row.id === child.id),
-      ),
-    ).resolves.toMatchObject({ enabled: false });
-
-    track.mockClear();
-    await svc.updateConnection(parent.id, { enabled: false });
-    // Parent and child both already disabled: nothing changed, nothing emits.
-    expect(updatedEvents()).toHaveLength(0);
-  }, 30_000);
-
-  it("a child deleted between listing and write produces no event", async () => {
-    const company = await createCompany(db);
-    const { parent, child } = await createComposioParentAndChild(db, company.id);
-    const svc = service({
-      composioClientFactory: () => fakeComposioClient(() => "ACTIVE"),
-      beforeComposioChildLifecycleWrite: async (childId) => {
-        await db.delete(toolConnections).where(eq(toolConnections.id, childId));
+    // The same server path the Apps gallery and inline task cards call
+    // (POST /companies/:companyId/tools/apps/connect): Composio Connect with an
+    // externally configured MCP session URL.
+    const connected = await svc.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "composio",
+        connectionMethodKey: "mcp",
+        link: "https://mcp.composio.dev/session/fixture?token=fixture-secret",
+        authMode: "none",
       },
-    });
-
-    await svc.updateConnection(parent.id, { enabled: false });
-    const events = updatedEvents();
-    // Only the parent's own committed transition may report.
-    expect(events).toHaveLength(1);
-    expect(
-      events.every(
-        ([, dims]) =>
-          (dims as { change_source: string }).change_source !== "composio_sync",
-      ),
-    ).toBe(true);
-    const remaining = await db.select().from(toolConnections);
-    expect(remaining.find((row) => row.id === child.id)).toBeUndefined();
-  }, 30_000);
-
-  it("a failed child lifecycle write emits nothing for that child", async () => {
-    const company = await createCompany(db);
-    const { parent } = await createComposioParentAndChild(db, company.id);
-    const svc = service({
-      composioClientFactory: () => fakeComposioClient(() => "ACTIVE"),
-      beforeComposioChildLifecycleWrite: async () => {
-        throw new Error("forced child write failure");
-      },
-    });
-
-    await expect(
-      svc.updateConnection(parent.id, { enabled: false }),
-    ).rejects.toThrow(/forced child write failure/);
-    expect(
-      updatedEvents().filter(
-        ([, dims]) =>
-          (dims as { change_source: string }).change_source === "composio_sync",
-      ),
-    ).toHaveLength(0);
-  }, 30_000);
-
-  it("restore emits only for children whose committed enabled state changed", async () => {
-    const company = await createCompany(db);
-    const { parent, child } = await createComposioParentAndChild(db, company.id);
-    let accountStatus = "ACTIVE";
-    const svc = service({
-      composioClientFactory: () => fakeComposioClient(() => accountStatus),
-    });
-
-    await svc.updateConnection(parent.id, { enabled: false });
-    track.mockClear();
-
-    // Inactive account: the child stays disabled, so no transition may report.
-    accountStatus = "INACTIVE";
-    await svc.updateConnection(parent.id, { enabled: true });
-    expect(
-      updatedEvents().filter(
-        ([, dims]) =>
-          (dims as { change_source: string }).change_source === "composio_sync",
-      ),
-    ).toHaveLength(0);
-
-    track.mockClear();
-    accountStatus = "ACTIVE";
-    await svc.updateConnection(parent.id, { enabled: true });
-    const events = updatedEvents().filter(
-      ([, dims]) =>
-        (dims as { change_source: string }).change_source === "composio_sync",
+      actor,
     );
-    expect(events).toHaveLength(1);
-    expect(events[0]?.[1]).toMatchObject({
+    expect(remote.requests.length).toBeGreaterThan(0);
+    const created = createdEvents();
+    expect(created).toHaveLength(1);
+    expect(created[0]?.[1]).toMatchObject({
+      connector_key: "composio",
+      transport: "mcp_remote",
+      auth_kind: "none",
+      setup_flow: "gallery",
+      status: connected.connection.status,
+      enabled: connected.connection.enabled,
+    });
+    expect(JSON.stringify(track.mock.calls)).not.toContain("fixture-secret");
+    expect(JSON.stringify(track.mock.calls)).not.toContain("mcp.composio.dev");
+
+    track.mockClear();
+    const finished = await svc.finishGalleryAppConnection(
+      company.id,
+      connected.connectionId,
+      {
+        enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id),
+        askFirstCatalogEntryIds: [],
+        access: "all_agents",
+      },
+      actor,
+    );
+    // Connect commits a draft; the finish step is the committed draft -> active
+    // transition, so it is the one `gallery` update this setup reports.
+    expect(connected.connection).toMatchObject({ status: "draft", enabled: false });
+    expect(finished.connection).toMatchObject({ status: "active", enabled: true });
+    const updated = updatedEvents();
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.[1]).toMatchObject({
+      connector_key: "composio",
+      transport: "mcp_remote",
+      change_source: "gallery",
+      previous_status: "draft",
+      status: "active",
       previous_enabled: false,
       enabled: true,
     });
-    await expect(
-      db.select().from(toolConnections).then((rows) =>
-        rows.find((row) => row.id === child.id),
-      ),
-    ).resolves.toMatchObject({ enabled: true });
+    expect(createdEvents()).toHaveLength(0);
+  }, 30_000);
+
+  it("pausing and resuming a direct Composio MCP connection reports api transitions with the catalog key", async () => {
+    const company = await createCompany(db);
+    const remote = remoteMcpFixture();
+    const svc = service({
+      deploymentMode: "local_trusted",
+      deploymentExposure: "private",
+      remoteHttpRequest: remote.remoteHttpRequest,
+    });
+    const connected = await svc.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "composio",
+        connectionMethodKey: "mcp",
+        link: "https://mcp.composio.dev/session/fixture?token=fixture-secret",
+        authMode: "none",
+      },
+      actor,
+    );
+    await svc.finishGalleryAppConnection(
+      company.id,
+      connected.connectionId,
+      {
+        enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id),
+        askFirstCatalogEntryIds: [],
+        access: "all_agents",
+      },
+      actor,
+    );
+    track.mockClear();
+
+    await svc.updateConnection(connected.connectionId, { enabled: false });
+    await svc.updateConnection(connected.connectionId, { enabled: true });
+    const updated = updatedEvents();
+    expect(updated).toHaveLength(2);
+    expect(updated.map(([, dims]) => dims)).toEqual([
+      expect.objectContaining({
+        connector_key: "composio",
+        transport: "mcp_remote",
+        change_source: "api",
+        previous_enabled: true,
+        enabled: false,
+      }),
+      expect.objectContaining({
+        connector_key: "composio",
+        change_source: "api",
+        previous_enabled: false,
+        enabled: true,
+      }),
+    ]);
+    // No per-app child rows exist for direct MCP, so nothing else cascades.
+    expect(createdEvents()).toHaveLength(0);
+  }, 30_000);
+
+  it("finalizing OAuth access reports the committed draft -> active transition as a gallery step", async () => {
+    // Direct MCP aggregator OAuth (Composio Connect via DCR) from the Apps
+    // gallery or an inline task card: the callback stores a personal grant,
+    // then finalizeOAuthAccess — POST .../apps/:id/finalize-oauth-access, also
+    // called by connection-intent completion — activates the draft row itself
+    // before handing off to the finish step.
+    const company = await createCompany(db);
+    const svc = service();
+    const [application] = await db
+      .insert(toolApplications)
+      .values({ companyId: company.id, name: "Composio", type: "mcp_remote", status: "active" })
+      .returning();
+    const [connection] = await db
+      .insert(toolConnections)
+      .values({
+        companyId: company.id,
+        applicationId: application!.id,
+        name: "Composio",
+        uid: `composio/${randomUUID()}`,
+        transport: "mcp_remote",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "draft",
+        enabled: false,
+        config: {
+          sourceTemplateKey: "composio",
+          connectionMethodKey: "mcp",
+          url: "https://connect.composio.dev/mcp",
+        },
+        transportConfig: { url: "https://connect.composio.dev/mcp" },
+      })
+      .returning();
+    const accessToken = await secretService(db).create(company.id, {
+      name: `OAuth access token ${randomUUID().slice(0, 8)}`,
+      key: `tool_app.${randomUUID()}.oauth_access_token`,
+      provider: "local_encrypted",
+      value: "fixture-access-token",
+    });
+    await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection!.id,
+      kind: "user",
+      subjectUserId: actor.actorId,
+      status: "active",
+      credentialSecretRefs: [
+        {
+          secretId: accessToken.id,
+          versionSelector: "latest",
+          configPath: "oauth.access_token",
+          required: true,
+          label: "OAuth access token",
+        },
+      ],
+    });
+    track.mockClear();
+
+    const finished = await svc.finalizeOAuthAccess(
+      company.id,
+      connection!.id,
+      { grantKind: "user" },
+      actor,
+    );
+    expect(finished.connection).toMatchObject({ status: "active", enabled: true });
+    const updated = updatedEvents();
+    // Exactly one transition: finalize's own write. The finish step it calls
+    // afterwards re-reads an already-active row and stays silent.
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.[1]).toMatchObject({
+      connector_key: "composio",
+      transport: "mcp_remote",
+      auth_kind: "oauth",
+      change_source: "gallery",
+      previous_status: "draft",
+      status: "active",
+      previous_enabled: false,
+      enabled: true,
+    });
+    expect(createdEvents()).toHaveLength(0);
+    expect(JSON.stringify(track.mock.calls)).not.toContain("fixture-access-token");
+  }, 30_000);
+
+  it("retained legacy broker records emit only their explicit removal, distinguishable by transport", async () => {
+    const company = await createCompany(db);
+    const { parent, child } = await insertRetiredComposioRecords(db, company.id);
+    const svc = service();
+    track.mockClear();
+
+    await svc.archiveConnection(parent.id);
+    await svc.archiveConnection(child.id);
+    const updated = updatedEvents();
+    expect(updated).toHaveLength(2);
+    expect(updated[0]?.[1]).toMatchObject({
+      // Legacy parent: catalog slug survives, but `rest_api` marks it as the
+      // retired broker rather than a direct MCP connection.
+      connector_key: "composio",
+      transport: "rest_api",
+      change_source: "archive",
+      status: "archived",
+    });
+    expect(updated[1]?.[1]).toMatchObject({
+      // Legacy child: no catalog key; the raw toolkit slug never leaves.
+      connector_key: "custom",
+      transport: "mcp_remote",
+      change_source: "archive",
+      status: "archived",
+    });
+    expect(JSON.stringify(track.mock.calls)).not.toContain("github");
+    expect(JSON.stringify(track.mock.calls)).not.toContain("account-github");
+    expect(createdEvents()).toHaveLength(0);
   }, 30_000);
 });
