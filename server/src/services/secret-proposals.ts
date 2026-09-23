@@ -1,5 +1,5 @@
 import { withAgentAppearance } from "@paperclipai/shared";
-import { and, count, desc, eq, gte, inArray, lte, notExists, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, lte, notExists, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -805,7 +805,28 @@ export function createSecretProposalsService(db: Db) {
       }).where(and(eq(companySecretProposals.id, proposalId), eq(companySecretProposals.status, "pending")))
         .returning().then((rows) => rows[0] ?? null);
       if (!updated) throw conflict("Proposal is no longer pending");
-      const dependents = proposal.kind === "secret" && (status === "rejected" || status === "expired" || status === "withdrawn")
+      // A cascade can span several dependents, and an UPDATE takes its row
+      // locks in whatever order the plan returns them. create()'s sibling
+      // supersede locks the same proposals in ascending card id order, so an
+      // unordered cascade and a concurrent create can take one shared pair in
+      // opposite orders and deadlock. Lock the dependents in that same order
+      // first; the update below then finds every row already held here.
+      const dependentIds = proposal.kind === "secret"
+        && (status === "rejected" || status === "expired" || status === "withdrawn")
+        ? (await tx.select({ id: companySecretProposals.id })
+            .from(companySecretProposals)
+            .where(and(
+              eq(companySecretProposals.companyId, companyId),
+              eq(companySecretProposals.status, "pending"),
+              eq(companySecretProposals.secretProposalId, proposal.id),
+            ))
+            // A dependent without a card sorts last: no pass ever locks it
+            // alongside a card, so its place in the sequence is arbitrary.
+            .orderBy(asc(companySecretProposals.interactionId), asc(companySecretProposals.id))
+            .for("update"))
+          .map((row) => row.id)
+        : [];
+      const dependents = dependentIds.length > 0
         ? await tx.update(companySecretProposals).set({
             status: "rejected",
             resolvedByUserId: input.resolvedByUserId ?? null,
@@ -814,11 +835,7 @@ export function createSecretProposalsService(db: Db) {
             valueCiphertext: null,
             ciphertextScrubbedAt: now,
             updatedAt: now,
-          }).where(and(
-            eq(companySecretProposals.companyId, companyId),
-            eq(companySecretProposals.status, "pending"),
-            eq(companySecretProposals.secretProposalId, proposal.id),
-          )).returning()
+          }).where(inArray(companySecretProposals.id, dependentIds)).returning()
         : [];
       const actorType = input.resolvedByUserId ? "user" as const : status === "withdrawn" ? "agent" as const : "system" as const;
       const actorId = input.resolvedByUserId ?? input.proposerAgentId ?? "system";

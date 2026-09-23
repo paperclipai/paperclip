@@ -108,19 +108,29 @@ describeEmbeddedPostgres("secret proposal orphan sweep", () => {
       expiresAt?: Date;
       configPath?: string;
       proposerAgentId?: string;
+      kind?: "secret" | "binding";
+      secretProposalId?: string;
     } = {},
   ) {
     const id = randomUUID();
+    // A secret proposal and a binding proposal carry disjoint fields; the shape
+    // check constraint allows one shape or the other, never a mix.
+    const kind = overrides.kind ?? "binding";
+    const isSecret = kind === "secret";
     await db.insert(companySecretProposals).values({
       id,
       companyId: fixture.companyId,
-      kind: "binding",
+      kind,
+      proposedName: isSecret ? "soak/database-url" : null,
+      proposedKey: isSecret ? "soak-database-url" : null,
+      secretProposalId: isSecret ? null : overrides.secretProposalId ?? null,
       status: "pending",
       justification: "Soak env for the resident runner",
-      secretId: fixture.secretId,
-      targetType: "agent",
-      targetId: overrides.proposerAgentId ?? fixture.agentId,
-      configPath: overrides.configPath ?? "env.THARSIA_DATABASE_URL",
+      // A binding references a secret or a parent proposal, never both.
+      secretId: isSecret || overrides.secretProposalId ? null : fixture.secretId,
+      targetType: isSecret ? null : "agent",
+      targetId: isSecret ? null : overrides.proposerAgentId ?? fixture.agentId,
+      configPath: isSecret ? null : overrides.configPath ?? "env.THARSIA_DATABASE_URL",
       proposedByAgentId: overrides.proposerAgentId ?? fixture.agentId,
       originIssueId: fixture.issueId,
       originRunId: fixture.heartbeatRunId,
@@ -135,12 +145,13 @@ describeEmbeddedPostgres("secret proposal orphan sweep", () => {
     fixture: Awaited<ReturnType<typeof seed>>,
     input: {
       status: string;
+      id?: string;
       proposalId?: string;
       createdAt?: Date;
       prompt?: string;
     },
   ) {
-    const id = randomUUID();
+    const id = input.id ?? randomUUID();
     const linked = input.proposalId
       ? {
           secretProposal: {
@@ -472,6 +483,102 @@ describeEmbeddedPostgres("secret proposal orphan sweep", () => {
     // would adopt it, and the caller would get the pass's *value* instead.
     return { pass };
   }
+
+  // Holds one dependent's proposal and, once the pass is queued behind that
+  // holder, reports which of the other dependents the pass has already taken.
+  // The pass is blocked on the holder's row, so anything it holds beyond that
+  // row it locked before reaching it -- which is the order under test.
+  async function assertPassHoldsNoOtherDependent(
+    holderProposalId: string,
+    otherProposalIds: string[],
+    startPass: () => Promise<unknown>,
+  ) {
+    let resolveHolderPid!: (pid: number) => void;
+    const holderPidReady = new Promise<number>((resolve) => {
+      resolveHolderPid = resolve;
+    });
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM company_secret_proposals WHERE id = ${holderProposalId} FOR UPDATE`);
+      const [backend] = (await tx.execute(sql`SELECT pg_backend_pid() AS pid`)) as unknown as Array<{ pid: number }>;
+      resolveHolderPid(backend.pid);
+      await holderReleased;
+    });
+    const holderPid = await holderPidReady;
+
+    let pass: Promise<unknown> | null = null;
+    const taken: string[] = [];
+    try {
+      pass = startPass();
+      pass.catch(() => {});
+
+      let passQueuedOnTheHolder = false;
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        const rows = (await db.execute(
+          sql`SELECT 1 FROM pg_stat_activity WHERE ${holderPid} = ANY(pg_blocking_pids(pid))`,
+        )) as unknown as Array<unknown>;
+        if (rows[0]) {
+          passQueuedOnTheHolder = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(passQueuedOnTheHolder).toBe(true);
+
+      for (const otherId of otherProposalIds) {
+        const probe = await db
+          .transaction(async (tx) => {
+            await tx.execute(sql`SELECT 1 FROM company_secret_proposals WHERE id = ${otherId} FOR UPDATE NOWAIT`);
+          })
+          .then(() => null)
+          .catch((error: unknown) => error);
+        if (/could not obtain lock/i.test(String((probe as { cause?: unknown })?.cause ?? probe))) {
+          taken.push(otherId);
+        }
+      }
+    } finally {
+      releaseHolder();
+      await holder;
+      if (pass) await Promise.allSettled([pass]);
+    }
+    return { pass, taken };
+  }
+
+  it("cascades to a shared parent's dependents in ascending card id order", async () => {
+    const fixture = await seed();
+    const parentId = await insertProposal(fixture, { kind: "secret", configPath: "env.THARSIA_SOAK_KEY" });
+    // One parent, two binding dependents, one card each. The cards are inserted
+    // highest id first, so the order a plan returns the cascade's rows in is the
+    // reverse of the order this test requires.
+    const higherId = "00000000-0000-4000-8000-00000000c002";
+    const lowerId = "00000000-0000-4000-8000-00000000c001";
+    const higherDependent = await insertProposal(fixture, {
+      secretProposalId: parentId,
+      configPath: "env.THARSIA_MODEL_BASE_URL",
+    });
+    const lowerDependent = await insertProposal(fixture, {
+      secretProposalId: parentId,
+      configPath: "env.THARSIA_NATS_URL",
+    });
+    await insertCard(fixture, { id: higherId, status: "pending", proposalId: higherDependent });
+    await insertCard(fixture, { id: lowerId, status: "pending", proposalId: lowerDependent });
+    const secretProposals = createSecretProposalsService(db as never);
+
+    const { pass, taken } = await assertPassHoldsNoOtherDependent(
+      lowerDependent,
+      [higherDependent],
+      () => secretProposals.transition(fixture.companyId, parentId, "rejected"),
+    );
+
+    expect(taken).toEqual([]);
+    await expect(pass).resolves.toBeDefined();
+    expect(await proposalRow(parentId)).toMatchObject({ status: "rejected" });
+    expect(await proposalRow(higherDependent)).toMatchObject({ status: "rejected" });
+    expect(await proposalRow(lowerDependent)).toMatchObject({ status: "rejected" });
+  });
 
   it("takes the proposal lock before the sibling card lock when a create supersedes", async () => {
     const fixture = await seed();
