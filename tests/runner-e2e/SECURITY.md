@@ -1,6 +1,6 @@
 # Runner E2E security for a public repository
 
-This suite can spend provider money, expose four API credentials to isolated
+This suite can spend provider money, expose selected API credentials to isolated
 test processes, publish a container, retain private visual evidence, and write
 public structured evidence. Treat changes to the workflow, harness, fixture
 prompts, evidence packager, and publisher as security-sensitive production
@@ -64,7 +64,7 @@ rejects mutable tag or branch references.
 ## Secrets and protected environments
 
 Create `runner-e2e-paid`, restrict deployments to the default branch, and put
-only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, and
+only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY`, and
 `DAYTONA_API_KEY` in it. Do not duplicate these credentials as repository- or
 organization-level Actions secrets: environment scoping is the boundary that
 prevents branch or pull-request jobs from requesting them. Require approval
@@ -98,13 +98,18 @@ the actor gate, environment branch restriction, and protected default branch.
 
 ## Runner fleet isolation
 
-When `RUNNER_E2E_AWS_ENABLED=true`, paid matrix cells use the exact RunsOn fleet
+When `RUNNER_E2E_AWS_ENABLED=true`, paid matrix cells, reusable runner builds,
+and Daytona image builds use the exact RunsOn fleet
 selector `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`, matching the AWS
 fleet selected by `pr-trusted.yml` only after its stable numeric-ID trust gate.
 Any other or missing toggle value falls back to the GitHub-hosted
 `ubuntu-latest` runner and its lower concurrency ceiling. The workflow chooses
 between those two reviewed literal labels; it never evaluates a configured
 runner label.
+
+Daytona image builds depend on successful campaign authorization and keep the
+existing GHCR publication and signing permissions. They receive no provider
+credentials and do not enter the `runner-e2e-paid` environment.
 
 Keep both runner targets restricted to `paperclipai/paperclip` and workflows
 that independently authorize trusted source revisions. Never let a fork or
@@ -192,8 +197,8 @@ latest pointers are mutable, and S3 versioning makes those updates recoverable.
 ## Public evidence boundary
 
 CloudFront and GitHub Pages are public. Fixture identifiers, timing, token
-usage, costs, normalized results, allowlisted inert structured per-attempt
-evidence, and trusted runner PNG screenshots are expected public data. Each
+usage, costs, normalized results, and trusted runner PNG screenshots are
+expected public data. Each
 public screenshot must carry the explicit `public-runner-fixture` marker in
 the normalized result. This includes a `failure.png` capture. Screenshot paths
 must be safe PNG basenames and must be tied to the exact normalized execution
@@ -206,8 +211,10 @@ fixed catalog labels and sanitized numeric/status fields. Video, archives,
 generated Playwright/blob/HTML report trees, SVG or other active content,
 credentials, Paperclip homes, databases, workspaces, master keys,
 raw/unredacted logs, unmarked images, and unallowlisted files are not public.
-Allowlisted `.log` copies must pass the existing exact-value/key-shape scan and
-redaction boundary.
+Per-attempt JSON snapshots, result copies, logs, Markdown, and text files stay
+in the retained Actions artifact. Credential redaction does not remove hidden
+reasoning or provider session identities, so a text extension never admits a
+file to the public bundle. Graded results remain in `normalized-results.json`.
 
 The packaged evidence uploaded as a 30-day GitHub Actions artifact has a
 different, broader boundary. Text is exact-value and key-shape scanned and
@@ -220,8 +227,9 @@ capture requires review of the visible page state. Videos remain
 access-controlled.
 
 Before permanent publication, the campaign publisher creates a separate S3
-stage and retains only allowlisted `.json`, `.log`, `.md`, and `.txt` evidence,
-result PNGs with the explicit `public-runner-fixture` marker.
+stage and retains only result PNGs with the explicit `public-runner-fixture`
+marker under `evidence/`. This applies even to malformed JSON and renamed
+process logs. Original packaged evidence and grades remain unchanged.
 It then launches publisher-only Chromium with networking blocked to render one
 `public-images/campaign-summary.png`. That fixed-path PNG is capped at 12 MiB
 and its signature is validated. Per-attempt XML is excluded because browsers

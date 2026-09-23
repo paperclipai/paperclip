@@ -200,6 +200,14 @@ describe("public repository paid workflow security", () => {
       fullStack.indexOf("  daytona_image:"),
       fullStack.indexOf("  build_runner_artifacts:"),
     );
+    expect(daytonaImageJob).toMatch(buildRunnerNeeds);
+    expect(daytonaImageJob).toContain(
+      "runs-on: ${{ needs.authorize.outputs.test_runner }}",
+    );
+    expect(daytonaImageJob).not.toContain("name: runner-e2e-paid");
+    expect(daytonaImageJob).not.toMatch(
+      /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI)_API_KEY/,
+    );
     expect(authorizeJob).toContain(
       "aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'",
     );
@@ -294,12 +302,18 @@ describe("public repository paid workflow security", () => {
     expect(paidExecution).toBeGreaterThan(awsFfmpegInstall);
     expect(paidExecution).toBeGreaterThan(daytonaPluginPreparation);
     expect(paidExecution).toBeGreaterThan(everydayOraclePreparation);
+    const grokPreparation = paidJob.indexOf("- name: Install checksum-verified Grok executable");
+    expect(grokPreparation).toBeGreaterThan(paidInstall);
+    expect(paidExecution).toBeGreaterThan(grokPreparation);
+    expect(paidJob).toContain("if: matrix.environmentId == 'local' && matrix.profileId == 'runner-acpx-grok'");
+    expect(paidJob).toContain("run: node packages/grok-acp/install.mjs");
+
     const everydayOracleStep = paidJob.slice(
       everydayOraclePreparation,
       paidExecution,
     );
     expect(everydayOracleStep).toContain(
-      "if: matrix.suiteId == 'everyday-workflows' && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')",
+      "if: (matrix.suiteId == 'everyday-workflows' || matrix.suiteId == 'grok-qualification') && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')",
     );
     expect(everydayOracleStep).toContain(
       `oracle_image='${everydayOracleImage}'`,
@@ -367,6 +381,10 @@ describe("public repository paid workflow security", () => {
     );
     expect(authorizeJob).toContain('echo "max_parallel_limit=100"');
     expect(fullStack).toContain('[ "$MAX_PARALLEL_LIMIT" -gt 100 ]');
+    expect(fullStack).toContain("REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}");
+    expect(fullStack).toContain('[ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL" ]');
+    expect(fullStack).toContain('[[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]{0,2}$ ]]');
+
     expect(fullStack).toContain(
       '[ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]',
     );
@@ -511,6 +529,7 @@ describe("public repository paid workflow security", () => {
       OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",
       ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",
       OPENROUTER_API_KEY: "matrix.credentialName == 'OPENROUTER_API_KEY'",
+      XAI_API_KEY: "matrix.credentialName == 'XAI_API_KEY'",
       DAYTONA_API_KEY: "matrix.environmentId == 'daytona'",
     })) {
       expect(fullStack).toContain(
@@ -538,7 +557,7 @@ describe("public repository paid workflow security", () => {
       );
       const providerSecretReferences = [
         ...contents.matchAll(
-          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)['"]\])/g,
+          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|DAYTONA_API_KEY)['"]\])/g,
         ),
       ];
       if (providerSecretReferences.length > 0) {

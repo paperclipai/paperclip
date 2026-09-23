@@ -249,10 +249,10 @@ describe("runner E2E campaign history", () => {
       "campaigns/complete-red/public-images/campaign-summary.png",
     );
     expect(index).toContain(
-      "declared screenshots, and sanitized structured evidence",
+      "declared screenshots, and normalized results",
     );
     expect(index).toContain(
-      "Declared screenshots and inert structured evidence",
+      "Declared screenshots and normalized results",
     );
     expect(index).not.toContain("data-gallery-dialog");
     expect(index).not.toContain("Configuration matrix");
@@ -260,6 +260,32 @@ describe("runner E2E campaign history", () => {
 });
 
 describe("historical publication security", () => {
+  it.each([
+    "snapshots/api-state.json", "server.log", "playwright.log", "result.json",
+    "renamed-diagnostic.md", "nested/provider.txt", "malformed.json",
+  ])("withholds raw diagnostic %s even after credential redaction", async (file) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-private-evidence-"));
+    temporaryDirectories.push(root);
+    const relative = `evidence/fixture.local.case/attempt-1/${file}`;
+    const absolute = path.join(root, relative);
+    const text = file === "malformed.json" ? "{malformed PRIVATE_REASONING" : JSON.stringify({
+      apiKey: "[REDACTED]",
+      runEvents: [{ payload: { prpEvent: { payload: {
+        kind: "reasoning", text: "PRIVATE_REASONING", sessionId: "PRIVATE_SESSION",
+      } } } }],
+      runLogs: [{ log: { content: JSON.stringify({ reasoning: "PRIVATE_REASONING" }) } }],
+    });
+    await mkdir(path.dirname(absolute), { recursive: true });
+    await writeFile(absolute, text);
+    expect(isHistoricalBundlePathAllowed(relative)).toBe(false);
+    // A text file cannot be admitted by pretending it is a declared screenshot.
+    expect(isHistoricalBundlePathAllowed(relative, false, new Set([relative]))).toBe(false);
+    await expect(createBundleManifest(root, "private-diagnostics")).rejects.toThrow("non-allowlisted");
+    await prunePrivateHistoryEvidence(root);
+    await expect(readFile(absolute)).rejects.toThrow();
+    expect((await createBundleManifest(root, "private-diagnostics")).files).toEqual([]);
+  });
+
   it("allows public capture only on an issue task route", () => {
     const target = {
       issuePrefix: "PAP",
@@ -379,10 +405,10 @@ describe("historical publication security", () => {
     );
     expect(dashboard).toContain("View gallery · 1");
     expect(dashboard).toContain(
-      "Declared PNG screenshots and sanitized structured evidence are retained with every published campaign",
+      "Declared PNG screenshots and normalized results are retained with every published campaign",
     );
     expect(dashboard).toContain(
-      "Declared screenshots and sanitized structured evidence published",
+      "Declared screenshots and normalized results published",
     );
     await expect(
       readFile(path.join(evidenceDirectory, "final-state.png")),
@@ -404,13 +430,13 @@ describe("historical publication security", () => {
     ).rejects.toThrow();
     await expect(
       readFile(path.join(evidenceDirectory, "result.json"), "utf8"),
-    ).resolves.toBe("{}\n");
+    ).rejects.toThrow();
     await expect(
       readFile(
         path.join(evidenceDirectory, "snapshots", "api-state.json"),
         "utf8",
       ),
-    ).resolves.toBe("{}\n");
+    ).rejects.toThrow();
     expect(
       JSON.parse(
         await readFile(path.join(output, "normalized-results.json"), "utf8"),
@@ -484,7 +510,7 @@ describe("historical publication security", () => {
     }
     await expect(
       readFile(path.join(evidenceDirectory, "server.log"), "utf8"),
-    ).resolves.toBe("sanitized\n");
+    ).rejects.toThrow();
     const summaryHtml = renderPublicCampaignSummary(campaign);
     expect(summaryHtml).toContain(execution.suite.label);
     expect(summaryHtml).not.toContain("PROVIDER_TEXT_MUST_NOT_RENDER");
@@ -747,12 +773,12 @@ describe("historical publication security", () => {
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/result.json",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/snapshots/api-state.json",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(isHistoricalBundlePathAllowed("paperclip-home/database")).toBe(
       false,
     );

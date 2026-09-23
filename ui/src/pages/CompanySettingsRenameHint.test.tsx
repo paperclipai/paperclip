@@ -2,6 +2,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -104,7 +105,9 @@ describe("CompanySettings rename hint", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <CompanySettings />
+            <MemoryRouter>
+              <CompanySettings />
+            </MemoryRouter>
           </TooltipProvider>
         </QueryClientProvider>,
       );

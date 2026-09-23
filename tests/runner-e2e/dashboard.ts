@@ -1104,7 +1104,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <div>
         <p class="eyebrow">Full-stack acceptance campaign</p>
         <h1>${html(input.title)}</h1>
-        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Declared PNG screenshots and sanitized structured evidence are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.</p>
+        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Declared PNG screenshots and normalized results are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.</p>
       </div>
       <div class="report-actions">
         <div class="summary" aria-label="Campaign summary">
@@ -1145,7 +1145,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </section>
     ${suiteSections}
     ${historySection}
-    <footer><span>Generated ${html(input.generatedAt)}</span><span>${catalog.length} catalog executions · Declared screenshots and sanitized structured evidence published</span></footer>
+    <footer><span>Generated ${html(input.generatedAt)}</span><span>${catalog.length} catalog executions · Declared screenshots and normalized results published</span></footer>
   </main>
   <dialog class="gallery-dialog" data-gallery-dialog aria-labelledby="gallery-title">
     <div class="gallery-shell">

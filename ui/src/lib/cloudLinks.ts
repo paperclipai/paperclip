@@ -42,3 +42,14 @@ export function cloudStackEnterUrl(
 export function cloudStackCreateUrl(cloudBaseUrl: string | null | undefined): string | null {
   return cloudAppUrl(cloudBaseUrl, "/stacks/new");
 }
+
+/**
+ * Cloud's organization portfolio in its explicit manage view. `?manage=1`
+ * matters: the plain launchpad auto-forwards a solo user straight back into
+ * their one openable stack, and the caller here has just archived that
+ * stack's only company — bouncing back into it is exactly what the
+ * navigation is escaping.
+ */
+export function cloudPortfolioManageUrl(cloudBaseUrl: string | null | undefined): string | null {
+  return cloudAppUrl(cloudBaseUrl, "/orgs?manage=1");
+}

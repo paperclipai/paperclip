@@ -9,6 +9,10 @@ on:
         description: "Branch in paperclipai/paperclip to test; the trusted workflow still runs from master"
         type: string
         required: false
+      max_parallel:
+        description: "Optional lower concurrency for this campaign (cannot exceed the configured limit)"
+        type: string
+        required: false
       all:
         description: "Run the complete paid matrix when no narrower selector is supplied"
         type: boolean
@@ -286,6 +290,7 @@ jobs:
           SELECT_ID: ${{ inputs.id }}
           MAX_PARALLEL: ${{ vars.RUNNER_E2E_MAX_PARALLEL || needs.authorize.outputs.max_parallel_default }}
           MAX_PARALLEL_LIMIT: ${{ needs.authorize.outputs.max_parallel_limit }}
+          REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}
         run: |
           set -euo pipefail
           args=(--matrix-json)
@@ -346,12 +351,20 @@ jobs:
             echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 1 through $MAX_PARALLEL_LIMIT for the selected runner." >&2
             exit 1
           fi
+          if [ -n "${REQUESTED_MAX_PARALLEL:-}" ]; then
+            if ! [[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]{0,2}$ ]] || [ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL" ]; then
+              echo "max_parallel must be an integer from 1 through the configured campaign limit." >&2
+              exit 1
+            fi
+            MAX_PARALLEL="$REQUESTED_MAX_PARALLEL"
+          fi
           echo "max_parallel=$MAX_PARALLEL" >> "$GITHUB_OUTPUT"
 
   daytona_image:
     name: Publish verified Daytona image
     needs: [authorize, target_lock, catalog]
-    runs-on: ubuntu-latest
+    # Keep image builds on the same authorized fleet as campaign execution.
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -874,6 +887,10 @@ jobs:
         if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth')
         run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
+      - name: Install checksum-verified Grok executable
+        if: matrix.environmentId == 'local' && matrix.profileId == 'runner-acpx-grok'
+        run: node packages/grok-acp/install.mjs
+
       - name: Download immutable campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1024,7 +1041,7 @@ jobs:
           NODE
 
       - name: Prepare pinned Python artifact oracle image
-        if: matrix.suiteId == 'everyday-workflows' && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')
+        if: (matrix.suiteId == 'everyday-workflows' || matrix.suiteId == 'grok-qualification') && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')
         run: |
           set -euo pipefail
           oracle_image='python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285'
@@ -1037,6 +1054,7 @@ jobs:
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
           DAYTONA_API_KEY: ${{ matrix.environmentId == 'daytona' && secrets.DAYTONA_API_KEY || '' }}
           PAPERCLIP_E2E_DAYTONA_IMAGE: ${{ needs.daytona_image.outputs.image }}
           PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: ${{ github.workspace }}/packages/paperclip-runner/provider-pack
