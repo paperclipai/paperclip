@@ -375,7 +375,7 @@ describe("public repository paid workflow security", () => {
     expect(fullStack).toContain('[ "$MAX_PARALLEL_LIMIT" -gt 100 ]');
     expect(fullStack).toContain("REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}");
     expect(fullStack).toContain('[ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL" ]');
-    expect(fullStack).toContain('[[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]]');
+    expect(fullStack).toContain('[[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]{0,2}$ ]]');
 
     expect(fullStack).toContain(
       '[ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]',
