@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { verifyFirefliesWebhook } from "./fireflies-webhook.js";
 
@@ -12,7 +13,28 @@ function signed(value: unknown = payload) {
   };
 }
 
+const publishedV2 = JSON.parse(readFileSync(new URL("../__tests__/fixtures/fireflies-webhooks-v2.json", import.meta.url), "utf8")) as {
+  signingSecret: string;
+  cases: Array<{ example: string; rawBody: string; signature: string }>;
+};
+
 describe("Fireflies V2 webhook", () => {
+  it.each(publishedV2.cases)("accepts the provider's published $example contract and fixed signature", ({ rawBody, signature }) => {
+    const input = {
+      secret: publishedV2.signingSecret, publicId: "documentation-fixture",
+      rawBody: Buffer.from(rawBody, "utf8"), signature,
+    };
+    const providerPayload = JSON.parse(rawBody);
+    const result = verifyFirefliesWebhook(input);
+    expect(typeof result.payload.meeting_id).toBe("string");
+    expect(typeof result.payload.timestamp).toBe("number");
+    expect(result.payload).toEqual(providerPayload);
+    expect(result.ignored).toBe(providerPayload.event !== "meeting.summarized");
+    // The stored signature was generated independently, not by the test's
+    // signing helper. Even whitespace-only changes must fail authentication.
+    expect(() => verifyFirefliesWebhook({ ...input, rawBody: Buffer.from(JSON.stringify(providerPayload)) })).toThrow();
+  });
+
   it("verifies exact bytes and passes only authenticated meeting metadata", () => {
     const result = verifyFirefliesWebhook(signed({ ...payload, client_reference_id: "upload-1", variables: { instruction: "untrusted" } }));
     expect(result).toMatchObject({ ignored: false, payload: { ...payload, client_reference_id: "upload-1" } });

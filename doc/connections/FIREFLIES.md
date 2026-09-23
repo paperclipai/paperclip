@@ -137,6 +137,13 @@ Validation on 2026-09-23:
   selected preview agent. The summary included overview and action items.
   Turning the summary action Off blocked its test; refreshing actions preserved
   that restriction. Restored the previously authorized read after testing.
+- Published webhook contract proof: `server/src/__tests__/fixtures/fireflies-webhooks-v2.json`
+  preserves the official V2 examples for all three events, including short and
+  long meeting IDs, numeric millisecond timestamps, and an optional string
+  client reference. Fixed HMAC test vectors were generated independently with
+  Python over the documented UTF-8 bodies. Tests accept those exact bytes and
+  reject whitespace-only alterations. This is provider-derived contract evidence,
+  not a captured live delivery.
 - Real provider webhook delivery is still pending a publicly reachable callback.
   Fireflies’ live V2 settings offer a **Meeting Summarized** subscription and a
   **Test Webhook** step. No production meeting completion has been tested.
