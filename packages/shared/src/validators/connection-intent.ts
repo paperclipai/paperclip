@@ -2,10 +2,12 @@ import { z } from "zod";
 
 export const connectionsSearchInputSchema = z.object({
   query: z.string().trim().max(200).default(""),
+  retryProviderChoice: z.boolean().optional().describe("Only when the user explicitly asks to reconsider a previous provider choice or decline"),
 }).strict();
 
 export const connectionRequestInputSchema = z.object({
   service: z.string().trim().min(1).max(120),
+  selectionInteractionId: z.string().guid().optional(),
 }).strict();
 
 export const completeConnectionIntentSchema = z.object({

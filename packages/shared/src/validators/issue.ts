@@ -1075,6 +1075,7 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    upstreamService: z.object({ slug: z.string().min(1).max(120), name: z.string().min(1).max(160), selectionInteractionId: z.string().guid() }).strict().optional(),
     purpose: z.literal("ai").optional(),
     version: z.literal(1),
     serviceSlug: z.string().trim().min(1).max(120),
@@ -1090,6 +1091,7 @@ export const connectionIntentPayloadSchema = z
 export const connectionIntentResultSchema = z
   .object({
     version: z.literal(1),
+    instruction: z.string().max(4000).optional(),
     outcome: z.enum(["connected", "declined", "superseded", "expired"]),
     connectionId: z.string().guid().nullable().optional(),
     reason: z.string().trim().max(4000).nullable().optional(),

@@ -6,6 +6,7 @@ import {
 } from "@paperclipai/shared";
 
 interface RuntimeConnectionOptions {
+  retryProviderChoice?: boolean;
   json?: boolean;
 }
 
@@ -51,9 +52,10 @@ export function registerConnectionIntentCommands(program: Command) {
   connections
     .command("search")
     .argument("[query]", "Service name or capability")
+    .option("--retry-provider-choice", "Reconsider a provider choice only at the user’s explicit request")
     .option("--json", "Print formatted JSON")
     .action(async (query: string | undefined, options: RuntimeConnectionOptions) => {
-      const input = connectionsSearchInputSchema.parse({ query: query ?? "" });
+      const input = connectionsSearchInputSchema.parse({ query: query ?? "", retryProviderChoice: options.retryProviderChoice });
       writeResult(await callRuntimeConnectionTool(
         "PAPERCLIP_RUNTIME_TOOLS_CONNECTIONS_SEARCH_URL",
         input,
@@ -63,9 +65,10 @@ export function registerConnectionIntentCommands(program: Command) {
   connections
     .command("request")
     .argument("<service>", "Connectable service slug")
+    .option("--selection-interaction-id <id>", "Answered external-provider question ID")
     .option("--json", "Print formatted JSON")
     .action(async (service: string, options: RuntimeConnectionOptions) => {
-      const input = connectionRequestInputSchema.parse({ service });
+      const input = connectionRequestInputSchema.parse({ service, selectionInteractionId: (options as RuntimeConnectionOptions & { selectionInteractionId?: string }).selectionInteractionId });
       writeResult(await callRuntimeConnectionTool(
         "PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL",
         input,

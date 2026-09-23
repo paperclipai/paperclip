@@ -103,13 +103,13 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       const name = typeof params.name === "string" ? params.name : "";
       if (name === "connections_search") {
         const input = connectionsSearchInputSchema.parse(params.arguments ?? {});
-        const result = await service.search(claims, input.query);
+        const result = await service.search(claims, input.query, { retryProviderChoice: input.retryProviderChoice });
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         return;
       }
       if (name === "connection_request") {
         const input = connectionRequestInputSchema.parse(params.arguments ?? {});
-        const result = await service.request(claims, input.service);
+        const result = await service.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId });
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         return;
       }
@@ -129,11 +129,11 @@ export function runtimeConnectionIntentRoutes(db: Db) {
 
   router.post("/runtime-tools/connections/search", async (req, res) => {
     const input = connectionsSearchInputSchema.parse(req.body ?? {});
-    res.json(await service.search(runtimeClaims(req), input.query));
+    res.json(await service.search(runtimeClaims(req), input.query, { retryProviderChoice: input.retryProviderChoice }));
   });
   router.post("/runtime-tools/connections/request", async (req, res) => {
     const input = connectionRequestInputSchema.parse(req.body ?? {});
-    res.json(await service.request(runtimeClaims(req), input.service));
+    res.json(await service.request(runtimeClaims(req), input.service, { selectionInteractionId: input.selectionInteractionId }));
   });
   return router;
 }

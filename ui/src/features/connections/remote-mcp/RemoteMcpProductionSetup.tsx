@@ -24,7 +24,7 @@ function readAccessDraft(key: string): Partial<RemoteMcpSetupState> {
 }
 
 export function RemoteMcpProductionSetup({ providerId, connection, host = "page", interactionId,
-  requestedAgentId, existingConnections = [], forceNewConnection, onUseExisting, onComplete, onCancel, onPhaseChange,
+  upstreamServiceName, requestedAgentId, existingConnections = [], forceNewConnection, onUseExisting, onComplete, onCancel, onPhaseChange,
 }: ConnectionSetupFlowProps & { providerId: RemoteMcpProviderId; connection?: ToolConnection }) {
   const provider = remoteMcpProviders[providerId];
   const { selectedCompanyId } = useCompany();
@@ -190,5 +190,5 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     <div className="flex items-center justify-between gap-3"><Button variant="ghost" disabled={Boolean(choicePending)} onClick={onCancel}>Cancel</Button><Button disabled={Boolean(choicePending)} onClick={() => setShowChoices(false)}>Connect new</Button></div>
   </div>;
   if (connection && !installs.data) return <div className="space-y-3 p-8"><p>{installs.isError ? "Could not load saved access. Retry before changing this connection." : "Loading saved access…"}</p>{installs.isError && <button type="button" className="text-primary underline" onClick={() => void installs.refetch()}>Try again</button>}</div>;
-  return <RemoteMcpConnectionSetup host={host} lockedAgentId={requestedAgentId} authorizationUrl={host === "dialog" ? authorizationUrl.current : undefined} provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;
+  return <RemoteMcpConnectionSetup upstreamServiceName={upstreamServiceName} host={host} lockedAgentId={requestedAgentId} authorizationUrl={host === "dialog" ? authorizationUrl.current : undefined} provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;
 }
