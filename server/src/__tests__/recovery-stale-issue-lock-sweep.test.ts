@@ -935,7 +935,11 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   it("does not terminalize or clear issue locks when an ownership hold arrives after the sweep snapshot", async () => {
-    const { companyId, agentId, runningRunId } = await seed();
+    // The race this covers starts inside the terminal write, so the run has to
+    // clear the issue-terminal grace period to reach it at all.
+    const { companyId, agentId, runningRunId } = await seed({
+      runningRunStartedAt: orphanedRunStartedAt(),
+    });
     const issueId = randomUUID();
     await db
       .update(heartbeatRuns)
