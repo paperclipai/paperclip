@@ -105,6 +105,42 @@ const support = await getEmbeddedPostgresTestSupport();
       .toBeTruthy();
   });
 
+  it("refuses at admission a stage wake whose stage changed after selection", async () => {
+    const f = await seed();
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "succeeded" })
+      .where(eq(environmentLeases.id, f.leaseId));
+    // The task moved to another stage with the same participant and status.
+    await db.update(issues).set({ executionState: { status: "pending", currentStageId: randomUUID(),
+      currentStageType: "review", currentParticipant: { type: "agent", agentId: f.participantId, userId: null } } })
+      .where(eq(issues.id, f.issueId));
+    await heartbeatService(db).wakeup(f.participantId, { ...stageWake(f),
+      issueStateGuard: { assigneeAgentId: f.participantId, statuses: ["in_review"], executionStageId: f.stageId } });
+    const [wake] = await db.select().from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.agentId, f.participantId)));
+    expect(wake).toMatchObject({ status: "skipped", reason: "issue_state_guard_mismatch" });
+    expect(await queuedRuns(f.companyId, f.participantId)).toHaveLength(0);
+  });
+
+  it("does not let a page of still-blocked handoffs starve one whose gate cleared", async () => {
+    // Fifty older handoffs whose leases stay held.
+    for (let i = 0; i < 50; i += 1) {
+      const blocked = await seed();
+      await heartbeatService(db).wakeup(blocked.participantId, stageWake(blocked));
+      await db.update(agentWakeupRequests).set({ updatedAt: new Date(1000 + i) })
+        .where(eq(agentWakeupRequests.agentId, blocked.participantId));
+    }
+    const f = await seed();
+    await heartbeatService(db).wakeup(f.participantId, stageWake(f));
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "succeeded" })
+      .where(eq(environmentLeases.id, f.leaseId));
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(5000) })
+      .where(eq(agentWakeupRequests.agentId, f.participantId));
+    // The first pass rotates the blocked page; the next reaches the cleared handoff.
+    await heartbeatService(db).resumeQueuedRuns();
+    await heartbeatService(db).resumeQueuedRuns();
+    expect(await queuedRuns(f.companyId, f.participantId)).toHaveLength(1);
+  }, 120000);
+
   it("leaves a handoff alone while the gate is up or the stage has moved on", async () => {
     const f = await seed();
     await heartbeatService(db).wakeup(f.participantId, stageWake(f));

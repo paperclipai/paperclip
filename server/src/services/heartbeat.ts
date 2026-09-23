@@ -3657,6 +3657,8 @@ interface WakeupOptions {
     statuses: string[];
     assigneeAgentId: string;
     statusVersion?: number;
+    /** The pending execution stage the wake was built for. */
+    executionStageId?: string;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
@@ -10478,7 +10480,7 @@ export function heartbeatService(
    */
   async function readmitBlockedStageHandoffs() {
     if ((await getSchedulingSuppression()).suppressed) return;
-    const waits = await db.select({ wake: agentWakeupRequests })
+    const waits = await db.select({ wake: agentWakeupRequests, statusVersion: issues.statusVersion })
       .from(agentWakeupRequests)
       .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
@@ -10500,13 +10502,21 @@ export function heartbeatService(
       ))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const seen = new Set<string>();
-    for (const { wake } of waits) {
+    for (const { wake, statusVersion } of waits) {
       const payload = parseObject(wake.payload);
       const issueId = readNonEmptyString(payload.issueId);
       const executionStage = parseObject(payload.executionStage);
-      if (!issueId || seen.has(`${wake.agentId}:${issueId}`)) continue;
+      const stageId = readNonEmptyString(executionStage.stageId);
+      if (!issueId || !stageId || seen.has(`${wake.agentId}:${issueId}`)) continue;
       seen.add(`${wake.agentId}:${issueId}`);
-      if (await getExecutionBlocker(db, wake.companyId, issueId)) continue;
+      if (await getExecutionBlocker(db, wake.companyId, issueId)) {
+        // Rotate a receipt whose gate is still up behind newer ones, so a page
+        // of long-held gates cannot starve handoffs whose gates have cleared.
+        await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+          eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
+          eq(agentWakeupRequests.status, "skipped")));
+        continue;
+      }
       // Claim the receipt by its own age, as `readmitUnblockedExecutionWaits`
       // does, so a concurrent pass cannot rebuild the same handoff. The receipt
       // is retired only after admission answers, so an interrupted server
@@ -10540,7 +10550,10 @@ export function heartbeatService(
             issueId, taskId: issueId, wakeReason: reason, source: "issue.execution_stage", executionStage,
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
-          issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+          // Selection read the task outside the admission lock. Admission must
+          // refuse a task whose status, owner or stage changed in between.
+          issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"],
+            statusVersion, executionStageId: stageId },
           idempotencyKey: readmitKey,
         });
       } catch (err) {
@@ -26911,6 +26924,7 @@ export function heartbeatService(
               assigneeAgentId: issues.assigneeAgentId,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
+              executionState: issues.executionState,
               createdAt: issues.createdAt,
             })
             .from(issues)
@@ -27133,7 +27147,10 @@ export function heartbeatService(
             issueStateGuard &&
             (!issueStateGuard.statuses.includes(issue.status) ||
               issue.assigneeAgentId !== issueStateGuard.assigneeAgentId ||
-              (issueStateGuard.statusVersion !== undefined && issue.statusVersion !== issueStateGuard.statusVersion))
+              (issueStateGuard.statusVersion !== undefined && issue.statusVersion !== issueStateGuard.statusVersion) ||
+              (issueStateGuard.executionStageId !== undefined &&
+                (parseObject(issue.executionState).status !== "pending" ||
+                  parseObject(issue.executionState).currentStageId !== issueStateGuard.executionStageId)))
           ) {
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -27146,7 +27163,7 @@ export function heartbeatService(
                 ...(payload ?? {}),
                 heartbeatSkip: {
                   reason:
-                    "Issue status or assignee changed before the wake could be queued.",
+                    "Issue status, assignee or execution stage changed before the wake could be queued.",
                   issueId: issue.id,
                   expectedStatuses: issueStateGuard.statuses,
                   actualStatus: issue.status,
