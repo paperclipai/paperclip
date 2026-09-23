@@ -1209,6 +1209,82 @@
   {
     "allowedModes": [
       "standard",
+      "skill_test"
+    ],
+    "description": "Create one native Paperclip Runner teammate for the current company and task. The new agent reports to you, inherits your native runtime, and receives no provider, adapter, environment, or credential configuration from the tool. Reuse an existing teammate when appropriate and follow any approval returned by the API.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "description": "Optional concise capability summary.",
+          "maxLength": 2000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instructions": {
+          "description": "Optional persona or task instructions.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Name for the new teammate.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "default": "general",
+          "enum": [
+            "ceo",
+            "cto",
+            "cmo",
+            "cfo",
+            "security",
+            "engineer",
+            "designer",
+            "pm",
+            "qa",
+            "devops",
+            "researcher",
+            "general"
+          ]
+        },
+        "title": {
+          "description": "Optional teammate title.",
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "operationId": "hire_agent",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "delegation:agents:create"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Hire a native agent",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
       "ask",
       "planning",
       "skill_test"

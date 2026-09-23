@@ -289,6 +289,7 @@ import {
   resolveRemoteRunnerTransportMode,
   renewNativeSessionExecutionLease,
   runtimeInputLifecycleMetric,
+  firstMeaningfulAgentEventKind,
   runtimeQuestionFallbackFromEvent,
   resolveNativeRuntimeRequest,
   resolveNativeHarnessPersistenceProfile,
@@ -306,6 +307,59 @@ beforeEach(() => {
   state.resolveRunnerBinary.mockReset().mockReturnValue("/tmp/paperclip-runnerd");
   state.resolveCurrentWakeCommentsBinding.mockReset().mockResolvedValue(null);
   state.assertCurrentWakeCommentsRead.mockReset().mockResolvedValue(undefined);
+});
+
+describe("first meaningful native agent event", () => {
+  const event = (eventType: string, payload: Record<string, unknown>) =>
+    ({ eventType, payload }) as PrpEvent;
+
+  it("accepts nonempty assistant and reasoning deltas", () => {
+    expect(
+      firstMeaningfulAgentEventKind(
+        event("item.delta", { kind: "agentMessage", text: "first token" }),
+      ),
+    ).toBe("agentMessage");
+    expect(
+      firstMeaningfulAgentEventKind(
+        event("item.delta", { kind: "reasoning", delta: "thinking" }),
+      ),
+    ).toBe("reasoning");
+  });
+
+  it("accepts real tool starts and preserves qualified item events", () => {
+    expect(
+      firstMeaningfulAgentEventKind(
+        event("tool.execution.started", {
+          executionId: "tool-1",
+          name: "Terminal",
+        }),
+      ),
+    ).toBe("toolCall");
+    expect(
+      firstMeaningfulAgentEventKind(
+        event("item.started", { kind: "dynamicToolCall" }),
+      ),
+    ).toBe("dynamicToolCall");
+    expect(
+      firstMeaningfulAgentEventKind(
+        event("item.completed", { kind: "agentMessage" }),
+      ),
+    ).toBe("agentMessage");
+  });
+
+  it("counts a generic tool announcement without a display name", () => {
+    expect(firstMeaningfulAgentEventKind(event("tool.execution.started", { executionId: "tool-1", name: null }))).toBe("toolCall");
+  });
+
+  it("ignores empty deltas and usage, status, or metadata events", () => {
+    for (const candidate of [
+      event("item.delta", { kind: "agentMessage", text: " " }),
+      event("item.delta", { kind: "reasoning", delta: "" }),
+      event("item.delta", { kind: "usage", text: "tokens" }),
+      event("turn.started", { kind: "agentMessage", text: "message" }),
+      event("tool.execution.started", { name: "Terminal" }),
+    ]) expect(firstMeaningfulAgentEventKind(candidate)).toBeNull();
+  });
 });
 
 describe("remote controller restart adoption", () => {
@@ -9982,6 +10036,7 @@ describe("runnerd provider runtime wiring", () => {
         .mockImplementation((binding: Record<string, unknown>) =>
           Promise.resolve({ runId: binding.runId }),
         );
+      const tracedRuns: string[] = [];
       let firstScopedRoot: string | undefined;
       for (const candidate of [
         first,
@@ -10015,6 +10070,13 @@ describe("runnerd provider runtime wiring", () => {
           db: candidateDb,
           execution: candidate,
           runnerInstanceId: `runner-${candidate.binding.runId}`,
+          toolTrace: {
+            observe() {},
+            async execute(_call, work) {
+              tracedRuns.push(candidate.binding.runId);
+              return await work();
+            },
+          },
         });
         state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
         if (candidate === first) {
@@ -10067,6 +10129,7 @@ describe("runnerd provider runtime wiring", () => {
       await expect(
         continuationOptions.dynamicToolHandler!({}),
       ).resolves.toEqual({ runId: continuation.binding.runId });
+      expect(tracedRuns).toEqual([continuation.binding.runId, continuation.binding.runId]);
     } finally {
       if (previousStateDirectory === undefined) {
         delete process.env.PAPERCLIP_RUNNER_STATE_DIR;

@@ -62,6 +62,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
+import { inheritNativeRunnerAdapterConfig } from "../services/native-runtime/native-agent-runtime-inheritance.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
   agentService,
@@ -4450,8 +4451,33 @@ export function agentRoutes(
       // The onboarding marker is not an agent column. The server consumes it to
       // seed the chief-of-staff persona; it never reaches the insert values.
       onboardingFirstAgent: hireOnboardingFirstAgent,
+      // This intent flag is consumed below and must never reach agent create.
+      inheritRuntimeFrom,
       ...hireInput
     } = req.body;
+
+    if (inheritRuntimeFrom === "caller") {
+      if (req.actor.type !== "agent" || !req.actor.agentId) {
+        throw forbidden("Only an agent can inherit native runtime settings from the caller");
+      }
+      if (hireInput.adapterType !== "paperclip_runner") {
+        throw unprocessable("inheritRuntimeFrom=caller requires adapterType=paperclip_runner");
+      }
+      const requestedConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+      const requestedRuntime = (hireInput.runtimeConfig ?? {}) as Record<string, unknown>;
+      if (Object.keys(requestedConfig).length > 0 || Object.keys(requestedRuntime).length > 0 || hireInput.defaultEnvironmentId !== undefined) {
+        throw unprocessable("inheritRuntimeFrom=caller cannot be combined with adapterConfig, runtimeConfig, or defaultEnvironmentId");
+      }
+      const caller = await svc.getById(req.actor.agentId);
+      if (!caller || caller.companyId !== companyId) {
+        throw forbidden("The caller agent is not in this company");
+      }
+      if (caller.adapterType !== "paperclip_runner") {
+        throw unprocessable("The caller must use the paperclip_runner adapter");
+      }
+      hireInput.adapterConfig = inheritNativeRunnerAdapterConfig(caller.adapterConfig);
+      hireInput.defaultEnvironmentId = caller.defaultEnvironmentId ?? null;
+    }
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
@@ -4513,6 +4539,11 @@ export function agentRoutes(
       adapterConfig: normalizedAdapterConfig,
       runtimeConfig: normalizedRuntimeConfig,
     };
+    await assertAgentEnvironmentSelection(companyId, hireInput.adapterType, hireInput.defaultEnvironmentId);
+    await assertAgentDefaultEnvironmentSelection(companyId, hireInput.defaultEnvironmentId, {
+      allowedDrivers: allowedEnvironmentDriversForAgent(hireInput.adapterType),
+      allowedSandboxProviders: allowedSandboxProvidersForAgent(hireInput.adapterType),
+    });
 
     const company = await db
       .select()

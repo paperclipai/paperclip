@@ -1,7 +1,7 @@
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -248,6 +248,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       );
       expect(disabledNames).not.toContain("search_api");
       expect(disabledNames).not.toContain("call_api");
+      expect(disabledNames).not.toContain("hire_agent");
 
       process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
       process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = companyId;
@@ -259,8 +260,14 @@ describe("PaperclipRunnerToolAuthority", () => {
           ...requiredChatFileTools,
           "search_api",
           "call_api",
+          "hire_agent",
         ]),
       );
+      const hire = createAuthority().definitions().find((tool) => tool.name === "hire_agent")!;
+      const hireSchema = hire.inputSchema as { properties: Record<string, unknown> };
+      expect(hireSchema.properties).toEqual(expect.objectContaining({ name: expect.any(Object), role: expect.any(Object) }));
+      expect(hireSchema.properties).not.toHaveProperty("adapterConfig");
+      expect(hireSchema.properties).not.toHaveProperty("env");
     } finally {
       if (previousEnabled === undefined) {
         delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
@@ -272,6 +279,71 @@ describe("PaperclipRunnerToolAuthority", () => {
       } else {
         process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = previousCompanies;
       }
+    }
+  });
+
+  it("dispatches hire_agent with fixed caller context and replays its API receipt", async () => {
+    const previousEnabled = process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+    const previousCompanies = process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
+    const previousSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "hire-agent-test-secret";
+    process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
+    process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = companyId;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: randomUUID(), status: "active" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, {
+        companyId,
+        agentId,
+        issueId,
+        runId,
+        apiUrl: "http://runner-test.invalid",
+      });
+      const call = {
+        tool: "hire_agent",
+        callId: "hire-agent-receipt",
+        arguments: {
+          name: "QA teammate",
+          role: "qa",
+          title: "Quality lead",
+          capabilities: "Test native workflows",
+          instructions: "Use the assigned workspace and report findings.",
+        },
+      } as const;
+      const first = await authority.execute(call);
+      expect(first).toMatchObject({ ok: true, status: 201, apiOperationId: "POST /api/companies/{companyId}/agent-hires" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(String(url)).toBe(`http://runner-test.invalid/api/companies/${companyId}/agent-hires`);
+      const body = JSON.parse(String(request.body));
+      expect(body).toMatchObject({
+        name: "QA teammate",
+        role: "qa",
+        title: "Quality lead",
+        capabilities: "Test native workflows",
+        adapterType: "paperclip_runner",
+        inheritRuntimeFrom: "caller",
+        reportsTo: agentId,
+        sourceIssueId: issueId,
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Use the assigned workspace and report findings." } },
+      });
+      expect(body).not.toHaveProperty("adapterConfig");
+      expect(body).not.toHaveProperty("runtimeConfig");
+      expect(body).not.toHaveProperty("env");
+      await expect(authority.execute(call)).resolves.toEqual(first);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchMock.mockRestore();
+      if (previousEnabled === undefined) delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+      else process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = previousEnabled;
+      if (previousCompanies === undefined) delete process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
+      else process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = previousCompanies;
+      if (previousSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousSecret;
     }
   });
 
@@ -567,7 +639,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     const progressActivity = await db
       .select()
       .from(activityLog)
-      .where(eq(activityLog.entityId, issueId));
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.comment_added")));
     expect(progressActivity).toHaveLength(1);
     expect(progressActivity[0]).toMatchObject({
       action: "issue.comment_added",

@@ -78,7 +78,7 @@ import {
 } from "./chat-attachment-read.js";
 
 const IMPLEMENTED_OPERATIONS = new Set([
-  "search_api", "call_api",
+  "search_api", "call_api", "hire_agent",
   "get_task_context", "get_task_history", "search_tasks", "report_progress",
   "request_human_input",
   "create_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
@@ -180,7 +180,7 @@ export class PaperclipRunnerToolAuthority {
             this.binding.companyId,
             this.binding.apiToolsEnabled,
           ) ||
-            !["search_api", "call_api"].includes(descriptor.operationId)) &&
+            !["search_api", "call_api", "hire_agent"].includes(descriptor.operationId)) &&
           descriptor.allowedModes.includes(workMode) &&
           (descriptor.operationId !== "register_deliverable" ||
             (Boolean(this.binding.workspaceRoot) &&
@@ -290,7 +290,7 @@ export class PaperclipRunnerToolAuthority {
         this.binding.companyId,
         this.binding.apiToolsEnabled,
       ) &&
-      ["search_api", "call_api"].includes(call.tool)
+      ["search_api", "call_api", "hire_agent"].includes(call.tool)
     ) {
       throw new Error("paperclip_runner_tool_not_advertised");
     }
@@ -367,6 +367,30 @@ export class PaperclipRunnerToolAuthority {
           conversation: Boolean(context.issue.conversationAgentId) });
       }
       case "search_api": return searchRunnerApi(call.arguments);
+      case "hire_agent": {
+        const body: Record<string, unknown> = {
+          name: requiredString(input.name),
+          adapterType: "paperclip_runner",
+          inheritRuntimeFrom: "caller",
+          reportsTo: this.binding.agentId,
+          sourceIssueId: this.binding.issueId,
+        };
+        if (input.role !== undefined) body.role = input.role;
+        if (input.title !== undefined) body.title = input.title;
+        if (input.capabilities !== undefined) body.capabilities = input.capabilities;
+        if (typeof input.instructions === "string" && input.instructions.trim()) {
+          body.instructionsBundle = {
+            entryFile: "AGENTS.md",
+            files: { "AGENTS.md": input.instructions },
+          };
+        }
+        const { operationId, ...response } = record(await this.#callApi(call.callId, {
+          operationId: "POST /api/companies/{companyId}/agent-hires",
+          pathParams: { companyId: this.binding.companyId },
+          body,
+        }));
+        return { ...response, apiOperationId: operationId };
+      }
       case "call_api": {
         // PRP reserves operationId/callId for semantic result identity. The
         // HTTP operation is metadata, including in previously saved receipts;

@@ -15,6 +15,7 @@ export interface AcpRuntimeEventShape {
   text?: string;
   status?: string;
   rawOutput?: unknown;
+  inputUpdated?: boolean;
   tag?: string;
   entries?: Array<{ content: string; status?: string }>;
   [key: string]: unknown;
@@ -1133,6 +1134,11 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
       target: safeAcpLocation(event.locations?.[0]),
       namespace: mcp?.namespace ?? null,
       readOnly: ["read", "search", "list"].includes(operation),
+      ...(Object.prototype.hasOwnProperty.call(event, "rawInput")
+        ? { inputUpdated: event.rawInput !== undefined }
+        : typeof event.inputUpdated === "boolean"
+          ? { inputUpdated: event.inputUpdated }
+          : {}),
       status,
       durationMs: null,
       exitCode: null,

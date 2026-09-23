@@ -324,6 +324,30 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     requiredClaims: ["discovery:agents:read"],
   }),
   descriptor({
+    operationId: "hire_agent",
+    title: "Hire a native agent",
+    description:
+      "Create one native Paperclip Runner teammate for the current company and task. The new agent reports to you, inherits your native runtime, and receives no provider, adapter, environment, or credential configuration from the tool. Reuse an existing teammate when appropriate and follow any approval returned by the API.",
+    placement: "optional",
+    effect: "write",
+    requiredClaims: ["delegation:agents:create"],
+    allowedModes: STANDARD_MODE,
+    inputSchema: object(
+      {
+        name: text("Name for the new teammate.", 200),
+        role: {
+          enum: ["ceo", "cto", "cmo", "cfo", "security", "engineer", "designer", "pm", "qa", "devops", "researcher", "general"],
+          default: "general",
+        },
+        title: nullableText("Optional teammate title.", 300),
+        capabilities: nullableText("Optional concise capability summary.", 2_000),
+        instructions: nullableText("Optional persona or task instructions.", 20_000),
+      },
+      ["name"],
+    ),
+    outputSchema: openObject,
+  }),
+  descriptor({
     operationId: "get_agent",
     title: "Get company agent",
     description: "Read one redacted actor profile in the run company.",

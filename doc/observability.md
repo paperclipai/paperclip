@@ -168,7 +168,9 @@ task.run
 │   │   └── runner.turn.submit
 │   └── agent.turn
 │       ├── provider.turn.queue
-│       └── provider.time_to_first_agent_event
+│       ├── provider.time_to_first_agent_event
+│       ├── tool.request.input_stream
+│       └── tool.execute
 └── task.settle
     ├── native.result.finalize
     └── session.checkpoint.persist
@@ -188,6 +190,28 @@ session records `runner.session.resume`. `agent.turn` begins at
 `turn.submitted` and ends at the provider terminal event. `task.settle` begins
 at that terminal event and remains open through finalization and checkpoint
 persistence, so settlement work does not appear to outlive its parent.
+
+`provider.time_to_first_agent_event` ends at the first meaningful provider
+activity: a nonempty assistant/reasoning delta, a tool announcement with an
+execution identity, or an existing assistant/reasoning/tool item start or
+completion. Usage updates and empty deltas do not count. This is a first
+activity metric, not time to a finished answer.
+
+`tool.request.input_stream` measures the observed request-input window: from
+an ACP tool announcement to its last input update before the provider reports
+the tool complete. It can include provider buffering and transport. It is not
+a claim about the exact end of model generation or the start of API execution.
+The span is omitted when no subsequent input update is observed.
+
+For native control-plane tools, `tool.execute` measures authorization and
+execution inside the server authority, including time spent in HTTP requests.
+Provider tool IDs and MCP request IDs are separate namespaces; the trace does
+not guess a pairing by tool name or arrival order. Both spans belong to the
+current run's `agent.turn`, including when a warm provider session is reused.
+Their `operation` attribute is a known semantic tool name or `other`. Only a
+boolean input-update marker crosses the provider-event boundary; no arguments,
+argument hashes, or raw call IDs are exported by these spans. Concurrent tools
+have separate durations; overlapping spans must not be summed as wall time.
 
 The active native scope is also published through the existing asynchronous
 runtime-parent seam. Provider execution, plugin, websocket/duplex, daemon, and
