@@ -3075,6 +3075,55 @@ describe("wake payload exec-string limit", () => {
     expect(description.payloadTruncated.objectiveOmitted).toBe(false);
   });
 
+  it("clamps a caller budget that would let the string pass the hard ceiling", () => {
+    // The bound is the whole point of the function, so a caller cannot opt out
+    // of it by asking for an unlimited budget.
+    const oversized = {
+      ...longThread(400),
+      agentMessage: { text: "m".repeat(200_000), source: null },
+    };
+
+    expect(
+      stringifyPaperclipWakePayload(oversized, { maxBytes: Number.POSITIVE_INFINITY }),
+    ).toBeNull();
+    expect(
+      stringifyPaperclipWakePayload(oversized, { maxBytes: 1_000_000 }),
+    ).toBeNull();
+    // A lowered budget still applies.
+    expect(
+      Buffer.byteLength(
+        stringifyPaperclipWakePayload(longThread(400), { maxBytes: 8 * 1024 }) ?? "",
+        "utf8",
+      ),
+    ).toBeLessThanOrEqual(8 * 1024);
+  });
+
+  it("stops claiming complete history once it has dropped messages", () => {
+    const payload = JSON.parse(
+      stringifyPaperclipWakePayload(longThread(400)) ?? "{}",
+    );
+
+    expect(payload.executionContinuation.coverage.kind).toBe("task_history_delta");
+    expect(payload.executionContinuation.coverage.throughCommentId).toBe(
+      payload.executionContinuation.messages.at(-1).id,
+    );
+    // An agent that renders the reduced copy must not read that history is whole.
+    expect(renderPaperclipWakePrompt(payload)).not.toContain("History is complete");
+  });
+
+  it("keeps the omission record when a reduced copy is normalized again", () => {
+    const reduced = stringifyPaperclipWakePayload(longThread(400)) ?? "{}";
+    const before = JSON.parse(reduced).payloadTruncated;
+
+    const again = JSON.parse(
+      stringifyPaperclipWakePayload(JSON.parse(reduced)) ?? "{}",
+    );
+
+    expect(before.continuationMessagesOmitted).toBeGreaterThan(0);
+    expect(again.payloadTruncated).toEqual(before);
+    expect(again.executionContinuation.coverage.kind).toBe("task_history_delta");
+  });
+
   it("returns null rather than a string the kernel would reject", () => {
     // An oversized field the reduction ladder cannot shrink still must not
     // reach execve: the caller runs without the environment copy instead.
