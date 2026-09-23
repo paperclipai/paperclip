@@ -10534,12 +10534,14 @@ export function heartbeatService(
       const interruptedRunId = readNonEmptyString(payload.interruptedRunId);
       // A replacement committed before an interruption carries this key; a later
       // pass then only retires the receipt instead of starting a second run.
+      // Only an admitted replacement counts: a refused attempt leaves no run.
       const readmitKey = `stage-handoff-readmit:${wake.id}`;
       const [alreadyAdmitted] = await db.select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests).where(and(
           eq(agentWakeupRequests.companyId, wake.companyId),
           eq(agentWakeupRequests.agentId, wake.agentId),
           eq(agentWakeupRequests.idempotencyKey, readmitKey),
+          isNotNull(agentWakeupRequests.runId),
         )).limit(1);
       try {
         if (!alreadyAdmitted) await enqueueWakeup(wake.agentId, {
@@ -10560,6 +10562,18 @@ export function heartbeatService(
         // The receipt is still unretired, so a later pass reconsiders this handoff.
         logger.warn({ err, wakeId: wake.id }, "failed to re-admit a blocked execution-stage handoff");
         continue;
+      }
+      // A guard refusal is not an answer for this handoff: the task changed
+      // between selection and admission. Keep the receipt; the next pass
+      // selects it again only if the task still waits on this stage.
+      if (!alreadyAdmitted) {
+        const [latest] = await db.select({ reason: agentWakeupRequests.reason, runId: agentWakeupRequests.runId })
+          .from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, wake.companyId),
+            eq(agentWakeupRequests.agentId, wake.agentId),
+            eq(agentWakeupRequests.idempotencyKey, readmitKey),
+          )).orderBy(desc(agentWakeupRequests.requestedAt)).limit(1);
+        if (latest && !latest.runId && latest.reason === "issue_state_guard_mismatch") continue;
       }
       // Admission has answered. Retire the receipt so no later pass rebuilds it.
       await db.update(agentWakeupRequests).set({
