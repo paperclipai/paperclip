@@ -98,13 +98,18 @@ the actor gate, environment branch restriction, and protected default branch.
 
 ## Runner fleet isolation
 
-When `RUNNER_E2E_AWS_ENABLED=true`, paid matrix cells use the exact RunsOn fleet
+When `RUNNER_E2E_AWS_ENABLED=true`, paid matrix cells, reusable runner builds,
+and Daytona image builds use the exact RunsOn fleet
 selector `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`, matching the AWS
 fleet selected by `pr-trusted.yml` only after its stable numeric-ID trust gate.
 Any other or missing toggle value falls back to the GitHub-hosted
 `ubuntu-latest` runner and its lower concurrency ceiling. The workflow chooses
 between those two reviewed literal labels; it never evaluates a configured
 runner label.
+
+Daytona image builds depend on successful campaign authorization and keep the
+existing GHCR publication and signing permissions. They receive no provider
+credentials and do not enter the `runner-e2e-paid` environment.
 
 Keep both runner targets restricted to `paperclipai/paperclip` and workflows
 that independently authorize trusted source revisions. Never let a fork or

@@ -200,6 +200,14 @@ describe("public repository paid workflow security", () => {
       fullStack.indexOf("  daytona_image:"),
       fullStack.indexOf("  build_runner_artifacts:"),
     );
+    expect(daytonaImageJob).toMatch(buildRunnerNeeds);
+    expect(daytonaImageJob).toContain(
+      "runs-on: ${{ needs.authorize.outputs.test_runner }}",
+    );
+    expect(daytonaImageJob).not.toContain("name: runner-e2e-paid");
+    expect(daytonaImageJob).not.toMatch(
+      /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI)_API_KEY/,
+    );
     expect(authorizeJob).toContain(
       "aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'",
     );

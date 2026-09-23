@@ -363,7 +363,8 @@ jobs:
   daytona_image:
     name: Publish verified Daytona image
     needs: [authorize, target_lock, catalog]
-    runs-on: ubuntu-latest
+    # Keep image builds on the same authorized fleet as campaign execution.
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 45
     permissions:
       contents: read
