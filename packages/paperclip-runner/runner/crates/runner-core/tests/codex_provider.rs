@@ -589,6 +589,54 @@ fn codex_transport_buffers_notifications_while_waiting_for_responses() {
 }
 
 #[test]
+fn codex_account_updates_do_not_interrupt_turns_or_publish_account_details() {
+    let directory = temporary_directory("account-notifications");
+    let config = provider_config(&directory, &["--account-notifications"]);
+    let mut provider = CodexProvider::start(&config, None).expect("start fake Codex provider");
+    for _ in 0..2 {
+        provider
+            .start_turn("Are you there?", &config.cwd)
+            .expect("start provider turn");
+        let mut completed = false;
+        let mut account_notices = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            match provider.poll().expect("poll provider event") {
+                Some(CodexProviderEvent::ProtocolFailure { diagnostic }) => {
+                    panic!("account notification interrupted the turn: {diagnostic}");
+                }
+                Some(CodexProviderEvent::Notification { method, params }) => {
+                    if params["providerMethod"]
+                        .as_str()
+                        .is_some_and(|method| method.starts_with("account/"))
+                    {
+                        account_notices += 1;
+                        assert_eq!(method, "warning");
+                        assert_eq!(params["classification"], "unrelated_information");
+                        assert!(!params.to_string().contains("fixture-login"));
+                        assert!(params.get("authMode").is_none());
+                        assert!(params.get("planType").is_none());
+                    }
+                    if method == "turn/completed" {
+                        completed = true;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            completed,
+            "the real provider boundary must deliver the terminal"
+        );
+        assert_eq!(account_notices, 2);
+    }
+    provider.shutdown().expect("stop provider");
+    fs::remove_dir_all(directory).expect("remove account notification test directory");
+}
+
+#[test]
 fn codex_goal_autostart_binds_the_provider_turn_authority() {
     let directory = temporary_directory("goal-autostart");
     let config = provider_config(&directory, &["--goal-autostart"]);
