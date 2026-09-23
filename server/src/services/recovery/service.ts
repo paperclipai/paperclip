@@ -5899,6 +5899,87 @@ export function recoveryService(
     return result;
   }
 
+  // SIA-803 backstop sweeper: a wakeup request that is still `claimed` while
+  // its run is already terminal (or missing entirely) can never be finalized
+  // by the normal run-completion path — the run row is closed and nobody is
+  // left to call setWakeupStatus. Every leak source (recovery-backstop
+  // terminalization, a crash between setRunStatus and setWakeupStatus, a
+  // deleted run row) converges on this same observable state, so one sweep
+  // over that state closes the whole class. Terminal statuses are delegated
+  // to TERMINAL_HEARTBEAT_RUN_STATUSES so native scheduled_retry stays a live
+  // claim. Idempotent: rows already finalized never match again, so no
+  // wake storm is possible.
+  async function sweepOrphanClaimedWakes() {
+    const result = {
+      finalized: 0,
+      missingRun: 0,
+      byRunStatus: {} as Record<string, number>,
+    };
+
+    const stale = await db
+      .select({
+        id: agentWakeupRequests.id,
+        companyId: agentWakeupRequests.companyId,
+        runId: agentWakeupRequests.runId,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "claimed"));
+
+    for (const row of stale) {
+      let runStatus: string | null = null;
+      if (row.runId) {
+        const [run] = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, row.runId))
+          .limit(1);
+        runStatus = run?.status ?? null;
+      }
+      const orphan =
+        runStatus === null || TERMINAL_HEARTBEAT_RUN_STATUSES.has(runStatus);
+      if (!orphan) continue;
+
+      const now = new Date();
+      const finalized = await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "failed",
+          finishedAt: now,
+          error: `orphan claimed wake sweep: linked run ${
+            row.runId ? `is ${runStatus}` : "missing"
+          }`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, row.id),
+            eq(agentWakeupRequests.companyId, row.companyId),
+            eq(agentWakeupRequests.status, "claimed"),
+          ),
+        )
+        .returning({ id: agentWakeupRequests.id })
+        .then((rows) => rows[0] ?? null);
+      if (!finalized) continue; // a live path finalized it concurrently
+
+      result.finalized += 1;
+      if (!row.runId || runStatus === null) result.missingRun += 1;
+      else
+        result.byRunStatus[runStatus] =
+          (result.byRunStatus[runStatus] ?? 0) + 1;
+
+      logger.warn(
+        {
+          wakeupRequestId: row.id,
+          runId: row.runId,
+          runStatus,
+        },
+        "finalized orphan claimed wakeup request in sweep",
+      );
+    }
+
+    return result;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -5908,6 +5989,7 @@ export function recoveryService(
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
     reconcileResolvedDependencyWakeBackstop,
+    sweepOrphanClaimedWakes,
     readRecoveryTimerIntervalMs,
   };
 }

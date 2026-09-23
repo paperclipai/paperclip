@@ -1801,6 +1801,14 @@ async function startServerWithDatabaseTeardown(
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
               }
             })
+            .then(async () => {
+              // SIA-803: finalize claimed wakes whose run is terminal or
+              // missing, so one-shot cleanups are never needed again.
+              const sweptWakes = await heartbeat.sweepOrphanClaimedWakes();
+              if (sweptWakes.finalized > 0) {
+                logger.warn({ ...sweptWakes }, "periodic orphan-claimed-wake sweeper finalized wakeup requests");
+              }
+            })
             .catch((err) => {
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));
