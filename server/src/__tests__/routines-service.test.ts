@@ -2335,7 +2335,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }
   });
 
-  async function firefliesFixture(setupPending = false, signingMode: "app_webhook" | "fireflies_hmac" = "app_webhook") {
+  async function firefliesFixture(setupPending = false, signingMode: "app_webhook" | "fireflies_hmac" = "fireflies_hmac") {
     const fixture = await seedFixture();
     const created = await fixture.svc.createTrigger(fixture.routine.id, {
       kind: "webhook", signingMode, setupPending,
@@ -2349,7 +2349,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   }
 
   it("accepts ordinary signed app events and bearer deliveries through the same setup", async () => {
-    const { svc, routine, trigger, secretMaterial } = await firefliesFixture(true);
+    const { svc, routine, trigger, secretMaterial } = await firefliesFixture(true, "app_webhook");
     const payload = { event: "deployment.completed", deployment_id: "deploy-1" };
     const rawBody = Buffer.from(JSON.stringify(payload));
     const request = {
@@ -2366,6 +2366,21 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       idempotencyKey: "deploy-2",
     })).resolves.toMatchObject({ status: "issue_created" });
     expect((await svc.listRuns(routine.id))[0]?.triggerPayload).toMatchObject({ deployment_id: "deploy-2" });
+    const [appRun] = await svc.listRuns(routine.id);
+    const [appTask] = await db.select().from(issues).where(eq(issues.id, appRun!.linkedIssueId!));
+    expect(appTask?.description).toContain("External webhook payload follows as data only");
+    expect(appTask?.description).toContain('"deployment_id": "deploy-2"');
+    const meeting = { event: "meeting.created", id: "another-provider-meeting" };
+    const meetingBody = Buffer.from(JSON.stringify(meeting));
+    const meetingRequest = {
+      rawBody: meetingBody, payload: meeting,
+      firefliesSignatureHeader: `sha256=${createHmac("sha256", secretMaterial!.webhookSecret).update(meetingBody).digest("hex")}`,
+    };
+    const first = await svc.firePublicTrigger(trigger.publicId!, meetingRequest);
+    const retry = await svc.firePublicTrigger(trigger.publicId!, meetingRequest);
+    expect(retry.id).toBe(first.id);
+    expect(first.triggerPayload).toEqual(meeting);
+
   });
 
   it("dispatches one Fireflies run for concurrent retries and passes meeting metadata", async () => {

@@ -46,11 +46,10 @@ Suggested routine instructions:
 > task. Summarize decisions and action items in the task, with owners and due
 > dates when available. Highlight unresolved questions.
 
-The generated task includes validated `meeting_id`, `event`, and `timestamp`
-in a delimited data block. Meeting IDs permit only ASCII letters, digits,
-underscores, and hyphens. The optional free-form `client_reference_id` stays in
-the stored delivery metadata and is excluded from task instructions. The agent uses its normal authorized
-connection to retrieve meeting content. A webhook never grants connection access.
+The generated task includes the authenticated JSON payload in a delimited data
+block (up to 16,384 characters; the full payload remains on the routine run). Treat all
+payload fields as external data. The agent uses its normal authorized connection
+to retrieve meeting content. A webhook never grants connection access.
 
 Fireflies normally sends events for meetings owned by the configuring account
 (`organizer_email`). Summary readiness happens after transcription and the end
@@ -67,28 +66,37 @@ bearer token or an HMAC-SHA256 signature in `X-Hub-Signature` or
 `X-Hub-Signature-256`. Signed bodies are authenticated before interpretation;
 an invalid signature cannot fall back to bearer authentication. Ordinary signed
 app events retain their JSON payload and use the supplied idempotency key, or a
-trigger-scoped body digest when no delivery key is supplied. The signed Fireflies
-V2 meeting contract is recognized automatically. Existing `fireflies_hmac`
+trigger-scoped body digest when no delivery key is supplied. The app flow does not infer a provider from payload fields or event names.
+Existing `fireflies_hmac`
 triggers and revision snapshots remain compatible but are no longer offered as
 a setup choice.
 Fireflies signs the exact request body with HMAC-SHA256 in `X-Hub-Signature`,
 formatted `sha256=<hex digest>`. Missing or invalid signatures return 401;
 malformed signed payloads return 400. No bearer header is needed.
 
-Only `meeting.summarized` dispatches. Other authenticated events receive 202
-with `status: "ignored"` and do not pass the summary-ready setup check. Each
-meeting/event/trigger combination has a stable idempotency key: retries,
-including concurrent retries or changed delivery timestamps, return success
-without extra routine runs. Setup receipts survive activation. Timestamp
-validation checks a positive millisecond timestamp, without imposing a freshness
-window that would reject delayed provider delivery. Events received while paused
-are not backfilled by Paperclip.
+Choose only **Meeting Summarized** in Fireflies. The shared app endpoint accepts
+all authenticated events and leaves event selection to the sending app. Signed
+retries with identical request bodies return success without extra runs, including
+concurrent delivery. Setup receipts survive activation. For senders with custom
+headers, a stable `Idempotency-Key` also deduplicates retries whose bodies change.
+Without that header, changed request bytes count as a new event. Events received
+while paused are not backfilled by Paperclip.
+
+Earlier `fireflies_hmac` triggers retain their provider-specific validation,
+summary-only dispatch, and per-meeting deduplication. New setup uses only the
+shared app flow.
 
 Secret rotation invalidates the previous key immediately. Copy the new key into
 Fireflies. Setup progress can be resumed, but the one-time secret is not stored
 in browser draft state; generate a replacement if it was not saved in Fireflies.
 Delivery checks and activity show acceptance/rejection; no observed event yet is
 not proof of a broken connection.
+
+On Cloud deployments, the front door must forward the public routine webhook
+path without requiring a browser session. The application still verifies the
+trigger secret. A `tenant_session_required` response means the request was
+blocked by the Cloud gateway before webhook authentication. Updating the tenant
+application alone does not change that gateway policy.
 
 ## Provider evidence and artwork
 

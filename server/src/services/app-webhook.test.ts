@@ -36,12 +36,14 @@ describe("shared app webhook authentication", () => {
   it.each([[], null, "string"])("rejects signed non-object payload %#", (payload) => {
     expect(() => verifyAppWebhook(signed(payload))).toThrow("must be an object");
   });
-  it("recognizes signed Fireflies summaries without a provider selection", () => {
-    const payload = { event: "meeting.summarized", meeting_id: "meeting-1", timestamp: 1780000000000 };
-    const result = verifyAppWebhook(signed(payload));
-    expect(result).toMatchObject({ payload, ignored: false, meetingMetadata: true });
-    expect(verifyAppWebhook(signed({ ...payload, timestamp: payload.timestamp + 1000 }))?.idempotencyKey).toBe(result?.idempotencyKey);
-    expect(verifyAppWebhook(signed({ ...payload, event: "meeting.transcribed" }))?.ignored).toBe(true);
-    expect(() => verifyAppWebhook(signed({ event: "meeting.summarized" }))).toThrow();
+  it.each([
+    { event: "meeting.summarized", meeting_id: "meeting-1", timestamp: 1780000000000 },
+    { event: "meeting.created", id: "another-provider-meeting" },
+    { event: "meeting.transcribed" },
+  ])("treats meeting events as generic app data %#", (payload) => {
+    const input = signed(payload);
+    const result = verifyAppWebhook(input);
+    expect(result).toMatchObject({ payload, ignored: false, meetingMetadata: false });
+    expect(verifyAppWebhook(input)?.idempotencyKey).toBe(result?.idempotencyKey);
   });
 });

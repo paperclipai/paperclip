@@ -1,6 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { badRequest, unauthorized } from "../errors.js";
-import { verifyFirefliesWebhook } from "./fireflies-webhook.js";
 
 /** Generic app setup supports either custom Authorization or a signing secret. */
 export function verifyAppWebhook(input: {
@@ -22,11 +21,6 @@ export function verifyAppWebhook(input: {
     catch { throw badRequest("Invalid webhook JSON"); }
     if (!value || typeof value !== "object" || Array.isArray(value)) throw badRequest("Webhook payload must be an object");
     const payload = value as Record<string, unknown>;
-    // Recognize the signed Fireflies V2 contract within the shared app flow.
-    // Validation still rejects incomplete meeting events; setup needs no provider selector.
-    if (typeof payload.event === "string" && payload.event.startsWith("meeting.")) {
-      return { ...verifyFirefliesWebhook(input), meetingMetadata: true };
-    }
     return {
       payload, ignored: false, meetingMetadata: false,
       idempotencyKey: input.idempotencyKey ?? `app-webhook:${createHash("sha256")
