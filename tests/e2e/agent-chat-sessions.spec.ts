@@ -19,28 +19,31 @@ test("built chat initializes after service worker takeover and reload with a slo
   request,
 }) => {
   const f = await setup(request);
-  const cdp = await context.newCDPSession(page);
-  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
   try {
-    await page.goto(f.route);
-    await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
-    // The failed CI traces stopped before React evaluated, while a service
-    // worker forwarded the Vite module graph. Keep this test on shipped assets
-    // and cover both first takeover and subsequent controlled navigations.
-    const scripts = await page.locator('script[type="module"][src]').evaluateAll(
-      (elements) => elements.map((element) => element.getAttribute("src")),
-    );
-    expect(scripts.length).toBeGreaterThan(0);
-    expect(scripts.every((src) => src?.startsWith("/assets/"))).toBe(true);
-    await page.evaluate(async () => { await navigator.serviceWorker.ready; });
-    for (let reload = 0; reload < 3; reload += 1) {
-      await page.reload();
+    const cdp = await context.newCDPSession(page);
+    try {
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+      await page.goto(f.route);
       await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
-      expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+      // The failed CI traces stopped before React evaluated, while a service
+      // worker forwarded the Vite module graph. Keep this test on shipped assets
+      // and cover both first takeover and subsequent controlled navigations.
+      const scripts = await page.locator('script[type="module"][src]').evaluateAll(
+        (elements) => elements.map((element) => element.getAttribute("src")),
+      );
+      expect(scripts.length).toBeGreaterThan(0);
+      expect(scripts.every((src) => src?.startsWith("/assets/"))).toBe(true);
+      await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+      for (let reload = 0; reload < 3; reload += 1) {
+        await page.reload();
+        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+        expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+      }
+      expect(await json(await request.get(f.chatPath))).toBeNull();
+    } finally {
+      await cdp.detach();
     }
-    expect(await json(await request.get(f.chatPath))).toBeNull();
   } finally {
-    await cdp.detach();
     await f.restore();
   }
 });
