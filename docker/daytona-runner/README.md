@@ -100,6 +100,11 @@ its frozen install, matching CI when a source commit precedes the lockfile bot.
 The complete resolved lockfile must match `PAPERCLIP_RUNNER_LOCK_SHA256` before
 package installation or lifecycle execution. Review and refresh that digest
 with source dependency changes; registry-time resolution drift fails closed.
+The Product E2E workflow resolves one lockfile before the image build. It
+verifies the downloaded artifact, then passes that artifact's SHA-256 as the
+`PAPERCLIP_RUNNER_LOCK_SHA256` build argument. The Dockerfile checks the resolved
+lock against this value before installation. The fixed Dockerfile default is
+for standalone builds; it must not replace a campaign's verified lock digest.
 Keep one latest stable CLI installation per provider; refresh exact runtime
 versions and qualification digests together, never install a private older copy
 or download dependencies when a task starts.

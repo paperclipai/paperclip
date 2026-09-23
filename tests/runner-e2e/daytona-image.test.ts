@@ -94,6 +94,22 @@ describe("runner E2E Daytona image contract", () => {
       '--build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}"',
     );
     expect(workflow).toContain(
+      "TARGET_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}",
+    );
+    expect(workflow).toContain(
+      '[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]',
+    );
+    expect(workflow).toContain(
+      '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
+    );
+    expect(
+      workflow.indexOf('[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]'),
+    ).toBeLessThan(
+      workflow.indexOf(
+        '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
+      ),
+    );
+    expect(workflow).toContain(
       "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
     );
     expect(workflow).toContain(
