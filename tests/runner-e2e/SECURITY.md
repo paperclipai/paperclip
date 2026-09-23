@@ -192,8 +192,8 @@ latest pointers are mutable, and S3 versioning makes those updates recoverable.
 ## Public evidence boundary
 
 CloudFront and GitHub Pages are public. Fixture identifiers, timing, token
-usage, costs, normalized results, allowlisted inert structured per-attempt
-evidence, and trusted runner PNG screenshots are expected public data. Each
+usage, costs, normalized results, and trusted runner PNG screenshots are
+expected public data. Each
 public screenshot must carry the explicit `public-runner-fixture` marker in
 the normalized result. This includes a `failure.png` capture. Screenshot paths
 must be safe PNG basenames and must be tied to the exact normalized execution
@@ -206,8 +206,10 @@ fixed catalog labels and sanitized numeric/status fields. Video, archives,
 generated Playwright/blob/HTML report trees, SVG or other active content,
 credentials, Paperclip homes, databases, workspaces, master keys,
 raw/unredacted logs, unmarked images, and unallowlisted files are not public.
-Allowlisted `.log` copies must pass the existing exact-value/key-shape scan and
-redaction boundary.
+Per-attempt JSON snapshots, result copies, logs, Markdown, and text files stay
+in the retained Actions artifact. Credential redaction does not remove hidden
+reasoning or provider session identities, so a text extension never admits a
+file to the public bundle. Graded results remain in `normalized-results.json`.
 
 The packaged evidence uploaded as a 30-day GitHub Actions artifact has a
 different, broader boundary. Text is exact-value and key-shape scanned and
@@ -220,8 +222,9 @@ capture requires review of the visible page state. Videos remain
 access-controlled.
 
 Before permanent publication, the campaign publisher creates a separate S3
-stage and retains only allowlisted `.json`, `.log`, `.md`, and `.txt` evidence,
-result PNGs with the explicit `public-runner-fixture` marker.
+stage and retains only result PNGs with the explicit `public-runner-fixture`
+marker under `evidence/`. This applies even to malformed JSON and renamed
+process logs. Original packaged evidence and grades remain unchanged.
 It then launches publisher-only Chromium with networking blocked to render one
 `public-images/campaign-summary.png`. That fixed-path PNG is capped at 12 MiB
 and its signature is validated. Per-attempt XML is excluded because browsers

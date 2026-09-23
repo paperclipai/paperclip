@@ -245,10 +245,10 @@ describe("runner E2E report aggregation", () => {
     expect(dashboard).toContain("data-gallery-next");
     expect(dashboard).toContain("View gallery · 1");
     expect(dashboard).toContain(
-      "Declared PNG screenshots and sanitized structured evidence are retained with every published campaign",
+      "Declared PNG screenshots and normalized results are retained with every published campaign",
     );
     expect(dashboard).toContain(
-      "Declared screenshots and sanitized structured evidence published",
+      "Declared screenshots and normalized results published",
     );
     expect(dashboard).toContain("message_contains");
     expect(dashboard).toContain("Matchers and test context");
