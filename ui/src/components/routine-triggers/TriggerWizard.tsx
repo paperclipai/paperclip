@@ -19,15 +19,15 @@ import { Label } from "@/components/ui/label";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { cn } from "@/lib/utils";
 import { AgentInstructions, CopyField } from "./WebhookFields";
-import { AppLogo } from "@/pages/apps/AppLogo";
-import { FirefliesWebhookInstructions } from "./FirefliesWebhookInstructions";
 import { WebhookUrlWarning } from "./WebhookUrlWarning";
 
 export type TriggerDraft = {
   kind: "choose" | "schedule" | "webhook";
   step: number;
   availableStep: number;
-  sender: "custom" | "github" | "fireflies";
+  sender: "custom" | "github";
+  /** Retained when resuming webhooks created before generic signed-app support. */
+  signingMode?: "bearer" | "app_webhook" | "fireflies_hmac";
   frequency: string;
   time: string;
   weekday: string;
@@ -51,6 +51,7 @@ export function webhookAgentInstructions(
   webhookUrl: string,
   webhookSecret: string,
   setupPending = true,
+  signingMode: TriggerDraft["signingMode"] = "app_webhook",
 ) {
   const common = [
     `Connect the sending app to the Paperclip routine ${JSON.stringify(routineTitle)}.`,
@@ -59,18 +60,7 @@ export function webhookAgentInstructions(
     "Content-Type: application/json",
   ];
   const auth =
-    sender === "fireflies"
-      ? [
-          "Open https://app.fireflies.ai/integrations/api/webhook and add a webhook.",
-          "Use the webhook URL above. It must be publicly reachable over HTTPS.",
-          `Signing Secret: ${webhookSecret}`,
-          "Paste this separate secret into Fireflies’ Signing Secret field; do not use your Fireflies API key.",
-          "Subscribe only to meeting.summarized (Summary ready), then save.",
-          "Fireflies signs the raw JSON body in X-Hub-Signature. No custom Authorization header is needed.",
-          "To test delivery, finish a meeting you own and wait for its summary to be ready.",
-          "The routine receives meeting_id. Its assigned agent needs access to a Fireflies Apps connection to retrieve the summary and transcript.",
-        ]
-      : sender === "github"
+    sender === "github"
       ? [
           "In GitHub, open your repository → Settings → Webhooks → Add webhook.",
           "Use the webhook URL above as Payload URL and select application/json as Content type.",
@@ -81,8 +71,13 @@ export function webhookAgentInstructions(
         ]
       : [
           `Secret key: ${webhookSecret}`,
-          `Authorization: Bearer ${webhookSecret}`,
-          "Set the HTTP header name to Authorization and its value to the complete Bearer value above, including the space after Bearer.",
+          ...(signingMode === "bearer" ? [] : [
+            `If the app asks for a signing secret, paste the secret key above. Paperclip accepts HMAC-SHA256 over the exact request body in ${signingMode === "fireflies_hmac" ? "X-Hub-Signature" : "X-Hub-Signature or X-Hub-Signature-256"}, formatted sha256=<hex digest>.`,
+          ]),
+          ...(signingMode === "fireflies_hmac" ? [] : [
+            `For apps with custom headers, use Authorization: Bearer ${webhookSecret}`,
+          ]),
+          "Subscribe only to the events that should start this routine. Public services need a publicly reachable HTTPS URL.",
           "In the sending app, add a webhook using this URL, POST method, JSON body, and headers, then save it.",
           "Send a unique Idempotency-Key header for each event and reuse it on retries, so retrying a setup test after activation cannot start the routine.",
           'Example JSON body: {"event":"deployment.completed","environment":"production"}',
@@ -180,7 +175,6 @@ export function RoutineTriggerWizard({
   }, [saveAndExit, setBreadcrumbs, routineTitle, routineId]);
   const schedule = draft.kind === "schedule";
   const github = draft.sender === "github";
-  const fireflies = draft.sender === "fireflies";
   const labels = schedule
     ? ["Choose trigger", "Set schedule", "Review schedule"]
     : ["Choose trigger", "Connect your app", "Check connection"];
@@ -208,7 +202,7 @@ export function RoutineTriggerWizard({
           ? "Set a schedule"
           : "Review your schedule"
         : draft.step === 1
-          ? `Connect ${fireflies ? "Fireflies" : github ? "GitHub" : "your app"}`
+          ? `Connect ${github ? "GitHub" : "your app"}`
           : "Check your connection";
   const subtitle =
     draft.step === 0
@@ -406,7 +400,6 @@ export function RoutineTriggerWizard({
                     Icon: Globe,
                   },
                   { sender: "github", label: "GitHub", Icon: GitBranch },
-                  { sender: "fireflies", label: "Fireflies — Summary ready", Icon: Webhook },
                 ] as const
               ).map(({ sender, label, Icon }) => (
                 <label
@@ -427,9 +420,7 @@ export function RoutineTriggerWizard({
                     disabled={draft.created}
                     onChange={() => patch({ sender })}
                   />
-                  {sender === "fireflies" ? (
-                    <AppLogo name="Fireflies" brandKey="fireflies" compact />
-                  ) : <Icon className="h-4 w-4" />}
+                  <Icon className="h-4 w-4" />
                   <span className="flex-1 text-sm">{label}</span>
                   {draft.sender === sender && <Check className="h-4 w-4" />}
                 </label>
@@ -437,16 +428,13 @@ export function RoutineTriggerWizard({
             </div>
           </fieldset>
         )}
-        {draft.kind === "webhook" && fireflies && draft.step === 0 && (
-          <p className="rounded-md bg-muted/40 p-4 text-sm">
-            Fireflies needs a publicly reachable HTTPS webhook URL. Each meeting’s
-            completed summary can start this routine. The assigned agent needs
-            access to your Fireflies connection to read the meeting.
+        {draft.kind === "webhook" && draft.step === 0 && (
+          <p className="text-sm text-muted-foreground">
+            Public services need a publicly reachable HTTPS webhook URL.
           </p>
         )}
         {!schedule && draft.step === 1 && (
           <div className="space-y-5">
-            {fireflies && <FirefliesWebhookInstructions />}
             {webhookSecret && (
               <AgentInstructions
                 value={webhookAgentInstructions(
@@ -454,6 +442,8 @@ export function RoutineTriggerWizard({
                   routineTitle,
                   webhookUrl,
                   webhookSecret,
+                  true,
+                  draft.signingMode,
                 )}
               />
             )}
@@ -461,10 +451,19 @@ export function RoutineTriggerWizard({
               label={github ? "Payload URL" : "Webhook URL"}
               value={webhookUrl}
             />
+            {!github && draft.signingMode !== "bearer" && (
+              <p className="text-sm text-muted-foreground">
+                Paste this key into your app’s signing secret field.
+                {draft.signingMode !== "fireflies_hmac" && <>
+                  {" "}If your app uses custom headers instead, set Authorization to Bearer followed
+                  by a space and this key.
+                </>}
+              </p>
+            )}
             {webhookSecret ? (
               <CopyField
-                label={fireflies ? "Signing Secret" : github ? "Secret" : "Authorization header value"}
-                value={github || fireflies ? webhookSecret : `Bearer ${webhookSecret}`}
+                label={github ? "Secret" : draft.signingMode === "bearer" ? "Authorization header value" : "Secret key"}
+                value={!github && draft.signingMode === "bearer" ? `Bearer ${webhookSecret}` : webhookSecret}
               />
             ) : (
               <div className="space-y-2">
@@ -493,12 +492,10 @@ export function RoutineTriggerWizard({
             </div>
             <div className="space-y-2">
               <p className="text-sm font-medium">
-                Send an event from {fireflies ? "Fireflies" : github ? "GitHub" : "your app"}
+                Send an event from {github ? "GitHub" : "your app"}
               </p>
               <p className="text-sm text-muted-foreground">
-                {fireflies
-                  ? "Finish a meeting you own and wait for Fireflies to generate its summary. Only summary-ready events verify this trigger. You can also finish setup without waiting."
-                  : github
+                {github
                   ? "Open this webhook in your repository settings. Under Recent Deliveries, choose Redeliver on an event."
                   : "Look for “Send test” in your app’s webhook settings. If it doesn’t have one, do the action that should trigger the webhook—for example, complete a deployment."}
               </p>

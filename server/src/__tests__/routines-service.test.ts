@@ -2335,10 +2335,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }
   });
 
-  async function firefliesFixture(setupPending = false) {
+  async function firefliesFixture(setupPending = false, signingMode: "app_webhook" | "fireflies_hmac" = "app_webhook") {
     const fixture = await seedFixture();
     const created = await fixture.svc.createTrigger(fixture.routine.id, {
-      kind: "webhook", signingMode: "fireflies_hmac", setupPending,
+      kind: "webhook", signingMode, setupPending,
     }, {});
     const delivery = (extra: Record<string, unknown> = {}, secret = created.secretMaterial!.webhookSecret) => {
       const payload = { event: "meeting.summarized", meeting_id: "meeting-1", timestamp: 1780000000000, ...extra };
@@ -2347,6 +2347,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     };
     return { ...fixture, ...created, delivery };
   }
+
+  it("accepts ordinary signed app events and bearer deliveries through the same setup", async () => {
+    const { svc, routine, trigger, secretMaterial } = await firefliesFixture(true);
+    const payload = { event: "deployment.completed", deployment_id: "deploy-1" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const request = {
+      rawBody, payload,
+      hubSignatureHeader: `sha256=${createHmac("sha256", secretMaterial!.webhookSecret).update(rawBody).digest("hex")}`,
+    };
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({ status: "test_received" });
+    await svc.updateTrigger(trigger.id, { setupPending: false }, {});
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({ status: "test_received" });
+    expect(await svc.listRuns(routine.id)).toEqual([]);
+    await expect(svc.firePublicTrigger(trigger.publicId!, {
+      authorizationHeader: `Bearer ${secretMaterial!.webhookSecret}`,
+      payload: { event: "deployment.completed", deployment_id: "deploy-2" },
+      idempotencyKey: "deploy-2",
+    })).resolves.toMatchObject({ status: "issue_created" });
+    expect((await svc.listRuns(routine.id))[0]?.triggerPayload).toMatchObject({ deployment_id: "deploy-2" });
+  });
 
   it("dispatches one Fireflies run for concurrent retries and passes meeting metadata", async () => {
     const { svc, routine, trigger, delivery, wakeups } = await firefliesFixture();
@@ -2384,7 +2404,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("restores the Fireflies signing mode through routine revisions", async () => {
-    const { svc, routine, trigger, revision, secretMaterial } = await firefliesFixture();
+    const { svc, routine, trigger, revision, secretMaterial } = await firefliesFixture(false, "fireflies_hmac");
     await svc.updateTrigger(trigger.id, { signingMode: "bearer" }, {});
     const restored = await svc.restoreRevision(routine.id, revision.id, {});
     expect(restored.revision.snapshot.triggers[0]?.signingMode).toBe("fireflies_hmac");

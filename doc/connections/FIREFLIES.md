@@ -27,13 +27,14 @@ renaming meetings, revoking access, and creating soundbites are mutations.
 1. Create or choose a routine and set its assigned agent and instructions.
    Give that agent access to your Fireflies connection in Apps.
 2. In the routine's **Triggers** tab, add a webhook and choose
-   **Fireflies — Summary ready**.
+   **Another app or script**. No provider-specific routine option is needed.
 3. Ensure the displayed callback URL is publicly reachable over HTTPS.
    A localhost URL or private-network HTTPS address cannot receive Fireflies
    deliveries. This prerequisite applies only to webhooks, not MCP access.
 4. Open [Fireflies Webhooks V2 settings](https://app.fireflies.ai/integrations/api/webhook).
-   Add the displayed URL and **Signing Secret**. This is the routine's generated
-   secret, not your Fireflies API key.
+   Add the displayed URL and paste Paperclip’s **Secret key** into Fireflies’
+   **Signing Secret** field. This is the routine’s generated secret, not your
+   Fireflies API key.
 5. Subscribe only to `meeting.summarized`, then save in Fireflies.
 6. Optionally finish a meeting you own and wait for its summary to test delivery.
    Setup deliveries verify the connection without creating tasks. Finish setup
@@ -61,7 +62,15 @@ incoming events from creating tasks.
 ## Delivery and authentication
 
 The existing `POST /api/routine-triggers/public/:publicId/fire` endpoint supports
-`signingMode: "fireflies_hmac"` in trigger creation, updates, and revision restore.
+`signingMode: "app_webhook"` for **Another app or script**. It accepts either a
+bearer token or an HMAC-SHA256 signature in `X-Hub-Signature` or
+`X-Hub-Signature-256`. Signed bodies are authenticated before interpretation;
+an invalid signature cannot fall back to bearer authentication. Ordinary signed
+app events retain their JSON payload and use the supplied idempotency key, or a
+trigger-scoped body digest when no delivery key is supplied. The signed Fireflies
+V2 meeting contract is recognized automatically. Existing `fireflies_hmac`
+triggers and revision snapshots remain compatible but are no longer offered as
+a setup choice.
 Fireflies signs the exact request body with HMAC-SHA256 in `X-Hub-Signature`,
 formatted `sha256=<hex digest>`. Missing or invalid signatures return 401;
 malformed signed payloads return 400. No bearer header is needed.
