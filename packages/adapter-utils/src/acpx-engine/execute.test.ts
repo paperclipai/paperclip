@@ -132,11 +132,11 @@ function createLocalSandboxRunner(
 
 function buildRuntime(
   onSetConfigOption?: (input: { key: string; value: string }) => void,
-  onEnsureSession?: (input: Record<string, unknown>) => void,
+  onEnsureSession?: (input: Record<string, unknown>) => unknown,
 ) {
   return {
     ensureSession: async (input: Record<string, unknown>) => {
-      onEnsureSession?.(input);
+      await onEnsureSession?.(input);
       return ({
       backendSessionId: "backend-session",
       agentSessionId: "agent-session",
@@ -168,6 +168,7 @@ async function runExecutor(
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
+    inspectSession?: (input: Record<string, unknown>) => Promise<void>;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -180,11 +181,11 @@ async function runExecutor(
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
       : {}),
-    createRuntime: (options) => {
-      runtimeOptions.push(options as unknown as Record<string, unknown>);
+    createRuntime: (runtimeConfig) => {
+      runtimeOptions.push(runtimeConfig as unknown as Record<string, unknown>);
       return buildRuntime(
         ({ key, value }) => configOptions.push({ key, value }),
-        (input) => sessionInputs.push(input),
+        async (input) => { sessionInputs.push(input); await options.inspectSession?.(input); },
       ) as never;
     },
   });
@@ -369,6 +370,54 @@ const ALLOWED_TURN_SPAN_ATTRIBUTE_KEYS = new Set<string>([
 ]);
 
 describe("shared ACPX engine runtime behavior", () => {
+  it("removes the oversized wake file when ACP initialization fails", async () => {
+    const root = await makeTempRoot();
+    let filePath = "";
+    const execute = createAcpxEngineExecutor({ createRuntime: () => ({
+      ...buildRuntime(),
+      ensureSession: async (input: { sessionOptions: { env: Record<string, string> } }) => {
+        filePath = input.sessionOptions.env.PAPERCLIP_WAKE_PAYLOAD_PATH!;
+        expect(await fs.readFile(filePath, "utf8")).toContain("complete description");
+        throw new Error("synthetic initialization failure");
+      },
+    }) as never });
+    const result = await execute({
+      runId: "failed-wake-init", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", cwd: root, stateDir: path.join(root, "state") },
+      context: { paperclipWake: { issue: { id: "issue-1", description: "complete description ".repeat(40_000) } } },
+      onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+    expect(filePath).not.toBe("");
+    await expect(fs.stat(path.dirname(filePath))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("delivers the full oversized wake during ACP initialization and cleans it up after each resumed turn", async () => {
+    const root = await makeTempRoot();
+    const config = { agent: "custom", agentCommand: "node ./fake-acp.js", cwd: root, stateDir: path.join(root, "state") };
+    let sessionParams: unknown;
+    const paths: string[] = [];
+    for (const marker of ["first", "resumed"]) {
+      const description = marker + "🙂 complete context ".repeat(40_000);
+      const run = await runExecutor(config, {
+        runtime: sessionParams ? { sessionParams } : {},
+        context: { taskId: "issue-1", paperclipWake: { issue: { id: "issue-1", identifier: "TEST-1", description } } },
+        inspectSession: async (input) => {
+          const env = (input.sessionOptions as { env: Record<string, string> }).env;
+          expect(env.PAPERCLIP_WAKE_PAYLOAD_JSON).toBeUndefined();
+          const filePath = env.PAPERCLIP_WAKE_PAYLOAD_PATH!;
+          paths.push(filePath);
+          expect(JSON.parse(await fs.readFile(filePath, "utf8")).issue.description).toBe(description);
+        },
+      });
+      sessionParams = run.result.sessionParams;
+      expect(String(run.meta[0]?.prompt)).toContain(JSON.stringify(paths.at(-1)));
+      expect(String(run.meta[0]?.prompt)).toContain("takes precedence over any older wake environment");
+      await expect(fs.stat(paths.at(-1)!)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(new Set(paths).size).toBe(2);
+  });
+
   it.each(["claude", "codex", "gemini", "kimi", "custom"])("defaults the legacy %s engine to full auto on fresh and resumed runs", async (agent) => {
     const root = await makeTempRoot();
     const config = {

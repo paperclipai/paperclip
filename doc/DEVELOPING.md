@@ -345,6 +345,27 @@ Allow additional private hostnames (for example custom Tailscale hostnames):
 npx paperclipai allowed-hostname dotta-macbook-pro
 ```
 
+## Wake payload process transport
+
+Process adapters keep `PAPERCLIP_WAKE_PAYLOAD_JSON` inline up to 64 KiB of
+UTF-8 data (including shell quoting overhead for remote launches). Larger values are written without modification to a private file
+on the execution host. The child receives `PAPERCLIP_WAKE_PAYLOAD_PATH` instead
+of the JSON variable. Consumers must support both forms. Prompt rendering and
+gateway request serialization remain unchanged.
+
+Local files use a unique temporary directory (0700) and file (0600). Confined
+local processes receive a read-only mount of that file. SSH and sandbox launches
+upload bounded chunks into an exclusively created directory, then verify the
+byte count before starting the child. Failed uploads prevent launch. The process
+or ACP turn owns cleanup, including startup failure and cancellation paths. ACP
+prompts name the current turn's file so a resumed process cannot select an old
+wake from its initial environment. Invocation logs record payload size only.
+
+The files are temporary run data, not durable context. An abrupt host or worker
+crash can leave a private temporary directory for the host's normal temporary
+file cleanup. This transport does not bound other environment variables or CLI
+prompt arguments, and does not apply to hosted SDK or gateway request bodies.
+
 ## Test Commands
 
 Use the cheap local default unless you are specifically working on browser flows:

@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -19,6 +20,7 @@ import {
   type SshEnvLabFixtureState,
 } from "./ssh.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { runChildProcess } from "./server-utils.js";
 
 const SSH_FIXTURE_TEST_TIMEOUT_MS = 30_000;
 let sshEnvLabUnsupportedReason: string | null = null;
@@ -511,6 +513,27 @@ describe("ssh env-lab fixture", () => {
       }),
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
   });
+
+  it("delivers and removes an oversized wake on the SSH host", async (context) => {
+    const rootDir = await createFixtureRootDir();
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH wake payload test");
+    if (!started) { context.skip(); return; }
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const payload = JSON.stringify({ description: "full 🙂 wake context ".repeat(10_000) });
+    const result = await runChildProcess("ssh-wake", process.execPath, ["-e", `
+      const fs = require('node:fs');
+      const p = process.env.PAPERCLIP_WAKE_PAYLOAD_PATH;
+      console.log(JSON.stringify({ path: p, digest: require('node:crypto').createHash('sha256').update(fs.readFileSync(p)).digest('hex'), inline: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON ?? null }));
+    `], {
+      cwd: rootDir, env: { PAPERCLIP_WAKE_PAYLOAD_JSON: payload }, timeoutSec: 10, graceSec: 1, onLog: async () => {},
+      remoteExecution: { ...config, remoteCwd: started.workspaceDir },
+    });
+    expect(result.exitCode).toBe(0);
+    const received = JSON.parse(result.stdout);
+    expect(received.digest).toBe(createHash("sha256").update(payload).digest("hex"));
+    expect(received.inline).toBeNull();
+    await expect(stat(path.dirname(received.path))).rejects.toMatchObject({ code: "ENOENT" });
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("syncs a local directory into the remote fixture workspace", async () => {
     const rootDir = await createFixtureRootDir();

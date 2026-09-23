@@ -21,6 +21,7 @@ import {
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
   prepareAdapterExecutionTargetRuntime,
+  prepareAdapterWakePayloadEnv,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
   resolveReferencedSourceIgnore,
@@ -76,6 +77,7 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { renderWakePayloadFileNote, type WakePayloadDelivery } from "../wake-payload-env.js";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -429,6 +431,7 @@ export interface AcpxEngineExecutorOptions {
 }
 
 interface AcpxPreparedRuntime {
+  wakePayloadDelivery: WakePayloadDelivery;
   acpxAgent: string;
   coalescePlaceholderToolUpdates: boolean;
   mode: "persistent" | "oneshot";
@@ -2433,8 +2436,13 @@ async function buildRuntime(input: {
   let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
   let processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null = null;
   let runtimeEnv: Record<string, string> = {};
+  let wakePayloadDelivery: WakePayloadDelivery | null = null;
   const startTransportStart = nowMs();
   try {
+    wakePayloadDelivery = await prepareAdapterWakePayloadEnv(useRemoteProcessSession ? executionTarget : null, env);
+    delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
+    delete env.PAPERCLIP_WAKE_PAYLOAD_PATH;
+    Object.assign(env, wakePayloadDelivery.env);
     if (useRemoteProcessSession && sandboxSite) {
       // The sandbox run site brings up both host-side bridges concurrently, keeps
       // the one paperclip-env → process-session-launch dependency at a single
@@ -2464,6 +2472,7 @@ async function buildRuntime(input: {
     const startedControl = sandboxSite?.controlBridge ?? paperclipBridge;
     const startedAgent = sandboxSite?.agentBridge ?? processSessionBridge;
     await Promise.allSettled([startedControl?.stop(), startedAgent?.stop()]);
+    await wakePayloadDelivery?.cleanup().catch(() => {});
     // The staged home / copy-back teardown must run even if a bridge fails to
     // start after the workspace + managed home were already staged into the
     // sandbox, so a refreshed credential is copied back on this error path too.
@@ -2506,6 +2515,7 @@ async function buildRuntime(input: {
   });
 
   return {
+    wakePayloadDelivery,
     acpxAgent,
     coalescePlaceholderToolUpdates,
     mode,
@@ -3008,6 +3018,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = externalChatTurn ? "" : renderPaperclipEnvNote(env);
+  const wakePayloadFileNote = externalChatTurn ? "" : renderWakePayloadFileNote(env);
   const apiAccessNote = externalChatTurn ? "" : renderApiAccessNote(env);
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
@@ -3016,6 +3027,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     sessionHandoffNote,
     taskContextNote,
     paperclipEnvNote,
+    wakePayloadFileNote,
     apiAccessNote,
     renderedPrompt,
   ]);
@@ -3030,7 +3042,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
       taskContextChars: taskContextNote.length,
-      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+      runtimeNoteChars: paperclipEnvNote.length + wakePayloadFileNote.length + apiAccessNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     },
   };
@@ -3927,6 +3939,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // null on the host lane (no staging) and on a build failure (where
     // `buildRuntime` already released its own partial lease).
     let releaseStagingLease: (() => void) | null = null;
+    let wakePayloadDelivery: WakePayloadDelivery | null = null;
     let stopTimer: ReturnType<typeof setTimeout> | undefined;
     let removeStopListener: (() => void) | undefined;
     // Unregisters the sandbox duplex bridge's loss listener (below, in
@@ -4155,6 +4168,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // Capture acquired resources before the cancellation boundary so the
           // normal settlement path also releases a just-completed build.
           releaseStagingLease = prepared.sessionStagingLeaseRelease;
+          wakePayloadDelivery = prepared.wakePayloadDelivery;
         } finally {
           await startupCancellation.finish();
         }
@@ -5430,6 +5444,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       return await runAttempt(plan);
     } finally {
       clearTimeout(stopTimer);
+      await (wakePayloadDelivery as WakePayloadDelivery | null)?.cleanup().catch(async () => {
+        await ctx.onLog("stderr", "[paperclip] Could not remove the wake payload file after the turn ended.\n").catch(() => {});
+      });
       removeStopListener?.();
       removeLossListener?.();
       clearTimeout(lossDeadlineTimer);

@@ -10,7 +10,8 @@ import {
   buildLocalProcessSandboxSpawnTarget,
   type LocalProcessSandboxOptions,
 } from "./local-process-sandbox.js";
-import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
+import { buildSshSpawnTarget, runSshCommand, type SshRemoteExecutionSpec } from "./ssh.js";
+import { prepareWakePayloadEnv } from "./wake-payload-env.js";
 import { redactCommandText } from "./command-redaction.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
@@ -165,7 +166,7 @@ export function isPaperclipRuntimeEnvKey(key: string): boolean {
 // Other PAPERCLIP_*-named config keys are allowed as long as Paperclip has
 // not assigned the same key for the run (runtime vars always win).
 export function isForbiddenConfigEnvKey(key: string): boolean {
-  return key === "PAPERCLIP_API_KEY";
+  return key === "PAPERCLIP_API_KEY" || key === "PAPERCLIP_WAKE_PAYLOAD_PATH";
 }
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -3069,6 +3070,10 @@ export function redactEnvForLogs(
 ): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
+    if (key === "PAPERCLIP_WAKE_PAYLOAD_JSON") {
+      redacted[key] = `[wake payload: ${Buffer.byteLength(value, "utf8")} bytes]`;
+      continue;
+    }
     redacted[key] = SENSITIVE_ENV_KEY.test(key) ? REDACTED_LOG_VALUE : value;
   }
   return redacted;
@@ -4572,6 +4577,34 @@ export async function ensureCommandResolvable(
 }
 
 export async function runChildProcess(
+  runId: string,
+  command: string,
+  args: string[],
+  opts: Parameters<typeof runChildProcessWithPreparedEnv>[3],
+): Promise<RunProcessResult> {
+  const remote = opts.remoteExecution;
+  const delivery = await prepareWakePayloadEnv(opts.env, remote
+    ? async (script) => (await runSshCommand(remote, script, { timeoutMs: 30_000, maxBuffer: 64 * 1024 })).stdout
+    : undefined);
+  try {
+    return await runChildProcessWithPreparedEnv(runId, command, args, {
+      ...opts,
+      env: delivery.env,
+      localProcessSandbox: opts.localProcessSandbox && delivery.filePath && !remote
+        ? { ...opts.localProcessSandbox, managedPaths: [
+            ...(opts.localProcessSandbox.managedPaths ?? []),
+            { path: delivery.filePath, access: "ro" },
+          ] }
+        : opts.localProcessSandbox,
+    });
+  } finally {
+    await delivery.cleanup().catch(async () => {
+      await opts.onLog("stderr", "[paperclip] Could not remove the wake payload file after the process ended.\n").catch(() => {});
+    });
+  }
+}
+
+async function runChildProcessWithPreparedEnv(
   runId: string,
   command: string,
   args: string[],
