@@ -1,3 +1,8 @@
+import {
+  isSupportedRemoteCodexVersion,
+  parseCodexCliVersion,
+  REMOTE_CODEX_SUPPORTED_RANGE,
+} from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
@@ -10666,6 +10671,7 @@ async function createRunnerdBackendWithinSessionClaim(
     assertRemoteRunnerBuildMetadata(metadata, requiredMode);
   };
 
+  const reportedCodexVersions = new Set<string>();
   const verifyRemoteCodex = async (executable = remoteCodexBinary) => {
     if (!remoteTarget || !remoteCommandRunner || !executable) return;
     const versionResult = await remoteCommandRunner.execute({
@@ -10679,10 +10685,17 @@ async function createRunnerdBackendWithinSessionClaim(
       throw new Error("runner_remote_codex_artifact_verification_failed");
     }
     const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`;
-    const version = versionOutput.match(/\bcodex-cli\s+(\d+\.\d+\.\d+)\b/)?.[1];
-    if (version !== REMOTE_PROVIDER_PACK_PINS.codex) {
+    const version = parseCodexCliVersion(versionOutput);
+    if (!version || !isSupportedRemoteCodexVersion(version)) {
       throw new Error(
-        `runner_remote_provider_artifact_incompatible: expected Codex ${REMOTE_PROVIDER_PACK_PINS.codex}, received ${version ?? "an unrecognized version"}`,
+        `runner_remote_provider_artifact_incompatible: supported Codex versions ${REMOTE_CODEX_SUPPORTED_RANGE}, received ${version ?? "an unrecognized or prerelease version"}; install a supported stable Codex release or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`,
+      );
+    }
+    if (version !== REMOTE_PROVIDER_PACK_PINS.codex && !reportedCodexVersions.has(version)) {
+      reportedCodexVersions.add(version);
+      await input.onLog?.(
+        "stderr",
+        `[paperclip-runner] using compatible Codex ${version} (supported ${REMOTE_CODEX_SUPPORTED_RANGE}; install pin ${REMOTE_PROVIDER_PACK_PINS.codex})\n`,
       );
     }
   };

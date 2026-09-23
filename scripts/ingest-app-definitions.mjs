@@ -912,6 +912,7 @@ const categoryBySlug = {
   coda: "productivity",
   egnyte: "content",
   embat: "commerce",
+  fireflies: "productivity",
   "hugging-face": "ai",
   jira: "productivity",
   kernel: "developer",
@@ -1072,6 +1073,21 @@ const apiKeyMethodFor = (
   );
 };
 const specialMethodsFor = (entry) => {
+  if (entry.slug === "fireflies")
+    return [
+      oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+        defaults: { serverUrl: entry.serverUrl, scopesHint: ["email", "profile"] },
+        guidanceMd: "Sign in to Fireflies to use meeting transcripts, summaries, and action items. Configure optional summary-ready webhooks separately in a routine's Triggers tab.",
+      }),
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        whenToUse: "Use your Fireflies API key instead of browser sign-in.",
+        guidanceMd: "Open Fireflies Settings → Developer Settings, copy your API key, and paste it below. This key accesses your meeting data; routine webhooks use a separate signing secret.",
+        consoleLinks: {
+          keys: "https://app.fireflies.ai/settings",
+          docs: entry.docsUrl,
+        },
+      }),
+    ];
   // Atlassian's /authv2 rollout only issues GA-tool-compatible tokens when the
   // authorization request includes this reviewed protected-resource scope set.
   // Omitting scope currently yields agent-interface scopes that its own Jira
@@ -1410,7 +1426,9 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: `Connect ${entry.name}'s provider-hosted MCP server.`,
+    description: entry.slug === "fireflies"
+      ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
+      : `Connect ${entry.name}'s provider-hosted MCP server.`,
     categories: [categoryBySlug[entry.slug] ?? "other"],
     featured: entry.slug === "jira",
     branding: brandingFor(entry.slug),

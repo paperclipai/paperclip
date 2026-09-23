@@ -989,6 +989,25 @@ In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to th
 
 When a workspace service runs Paperclip for browser OAuth QA, configure its `expose.urlTemplate` with the canonical URL the browser can reach. Paperclip preserves explicit `PAPERCLIP_PUBLIC_URL` or `BETTER_AUTH_URL` settings; otherwise it uses a valid exposed HTTPS origin (or loopback HTTP) as the managed runtime fallback for Better Auth and `/api/tools/oauth/callback`. Internal service names such as `http://paperclip-dev:<port>` are rejected unless that hostname is genuinely the browser route. Use a unique origin per isolated worktree. See [Execution Workspaces And Runtime Services](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#browser-reachable-origins-for-oauth-qa) for configuration and verification.
 
+## Wake Context Delivery
+
+Built-in adapters deliver wake context through the run prompt, including structured
+execution-continuation data. They do not export `PAPERCLIP_WAKE_PAYLOAD_JSON`. A
+large JSON environment entry can prevent the agent process from starting with
+`E2BIG`, even when the same context fits in the prompt transport. Configured values
+for this retired variable are ignored. Scalar runtime variables such as
+`PAPERCLIP_TASK_ID` and `PAPERCLIP_WAKE_REASON` remain available.
+
+Custom instructions that read the retired variable must use the wake payload in
+the prompt instead. This transport change adds no history limits or truncation;
+existing comment windows and resume-delta rendering still apply. Gateway request
+bodies and Hermes prompt-template JSON variables remain supported.
+
+This removes the duplicate environment entry, not every possible `E2BIG` cause.
+Legacy CLI paths that put prompts in command-line arguments (Gemini, Grok, Kimi,
+Pi, and Hermes) still have argument-size limits. ACP turns, SDK requests, and
+CLI paths that use stdin avoid that separate limit for the wake prompt.
+
 ## Paperclip Runner Adapter Conversion
 
 The experimental Paperclip Runner offers native Codex, OpenCode, and **ACPX

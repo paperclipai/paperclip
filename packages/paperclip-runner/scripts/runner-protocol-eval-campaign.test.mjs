@@ -85,6 +85,7 @@ async function fixture() {
 
 test("maps every qualified driver to one explicit credential boundary", () => {
   assert.equal(credentialForConfig({ provider: "codex" }), "OPENAI_API_KEY");
+  assert.equal(credentialForConfig({ provider: "acpx", acpxAgent: "grok" }), "XAI_API_KEY");
   assert.equal(
     credentialForConfig({ provider: "opencode" }),
     "OPENROUTER_API_KEY",

@@ -64,6 +64,7 @@ export function credentialForConfig(config) {
   if (config.provider === "acpx") {
     if (config.acpxAgent === "pi") return "OPENROUTER_API_KEY";
     if (config.acpxAgent === "claude") return "ANTHROPIC_API_KEY";
+    if (config.acpxAgent === "grok") return "XAI_API_KEY";
     if (config.acpxAgent === "codex") return "OPENAI_API_KEY";
   }
   throw new Error(
