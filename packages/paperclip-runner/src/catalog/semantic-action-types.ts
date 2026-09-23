@@ -15,6 +15,7 @@ export type PaperclipSemanticActionId =
   | "block_task"
   | "request_review"
   | "list_agents"
+  | "hire_agent"
   | "get_agent"
   | "search_tasks"
   | "list_approvals"

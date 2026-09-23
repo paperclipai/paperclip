@@ -21,6 +21,7 @@ export const Connecting: Story = { args: { scenario: "connecting" } };
 export const BrowserSignInPending: Story = { args: { scenario: "sign_in" } };
 export const ReturnedFromSignIn: Story = { args: { scenario: "returned" } };
 export const SignInCancelled: Story = { args: { scenario: "cancelled" } };
+export const AuthorizationFailed: Story = { args: { scenario: "oauth_failed" } };
 export const InvalidUrl: Story = { args: { scenario: "invalid_url" } };
 export const RejectedCredentials: Story = { args: { scenario: "rejected" } };
 export const UnreachableEndpoint: Story = { args: { scenario: "unreachable" } };
@@ -40,3 +41,7 @@ export const ProviderHandoffAfterSetup: Story = { args: { scenario: "provider_pe
   const dialog = await within(document.body).findByRole("dialog");
   await userEvent.click(within(dialog).getByRole("button", { name: "Run" }));
 } };
+
+export const InlineCardAccess: Story = { args: { scenario: "initial", inline: true } };
+export const InlineCardConfiguration: Story = { args: { scenario: "connect", inline: true } };
+export const NarrowInlineCard: Story = { args: { scenario: "connect", inline: true }, globals: { viewport: { value: "mobile", isRotated: false } } };

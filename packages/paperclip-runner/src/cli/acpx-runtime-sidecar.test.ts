@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ACPX_SIDECAR_PROTOCOL_VERSION } from "../drivers/acpx/sidecar-protocol.js";
+import { canonicalProviderEventsFromAcpxRuntimeEvent } from "../provider-events.js";
 import {
   awaitSidecarCleanupWithin,
   closeActiveSidecarHostWithin,
@@ -30,6 +31,43 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
+  it("preserves ACP input presence through the bounded sidecar handoff", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)),
+      "utf8",
+    );
+    const start = source.indexOf("function boundRuntimeEventForNormalization");
+    const end = source.indexOf("\nfunction sanitizeRuntimeEvent", start);
+    if (start < 0 || end < 0) throw new Error("sidecar normalization source not found");
+    const functionSource = source
+      .slice(start, end)
+      .replace(
+        /function boundRuntimeEventForNormalization\(\n  event: AcpRuntimeEvent,\n\): AcpRuntimeEvent \{/,
+        "function boundRuntimeEventForNormalization(event) {",
+      )
+      .replace("  } as BoundedRuntimeToolEvent;", "  };");
+    const bound = new Function(
+      "boundedOptionalText", "stableProviderIdentity", "safeAcpxLocations", "openParams", "safeOutput",
+      `return (${functionSource});`,
+    )(
+      (value: unknown, fallback: string, max: number) => typeof value === "string" ? value.slice(0, max) : fallback,
+      (value: string) => value,
+      () => [],
+      null,
+      () => ({ output: null, outputBytes: 0, outputTruncated: false, outputDigest: null }),
+    ) as (event: Record<string, unknown>) => Record<string, unknown>;
+    const bounded = bound({
+      type: "tool_call", toolCallId: "provider-tool", title: "search", kind: "other",
+      status: "pending", rawInput: { secret: "must not cross" }, rawOutput: null,
+    });
+    expect(bounded.inputUpdated).toBe(true);
+    expect(bounded).not.toHaveProperty("rawInput");
+    const canonical = canonicalProviderEventsFromAcpxRuntimeEvent(bounded as never, "fallback")[0]!;
+    expect(canonical.payload).toMatchObject({ inputUpdated: true });
+    expect(JSON.stringify(canonical.payload)).not.toContain("must not cross");
+    expect(source).toContain("? boundedTool.inputUpdated");
+  });
+
   it.each(["paperclip_finish", "paperclip_block"])(
     "bounds pending %s calls before reserved handling and resumes admission",
     async (operationId) => {

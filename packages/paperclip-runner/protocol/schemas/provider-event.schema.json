@@ -54,6 +54,7 @@
         "target": { "$ref": "#/$defs/safePath" },
         "namespace": { "type": ["string", "null"], "maxLength": 240 },
         "readOnly": { "type": ["boolean", "null"] },
+        "inputUpdated": { "type": "boolean" },
         "status": { "enum": ["running", "completed", "failed", "cancelled", "interrupted"] },
         "durationMs": { "type": ["integer", "null"], "minimum": 0 },
         "exitCode": { "type": ["integer", "null"] },

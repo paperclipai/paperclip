@@ -8,8 +8,8 @@ import type { PluginOrganizationSwitcherProps } from "@paperclipai/plugin-sdk/ui
 import { PluginOrganizationSwitcher } from "./PluginOrganizationSwitcher";
 import { registerPluginReactComponent, registerPluginWebComponent, type ResolvedPluginSlot } from "@/plugins/slots";
 
-const state = vi.hoisted(() => ({ userId: "alice", companyId: "company-a", settled: true, companyListReady: true, companyIds: ["company-a", "company-b"], slots: [] as ResolvedPluginSlot[], errorMessage: null as string | null, mobile: false, collapsed: false, close: vi.fn(), signOut: vi.fn(), props: null as PluginOrganizationSwitcherProps | null }));
-vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => state, useCompanyListQuery: () => ({ isSuccess: state.companyListReady, data: { unauthorized: false, companies: state.companyIds.map(id => ({ id, name: "Acme", issuePrefix: "ACME", logoUrl: "/logo" })) } }) }));
+const state = vi.hoisted(() => ({ userId: "alice", companyId: "company-a", settled: true, failed: false, isLoading: false, companyListError: false, companyListReady: true, companyIds: ["company-a", "company-b"], slots: [] as ResolvedPluginSlot[], errorMessage: null as string | null, mobile: false, collapsed: false, close: vi.fn(), signOut: vi.fn(), props: null as PluginOrganizationSwitcherProps | null }));
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => state, useCompanyListQuery: () => ({ isSuccess: state.companyListReady, isError: state.companyListError, data: { unauthorized: false, companies: state.companyIds.map(id => ({ id, name: "Acme", issuePrefix: "ACME", logoUrl: "/logo" })) } }) }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: state.userId } }) } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: state.companyId, selectedCompany: { name: "Acme", issuePrefix: "ACME", logoUrl: "/logo" } }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: state.mobile, setSidebarOpen: state.close, collapsed: state.collapsed, peeking: false }) }));
@@ -26,7 +26,7 @@ function render() {
 }
 afterEach(() => {
   if (root) flushSync(() => root!.unmount()); root = undefined; container?.remove(); client.clear(); vi.restoreAllMocks();
-  Object.assign(state, { userId: "alice", companyId: "company-a", settled: true, companyListReady: true, companyIds: ["company-a", "company-b"], slots: [], errorMessage: null, mobile: false, collapsed: false, props: null });
+  Object.assign(state, { userId: "alice", companyId: "company-a", settled: true, failed: false, isLoading: false, companyListError: false, companyListReady: true, companyIds: ["company-a", "company-b"], slots: [], errorMessage: null, mobile: false, collapsed: false, props: null });
   state.close.mockClear(); state.signOut.mockClear();
 });
 function register() {
@@ -39,11 +39,29 @@ function register() {
   state.slots = [slot];
 }
 describe("organization navigation replacement", () => {
-  it("keeps built-in navigation for absent, ambiguous, failed or unsettled discovery", () => {
+  it("reserves the trigger until identity, companies, discovery and the module are ready", () => {
+    state.settled = false;
+    render();
+    expect(container.textContent).toBe("");
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+    state.settled = true; state.companyListReady = false; render();
+    expect(container.textContent).toBe("");
+    state.companyListReady = true; state.isLoading = true; render();
+    expect(container.textContent).toBe("");
+    state.slots = [{ ...slot, exportName: "Delayed" }]; render();
+    expect(container.textContent).toBe("");
+    registerPluginReactComponent(slot.pluginKey, "Delayed", () => <button>Resolved organization</button>);
+    state.isLoading = false; render();
+    expect(container.textContent).toBe("Resolved organization");
+    expect(container.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+  it("keeps built-in navigation for absent, ambiguous or failed discovery", () => {
     render(); expect(container.textContent).toBe("Built-in organizations");
     register(); state.slots = [slot, { ...slot, id: "other" }]; render(); expect(container.textContent).toBe("Built-in organizations");
     state.slots = [slot]; state.errorMessage = "offline"; render(); expect(container.textContent).toBe("Built-in organizations");
-    state.errorMessage = null; state.settled = false; render(); expect(container.textContent).toBe("Built-in organizations");
+    state.errorMessage = null; state.settled = false; state.failed = true; render(); expect(container.textContent).toBe("Built-in organizations");
+    state.failed = false; state.settled = true; state.companyListReady = false; state.companyListError = true;
+    render(); expect(container.textContent).toBe("Built-in organizations");
   });
   it("falls back when a declared module is missing or rendering fails", () => {
     state.slots = [{ ...slot, exportName: "Missing" }]; render(); expect(container.textContent).toBe("Built-in organizations");
@@ -57,12 +75,14 @@ describe("organization navigation replacement", () => {
     state.companyListReady = false;
     state.props = null;
     render();
-    expect(container.textContent).toBe("Built-in organizations");
+    expect(container.querySelector('[aria-label="Loading organization"]')).not.toBeNull();
+    expect(container.textContent).toBe("");
     expect(state.props).toBeNull();
     state.companyListReady = true;
     state.companyIds = ["company-b"];
     render();
-    expect(container.textContent).toBe("Built-in organizations");
+    expect(container.querySelector('[aria-label="Loading organization"]')).not.toBeNull();
+    expect(container.textContent).toBe("");
     expect(state.props).toBeNull();
     state.companyId = "company-b";
     render();

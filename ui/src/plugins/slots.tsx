@@ -614,10 +614,11 @@ function usePluginModuleLoader(contributions: PluginUiContribution[] | undefined
   useEffect(() => {
     if (!contributions || contributions.length === 0) return;
 
-    // Filter to contributions that haven't been loaded yet.
+    // Also await imports started by another consumer so this observer gets a
+    // completion render even when there is no export registration (e.g. errors).
     const unloaded = contributions.filter((c) => {
       const state = pluginLoadStates.get(buildPluginModuleKey(c));
-      return state !== "loaded" && state !== "loading";
+      return state !== "loaded";
     });
 
     if (unloaded.length === 0) return;
@@ -653,9 +654,6 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
     enabled: queryEnabled,
   });
 
-  // Kick off dynamic imports for any new plugin contributions.
-  usePluginModuleLoader(data);
-
   const slotTypesKey = useMemo(() => [...filters.slotTypes].sort().join("|"), [filters.slotTypes]);
 
   const slots = useMemo(() => {
@@ -688,8 +686,13 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
     return rows;
   }, [data, filters.entityType, slotTypesKey]);
 
-  // Consider loading until both query and module imports are done.
-  const modulesLoaded = data ? aggregateLoadState(data) === "loaded" : true;
+  // A replacement surface must not disappear while an unrelated plugin loads.
+  const contributions = useMemo(() => {
+    const pluginIds = new Set(slots.map(slot => slot.pluginId));
+    return data?.filter(contribution => pluginIds.has(contribution.pluginId));
+  }, [data, slots]);
+  usePluginModuleLoader(contributions);
+  const modulesLoaded = contributions ? aggregateLoadState(contributions) === "loaded" : true;
   const isLoading = queryEnabled && (isQueryLoading || !modulesLoaded);
 
   return {

@@ -860,6 +860,39 @@ Some actions require board approval. You cannot bypass these gates.
 
 ### Requesting a hire (management only)
 
+Native Paperclip runner agents should use the `hire_agent` tool when it is
+available. Supply the new teammate's identity and responsibilities. Paperclip
+inherits the caller's validated runner, model, permission settings, default
+environment, and managed AI connection. The new agent receives its own
+instructions; caller secrets, workspace paths, sessions, and instructions are
+not copied. Existing hiring permissions and company approval policy still apply.
+
+The equivalent native API request is:
+
+```
+POST /api/companies/{companyId}/agent-hires
+{
+  "name": "Marketing Analyst",
+  "role": "researcher",
+  "reportsTo": "{manager-agent-id}",
+  "capabilities": "Market research, competitor analysis",
+  "adapterType": "paperclip_runner",
+  "inheritRuntimeFrom": "caller",
+  "instructionsBundle": {
+    "entryFile": "AGENTS.md",
+    "files": {
+      "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager.\n"
+    }
+  }
+}
+```
+
+`inheritRuntimeFrom` is available only to a native runner agent in the same
+company. Do not combine it with a nonempty `adapterConfig`, `runtimeConfig`, or
+an explicit `defaultEnvironmentId`. Paperclip selects and validates those fields.
+For other adapters or a deliberately different runner configuration, use an
+explicit configuration, for example:
+
 ```
 POST /api/companies/{companyId}/agent-hires
 {

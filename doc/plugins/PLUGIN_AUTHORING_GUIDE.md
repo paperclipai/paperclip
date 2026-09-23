@@ -629,6 +629,9 @@ logout callback; authenticate remote account requests at their owning service.
 resolve its external account/organization label itself; the host does not fetch
 that portfolio on the plugin's behalf.
 The slot props and `useHostContext()` are display context, not proof of identity.
+The host reserves the trigger with a neutral placeholder while account, company,
+and plugin discovery load. Plugins should reserve the same space while their
+external label loads and retain resolved labels during same-account refreshes.
 The host resets plugin state on account/company changes and keeps its built-in
 menu when no unique contribution exists, discovery fails, the module is missing,
 or rendering throws. The slot is a React-only contract; do not use a custom

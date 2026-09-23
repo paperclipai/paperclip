@@ -1,8 +1,9 @@
 /**
  * The app-server compatibility window is separate from the reproducible install
- * pin. 0.149.0 shipped on 2026-08-20; 0.156.0 shipped on 2026-09-22.
- * Revisit both bounds when qualifying a new Codex minor release. Do not age out
- * an installed version based on the wall clock or query a registry at startup.
+ * pin. The minimum stays at 0.149.0 until maintainers explicitly change it;
+ * newer install pins and the passage of time must not raise it automatically.
+ * Qualify the upper bound separately when adding support for a new Codex minor.
+ * Do not query a registry at startup.
  */
 export const REMOTE_CODEX_MINIMUM_VERSION = "0.149.0";
 export const REMOTE_CODEX_MAXIMUM_VERSION_EXCLUSIVE = "0.157.0";

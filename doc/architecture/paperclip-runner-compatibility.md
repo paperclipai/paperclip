@@ -50,7 +50,8 @@ Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.157.0`**.
 The install pin remains `0.156.0`. A sandbox image can therefore use an older
 compatible Codex without failing startup or installing another copy.
 
-The floor covers a full month of releases as of 2026-09-22. The official
+The minimum is fixed at **`0.149.0`** until maintainers deliberately change it.
+It is not a rolling one-month support window. The official
 [`@openai/codex` publication history](https://registry.npmjs.org/@openai/codex)
 records `0.149.0` on 2026-08-20, `0.153.4` on 2026-09-04, and `0.156.0` on
 2026-09-22. See also the [Codex changelog](https://learn.chatgpt.com/docs/changelog).
@@ -71,12 +72,13 @@ release follows a backward-compatible protocol.
   provider-pack manifests, and runtime permission checks are unchanged.
   This window does not relax the separate ACP provider-pack qualification.
 
-When changing the install pin, review the window in
-`server/src/services/native-runtime/codex-runtime-compatibility.ts`. Keep a
-floor that covers at least the preceding month where the required protocol
-still works. Do not derive eligibility from the current date or fetch release
-metadata during startup: an idle installation must not become incompatible
-merely because time passed.
+When qualifying newer Codex releases, review the upper bound in
+`server/src/services/native-runtime/codex-runtime-compatibility.ts`. Updating
+the install pin or upper bound does not raise the minimum. Raising `0.149.0`
+requires a separate, explicit maintainer decision and compatibility evidence.
+Do not derive eligibility from the current date or fetch release metadata
+during startup: an idle installation must not become incompatible merely
+because time passed.
 
 Qualification on 2026-09-22 used the actual macOS ARM64 `0.149.0` and `0.156.0`
 app-server binaries with a local deterministic Responses API fixture. Both

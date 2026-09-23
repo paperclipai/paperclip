@@ -1,10 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   isSupportedRemoteCodexVersion,
   parseCodexCliVersion,
 } from "./codex-runtime-compatibility.js";
 
 describe("remote Codex compatibility window", () => {
+  it("keeps the fixed minimum supported as time passes", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+      expect(isSupportedRemoteCodexVersion("0.149.0")).toBe(true);
+      expect(isSupportedRemoteCodexVersion("0.148.99")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each(["0.149.0", "0.149.1", "0.150.0", "0.150.1", "0.151.0", "0.152.1", "0.153.4", "0.154.0", "0.155.1", "0.156.0", "0.156.99"])(
     "accepts stable supported version %s", (version) => {
       expect(isSupportedRemoteCodexVersion(version)).toBe(true);

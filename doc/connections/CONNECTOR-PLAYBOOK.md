@@ -13,6 +13,14 @@ classification, credential boundaries, and production validation requirements
 are specified below so contributors can implement a connector without access
 to an internal issue tracker.
 
+Inline task connection cards must use the same provider setup controller and
+fields as Apps: URL guidance, authentication options, validation, and recovery.
+Keep dialogs bounded to the form width on wide screens and scrollable on narrow
+screens. A task request locks agent access to its requester and returns to the
+card after completion; reusing an account must preserve its existing access.
+OAuth popups need a normal sign-in link fallback, and callback messages must be
+verified against durable server state before accepting the request.
+
 For chat and email setup, account linking, and ongoing configuration, also follow
 [Chat connector UX](./CHAT-CONNECTOR-UX.md). It covers step navigation, footer
 layout, credential instructions, provider handoffs, identity linking, optional
@@ -458,6 +466,12 @@ connection work or enforce a real tenant boundary. Follow these rules:
 - Show browser sign-in/pending/return only for a real OAuth handoff supported by
   the chosen authentication. Zapier's pasted MCP URL or bearer token requires no
   Paperclip sign-in window. Advanced token/header setups need no invented OAuth step.
+- On an OAuth failure or cancellation, explain the outcome on the return screen
+  and offer a retry of the same saved connection. Do not silently return to a blank
+  setup form or display untrusted provider error text from the callback URL.
+- Resuming a saved connection retains its credential identity. Show that identity
+  as fixed in Access, and start OAuth with the credential policy returned by the
+  server. Do not offer personal/shared choices that the server will ignore.
 - Put optional narrowing in fields marked `advanced: true`.
 - Give hidden fields a `defaultValue`; never create a hidden required field the
   server cannot fill.

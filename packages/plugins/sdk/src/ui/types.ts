@@ -272,7 +272,8 @@ export interface PluginDetailTabProps {
 }
 
 /** A single installed contribution replaces the organization menu. The host
- * retains its built-in menu while loading, on ambiguity, or on render failure.
+ * reserves the trigger while loading and uses its built-in menu when absent,
+ * ambiguous, or on render failure.
  * These values/callbacks are presentation context, never authorization. */
 export interface PluginOrganizationSwitcherProps {
   organizationSwitcher: {
