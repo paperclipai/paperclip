@@ -3040,6 +3040,41 @@ describe("wake payload exec-string limit", () => {
     expect(payload.fallbackFetchNeeded).toBe(true);
   });
 
+  it("names the prose field it removed, not the one it could have removed", () => {
+    // Each long prose field can be the only one present, so the record must
+    // report what this step actually dropped. A consumer reads these flags to
+    // decide what to re-fetch.
+    const base = longThread(4);
+    const onlyObjective = {
+      ...base,
+      issue: { ...base.issue, description: null },
+      executionContinuation: {
+        ...base.executionContinuation,
+        objective: "o".repeat(200_000),
+      },
+    };
+    const onlyDescription = {
+      ...base,
+      issue: { ...base.issue, description: "d".repeat(200_000) },
+      executionContinuation: {
+        ...base.executionContinuation,
+        objective: "",
+      },
+    };
+
+    const objective = JSON.parse(
+      stringifyPaperclipWakePayload(onlyObjective) ?? "{}",
+    );
+    expect(objective.payloadTruncated.objectiveOmitted).toBe(true);
+    expect(objective.payloadTruncated.issueDescriptionOmitted).toBe(false);
+
+    const description = JSON.parse(
+      stringifyPaperclipWakePayload(onlyDescription) ?? "{}",
+    );
+    expect(description.payloadTruncated.issueDescriptionOmitted).toBe(true);
+    expect(description.payloadTruncated.objectiveOmitted).toBe(false);
+  });
+
   it("returns null rather than a string the kernel would reject", () => {
     // An oversized field the reduction ladder cannot shrink still must not
     // reach execve: the caller runs without the environment copy instead.

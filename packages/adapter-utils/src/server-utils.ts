@@ -808,6 +808,7 @@ export type PaperclipWakePayloadTruncation = {
   continuationMessagesOmitted: number;
   commentBodiesOmitted: number;
   issueDescriptionOmitted: boolean;
+  objectiveOmitted: boolean;
 };
 
 type PaperclipWakePayload = {
@@ -1966,6 +1967,7 @@ function fitPaperclipWakePayloadToExecLimit(
     continuationMessagesOmitted: 0,
     commentBodiesOmitted: 0,
     issueDescriptionOmitted: false,
+    objectiveOmitted: false,
   };
   const mark = (
     next: PaperclipWakePayload,
@@ -2022,9 +2024,15 @@ function fitPaperclipWakePayloadToExecLimit(
     if (fits(candidate)) return serialize(candidate);
   }
 
-  // 3. Then the two long prose fields. The agent recovers all three over the API.
+  // 3. Then the two long prose fields. The agent recovers both over the API.
   if (candidate.issue?.description || candidate.executionContinuation?.objective) {
-    truncation = { ...truncation, issueDescriptionOmitted: true };
+    // Either field can be the only one present, and each has its own flag, so the
+    // record names what this step actually removed rather than what it could have.
+    truncation = {
+      ...truncation,
+      issueDescriptionOmitted: Boolean(candidate.issue?.description),
+      objectiveOmitted: Boolean(candidate.executionContinuation?.objective),
+    };
     candidate = mark(
       {
         ...candidate,
