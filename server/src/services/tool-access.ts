@@ -2348,6 +2348,11 @@ export function classifyRisk(
     const reviewed = railwayRisk(normalizedToolName);
     return reviewed === "read" && (annotations.readOnlyHint === false || annotations.writeHint === true) ? "write" : reviewed;
   }
+  // Fireflies sharing, moving, and access revocation are mutations even when
+  // a provider omits annotations or mistakenly advertises a read hint.
+  if (sourceTemplateKey === "fireflies" && [
+    "fireflies-share-meeting", "fireflies-revoke-meeting-access", "fireflies-move-meeting",
+  ].includes(normalizedToolName)) return "write";
   if (sourceTemplateKey === "posthog" && normalizedToolName === "exec")
     return "destructive";
   if (
@@ -15558,6 +15563,9 @@ export function toolAccessService(
       stateRow.connectionId,
       stateRow.companyId,
     );
+    // Reauthorization refreshes credentials and catalog without rebuilding the
+    // operator's action profile, policy rules, or access bindings.
+    const shouldFinalizeDefaults = connection.status === "draft";
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string"
         ? connection.config.sourceTemplateKey
@@ -15839,7 +15847,7 @@ export function toolAccessService(
       // who had just consented landed on a false "Nothing to test" state.
       // Activate and discover with the just-issued token before returning.
       const refresh = await refreshCatalog(connection.id, input.actor, {
-        enableAllByDefault: true,
+        enableAllByDefault: shouldFinalizeDefaults,
         skipDefaultProfileSync: true,
         credentialHeaders: { Authorization: `Bearer ${token.accessToken}` },
       });
@@ -15855,17 +15863,19 @@ export function toolAccessService(
             connectionMethodForConnection(galleryEntry, connection).key,
           )
         : { access: "all_agents" as const, askFirstRiskLevels: [] };
-      const finished = await finishOAuthCatalogWithRecommendedDefaults({
-        interactionId: stateRow.interactionId,
-        connection,
-        catalog: refresh.catalog,
-        suggestedDefaults,
-        actor: input.actor,
-      });
+      const finished = shouldFinalizeDefaults
+        ? await finishOAuthCatalogWithRecommendedDefaults({
+            interactionId: stateRow.interactionId,
+            connection,
+            catalog: refresh.catalog,
+            suggestedDefaults,
+            actor: input.actor,
+          })
+        : null;
       return {
         connectionId: refresh.connection.id,
         application: toApplication(application),
-        connection: finished.connection,
+        connection: finished?.connection ?? refresh.connection,
         catalog: refresh.catalog,
         actions: groupedActions(refresh.catalog),
         suggestedDefaults,
@@ -16052,7 +16062,7 @@ export function toolAccessService(
 
     await checkConnectionHealth(connection.id, input.actor);
     const refresh = await refreshCatalog(connection.id, input.actor, {
-      enableAllByDefault: true,
+      enableAllByDefault: shouldFinalizeDefaults,
       skipDefaultProfileSync: true,
     });
     const [application] = await db
@@ -16068,17 +16078,19 @@ export function toolAccessService(
           access: "all_agents" as const,
           askFirstRiskLevels: [],
         };
-    const finished = await finishOAuthCatalogWithRecommendedDefaults({
-      interactionId: stateRow.interactionId,
-      connection,
-      catalog: refresh.catalog,
-      suggestedDefaults,
-      actor: input.actor,
-    });
+    const finished = shouldFinalizeDefaults
+      ? await finishOAuthCatalogWithRecommendedDefaults({
+          interactionId: stateRow.interactionId,
+          connection,
+          catalog: refresh.catalog,
+          suggestedDefaults,
+          actor: input.actor,
+        })
+      : null;
     return {
       connectionId: refresh.connection.id,
       application: toApplication(application),
-      connection: finished.connection,
+      connection: finished?.connection ?? refresh.connection,
       catalog: refresh.catalog,
       actions: groupedActions(refresh.catalog),
       suggestedDefaults,

@@ -19,13 +19,15 @@ import { Label } from "@/components/ui/label";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { cn } from "@/lib/utils";
 import { AgentInstructions, CopyField } from "./WebhookFields";
+import { AppLogo } from "@/pages/apps/AppLogo";
+import { FirefliesWebhookInstructions } from "./FirefliesWebhookInstructions";
 import { WebhookUrlWarning } from "./WebhookUrlWarning";
 
 export type TriggerDraft = {
   kind: "choose" | "schedule" | "webhook";
   step: number;
   availableStep: number;
-  sender: "custom" | "github";
+  sender: "custom" | "github" | "fireflies";
   frequency: string;
   time: string;
   weekday: string;
@@ -57,7 +59,18 @@ export function webhookAgentInstructions(
     "Content-Type: application/json",
   ];
   const auth =
-    sender === "github"
+    sender === "fireflies"
+      ? [
+          "Open https://app.fireflies.ai/integrations/api/webhook and add a webhook.",
+          "Use the webhook URL above. It must be publicly reachable over HTTPS.",
+          `Signing Secret: ${webhookSecret}`,
+          "Paste this separate secret into Fireflies’ Signing Secret field; do not use your Fireflies API key.",
+          "Subscribe only to meeting.summarized (Summary ready), then save.",
+          "Fireflies signs the raw JSON body in X-Hub-Signature. No custom Authorization header is needed.",
+          "To test delivery, finish a meeting you own and wait for its summary to be ready.",
+          "The routine receives meeting_id. Its assigned agent needs access to a Fireflies Apps connection to retrieve the summary and transcript.",
+        ]
+      : sender === "github"
       ? [
           "In GitHub, open your repository → Settings → Webhooks → Add webhook.",
           "Use the webhook URL above as Payload URL and select application/json as Content type.",
@@ -167,6 +180,7 @@ export function RoutineTriggerWizard({
   }, [saveAndExit, setBreadcrumbs, routineTitle, routineId]);
   const schedule = draft.kind === "schedule";
   const github = draft.sender === "github";
+  const fireflies = draft.sender === "fireflies";
   const labels = schedule
     ? ["Choose trigger", "Set schedule", "Review schedule"]
     : ["Choose trigger", "Connect your app", "Check connection"];
@@ -194,7 +208,7 @@ export function RoutineTriggerWizard({
           ? "Set a schedule"
           : "Review your schedule"
         : draft.step === 1
-          ? `Connect ${github ? "GitHub" : "your app"}`
+          ? `Connect ${fireflies ? "Fireflies" : github ? "GitHub" : "your app"}`
           : "Check your connection";
   const subtitle =
     draft.step === 0
@@ -392,6 +406,7 @@ export function RoutineTriggerWizard({
                     Icon: Globe,
                   },
                   { sender: "github", label: "GitHub", Icon: GitBranch },
+                  { sender: "fireflies", label: "Fireflies — Summary ready", Icon: Webhook },
                 ] as const
               ).map(({ sender, label, Icon }) => (
                 <label
@@ -412,7 +427,9 @@ export function RoutineTriggerWizard({
                     disabled={draft.created}
                     onChange={() => patch({ sender })}
                   />
-                  <Icon className="h-4 w-4" />
+                  {sender === "fireflies" ? (
+                    <AppLogo name="Fireflies" brandKey="fireflies" compact />
+                  ) : <Icon className="h-4 w-4" />}
                   <span className="flex-1 text-sm">{label}</span>
                   {draft.sender === sender && <Check className="h-4 w-4" />}
                 </label>
@@ -420,8 +437,16 @@ export function RoutineTriggerWizard({
             </div>
           </fieldset>
         )}
+        {draft.kind === "webhook" && fireflies && draft.step === 0 && (
+          <p className="rounded-md bg-muted/40 p-4 text-sm">
+            Fireflies needs a publicly reachable HTTPS webhook URL. Each meeting’s
+            completed summary can start this routine. The assigned agent needs
+            access to your Fireflies connection to read the meeting.
+          </p>
+        )}
         {!schedule && draft.step === 1 && (
           <div className="space-y-5">
+            {fireflies && <FirefliesWebhookInstructions />}
             {webhookSecret && (
               <AgentInstructions
                 value={webhookAgentInstructions(
@@ -438,8 +463,8 @@ export function RoutineTriggerWizard({
             />
             {webhookSecret ? (
               <CopyField
-                label={github ? "Secret" : "Authorization header value"}
-                value={github ? webhookSecret : `Bearer ${webhookSecret}`}
+                label={fireflies ? "Signing Secret" : github ? "Secret" : "Authorization header value"}
+                value={github || fireflies ? webhookSecret : `Bearer ${webhookSecret}`}
               />
             ) : (
               <div className="space-y-2">
@@ -468,10 +493,12 @@ export function RoutineTriggerWizard({
             </div>
             <div className="space-y-2">
               <p className="text-sm font-medium">
-                Send an event from {github ? "GitHub" : "your app"}
+                Send an event from {fireflies ? "Fireflies" : github ? "GitHub" : "your app"}
               </p>
               <p className="text-sm text-muted-foreground">
-                {github
+                {fireflies
+                  ? "Finish a meeting you own and wait for Fireflies to generate its summary. Only summary-ready events verify this trigger. You can also finish setup without waiting."
+                  : github
                   ? "Open this webhook in your repository settings. Under Recent Deliveries, choose Redeliver on an event."
                   : "Look for “Send test” in your app’s webhook settings. If it doesn’t have one, do the action that should trigger the webhook—for example, complete a deployment."}
               </p>

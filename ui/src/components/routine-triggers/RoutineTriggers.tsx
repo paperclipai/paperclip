@@ -1,3 +1,4 @@
+import { FirefliesWebhookInstructions } from "./FirefliesWebhookInstructions";
 import { useCallback, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarClock, Plus, Webhook } from "lucide-react";
@@ -230,7 +231,9 @@ export function RoutineTriggers() {
                 ? (describeCron(trigger.cronExpression) ?? "Schedule")
                 : trigger.kind === "api"
                   ? "API trigger"
-                  : trigger.signingMode === "github_hmac"
+                  : trigger.signingMode === "fireflies_hmac"
+                    ? "Fireflies — Summary ready"
+                    : trigger.signingMode === "github_hmac"
                     ? "GitHub webhook"
                     : "Webhook"
             }
@@ -339,7 +342,7 @@ function TriggerSetup({
         ...defaultTriggerDraft,
         ...saved,
         kind: "webhook",
-        sender: trigger.signingMode === "github_hmac" ? "github" : "custom",
+        sender: trigger.signingMode === "fireflies_hmac" ? "fireflies" : trigger.signingMode === "github_hmac" ? "github" : "custom",
         created: true,
         step: saved?.step ?? 1,
         availableStep: Math.max(1, saved?.availableStep ?? 1),
@@ -357,7 +360,7 @@ function TriggerSetup({
       if (createdRef.current) return;
       const response = await routinesApi.createTrigger(routineId, {
         kind: "webhook",
-        signingMode: draft.sender === "github" ? "github_hmac" : "bearer",
+        signingMode: draft.sender === "fireflies" ? "fireflies_hmac" : draft.sender === "github" ? "github_hmac" : "bearer",
         setupPending: true,
       });
       createdRef.current = response.trigger;
@@ -517,16 +520,18 @@ function WebhookSettings({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const github = trigger.signingMode === "github_hmac";
+  const fireflies = trigger.signingMode === "fireflies_hmac";
   const delivery = trigger.lastWebhookDelivery;
   const checked =
     checkBaseline !== null && delivery && delivery.receivedAt !== checkBaseline;
   return (
     <div className="space-y-4">
       <WebhookUrlWarning url={trigger.webhookUrl ?? ""} />
-      {secret && (github || trigger.signingMode === "bearer") && (
+      {fireflies && <FirefliesWebhookInstructions />}
+      {secret && (fireflies || github || trigger.signingMode === "bearer") && (
         <AgentInstructions
           value={webhookAgentInstructions(
-            github ? "github" : "custom",
+            fireflies ? "fireflies" : github ? "github" : "custom",
             routineTitle,
             trigger.webhookUrl ?? "",
             secret,
@@ -542,7 +547,7 @@ function WebhookSettings({
               label={
                 trigger.signingMode === "bearer"
                   ? "Authorization header value"
-                  : "Secret"
+                  : fireflies ? "Signing Secret" : "Secret"
               }
               value={
                 trigger.signingMode === "bearer" ? `Bearer ${secret}` : secret

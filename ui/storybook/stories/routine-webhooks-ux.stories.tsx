@@ -21,7 +21,7 @@ const endpoint = "https://acme.paperclip.example/api/routine-triggers/public/012
 const secret = "demo_webhook_key_for_storybook_only";
 const root = "/routines/routine-webhook-story";
 type Stage = "setup" | "credentials" | "waiting" | "received" | "failure";
-type Sender = "custom" | "github";
+type Sender = TriggerDraft["sender"];
 type TriggerKind = "choose" | "schedule" | "webhook";
 type CheckResult = "waiting" | "received" | "rejected" | "no_event";
 type Props = {
@@ -195,7 +195,7 @@ const meta = {
   component: Prototype,
   parameters: { layout: "fullscreen" },
   args: { stage: "setup", sender: "custom", page: "triggers", triggerKind: "choose", wizardStep: 0, scheduleSaved: false, checkResult: "waiting" },
-  argTypes: { triggerKind: { control: "radio", options: ["choose", "schedule", "webhook"] }, scheduleSaved: { control: "boolean" }, checkResult: { control: "select", options: ["waiting", "received", "rejected", "no_event"] }, stage: { control: "select", options: ["setup", "credentials", "waiting", "received", "failure"] }, sender: { control: "radio", options: ["custom", "github"] }, page: { control: "radio", options: ["triggers", "overview", "activity"] } },
+  argTypes: { triggerKind: { control: "radio", options: ["choose", "schedule", "webhook"] }, scheduleSaved: { control: "boolean" }, checkResult: { control: "select", options: ["waiting", "received", "rejected", "no_event"] }, stage: { control: "select", options: ["setup", "credentials", "waiting", "received", "failure"] }, sender: { control: "radio", options: ["custom", "github", "fireflies"] }, page: { control: "radio", options: ["triggers", "overview", "activity"] } },
 } satisfies Meta<typeof Prototype>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -266,3 +266,12 @@ export const RemoveTriggers: Story = { name: "19 · Remove and restore triggers"
   await expect(canvas.getByRole("button", { name: "Edit schedule" })).toBeVisible();
   await expect(canvas.getByRole("button", { name: "Edit webhook" })).toBeVisible();
 } };
+
+export const FirefliesSummarySetup: Story = {
+  name: "20 · Fireflies summary-ready setup",
+  args: { stage: "setup", sender: "fireflies", triggerKind: "webhook", wizardStep: 1, scheduleSaved: false },
+};
+export const FirefliesSummaryCheck: Story = {
+  name: "21 · Fireflies summary-ready check",
+  args: { stage: "setup", sender: "fireflies", triggerKind: "webhook", wizardStep: 2, scheduleSaved: false },
+};

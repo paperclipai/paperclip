@@ -485,6 +485,12 @@
       "catalogVisible": true,
       "localAsset": "/brands/apps/railway.svg",
       "darkAsset": "/brands/apps/railway-dark.svg"
+    },
+    {
+      "slug": "fireflies",
+      "provider": "Fireflies",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/fireflies.svg"
     }
   ]
 }

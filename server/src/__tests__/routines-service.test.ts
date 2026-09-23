@@ -2335,6 +2335,88 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }
   });
 
+  async function firefliesFixture(setupPending = false) {
+    const fixture = await seedFixture();
+    const created = await fixture.svc.createTrigger(fixture.routine.id, {
+      kind: "webhook", signingMode: "fireflies_hmac", setupPending,
+    }, {});
+    const delivery = (extra: Record<string, unknown> = {}, secret = created.secretMaterial!.webhookSecret) => {
+      const payload = { event: "meeting.summarized", meeting_id: "meeting-1", timestamp: 1780000000000, ...extra };
+      const rawBody = Buffer.from(JSON.stringify(payload, null, 2));
+      return { rawBody, payload, firefliesSignatureHeader: `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}` };
+    };
+    return { ...fixture, ...created, delivery };
+  }
+
+  it("dispatches one Fireflies run for concurrent retries and passes meeting metadata", async () => {
+    const { svc, routine, trigger, delivery, wakeups } = await firefliesFixture();
+    const results = await Promise.all([
+      svc.firePublicTrigger(trigger.publicId!, delivery({ variables: { instruction: "untrusted" } })),
+      svc.firePublicTrigger(trigger.publicId!, delivery({ timestamp: 1780000001000 })),
+    ]);
+    expect(results.map((run) => run.status)).toEqual(["issue_created", "issue_created"]);
+    const runs = await svc.listRuns(routine.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].triggerPayload).toMatchObject({ event: "meeting.summarized", meeting_id: "meeting-1" });
+    expect(runs[0].triggerPayload).not.toHaveProperty("instruction");
+    expect(runs[0].triggerPayload).not.toHaveProperty("variables");
+    expect(wakeups).toHaveLength(1);
+    const [task] = await db.select().from(issues).where(eq(issues.id, runs[0].linkedIssueId!));
+    expect(task?.description).toContain('"meeting_id": "meeting-1"');
+    expect(task?.description).not.toContain("untrusted");
+  });
+
+  it("restores the Fireflies signing mode through routine revisions", async () => {
+    const { svc, routine, trigger, revision, secretMaterial } = await firefliesFixture();
+    await svc.updateTrigger(trigger.id, { signingMode: "bearer" }, {});
+    const restored = await svc.restoreRevision(routine.id, revision.id, {});
+    expect(restored.revision.snapshot.triggers[0]?.signingMode).toBe("fireflies_hmac");
+    expect((await svc.getTrigger(trigger.id))?.signingMode).toBe("fireflies_hmac");
+    expect(JSON.stringify(restored.revision.snapshot)).not.toContain(secretMaterial!.webhookSecret);
+  });
+
+  it("ignores other Fireflies events without verifying setup or creating work", async () => {
+    const { svc, routine, trigger, delivery } = await firefliesFixture(true);
+    await expect(svc.firePublicTrigger(trigger.publicId!, delivery({ event: "meeting.transcribed" })))
+      .resolves.toMatchObject({ status: "ignored", routineStarted: false });
+    expect((await svc.getTrigger(trigger.id))?.lastWebhookDelivery).toBeNull();
+    expect(await svc.listRuns(routine.id)).toEqual([]);
+  });
+
+  it("never replays a Fireflies setup test after activation", async () => {
+    const { svc, routine, trigger, delivery } = await firefliesFixture(true);
+    await expect(svc.firePublicTrigger(trigger.publicId!, delivery())).resolves.toMatchObject({ status: "test_received" });
+    await svc.updateTrigger(trigger.id, { setupPending: false }, {});
+    await expect(svc.firePublicTrigger(trigger.publicId!, delivery({ timestamp: 1780000002000 })))
+      .resolves.toMatchObject({ status: "test_received", routineStarted: false });
+    expect(await svc.listRuns(routine.id)).toEqual([]);
+    await expect(svc.firePublicTrigger(trigger.publicId!, delivery({ meeting_id: "meeting-2" })))
+      .resolves.toMatchObject({ status: "issue_created" });
+  });
+
+  it("rejects a Fireflies signature from another trigger or a rotated key", async () => {
+    const first = await firefliesFixture();
+    const second = await firefliesFixture();
+    await expect(second.svc.firePublicTrigger(second.trigger.publicId!, first.delivery())).rejects.toMatchObject({ status: 401 });
+    const rotated = await first.svc.rotateTriggerSecret(first.trigger.id, {});
+    await expect(first.svc.firePublicTrigger(first.trigger.publicId!, first.delivery())).rejects.toMatchObject({ status: 401 });
+    await expect(first.svc.firePublicTrigger(first.trigger.publicId!, first.delivery({}, rotated.secretMaterial.webhookSecret)))
+      .resolves.toMatchObject({ status: "issue_created" });
+    expect(await second.svc.listRuns(second.routine.id)).toEqual([]);
+  });
+
+  it("keeps Fireflies triggers paused and archived, and records rejected deliveries", async () => {
+    const { svc, trigger, delivery, routine } = await firefliesFixture();
+    await expect(svc.firePublicTrigger(trigger.publicId!, { ...delivery(), firefliesSignatureHeader: undefined }))
+      .rejects.toMatchObject({ status: 401 });
+    expect((await svc.getTrigger(trigger.id))?.lastWebhookDelivery?.status).toBe("rejected");
+    await svc.updateTrigger(trigger.id, { enabled: false }, {});
+    await expect(svc.firePublicTrigger(trigger.publicId!, delivery())).rejects.toMatchObject({ status: 409 });
+    await svc.updateTrigger(trigger.id, { archived: true }, {});
+    await expect(svc.firePublicTrigger(trigger.publicId!, delivery())).rejects.toMatchObject({ status: 404 });
+    expect(await svc.listRuns(routine.id)).toEqual([]);
+  });
+
   it("accepts GitHub-style X-Hub-Signature-256 with github_hmac signing mode", async () => {
     const { routine, svc } = await seedFixture();
     const { trigger, secretMaterial } = await svc.createTrigger(
