@@ -1821,7 +1821,14 @@ function SecretProposalIdentityHeader({
   );
 }
 
-function SecretProposalDetails({
+/**
+ * The one rendering of a secret proposal's bindings, shared by every surface
+ * that can decide one (the issue thread card and the task-chat takeover card).
+ * A grouped ask grants every binding it lists at once, so a surface that shows
+ * the anchor alone would hide what one click approves and leave no way to keep
+ * six keys while refusing the seventh.
+ */
+export function SecretProposalDetails({
   payload,
   declinedProposalIds,
   onToggleBinding,

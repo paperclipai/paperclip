@@ -2438,9 +2438,11 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
     rememberAction?: boolean,
+    // Bindings of a grouped secret proposal the approver cleared on the card.
+    rejectProposalIds?: string[],
   ) => {
     if (!conversationIssueId) return;
-    await issuesApi.acceptInteraction(conversationIssueId, interaction.id, { selectedClientKeys, selectedOptionIds, rememberAction });
+    await issuesApi.acceptInteraction(conversationIssueId, interaction.id, { selectedClientKeys, selectedOptionIds, rememberAction, rejectProposalIds });
     await invalidateConversation();
   }, [conversationIssueId, invalidateConversation]);
 

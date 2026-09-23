@@ -1292,6 +1292,7 @@ type IssueDetailChatTabProps = {
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
     rememberAction?: boolean,
+    rejectProposalIds?: string[],
   ) => Promise<void>;
   onRejectInteraction: (
     interaction: ActionableIssueThreadInteraction,
@@ -4633,16 +4634,19 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       selectedClientKeys,
       selectedOptionIds,
       rememberAction,
+      rejectProposalIds,
     }: {
       interaction: ActionableIssueThreadInteraction;
       selectedClientKeys?: string[];
       selectedOptionIds?: string[];
       rememberAction?: boolean;
+      rejectProposalIds?: string[];
     }) =>
       issuesApi.acceptInteraction(issueId!, interaction.id, {
         selectedClientKeys,
         selectedOptionIds,
         rememberAction,
+        rejectProposalIds,
       }),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
@@ -6273,12 +6277,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       selectedClientKeys?: string[],
       selectedOptionIds?: string[],
       rememberAction?: boolean,
+      // Bindings of a grouped secret proposal the approver cleared on the card.
+      rejectProposalIds?: string[],
     ) => {
       await acceptInteraction.mutateAsync({
         interaction,
         selectedClientKeys,
         selectedOptionIds,
         rememberAction,
+        rejectProposalIds,
       });
     },
     [acceptInteraction],

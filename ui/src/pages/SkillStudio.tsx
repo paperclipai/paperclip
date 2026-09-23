@@ -3342,9 +3342,15 @@ function InteractionSection({
   const agentMap = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
 
   const accept = useMutation({
-    mutationFn: (vars: { interaction: IssueThreadInteraction; optionIds?: string[] }) =>
+    mutationFn: (vars: {
+      interaction: IssueThreadInteraction;
+      optionIds?: string[];
+      // Bindings of a grouped secret proposal the approver cleared on the card.
+      rejectProposalIds?: string[];
+    }) =>
       issuesApi.acceptInteraction(harnessIssueId!, vars.interaction.id, {
         selectedOptionIds: vars.optionIds,
+        rejectProposalIds: vars.rejectProposalIds,
       }),
     onSuccess: onAnswered,
   });
@@ -3376,8 +3382,14 @@ function InteractionSection({
                 key={summary.id}
                 interaction={full}
                 agentMap={agentMap}
-                onAcceptInteraction={async (interaction, _keys, optionIds) => {
-                  await accept.mutateAsync({ interaction, optionIds });
+                onAcceptInteraction={async (
+                  interaction,
+                  _keys,
+                  optionIds,
+                  _rememberAction,
+                  rejectProposalIds,
+                ) => {
+                  await accept.mutateAsync({ interaction, optionIds, rejectProposalIds });
                 }}
                 onRejectInteraction={async (interaction, reason) => {
                   await reject.mutateAsync({ interaction, reason });
