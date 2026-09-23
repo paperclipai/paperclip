@@ -18,6 +18,10 @@ on:
         type: string
         default: "all"
         required: false
+      max_parallel:
+        description: "Optional lower concurrency (at least 2, no higher than the configured campaign limit)"
+        type: string
+        required: false
       max_infrastructure_retries:
         description: "Automatic retries only for explicitly retryable infrastructure failures (0-3)"
         type: number
@@ -250,12 +254,20 @@ jobs:
           PAPERCLIP_PROTOCOL_EVALS_SHA: ${{ needs.authorize.outputs.evals_sha }}
           MAX_PARALLEL: ${{ vars.RUNNER_E2E_MAX_PARALLEL || needs.authorize.outputs.max_parallel_default }}
           MAX_PARALLEL_LIMIT: ${{ needs.authorize.outputs.max_parallel_limit }}
+          REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}
           ROSTERS: ${{ inputs.rosters || 'all' }}
         run: |
           set -euo pipefail
           if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -lt 2 ] || [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
             echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 2 through $MAX_PARALLEL_LIMIT for the two-shard direct suite." >&2
             exit 1
+          fi
+          if [ -n "${REQUESTED_MAX_PARALLEL:-}" ]; then
+            if ! [[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]{0,2}$ ]] || [ "$REQUESTED_MAX_PARALLEL" -lt 2 ] || [ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL" ]; then
+              echo "max_parallel must be an integer from 2 through the configured campaign limit." >&2
+              exit 1
+            fi
+            MAX_PARALLEL="$REQUESTED_MAX_PARALLEL"
           fi
           node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs catalog \
             --evals-root .paperclip-evals \
@@ -331,6 +343,12 @@ jobs:
 
       - name: Materialize the pinned OpenCode executable before packaging
         run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
+
+      - name: Materialize the pinned Grok executable when the target includes it
+        run: |
+          if [ -f packages/grok-acp/install.mjs ]; then
+            node packages/grok-acp/install.mjs
+          fi
 
       - name: Build runner CLI, daemon, and canonical attempt viewer
         run: |
@@ -523,6 +541,7 @@ jobs:
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
           PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID }}
           PAPERCLIP_CLAUDE_MANAGED_AGENT_ID: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_AGENT_ID }}
           PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION }}

@@ -205,6 +205,7 @@ The paid jobs read only the credential selected for each roster:
 - `OPENAI_API_KEY` for native Codex and ACPX Codex;
 - `ANTHROPIC_API_KEY` for ACPX Claude and Claude Managed;
 - `OPENROUTER_API_KEY` for native OpenCode and ACPX Pi;
+- `XAI_API_KEY` for an explicitly selected ACPX Grok roster;
 - short-lived GitHub OIDC workload identity for AWS AgentCore.
 
 Claude Managed also requires the four nonsecret
@@ -308,3 +309,14 @@ pnpm --filter @paperclipai/paperclip-runner \
   --campaign-id gha-1-1 \
   --output /tmp/runner-protocol-eval-catalog.json
 ```
+
+
+For Grok qualification, select `protocol-live-acpx-grok` and its exact eval
+revision. Set `max_parallel: 2` when the API key has a low custom rate limit;
+this admits one case per shard. The override can only lower the configured
+campaign ceiling and cannot change the key's provider limits. Retain any
+rate-limited attempts as failures. The build installs the target's pinned,
+checksum-verified Grok binary before packaging the portable runtime. Targets
+without the Grok package keep their existing build behavior. This protocol
+workflow uses the explicitly selected API key; subscription credentials are
+not delivered by it.
