@@ -128,6 +128,13 @@ Validation on 2026-09-23:
   and API-key choices; no browser errors were observed.
 - Production webhook wizard checked in Storybook at desktop and mobile widths,
   including back/resume, verification steps, and light/dark official artwork.
-- Live account consent, real provider tool responses, and a real Fireflies
-  webhook remain outstanding; no account credentials or public callback were
-  available for this implementation.
+- Embedded-browser live account proof: completed catalog → Access → OAuth
+  consent → Permissions with the official provider. Discovered 20 actions
+  (14 reads, 6 writes), and ran `fireflies_get_transcripts`,
+  `fireflies_get_transcript`, and `fireflies_get_summary` successfully as the
+  selected preview agent. The summary included overview and action items.
+  Turning the summary action Off blocked its test; refreshing actions preserved
+  that restriction. Restored the previously authorized read after testing.
+- Real provider webhook delivery is still pending a publicly reachable callback.
+  Fireflies’ live V2 settings offer a **Meeting Summarized** subscription and a
+  **Test Webhook** step. No production meeting completion has been tested.
