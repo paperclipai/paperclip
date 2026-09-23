@@ -345,27 +345,6 @@ Allow additional private hostnames (for example custom Tailscale hostnames):
 npx paperclipai allowed-hostname dotta-macbook-pro
 ```
 
-## Wake payload process transport
-
-Process adapters keep `PAPERCLIP_WAKE_PAYLOAD_JSON` inline up to 64 KiB of
-UTF-8 data (including shell quoting overhead for remote launches). Larger values are written without modification to a private file
-on the execution host. The child receives `PAPERCLIP_WAKE_PAYLOAD_PATH` instead
-of the JSON variable. Consumers must support both forms. Prompt rendering and
-gateway request serialization remain unchanged.
-
-Local files use a unique temporary directory (0700) and file (0600). Confined
-local processes receive a read-only mount of that file. SSH and sandbox launches
-upload bounded chunks into an exclusively created directory, then verify the
-byte count before starting the child. Failed uploads prevent launch. The process
-or ACP turn owns cleanup, including startup failure and cancellation paths. ACP
-prompts name the current turn's file so a resumed process cannot select an old
-wake from its initial environment. Invocation logs record payload size only.
-
-The files are temporary run data, not durable context. An abrupt host or worker
-crash can leave a private temporary directory for the host's normal temporary
-file cleanup. This transport does not bound other environment variables or CLI
-prompt arguments, and does not apply to hosted SDK or gateway request bodies.
-
 ## Test Commands
 
 Use the cheap local default unless you are specifically working on browser flows:
@@ -1009,6 +988,25 @@ Managed `paperclip-dev` worktree services enable `PAPERCLIP_UI_DEV_MIDDLEWARE=tr
 In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to the managed runtime's loopback host. The browser still derives the HMR hostname from the public HTTPS page, and exposed runtimes use secure WebSockets, so listener containment does not break remote hot reload.
 
 When a workspace service runs Paperclip for browser OAuth QA, configure its `expose.urlTemplate` with the canonical URL the browser can reach. Paperclip preserves explicit `PAPERCLIP_PUBLIC_URL` or `BETTER_AUTH_URL` settings; otherwise it uses a valid exposed HTTPS origin (or loopback HTTP) as the managed runtime fallback for Better Auth and `/api/tools/oauth/callback`. Internal service names such as `http://paperclip-dev:<port>` are rejected unless that hostname is genuinely the browser route. Use a unique origin per isolated worktree. See [Execution Workspaces And Runtime Services](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#browser-reachable-origins-for-oauth-qa) for configuration and verification.
+
+## Wake Context Delivery
+
+Built-in adapters deliver wake context through the run prompt, including structured
+execution-continuation data. They do not export `PAPERCLIP_WAKE_PAYLOAD_JSON`. A
+large JSON environment entry can prevent the agent process from starting with
+`E2BIG`, even when the same context fits in the prompt transport. Configured values
+for this retired variable are ignored. Scalar runtime variables such as
+`PAPERCLIP_TASK_ID` and `PAPERCLIP_WAKE_REASON` remain available.
+
+Custom instructions that read the retired variable must use the wake payload in
+the prompt instead. This transport change adds no history limits or truncation;
+existing comment windows and resume-delta rendering still apply. Gateway request
+bodies and Hermes prompt-template JSON variables remain supported.
+
+This removes the duplicate environment entry, not every possible `E2BIG` cause.
+Legacy CLI paths that put prompts in command-line arguments (Gemini, Grok, Kimi,
+Pi, and Hermes) still have argument-size limits. ACP turns, SDK requests, and
+CLI paths that use stdin avoid that separate limit for the wake prompt.
 
 ## Paperclip Runner Adapter Conversion
 

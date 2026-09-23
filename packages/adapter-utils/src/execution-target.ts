@@ -80,7 +80,6 @@ import {
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
-import { prepareWakePayloadEnv, type WakePayloadDelivery } from "./wake-payload-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import {
   runWithRuntimeParent,
@@ -707,11 +706,6 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   env: NodeJS.ProcessEnv,
   options: { installCommand?: string | null; timeoutSec?: number | null } = {},
 ) {
-  // A command lookup never consumes wake context. Do not forward a large
-  // payload (or a previous turn's file) through the provider's probe launch.
-  env = { ...env };
-  delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
-  delete env.PAPERCLIP_WAKE_PAYLOAD_PATH;
   if (target?.kind === "remote" && target.transport === "sandbox") {
     await ensureSandboxCommandResolvable(
       command,
@@ -858,47 +852,6 @@ function applyRunDispositionSeam(
 }
 
 export async function runAdapterExecutionTargetProcess(
-  runId: string,
-  target: AdapterExecutionTarget | null | undefined,
-  command: string,
-  args: string[],
-  options: AdapterExecutionTargetProcessOptions,
-): Promise<RunProcessResult> {
-  if (target?.kind !== "remote" || target.transport !== "sandbox") {
-    return runAdapterExecutionTargetProcessWithPreparedEnv(runId, target, command, args, options);
-  }
-  const delivery = await prepareAdapterWakePayloadEnv(target, options.env);
-  try {
-    return await runAdapterExecutionTargetProcessWithPreparedEnv(runId, target, command, args, { ...options, env: delivery.env });
-  } finally {
-    await delivery.cleanup().catch(async () => {
-      await options.onLog("stderr", "[paperclip] Could not remove the wake payload file after the process ended.\n").catch(() => {});
-    });
-  }
-}
-
-/** Prepare on the host where the provider process actually runs. */
-export async function prepareAdapterWakePayloadEnv(
-  target: AdapterExecutionTarget | null | undefined,
-  env: Record<string, string>,
-): Promise<WakePayloadDelivery> {
-  if (target?.kind !== "remote") return prepareWakePayloadEnv(env);
-  if (target.transport === "ssh") {
-    return prepareWakePayloadEnv(env, async (script) =>
-      (await runSshCommand(target.spec, script, { timeoutMs: 30_000, maxBuffer: 64 * 1024 })).stdout);
-  }
-  const runner = requireSandboxRunner(target);
-  return prepareWakePayloadEnv(env, async (script) => {
-    const result = await runner.execute({
-      command: "sh", args: ["-c", script], cwd: target.remoteCwd,
-      timeoutMs: 30_000, bypassSession: true,
-    });
-    if (result.timedOut || result.exitCode !== 0) throw new Error("Wake payload file operation failed.");
-    return result.stdout;
-  });
-}
-
-async function runAdapterExecutionTargetProcessWithPreparedEnv(
   runId: string,
   target: AdapterExecutionTarget | null | undefined,
   command: string,
@@ -1979,35 +1932,7 @@ const AGENT_SESSION_SEND_INPUT_SPAN = "sandbox.agentSession.sendInput";
  * file found (`1 + 2n` execs). */
 const AGENT_SESSION_POLL_OUTPUT_SPAN = "sandbox.agentSession.pollOutput";
 
-export async function startAdapterExecutionTargetProcessSessionBridge(
-  input: Parameters<typeof startProcessSessionBridgeWithPreparedEnv>[0],
-): Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null> {
-  let delivery: WakePayloadDelivery | null = null;
-  const cleanup = async () => {
-    await delivery?.cleanup().catch(async () => {
-      await input.onLog?.("stderr", "[paperclip] Could not remove the wake payload file after the session ended.\n").catch(() => {});
-    });
-  };
-  try {
-    const bridge = await startProcessSessionBridgeWithPreparedEnv({
-      ...input,
-      env: async () => {
-        const env = typeof input.env === "function" ? await input.env() : input.env;
-        delivery = await prepareAdapterWakePayloadEnv(input.target, env);
-        return delivery.env;
-      },
-    });
-    if (!bridge) { await cleanup(); return null; }
-    return { ...bridge, stop: async () => {
-      try { await bridge.stop(); } finally { await cleanup(); }
-    } };
-  } catch (error) {
-    await cleanup();
-    throw error;
-  }
-}
-
-async function startProcessSessionBridgeWithPreparedEnv(input: {
+export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   runId: string;
   target: AdapterExecutionTarget | null | undefined;
   runtimeRootDir: string | null | undefined;

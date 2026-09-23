@@ -132,24 +132,28 @@ function createLocalSandboxRunner(
 
 function buildRuntime(
   onSetConfigOption?: (input: { key: string; value: string }) => void,
-  onEnsureSession?: (input: Record<string, unknown>) => unknown,
+  onEnsureSession?: (input: Record<string, unknown>) => void,
+  onStartTurn?: (input: Record<string, unknown>) => void,
 ) {
   return {
     ensureSession: async (input: Record<string, unknown>) => {
-      await onEnsureSession?.(input);
+      onEnsureSession?.(input);
       return ({
       backendSessionId: "backend-session",
       agentSessionId: "agent-session",
       runtimeSessionName: "runtime-session",
       });
     },
-    startTurn: () => ({
-      events: (async function* () {
-        yield { type: "done", stopReason: "end_turn" };
-      })(),
-      result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-      cancel: async () => {},
-    }),
+    startTurn: (input: Record<string, unknown>) => {
+      onStartTurn?.(input);
+      return {
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+        cancel: async () => {},
+      };
+    },
     setConfigOption: async (input: { key: string; value: string }) => {
       onSetConfigOption?.(input);
     },
@@ -168,12 +172,12 @@ async function runExecutor(
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
-    inspectSession?: (input: Record<string, unknown>) => Promise<void>;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
   const configOptions: Array<{ key: string; value: string }> = [];
   const sessionInputs: Record<string, unknown>[] = [];
+  const turnInputs: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
@@ -181,11 +185,12 @@ async function runExecutor(
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
       : {}),
-    createRuntime: (runtimeConfig) => {
-      runtimeOptions.push(runtimeConfig as unknown as Record<string, unknown>);
+    createRuntime: (options) => {
+      runtimeOptions.push(options as unknown as Record<string, unknown>);
       return buildRuntime(
         ({ key, value }) => configOptions.push({ key, value }),
-        async (input) => { sessionInputs.push(input); await options.inspectSession?.(input); },
+        (input) => sessionInputs.push(input),
+        (input) => turnInputs.push(input),
       ) as never;
     },
   });
@@ -216,7 +221,7 @@ async function runExecutor(
   } as never);
 
   expect(result.exitCode).toBe(0);
-  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, result };
+  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, turnInputs, result };
 }
 
 // Under `vi.useFakeTimers()`, setup before `ensureSession` still performs real
@@ -370,64 +375,6 @@ const ALLOWED_TURN_SPAN_ATTRIBUTE_KEYS = new Set<string>([
 ]);
 
 describe("shared ACPX engine runtime behavior", () => {
-  it("removes the oversized wake file when ACP initialization fails", async () => {
-    const root = await makeTempRoot();
-    let filePath = "";
-    const execute = createAcpxEngineExecutor({ createRuntime: () => ({
-      ...buildRuntime(),
-      ensureSession: async (input: { sessionOptions: { env: Record<string, string> } }) => {
-        filePath = input.sessionOptions.env.PAPERCLIP_WAKE_PAYLOAD_PATH!;
-        expect(await fs.readFile(filePath, "utf8")).toContain("complete description");
-        throw new Error("synthetic initialization failure");
-      },
-    }) as never });
-    const result = await execute({
-      runId: "failed-wake-init", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
-      config: { agent: "custom", agentCommand: "node ./fake-acp.js", cwd: root, stateDir: path.join(root, "state") },
-      context: { paperclipWake: { issue: { id: "issue-1", description: "complete description ".repeat(40_000) } } },
-      onLog: async () => {}, onMeta: async () => {},
-    } as never);
-    expect(result.errorCode).toBe("acpx_session_init_failed");
-    expect(filePath).not.toBe("");
-    await expect(fs.stat(path.dirname(filePath))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("delivers the full oversized wake during ACP initialization and cleans it up after each resumed turn", async () => {
-    const root = await makeTempRoot();
-    const config = { agent: "custom", agentCommand: "node ./fake-acp.js", cwd: root, stateDir: path.join(root, "state") };
-    let sessionParams: unknown;
-    const paths: string[] = [];
-    for (const marker of ["first", "resumed", "small"]) {
-      const description = marker + "🙂 complete context ".repeat(marker === "small" ? 1 : 40_000);
-      const run = await runExecutor(config, {
-        runtime: sessionParams ? { sessionParams } : {},
-        context: { taskId: "issue-1", paperclipWake: { issue: { id: "issue-1", identifier: "TEST-1", description } } },
-        inspectSession: async (input) => {
-          const env = (input.sessionOptions as { env: Record<string, string> }).env;
-          if (marker === "small") {
-            expect(JSON.parse(env.PAPERCLIP_WAKE_PAYLOAD_JSON!).issue.description).toBe(description);
-            expect(env.PAPERCLIP_WAKE_PAYLOAD_PATH).toBeUndefined();
-            return;
-          }
-          expect(env.PAPERCLIP_WAKE_PAYLOAD_JSON).toBeUndefined();
-          const filePath = env.PAPERCLIP_WAKE_PAYLOAD_PATH!;
-          paths.push(filePath);
-          expect(JSON.parse(await fs.readFile(filePath, "utf8")).issue.description).toBe(description);
-        },
-      });
-      sessionParams = run.result.sessionParams;
-      if (marker === "small") {
-        expect(String(run.meta[0]?.prompt)).toContain("do not read a previous turn's wake payload file");
-        for (const filePath of paths) expect(String(run.meta[0]?.prompt)).not.toContain(filePath);
-        continue;
-      }
-      expect(String(run.meta[0]?.prompt)).toContain(JSON.stringify(paths.at(-1)));
-      expect(String(run.meta[0]?.prompt)).toContain("takes precedence over any older wake environment");
-      await expect(fs.stat(paths.at(-1)!)).rejects.toMatchObject({ code: "ENOENT" });
-    }
-    expect(new Set(paths).size).toBe(2);
-  });
-
   it.each(["claude", "codex", "gemini", "kimi", "custom"])("defaults the legacy %s engine to full auto on fresh and resumed runs", async (agent) => {
     const root = await makeTempRoot();
     const config = {
@@ -662,7 +609,9 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("Paperclip runtime note:");
     expect(prompt).toContain("PAPERCLIP_AGENT_ID");
     expect(prompt).toContain("PAPERCLIP_API_KEY");
-    expect(prompt).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+    expect(prompt).not.toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+    expect(prompt).toContain("## Paperclip Wake Payload");
+    expect(prompt).toContain("TEST-1");
     expect(prompt).toContain("Paperclip API access note:");
     expect(prompt).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"');
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
@@ -673,6 +622,57 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).not.toContain("-d '{...}'");
     expect(prompt).not.toContain("runtime-secret-token");
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
+  });
+
+  it("keeps large continuation history in ACP turns and preserves resume deltas", async () => {
+    const root = await makeTempRoot();
+    const config = {
+      agent: "claude", cwd: root, stateDir: path.join(root, "state"), mode: "persistent",
+      env: { PAPERCLIP_WAKE_PAYLOAD_JSON: "stale configured wake" },
+    };
+    const messages = Array.from({ length: 50 }, (_, index) => ({
+      id: `message-${index}`, authorType: "user", authorId: "user-1",
+      body: `Message ${index}: ${"context ".repeat(500)} End ${index}.`,
+      createdAt: "2020-01-01T00:00:00.000Z", updatedAt: "2020-01-01T00:00:00.000Z",
+      deleted: false, sourceTrust: { kind: "authenticated_user" },
+    }));
+    const completedActions = Array.from({ length: 50 }, (_, index) => ({
+      runId: "prior-run", receiptId: `receipt-${index}`, operationId: `operation-${index}`,
+      result: { text: `Completed action ${index}` },
+    }));
+    const continuation = {
+      version: 1, companyId: "company-1", issueId: "issue-1",
+      trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+      originCommentIds: [messages[49]!.id], objective: "Preserve all context", messages,
+      interactionOutcomes: [], unresolvedInteractionIds: [], completedWork: null,
+      completedActions, coverage: { kind: "full_task_history", throughCommentId: messages[49]!.id, summaryThroughCommentId: null },
+    };
+    expect(Buffer.byteLength(JSON.stringify(continuation))).toBeGreaterThan(128 * 1024);
+    const context = { taskId: "issue-1", paperclipWake: {
+      reason: "issue_commented", issue: { id: "issue-1" }, executionContinuation: continuation,
+    } };
+    const fresh = await runExecutor(config, { context });
+    const changedMessage = { ...messages[49]!, body: "Updated direction: preserve approval gates." };
+    const resumed = await runExecutor(config, {
+      runtime: { sessionParams: fresh.result.sessionParams },
+      context: { ...context, paperclipWake: { ...context.paperclipWake, executionContinuation: {
+        ...continuation, resumeDelta: { baseRunId: "run-1", messages: [changedMessage] },
+      } } },
+    });
+    expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(fresh.result.sessionId);
+    for (const run of [fresh, resumed]) {
+      const sessionOptions = run.sessionInputs[0]?.sessionOptions as Record<string, unknown>;
+      expect(sessionOptions.env).not.toHaveProperty("PAPERCLIP_WAKE_PAYLOAD_JSON");
+      const prompt = String(run.turnInputs[0]?.text);
+      expect(prompt).not.toContain("stale configured wake");
+      for (const action of completedActions) expect(prompt).toContain(JSON.stringify(action));
+    }
+    const freshPrompt = String(fresh.turnInputs[0]?.text);
+    for (const message of messages) expect(freshPrompt).toContain(JSON.stringify(message));
+    const resumedPrompt = String(resumed.turnInputs[0]?.text);
+    expect(resumedPrompt).toContain(JSON.stringify(changedMessage));
+    expect(resumedPrompt).not.toContain(messages[0]!.body);
+    expect(resumedPrompt).toContain('"kind":"task_history_delta"');
   });
 
   it.each([

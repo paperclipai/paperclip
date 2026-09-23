@@ -574,43 +574,6 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
-  it.each([false, true])("delivers an oversized wake file through the real session wrapper (streamed=%s)", async (streamOutputViaSession) => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-wake-session-"));
-    cleanupDirs.push(rootDir);
-    const payload = JSON.stringify({ description: "full 🙂 wake history ".repeat(40_000) });
-    const childPath = path.join(rootDir, "child.mjs");
-    await writeFile(childPath, `import fs from 'node:fs';
-      const p = process.env.PAPERCLIP_WAKE_PAYLOAD_PATH;
-      process.stdout.write(JSON.stringify({ path: p, payload: fs.readFileSync(p, 'utf8'), inline: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON ?? null }));`);
-    const delegate = createLocalSandboxRunner();
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "large-wake-session", adapterKey: "acpx", runtimeRootDir: rootDir,
-      target: { kind: "remote", transport: "sandbox", remoteCwd: rootDir, runner: {
-        execute: async (input) => {
-          for (const value of [...(input.args ?? []), ...Object.values(input.env ?? {})]) {
-            expect(Buffer.byteLength(value)).toBeLessThan(128 * 1024);
-          }
-          return delegate.execute(input);
-        },
-      } },
-      command: process.execPath, args: [childPath], cwd: rootDir,
-      env: { PAPERCLIP_WAKE_PAYLOAD_JSON: payload }, timeoutSec: 10, streamOutputViaSession,
-    });
-    let filePath = "";
-    try {
-      const result = await runProxyWithInput(bridge!.agentCommand, "", true);
-      expect(result.code).toBe(0);
-      const received = JSON.parse(result.stdout);
-      expect(received.payload).toBe(payload);
-      expect(received.inline).toBeNull();
-      filePath = received.path;
-      expect(await readFile(filePath, "utf8")).toBe(payload);
-    } finally {
-      await bridge?.stop();
-    }
-    await expect(stat(path.dirname(filePath))).rejects.toMatchObject({ code: "ENOENT" });
-  }, 30_000);
-
   it("logs a streamed wrapper launch failure before forwarding its exit", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-wrapper-launch-error-"));
     cleanupDirs.push(rootDir);

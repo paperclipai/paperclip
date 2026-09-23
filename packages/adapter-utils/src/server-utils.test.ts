@@ -3717,6 +3717,16 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
     expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
   });
 
+  it("does not restore the retired wake JSON variable from config", () => {
+    const env: Record<string, string> = {};
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: { PAPERCLIP_WAKE_PAYLOAD_JSON: "stale wake" },
+      workspaceCwd: null,
+    });
+    expect(env).not.toHaveProperty("PAPERCLIP_WAKE_PAYLOAD_JSON");
+  });
+
   it("never accepts PAPERCLIP_API_KEY from config env", () => {
     const env: Record<string, string> = {};
 
