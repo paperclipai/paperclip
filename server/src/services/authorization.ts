@@ -20,7 +20,7 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, isUuidLike, type LowTrustBoundary } from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -227,7 +227,7 @@ type AssignmentPolicyEffect =
   | { kind: "blocked"; explanation: string }
   | { kind: "unknown"; explanation: string };
 
-type AgentHierarchyRow = { id: string; reportsTo: string | null };
+type AgentHierarchyRow = { id: string; reportsTo: string | null; status: string };
 type LowTrustBoundaryWithCompany = LowTrustBoundary & { companyId: string };
 type AgentAuthorizationRow = {
   id: string;
@@ -351,7 +351,7 @@ function agentIsInSubtree(
 
 async function loadCompanyAgentHierarchy(db: Db, companyId: string) {
   const rows = await db
-    .select({ id: agents.id, reportsTo: agents.reportsTo })
+    .select({ id: agents.id, reportsTo: agents.reportsTo, status: agents.status })
     .from(agents)
     .where(eq(agents.companyId, companyId));
   return new Map(rows.map((agent) => [agent.id, agent]));
@@ -411,8 +411,15 @@ async function scopeAllows(
     if (!scopeIncludesId(targetAgentIds, targetAssigneeAgentId)) return false;
   }
 
-  const directReportAgentIds = scopeValuesForKeys(grantScope, ["directReportAgentIds"]);
-  if (directReportAgentIds.length > 0) {
+  if (Object.prototype.hasOwnProperty.call(grantScope, "directReportAgentIds")) {
+    const rawDirectReportAgentIds = grantScope.directReportAgentIds;
+    if (
+      !Array.isArray(rawDirectReportAgentIds) ||
+      rawDirectReportAgentIds.length === 0 ||
+      rawDirectReportAgentIds.some((value) => typeof value !== "string" || !isUuidLike(value)) ||
+      new Set(rawDirectReportAgentIds).size !== rawDirectReportAgentIds.length
+    ) return false;
+    const directReportAgentIds = rawDirectReportAgentIds as string[];
     constrained = true;
     if (
       !options.directReportOfAgentId ||
@@ -420,7 +427,12 @@ async function scopeAllows(
       !targetAssigneeAgentId
     ) return false;
     const agentsById = await loadCompanyAgentHierarchy(db, companyId);
-    if (agentsById.get(targetAssigneeAgentId)?.reportsTo !== options.directReportOfAgentId) return false;
+    const targetAgent = agentsById.get(targetAssigneeAgentId);
+    if (
+      !targetAgent ||
+      targetAgent.reportsTo !== options.directReportOfAgentId ||
+      targetAgent.status === "terminated"
+    ) return false;
   }
 
   const targetUserIds = scopeValuesForKeys(grantScope, ["userId", "userIds"]);

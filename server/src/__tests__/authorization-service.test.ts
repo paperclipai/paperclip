@@ -314,6 +314,32 @@ describeEmbeddedPostgres("authorization service", () => {
       action: "agent_config:read",
       resource: { type: "agent", companyId: company.id, agentId: directReport.id },
     })).resolves.toMatchObject({ allowed: false });
+
+    // Termination also revokes access even when the historical reporting link remains.
+    await db.update(agents).set({ reportsTo: manager.id, status: "terminated" }).where(eq(agents.id, directReport.id));
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: directReport.id },
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.each([
+    { directReportAgentIds: [] },
+    { directReportAgentIds: [42] },
+    { directReportAgentIds: [""] },
+    { directReportAgentIds: ["malformed", "malformed"] },
+  ])("fails closed for malformed direct-report grant scope %#", async (scope) => {
+    const company = await createCompany(db, "MalformedDirectReportConfigReadGrant");
+    const manager = await createAgent(db, company.id);
+    const target = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, manager.id, "agents:suggest-changes", scope);
+
+    await expect(authorizationService(db).decide({
+      actor: { type: "agent", agentId: manager.id, companyId: company.id, source: "agent_key" },
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: target.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
   });
 
   it("falls back to the direct config-read grant decision when a suggest read grant is scoped away", async () => {

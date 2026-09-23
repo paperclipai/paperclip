@@ -28,14 +28,19 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 
 type Db = ReturnType<typeof createDb>;
 
-async function createApp(db: Db, companyId: string, userId: string) {
+async function createApp(
+  db: Db,
+  companyId: string,
+  userId: string,
+  actorOverride?: Express.Request["actor"],
+) {
   process.env.PAPERCLIP_LOG_DIR = "/tmp/paperclip-test-home/logs";
   process.env.PAPERCLIP_IN_WORKTREE = "false";
   const { accessRoutes } = await import("../routes/access.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = {
+    req.actor = actorOverride ?? {
       type: "board",
       userId,
       source: "local_implicit",
@@ -221,6 +226,11 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       scope: { directReportAgentIds: [directReport.id] },
       grantedByUserId: owner.principalId,
     });
+    const activity = await db.select().from(activityLog).where(eq(
+      activityLog.action,
+      "agent.direct_report_config_read_grant.updated",
+    )).then((rows) => rows[0]!);
+    expect(activity).toMatchObject({ actorType: "user", actorId: owner.principalId });
 
     const unrelated = await request(app).put(path).send({ directReportAgentIds: [unrelatedAgent.id] });
     expect(unrelated.status, JSON.stringify(unrelated.body)).toBe(400);
@@ -236,5 +246,54 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       eq(principalPermissionGrants.principalId, manager.id),
     ));
     expect(afterRemove).toHaveLength(0);
+  }, 10_000);
+
+  it("rejects an agent with users:manage_permissions from the Board-only grant route", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const manager = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Manager ${randomUUID()}`,
+      role: "general",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: manager.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: manager.id,
+      permissionKey: "users:manage_permissions",
+      scope: null,
+    });
+
+    const app = await createApp(db, company.id, owner.principalId, {
+      type: "agent",
+      agentId: manager.id,
+      companyId: company.id,
+      source: "agent_key",
+    });
+    const path = `/api/companies/${company.id}/agents/${manager.id}/direct-report-config-read-grant`;
+    await request(app).get(path).expect(401);
+    await request(app).put(path).send({ directReportAgentIds: [] }).expect(401);
+
+    const grants = await db.select().from(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, company.id),
+      eq(principalPermissionGrants.principalType, "agent"),
+      eq(principalPermissionGrants.principalId, manager.id),
+    ));
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.permissionKey).toBe("users:manage_permissions");
+    const activity = await db.select().from(activityLog).where(eq(
+      activityLog.action,
+      "agent.direct_report_config_read_grant.updated",
+    ));
+    expect(activity).toHaveLength(0);
   }, 10_000);
 });

@@ -4720,6 +4720,7 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const agentId = req.params.agentId as string;
+      if (req.actor.type !== "board" || !req.actor.userId) throw unauthorized();
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const agent = await agents.getById(agentId);
       if (!agent || agent.companyId !== companyId) throw notFound("Agent not found");
@@ -4746,6 +4747,7 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const agentId = req.params.agentId as string;
+      if (req.actor.type !== "board" || !req.actor.userId) throw unauthorized();
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const manager = await agents.getById(agentId);
       if (!manager || manager.companyId !== companyId) throw notFound("Agent not found");
@@ -4786,9 +4788,9 @@ export function accessRoutes(
             companyId,
             "agent",
             agentId,
-            "agents:suggest-changes",
-            false,
-            req.actor.userId ?? null,
+          "agents:suggest-changes",
+          false,
+            req.actor.userId,
           );
         }
       } else if (!sameTargets) {
@@ -4801,7 +4803,7 @@ export function accessRoutes(
           agentId,
           "agents:suggest-changes",
           true,
-          req.actor.userId ?? null,
+          req.actor.userId,
           { directReportAgentIds: [...directReportAgentIds].sort() },
         );
       }
@@ -4810,7 +4812,7 @@ export function accessRoutes(
         await logActivity(db, {
           companyId,
           actorType: "user",
-          actorId: req.actor.userId ?? "board",
+          actorId: req.actor.userId,
           action: "agent.direct_report_config_read_grant.updated",
           entityType: "agent",
           entityId: agentId,
