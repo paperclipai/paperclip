@@ -13,6 +13,14 @@ classification, credential boundaries, and production validation requirements
 are specified below so contributors can implement a connector without access
 to an internal issue tracker.
 
+Inline task connection cards must use the same provider setup controller and
+fields as Apps: URL guidance, authentication options, validation, and recovery.
+Keep dialogs bounded to the form width on wide screens and scrollable on narrow
+screens. A task request locks agent access to its requester and returns to the
+card after completion; reusing an account must preserve its existing access.
+OAuth popups need a normal sign-in link fallback, and callback messages must be
+verified against durable server state before accepting the request.
+
 For chat and email setup, account linking, and ongoing configuration, also follow
 [Chat connector UX](./CHAT-CONNECTOR-UX.md). It covers step navigation, footer
 layout, credential instructions, provider handoffs, identity linking, optional

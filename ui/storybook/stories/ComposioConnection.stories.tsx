@@ -42,3 +42,7 @@ export const ProviderHandoffAfterSetup: Story = { args: { scenario: "provider_pe
   const dialog = await within(document.body).findByRole("dialog");
   await userEvent.click(within(dialog).getByRole("button", { name: "Run" }));
 } };
+
+export const InlineCardAccess: Story = { args: { scenario: "initial", inline: true } };
+export const InlineCardConfiguration: Story = { args: { scenario: "connect", inline: true } };
+export const NarrowInlineCard: Story = { args: { scenario: "connect", inline: true }, globals: { viewport: { value: "mobile", isRotated: false } } };

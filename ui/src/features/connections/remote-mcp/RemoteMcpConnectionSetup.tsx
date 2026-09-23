@@ -25,7 +25,10 @@ function FieldHelp({ label, children }: { label: string; children: ReactNode }) 
 
 /** Controlled presentation shared by provider setup, configuration imports and review stories.
  * Authentication, persistence and calls belong to the controller, never these views. */
-export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, connectionId, fixedGrantKind }: {
+export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, connectionId, fixedGrantKind, lockedAgentId, host = "page", authorizationUrl }: {
+  host?: "page" | "dialog";
+  lockedAgentId?: string;
+  authorizationUrl?: string;
   provider: RemoteMcpProvider;
   connectionId: string;
   fixedGrantKind?: RemoteMcpSetupState["grantKind"];
@@ -55,7 +58,7 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
     : s.connectStatus === "unreachable" ? { title: "Paperclip could not reach this server", body: "Check that the endpoint is running and reachable from Paperclip, then try again. Your draft is still here." }
     : null;
 
-  return <div className="mx-auto max-w-6xl p-4 text-foreground sm:p-8" data-remote-mcp-provider={provider.id}>
+  return <div className={host === "dialog" ? "min-w-0 text-foreground" : "mx-auto max-w-6xl p-4 text-foreground sm:p-8"} data-remote-mcp-provider={provider.id}>
     <StepHeader headingRef={heading} appIdentity={{ name: provider.name, logoUrl: null }}
       title={s.step === "draft" ? "Continue your setup" : s.setupComplete ? s.step === "access" ? "Who can use this connection" : s.step === "connect" ? `Reconnect ${provider.name}` : provider.name : undefined}
       subtitle={currentStep >= 0 && !s.setupComplete ? `Step ${currentStep + 1} of 2` : s.step === "draft" ? `Your ${provider.name} setup is ready to resume.` : s.step === "permissions" ? `Connected${s.identity ? ` as ${s.identity}` : ""} · ${s.tools.length} actions available` : `Manage this ${provider.name} connection.`}
@@ -63,7 +66,7 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
     <main className="space-y-6">
         {s.notice && <p role="status" className="text-sm text-muted-foreground">{s.notice}</p>}
 
-        {s.step === "access" && <AccessStepContent agents={agents} authKind="oauth" grantKinds={fixedGrantKind ? [fixedGrantKind] : undefined} grantKind={s.grantKind} setGrantKind={(grantKind) => { if (grantKind !== "agent") change({ grantKind }); }}
+        {s.step === "access" && <AccessStepContent agents={agents} lockedAgentId={lockedAgentId} authKind="oauth" grantKinds={fixedGrantKind ? [fixedGrantKind] : undefined} grantKind={s.grantKind} setGrantKind={(grantKind) => { if (grantKind !== "agent") change({ grantKind }); }}
           installChoice={s.allAgents ? "all" : "specific"} setInstallChoice={(choice) => change({ allAgents: choice === "all" })}
           installAgentIds={new Set(s.agentIds)} setInstallAgentIds={(ids) => change({ agentIds: [...ids] })}
           submitLabel={s.setupComplete ? "Done" : "Continue"} onBack={s.setupComplete ? a.finish : a.saveExit} onContinue={s.setupComplete ? a.finish : () => a.navigate("connect")} />}
@@ -88,7 +91,7 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
             <div role="status"><InlineBanner title={`Finish signing in to ${provider.name}`}>
               Complete sign-in in the provider window, then return here. Paperclip is waiting for confirmation.
             </InlineBanner></div>
-            <p className="text-sm text-muted-foreground">If a window did not open, {external("sign_in", "open sign-in again")}.</p>
+            <p className="text-sm text-muted-foreground">If a window did not open, {authorizationUrl ? <a className="text-current underline" href={authorizationUrl} onClick={() => a.openProvider("sign_in")} target="_blank" rel="noopener noreferrer">open sign-in again</a> : external("sign_in", "open sign-in again")}.</p>
             {footer(<><Button variant="outline" onClick={a.cancelConnect}>Cancel sign-in</Button><Button disabled>Waiting for sign-in</Button></>)}
           </> : <form className="space-y-6" onSubmit={(event) => { event.preventDefault(); a.connect(); }}>
             {error && <div role="alert"><InlineBanner tone="danger" title={error.title}>{error.body}</InlineBanner></div>}

@@ -49,7 +49,7 @@ export const remoteMcpProviders: Record<RemoteMcpProviderId, RemoteMcpProvider> 
   executor: {
     id: "executor", name: "Executor", supportsBrowserAuth: true,
     description: "Run tools through your Executor workspace.",
-    instructions: ["Connect your apps and configure action policies in Executor.", "Copy the MCP URL from your workspace’s connection instructions.", "Paste it here and sign in when prompted."],
+    instructions: ["Connect your apps and configure action policies in Executor.", "Open Integrations and copy the URL under “Connect an agent”.", "Paste it here and sign in when prompted."],
     setupUrl: "https://executor.sh/docs/mcp-proxy",
     dashboardUrl: "https://executor.sh",
     defaultUrl: "", placeholder: "Paste your Executor workspace MCP URL",
