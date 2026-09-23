@@ -38,6 +38,8 @@
 // (`GlobalHandlers`), the two React error boundaries, deduplicates a repeat
 // event (`Dedupe`), and links a caused-by chain (`LinkedErrors`).
 
+import { buildBrowserErrorContext, type BrowserErrorDetails } from "./browser-error-context";
+
 let queue: Promise<void> = Promise.resolve();
 
 /** Run gate operations one at a time, in call order. */
@@ -135,10 +137,17 @@ export function teardownBrowserErrorMonitoring(): Promise<void> {
  * control flow. A no-op before the gate opens, when the gate never opens (no
  * DSN on the session), or when bootstrap failed.
  */
-export function captureBrowserException(error: unknown): void {
+export function captureBrowserException(error: unknown, details?: BrowserErrorDetails): void {
+  let context: ReturnType<typeof buildBrowserErrorContext> | undefined;
+  try {
+    if (details) context = buildBrowserErrorContext(details);
+  } catch {
+    // Diagnostics must never replace the original exception or its recovery UI.
+  }
   void enqueue(async () => {
     try {
-      sentry?.captureException(error);
+      if (context) sentry?.captureException(error, context);
+      else sentry?.captureException(error);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Sentry captureBrowserException failed", err);
