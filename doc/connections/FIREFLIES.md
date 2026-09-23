@@ -116,6 +116,10 @@ Validation on 2026-09-23:
   OAuth/API-key fixtures and permission preservation on reconnect.
 - Shared refresh regression coverage: another 104 tests passed across gateway,
   connection removal, Railway, and email integration callers.
+- Repository-wide Vitest coverage completed through the stable runner's server,
+  workspace, and both serialized groups (148 route suites). The initial full
+  invocation stopped on two reconnect fixture failures; those were fixed and
+  the complete connection suites and shared refresh callers rerun successfully.
 - `pnpm -r typecheck`, `pnpm build`, token gates, and branding validation passed.
 - Existing MCP browser suite: eight passed, two provider-dependent cases skipped.
 - Isolated app HTTP proof: signed setup receipt, activation/redelivery, ignored
