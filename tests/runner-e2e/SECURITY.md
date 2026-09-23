@@ -1,6 +1,6 @@
 # Runner E2E security for a public repository
 
-This suite can spend provider money, expose four API credentials to isolated
+This suite can spend provider money, expose selected API credentials to isolated
 test processes, publish a container, retain private visual evidence, and write
 public structured evidence. Treat changes to the workflow, harness, fixture
 prompts, evidence packager, and publisher as security-sensitive production
@@ -64,7 +64,7 @@ rejects mutable tag or branch references.
 ## Secrets and protected environments
 
 Create `runner-e2e-paid`, restrict deployments to the default branch, and put
-only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, and
+only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY`, and
 `DAYTONA_API_KEY` in it. Do not duplicate these credentials as repository- or
 organization-level Actions secrets: environment scoping is the boundary that
 prevents branch or pull-request jobs from requesting them. Require approval
