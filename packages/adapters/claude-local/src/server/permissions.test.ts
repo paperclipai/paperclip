@@ -40,45 +40,24 @@ describe("claude-local remote permission args", () => {
     expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: true })).toEqual([]);
   });
 
-  it("adds the deny-first tool list for a non-infra local role without an SSH mandate", () => {
+  it.each([
+    ["cto", ["--dangerously-skip-permissions"]],
+    ["engineer", ["--dangerously-skip-permissions", "--disallowedTools", NON_INFRA_DENIED_TOOLS]],
+    ["pm", ["--dangerously-skip-permissions", "--disallowedTools", NON_INFRA_DENIED_TOOLS]],
+    ["ceo", ["--dangerously-skip-permissions", "--disallowedTools", NON_INFRA_WITHOUT_SSH_DENIED_TOOLS]],
+    ["qa", ["--dangerously-skip-permissions", "--disallowedTools", NON_INFRA_WITHOUT_SSH_DENIED_TOOLS]],
+    ["designer", ["--dangerously-skip-permissions", "--disallowedTools", NON_INFRA_WITHOUT_SSH_DENIED_TOOLS]],
+    ["researcher", ["--dangerously-skip-permissions", "--disallowedTools", NON_INFRA_WITHOUT_SSH_DENIED_TOOLS]],
+    ["general", ["--dangerously-skip-permissions", "--disallowedTools", NON_INFRA_WITHOUT_SSH_DENIED_TOOLS]],
+  ])("applies the ADR-0029 deny matrix to the %s role", (agentRole, expected) => {
     expect(
       buildClaudeExecutionPermissionArgs({
         dangerouslySkipPermissions: true,
         targetIsRemote: false,
         localProcessUid: 1000,
-        agentRole: "qa",
+        agentRole,
       }),
-    ).toEqual([
-      "--dangerously-skip-permissions",
-      "--disallowedTools",
-      NON_INFRA_WITHOUT_SSH_DENIED_TOOLS,
-    ]);
-  });
-
-  it("keeps SSH available to non-infra local roles with an ADR-0029 SSH mandate", () => {
-    expect(
-      buildClaudeExecutionPermissionArgs({
-        dangerouslySkipPermissions: true,
-        targetIsRemote: false,
-        localProcessUid: 1000,
-        agentRole: "engineer",
-      }),
-    ).toEqual([
-      "--dangerously-skip-permissions",
-      "--disallowedTools",
-      NON_INFRA_DENIED_TOOLS,
-    ]);
-  });
-
-  it("keeps the local infrastructure role on the existing permission path", () => {
-    expect(
-      buildClaudeExecutionPermissionArgs({
-        dangerouslySkipPermissions: true,
-        targetIsRemote: false,
-        localProcessUid: 1000,
-        agentRole: "cto",
-      }),
-    ).toEqual(["--dangerously-skip-permissions"]);
+    ).toEqual(expected);
   });
 
   it("fails safe when the local role is absent or unknown", () => {

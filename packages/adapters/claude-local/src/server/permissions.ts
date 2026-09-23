@@ -17,6 +17,22 @@ const SANDBOX_ALLOWED_TOOLS =
   "NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill " +
   "TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write";
 
+// ADR-0029: CTO is the only infrastructure role. Engineer and Chief of Staff
+// retain their narrower SSH mandates, but still receive the other deny-first
+// protections applied to non-infrastructure roles.
+const INFRA_ROLES = new Set(["cto"]);
+const SSH_MANDATED_ROLES = new Set(["cto", "engineer", "pm"]);
+const NON_INFRA_DENIED_TOOLS = ["mcp__*__exec", "Bash(rm -rf *)"];
+
+function buildLocalDeniedTools(agentRole?: string | null): string {
+  const normalizedRole = agentRole?.trim().toLowerCase() ?? "";
+  if (INFRA_ROLES.has(normalizedRole)) return "";
+
+  const deniedTools = [...NON_INFRA_DENIED_TOOLS];
+  if (!SSH_MANDATED_ROLES.has(normalizedRole)) deniedTools.push("Bash(ssh *)");
+  return deniedTools.join(" ");
+}
+
 function shouldUseAllowedTools(input: { targetIsRemote: boolean; localProcessUid?: number | null }): boolean {
   // Claude Code refuses `--dangerously-skip-permissions` when the process runs
   // as root. Use the same explicit allowlist that remote targets use so local
@@ -44,10 +60,15 @@ export function buildClaudeExecutionPermissionArgs(input: {
   dangerouslySkipPermissions: boolean;
   targetIsRemote: boolean;
   localProcessUid?: number | null;
+  agentRole?: string | null;
 }): string[] {
   if (!input.dangerouslySkipPermissions) return [];
   if (shouldUseAllowedTools(input)) {
     return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];
   }
-  return ["--dangerously-skip-permissions"];
+  const deniedTools = buildLocalDeniedTools(input.agentRole);
+  return [
+    "--dangerously-skip-permissions",
+    ...(deniedTools ? ["--disallowedTools", deniedTools] : []),
+  ];
 }

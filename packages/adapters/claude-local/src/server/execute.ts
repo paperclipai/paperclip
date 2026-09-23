@@ -869,6 +869,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
+  const agentRole = "role" in agent && typeof agent.role === "string" ? agent.role : null;
   const passesConfiguredModel = Boolean(
     model && (!isBedrockAuth(modelEnv) || isBedrockModelId(model)),
   );
@@ -883,6 +884,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       dangerouslySkipPermissions,
       targetIsRemote: executionTargetIsRemote,
       localProcessUid: process.getuid?.() ?? null,
+      agentRole,
     }));
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
