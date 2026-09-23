@@ -886,6 +886,10 @@ jobs:
         if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth')
         run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
+      - name: Install checksum-verified Grok executable
+        if: matrix.environmentId == 'local' && matrix.profileId == 'runner-acpx-grok'
+        run: node packages/grok-acp/install.mjs
+
       - name: Download immutable campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

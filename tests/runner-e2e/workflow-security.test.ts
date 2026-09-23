@@ -294,6 +294,12 @@ describe("public repository paid workflow security", () => {
     expect(paidExecution).toBeGreaterThan(awsFfmpegInstall);
     expect(paidExecution).toBeGreaterThan(daytonaPluginPreparation);
     expect(paidExecution).toBeGreaterThan(everydayOraclePreparation);
+    const grokPreparation = paidJob.indexOf("- name: Install checksum-verified Grok executable");
+    expect(grokPreparation).toBeGreaterThan(paidInstall);
+    expect(paidExecution).toBeGreaterThan(grokPreparation);
+    expect(paidJob).toContain("if: matrix.environmentId == 'local' && matrix.profileId == 'runner-acpx-grok'");
+    expect(paidJob).toContain("run: node packages/grok-acp/install.mjs");
+
     const everydayOracleStep = paidJob.slice(
       everydayOraclePreparation,
       paidExecution,
