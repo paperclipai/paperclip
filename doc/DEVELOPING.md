@@ -368,6 +368,14 @@ pnpm test:release-smoke
 
 These browser suites are intended for targeted local verification and CI, not the default agent/human test command.
 
+The default E2E configuration builds the UI into `server/ui-dist` before starting
+its throwaway instance and serves that build with
+`PAPERCLIP_UI_DEV_MIDDLEWARE=false`. This exercises the
+shipped assets, including service-worker takeover and reload, without traversing
+the development server's unbundled module graph on each navigation. Browser
+assertion deadlines and retries remain unchanged. Use `pnpm dev` separately when
+verifying Vite/HMR behavior.
+
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
 ### Task search evaluation
