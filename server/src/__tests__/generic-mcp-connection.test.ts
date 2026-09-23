@@ -405,10 +405,11 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     method.defaults!.serverUrl = MCP_URL;
     try {
       const names = ["fireflies_get_transcripts", "fireflies_get_transcript", "fireflies_get_summary"];
+      const availableTools = [...names.map((name) => ({ name, annotations: { readOnlyHint: true } })), { name: "fireflies_share_meeting" }, { name: "fireflies_move_meeting" }];
       const fixture = installMcpOAuthFixture({
         auth: methodKey === "mcp-oauth" ? "oauth" : "header",
         requiredHeader: { name: "Authorization", value: "Bearer fixture-fireflies-key" },
-        tools: [...names.map((name) => ({ name, annotations: { readOnlyHint: true } })), { name: "fireflies_share_meeting" }],
+        tools: availableTools,
       });
       const company = await createCompany(db);
       const service = toolAccessService(db);
@@ -426,7 +427,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
         expect(completed.actions.readOnly.map((action) => action.toolName)).toEqual(names);
       } else {
         expect(connected.actions.readOnly.map((action) => action.toolName)).toEqual(names);
-        expect(connected.actions.canMakeChanges.map((action) => action.toolName)).toEqual(["fireflies_share_meeting"]);
+        expect(connected.actions.canMakeChanges.map((action) => action.toolName)).toEqual(["fireflies_share_meeting", "fireflies_move_meeting"]);
         expect(fixture.requestsTo("/mcp").at(-1)?.headers.authorization).toBe("Bearer fixture-fireflies-key");
       }
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
@@ -437,7 +438,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       const refreshed = await service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board-user" });
       const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Meeting reviewer", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
       await service.finishGalleryAppConnection(company.id, connected.connectionId, {
-        enabledCatalogEntryIds: refreshed.catalog.map((entry) => entry.id),
+        enabledCatalogEntryIds: refreshed.catalog.filter((entry) => entry.toolName !== "fireflies_move_meeting").map((entry) => entry.id),
         askFirstCatalogEntryIds: refreshed.catalog.filter((entry) => entry.toolName === "fireflies_share_meeting").map((entry) => entry.id),
         access: { agentIds: [agent!.id] },
       }, { actorType: "user", actorId: "board-user" });
@@ -448,7 +449,9 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       }
       const policy = toolAccessPolicyService(db);
       const entry = refreshed.catalog.find((item) => item.toolName === "fireflies_share_meeting")!;
-      // Re-authentication must retain the operator's approval requirement.
+      // Re-authentication must retain both Off and Ask first selections.
+      // Newly discovered tools still receive the normal connection defaults.
+      availableTools.push({ name: "fixture_new_read", annotations: { readOnlyHint: true } });
       if (methodKey === "mcp-oauth") {
         const actor = { actorType: "user" as const, actorId: "board-user" };
         const start = await service.startOAuth(company.id, connected.connectionId, { redirectUri: REDIRECT_URI, actor });
@@ -459,8 +462,14 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
         });
         expect(reconnected.connection.id).toBe(connected.connectionId);
       }
+      await service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board-user" });
+      await expect(gateway.executeTestCall({ companyId: company.id, connectionId: connected.connectionId, agentId: agent!.id, userId: "board-user", toolName: "fixture_new_read", parameters: {} }))
+        .resolves.toMatchObject({ decision: "allowed" });
       await expect(policy.decide({ companyId: company.id, actor: { actorType: "agent", actorId: agent!.id, agentId: agent!.id }, request: { connectionId: connected.connectionId, catalogEntryId: entry.id, toolName: entry.toolName } }))
         .resolves.toMatchObject({ allowed: false, decision: "require_approval" });
+      const offEntry = refreshed.catalog.find((item) => item.toolName === "fireflies_move_meeting")!;
+      await expect(policy.decide({ companyId: company.id, actor: { actorType: "agent", actorId: agent!.id, agentId: agent!.id }, request: { connectionId: connected.connectionId, catalogEntryId: offEntry.id, toolName: offEntry.toolName } }))
+        .resolves.toMatchObject({ allowed: false, decision: "deny" });
       await expect(gateway.executeTestCall({ companyId: randomUUID(), connectionId: connected.connectionId, agentId: agent!.id, userId: "board-user", toolName: names[0]!, parameters: {} })).rejects.toThrow();
       await service.archiveConnection(connected.connectionId, company.id);
       await expect(gateway.executeTestCall({ companyId: company.id, connectionId: connected.connectionId, agentId: agent!.id, userId: "board-user", toolName: names[0]!, parameters: {} })).rejects.toThrow();

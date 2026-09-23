@@ -13,7 +13,8 @@ Setup is **Access → Connect**. Successful authentication and catalog discovery
 complete setup; manage action permissions and test tools on the connection's
 Permissions screen. Available data follows the connected Fireflies account's
 permissions. Writes follow Paperclip's normal defaults and any restrictions you
-configure. Reconnect and catalog refresh preserve existing restrictions.
+configure. Reconnect and catalog refresh preserve **Off** and **Ask first**
+selections; newly discovered actions keep the normal connection defaults.
 
 Stable meeting tools include `fireflies_get_transcripts`,
 `fireflies_get_transcript`, and `fireflies_get_summary`. The last returns summary
@@ -113,6 +114,8 @@ Validation on 2026-09-23:
 
 - Eight focused suites: 537 tests passed, including actual gateway reads through
   OAuth/API-key fixtures and permission preservation on reconnect.
+- Shared refresh regression coverage: another 104 tests passed across gateway,
+  connection removal, Railway, and email integration callers.
 - `pnpm -r typecheck`, `pnpm build`, token gates, and branding validation passed.
 - Existing MCP browser suite: eight passed, two provider-dependent cases skipped.
 - Isolated app HTTP proof: signed setup receipt, activation/redelivery, ignored

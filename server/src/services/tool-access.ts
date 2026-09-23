@@ -15848,7 +15848,7 @@ export function toolAccessService(
       // Activate and discover with the just-issued token before returning.
       const refresh = await refreshCatalog(connection.id, input.actor, {
         enableAllByDefault: shouldFinalizeDefaults,
-        skipDefaultProfileSync: true,
+        skipDefaultProfileSync: shouldFinalizeDefaults,
         credentialHeaders: { Authorization: `Bearer ${token.accessToken}` },
       });
       const [application] = await db
@@ -16063,7 +16063,7 @@ export function toolAccessService(
     await checkConnectionHealth(connection.id, input.actor);
     const refresh = await refreshCatalog(connection.id, input.actor, {
       enableAllByDefault: shouldFinalizeDefaults,
-      skipDefaultProfileSync: true,
+      skipDefaultProfileSync: shouldFinalizeDefaults,
     });
     const [application] = await db
       .select()
