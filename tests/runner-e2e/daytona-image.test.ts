@@ -29,6 +29,8 @@ describe("runner E2E Daytona image contract", () => {
       ),
     ]);
     const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
+    const daytonaImageJob = workflow.match(/^  daytona_image:\n[\s\S]*?(?=^  \w+:)/m)?.[0];
+    expect(daytonaImageJob).toBeDefined();
     expect(dockerfile).toContain("--bin paperclip-runnerd");
     expect(dockerfile).toContain("build-provider-pack.mjs /provider-pack");
     expect(normalizedDockerfile).not.toContain(
@@ -93,19 +95,19 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(
       '--build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}"',
     );
-    expect(workflow).toContain(
+    expect(daytonaImageJob).toContain(
       "TARGET_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}",
     );
-    expect(workflow).toContain(
+    expect(daytonaImageJob).toContain(
       '[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]',
     );
-    expect(workflow).toContain(
+    expect(daytonaImageJob).toContain(
       '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
     );
     expect(
-      workflow.indexOf('[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]'),
+      daytonaImageJob!.indexOf('[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]'),
     ).toBeLessThan(
-      workflow.indexOf(
+      daytonaImageJob!.indexOf(
         '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
       ),
     );
@@ -127,8 +129,6 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
     expect(workflow).toContain(`--format '{{json .Image}}'`);
     expect(workflow).not.toContain(`docker --config "$anonymous_config" pull`);
-    const daytonaImageJob = workflow.match(/^  daytona_image:\n[\s\S]*?(?=^  \w+:)/m)?.[0];
-    expect(daytonaImageJob).toBeDefined();
     // Remote Daytona manifests must use registry inspection. Local oracle
     // images in the test job can still use the Docker daemon.
     expect(daytonaImageJob).not.toContain("docker image inspect");
