@@ -29,6 +29,8 @@ import type {
   AcpxEngineExecutorOptions,
   AcpxRemoteManagedHomeContext,
   AcpxRemoteManagedHomeResult,
+  AcpxTerminalFailureClassification,
+  AcpxTerminalSessionFailure,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
@@ -38,7 +40,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { normalizeCodexModel } from "../index.js";
-import { classifyCodexAuthRefreshFailure } from "./parse.js";
+import { classifyCodexAuthRefreshFailure, extractCodexRetryNotBefore } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
@@ -257,10 +259,31 @@ async function prepareCodexRemoteManagedHome(
   };
 }
 
+export function classifyCodexTerminalSessionFailure(
+  failure: AcpxTerminalSessionFailure,
+  now: Date,
+): AcpxTerminalFailureClassification | null {
+  // ACP's `limit` also covers context, turn, rate and configured budget limits.
+  // Require explicit usage exhaustion; the CLI's broader capacity matcher would
+  // also match a context/storage capacity limit and defer the wrong failure.
+  if (failure.category !== "limit") return null;
+  const surface = { errorMessage: [failure.title, failure.details].filter(Boolean).join("\n") };
+  if (!/\b(?:you(?:'|’)ve hit your usage limit|usage limit (?:reached|exceeded))\b/i.test(surface.errorMessage)) {
+    return null;
+  }
+  const retryNotBefore = extractCodexRetryNotBefore(surface, now)?.toISOString();
+  return {
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    ...(retryNotBefore ? { retryNotBefore } : {}),
+  };
+}
+
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
     prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
+    classifyTerminalSessionFailure: classifyCodexTerminalSessionFailure,
     ...options,
     adapterType: "codex_local",
     moduleDir,
