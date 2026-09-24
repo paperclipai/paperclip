@@ -13763,6 +13763,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
+      invalidateCompanyIssueListCache(issue.companyId);
       for (const publication of postCommitActivityPublications)
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
@@ -14962,7 +14963,6 @@ export function issueRoutes(
 
       await queueTaskWatchdogEvaluation(issue, actor.runId);
       const changes = issueResponse.changes ?? {};
-      invalidateCompanyIssueListCache(issue.companyId);
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
         res.json({
@@ -14996,6 +14996,7 @@ export function issueRoutes(
       return;
     }
 
+    invalidateCompanyIssueListCache(issue.companyId);
     for (const attachment of attachments) {
       try {
         await storage.deleteObject(attachment.companyId, attachment.objectKey);
@@ -15021,7 +15022,6 @@ export function issueRoutes(
     });
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);
-    invalidateCompanyIssueListCache(issue.companyId);
     res.json(issue);
   });
 

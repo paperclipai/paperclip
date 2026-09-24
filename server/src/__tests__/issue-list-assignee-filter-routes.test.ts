@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -15,6 +15,7 @@ import {
   ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES,
   issueRoutes,
 } from "../routes/issues.js";
+import * as services from "../services/index.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../services/successful-run-handoff-state.js";
@@ -38,6 +39,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     __clearIssueListResponseCacheForTests();
     await db.delete(issues);
     await db.delete(activityLog);
@@ -643,6 +645,45 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect((await readOther()).headers["x-paperclip-request-cache"]).toBe("hit");
   });
 
+  it.each(["update", "delete"] as const)("invalidates compact lists before post-commit %s activity finishes or fails", async (mutation) => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Post-commit cache", issuePrefix: uniqueIssuePrefix() });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Committed write", status: "todo", priority: "medium" });
+    const app = createApp(companyId);
+    const read = () => request(app).get(`/api/companies/${companyId}/issues`).query({ view: "compact" });
+    expect((await read()).body[0].status).toBe("todo");
+
+    let started!: () => void;
+    let release!: () => void;
+    const activityStarted = new Promise<void>((resolve) => { started = resolve; });
+    const activityReleased = new Promise<void>((resolve) => { release = resolve; });
+    const originalLogActivity = services.logActivity;
+    vi.spyOn(services, "logActivity").mockImplementation(async (...args) => {
+      if (args[1].entityId === issueId && args[1].action === `issue.${mutation === "update" ? "updated" : "deleted"}`) {
+        started();
+        await activityReleased;
+        throw new Error("Post-commit activity unavailable");
+      }
+      return originalLogActivity(...args);
+    });
+    const write = (mutation === "update"
+      ? request(app).patch(`/api/issues/${issueId}`).send({ status: "backlog" })
+      : request(app).delete(`/api/issues/${issueId}`)).then((response) => response);
+    await activityStarted;
+    try {
+      const duringActivity = await read();
+      expect(duringActivity.headers["x-paperclip-request-cache"]).toBe("miss");
+      expect(duringActivity.body.map((row: { status: string }) => row.status)).toEqual(mutation === "update" ? ["backlog"] : []);
+    } finally {
+      release();
+      expect((await write).status).toBe(500);
+    }
+    const afterFailure = await read();
+    expect(afterFailure.body.map((row: { status: string }) => row.status)).toEqual(mutation === "update" ? ["backlog"] : []);
+  });
+
   it("does not reuse or cache a compact read started before an update", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
@@ -654,13 +695,22 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const firstStarted = new Promise<void>((resolve) => { started = resolve; });
     const firstReleased = new Promise<void>((resolve) => { release = resolve; });
     let computeCount = 0;
-    const app = createApp(companyId, {
-      issueListDiagnostics: {
-        async onComputeStart() {
-          if (++computeCount === 1) { started(); await firstReleased; }
+    const originalIssueService = services.issueService;
+    vi.spyOn(services, "issueService").mockImplementation((database) => {
+      const service = originalIssueService(database);
+      return {
+        ...service,
+        async list(...args) {
+          const result = await service.list(...args);
+          if (args[0] === companyId && ++computeCount === 1) {
+            started();
+            await firstReleased;
+          }
+          return result;
         },
-      },
+      };
     });
+    const app = createApp(companyId);
     const read = () => request(app).get(`/api/companies/${companyId}/issues`).query({ view: "compact" });
     const first = read().then((response) => response);
     await firstStarted;
@@ -672,7 +722,8 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       await request(app).patch(`/api/issues/${issueId}`).send({ status: "todo" }).expect(200);
     } finally {
       release();
-      await first;
+      const stale = await first;
+      expect(stale.body[0].status).toBe("todo");
     }
     const final = await read();
     expect(final.headers["x-paperclip-request-cache"]).toBe("miss");

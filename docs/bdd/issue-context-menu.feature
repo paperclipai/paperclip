@@ -38,3 +38,9 @@ Feature: Move and delete tasks from collection context menus
     Then its next compact list reflects the change immediately
     And the other company's cache is preserved
     And an older in-flight list cannot repopulate the invalidated cache
+
+  Scenario: CM-7 Preserve freshness after post-commit failure
+    Given a compact task list is cached
+    When a task update or deletion commits but its subsequent activity log stalls or fails
+    Then compact reads reflect the committed change before the activity log finishes
+    And the committed change remains visible after the request reports an error
