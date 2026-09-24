@@ -217,6 +217,10 @@ export function findAggregatorService(query: string) {
 
 /** Preserve a provider explicitly named by the user instead of applying default ranking. */
 export function explicitAggregatorQuery(query: string) {
+  // A trailing exclusion is not a second proposed provider. Keep this grammar
+  // narrow; alternatives and contradictory choices still require confirmation.
+  const exclusion = query.match(/\s*,?\s+not\s+(composio|arcade|executor|zapier)[.!]?\s*$/i);
+  if (exclusion) query = query.slice(0, exclusion.index).trim();
   const matches = [
     ...query.matchAll(
       /\b(?:through|via|using)\s+(composio|arcade|executor|zapier)\b/gi,
@@ -229,6 +233,7 @@ export function explicitAggregatorQuery(query: string) {
   );
   if (matches.length !== 1 || namedProviders.size !== 1) return null;
   const match = matches[0]!;
+  if (exclusion?.[1]?.toLowerCase() === match[1]!.toLowerCase()) return null;
   return {
     provider: match[1]!.toLowerCase() as RemoteMcpConnectorId,
     serviceQuery: (

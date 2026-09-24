@@ -91,4 +91,9 @@ it("keeps dates per app/provider claim and parses only an unambiguous explicit p
   ).toBeNull();
   expect(explicitAggregatorQuery("arcade games")).toBeNull();
   expect(explicitAggregatorQuery("HubSpot via Arcade or Composio")).toBeNull();
+  expect(explicitAggregatorQuery("Jira via Arcade, not Zapier")).toEqual({
+    provider: "arcade",
+    serviceQuery: "Jira",
+  });
+  expect(explicitAggregatorQuery("Jira via Arcade, not Arcade")).toBeNull();
 });

@@ -103,3 +103,9 @@ or a different provider. When persisted consent cannot be verified, search confi
 the named provider; it does not silently choose a different one. Queries naming
 alternatives keep the full choice question. Regressions cover wrong humans, old
 messages, None, a different provider, and a new explicit user request after decline.
+
+Follow-up regressions verify direct requests reject an unanswered provider question,
+and a clear trailing exclusion ("Jira via Arcade, not Zapier") preserves the selected
+provider. Contradictory and alternative provider names still require confirmation.
+All 64 focused connection tests passed; the final parser/service changes passed the
+30 affected tests and server typecheck. Full local suites were not run.

@@ -504,10 +504,9 @@ export function connectionIntentService(db: Db) {
     const request = explicitAggregatorQuery(message.body);
     if (request?.provider !== provider) return false;
     const known = findAggregatorService(target);
-    const requested = normalizeConnectionQuery(message.body).replace(/^(?:please )?(?:connect|use) (?:to )?/, "");
+    const requested = normalizeConnectionQuery(request.serviceQuery).replace(/^(?:please )?(?:connect|use) (?:to )?/, "");
     const names = known ? [known.slug, known.name, ...known.aliases] : [target];
-    return names.some(name => ["through", "via", "using"].some(preposition =>
-      requested === `${normalizeConnectionQuery(name)} ${preposition} ${provider}`));
+    return names.some(name => requested === normalizeConnectionQuery(name));
   }
 
   function selectedProvider(row: typeof issueThreadInteractions.$inferSelect, expected: ReturnType<typeof aggregatorProviderQuestion>) {
@@ -545,7 +544,10 @@ export function connectionIntentService(db: Db) {
       const found = await search(claims, `${options.targetService} through ${serviceSlug}`);
       const selected = found.results.find(item => item.aggregator?.provider === serviceSlug && (item.service === serviceSlug || Boolean(found.selectionInteractionId && !found.providerQuestion)));
       if (!selected?.aggregator) throw forbidden("The requested provider cannot connect this app without verified support and a recorded user choice or explicit user request");
-      upstreamService = { slug: selected.aggregator.targetService, name: selected.aggregator.targetName, ...(found.selectionInteractionId ? { selectionInteractionId: found.selectionInteractionId } : {}) };
+      // Reuse the saved-answer validation below; a pending question also carries
+      // an interaction ID, but is never permission to create the setup card.
+      if (selected.service !== serviceSlug) return request(claims, selected.service, { selectionInteractionId: found.selectionInteractionId });
+      upstreamService = { slug: selected.aggregator.targetService, name: selected.aggregator.targetName };
     }
     if (route) {
       if (options.purpose) throw unprocessable("Aggregator routes are tool connections only");

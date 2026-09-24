@@ -389,6 +389,11 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(pending.selectionInteractionId).toBe(interaction.id);
       expect(pending.instruction).toContain("already pending");
       await expect(
+        connectionIntentService(db).request(claims, "arcade", {
+          targetService: "hubspot",
+        }),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(
         connectionIntentService(db).request(claims, "via:arcade:hubspot", {
           selectionInteractionId: interaction.id,
         }),
@@ -645,15 +650,15 @@ const support = await getEmbeddedPostgresTestSupport();
 
     it("permits explicit provider preference for a supported native app but not a native denial", async () => {
       await resetQuestions();
-      await userRequest("Connect Jira via Arcade");
+      await userRequest("Connect Jira via Arcade, not Zapier");
       const service = connectionIntentService(db);
       expect(
-        (await service.search(claims, "Jira via Arcade")).results.map(
+        (await service.search(claims, "Jira via Arcade, not Zapier")).results.map(
           (item) => item.service,
         ),
       ).toEqual(["arcade"]);
       await seedProvider("jira", "jira_read", "responsible-user", false);
-      expect((await service.search(claims, "Jira via Arcade")).results).toEqual(
+      expect((await service.search(claims, "Jira via Arcade, not Zapier")).results).toEqual(
         [expect.objectContaining({ service: "jira", state: "unavailable" })],
       );
     });
