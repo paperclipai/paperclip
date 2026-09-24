@@ -356,6 +356,20 @@ import {
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 import {
+  WAKE_EQUIVALENCE_PAYLOAD_KEY,
+  WAKE_REQUEST_COALESCE_TARGET_STATUSES,
+  WAKE_REQUEST_COALESCE_WINDOW_MS,
+  WAKE_REQUEST_COALESCED_ACTIVITY_ACTION,
+  buildWakeEquivalenceFingerprint,
+  formatBlockerState,
+  readWakeEquivalenceStamp,
+  readWakeRequestIssueScope,
+  selectCoalesceTarget,
+  stampWakeEquivalencePayload,
+  stripWakeEquivalencePayload,
+  wakeRequestCoalesceExemption,
+} from "./wake-request-coalescing.js";
+import {
   logActivity,
   publishPluginDomainEvent,
   type LogActivityInput,
@@ -7069,7 +7083,9 @@ function enrichWakeContextSnapshot(input: {
   triggerDetail: WakeupOptions["triggerDetail"] | null;
   payload: Record<string, unknown> | null;
 }) {
-  const { contextSnapshot, reason, source, triggerDetail, payload } = input;
+  const payload = stripWakeEquivalencePayload(input.payload);
+  const contextSnapshot = stripWakeEquivalencePayload(input.contextSnapshot);
+  const { reason, source, triggerDetail } = input;
   const issueIdFromPayload =
     readNonEmptyString(payload?.["issueId"]) ??
     readNonEmptyString(payload?.["taskId"]);
@@ -7635,6 +7651,10 @@ export async function buildPaperclipWakePayload(input: {
   // Simplified Technical English (rendered as a prompt directive downstream).
   simplifiedEnglishInteractions?: boolean;
 }) {
+  input = {
+    ...input,
+    contextSnapshot: stripWakeEquivalencePayload(input.contextSnapshot),
+  };
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const annotationCommentId = readNonEmptyString(
@@ -26817,6 +26837,7 @@ export function heartbeatService(
               assigneeAgentId: issues.assigneeAgentId,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
+              blockedTransitionAt: issues.blockedTransitionAt,
               createdAt: issues.createdAt,
             })
             .from(issues)
@@ -27804,6 +27825,192 @@ export function heartbeatService(
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
           }
 
+          const blockerState = formatBlockerState({
+            known: dependencyReadiness !== null,
+            ready: dependencyReadiness?.isDependencyReady === true,
+            unresolvedBlockerIssueIds: dependencyReadiness?.unresolvedBlockerIssueIds ?? [],
+            blockedTransitionAt: issue.blockedTransitionAt,
+          });
+          const coalesceExemption = wakeRequestCoalesceExemption({
+            manualUserWake: opts.manualUserWake,
+            failedRunId: opts.failedRunId,
+            wakeReason: reason,
+            requestedByActorType: opts.requestedByActorType,
+            triggerDetail,
+            durableReceipt: Boolean(durableRequest),
+            interactionContinuation:
+              hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
+              isInteractionResolutionWakePayload(payload ?? {}),
+            forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
+            allowRunCoalescing: opts.allowRunCoalescing,
+            blockerStateKnown: blockerState !== null,
+          });
+          const wakeEquivalenceFingerprint = coalesceExemption
+            ? null
+            : buildWakeEquivalenceFingerprint({
+                companyId: agent.companyId,
+                agentId,
+                issueId: issue.id,
+                ownerAgentId: issue.assigneeAgentId,
+                issueStatus: issue.status,
+                issueStatusVersion: issue.statusVersion,
+                blockerState,
+                payload,
+              });
+          if (wakeEquivalenceFingerprint) {
+            const coalesceNow = new Date();
+            const recentWakes = await tx
+              .select({
+                id: agentWakeupRequests.id,
+                companyId: agentWakeupRequests.companyId,
+                agentId: agentWakeupRequests.agentId,
+                status: agentWakeupRequests.status,
+                payload: agentWakeupRequests.payload,
+                requestedAt: agentWakeupRequests.requestedAt,
+                runId: agentWakeupRequests.runId,
+                coalescedCount: agentWakeupRequests.coalescedCount,
+              })
+              .from(agentWakeupRequests)
+              .where(
+                and(
+                  eq(agentWakeupRequests.companyId, agent.companyId),
+                  eq(agentWakeupRequests.agentId, agentId),
+                  inArray(agentWakeupRequests.status, [...WAKE_REQUEST_COALESCE_TARGET_STATUSES]),
+                  gte(
+                    agentWakeupRequests.requestedAt,
+                    new Date(coalesceNow.getTime() - WAKE_REQUEST_COALESCE_WINDOW_MS),
+                  ),
+                  sql`coalesce(${agentWakeupRequests.payload}->${WAKE_EQUIVALENCE_PAYLOAD_KEY}->>'issueId', ${agentWakeupRequests.payload}->>'issueId') = ${issue.id}`,
+                ),
+              )
+              .orderBy(desc(agentWakeupRequests.requestedAt))
+              .limit(20);
+            const coalesceMatch = selectCoalesceTarget(
+              {
+                companyId: agent.companyId,
+                agentId,
+                issueId: issue.id,
+                fingerprint: wakeEquivalenceFingerprint,
+              },
+              recentWakes.map((row) => ({
+                id: row.id,
+                companyId: row.companyId,
+                agentId: row.agentId,
+                issueId: readWakeRequestIssueScope(row.payload) ?? "",
+                status: row.status,
+                requestedAt: row.requestedAt,
+                fingerprint: readWakeEquivalenceStamp(row.payload)?.fingerprint ?? null,
+                runId: row.runId,
+                coalescedCount: row.coalescedCount,
+              })),
+              coalesceNow,
+            );
+            if (coalesceMatch) {
+              const targetRun = coalesceMatch.target.runId
+                ? await tx
+                    .select()
+                    .from(heartbeatRuns)
+                    .where(
+                      and(
+                        eq(heartbeatRuns.id, coalesceMatch.target.runId),
+                        eq(heartbeatRuns.companyId, agent.companyId),
+                        eq(heartbeatRuns.agentId, agentId),
+                      ),
+                    )
+                    .then((rows) => rows[0] ?? null)
+                : null;
+              const targetRunStillPending = !coalesceMatch.target.runId || (
+                targetRun != null &&
+                EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
+                  targetRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
+                )
+              );
+              const claimedTarget = targetRunStillPending
+                ? await tx
+                    .update(agentWakeupRequests)
+                    .set({
+                      coalescedCount: sql`${agentWakeupRequests.coalescedCount} + 1`,
+                      updatedAt: coalesceNow,
+                    })
+                    .where(
+                      and(
+                        eq(agentWakeupRequests.id, coalesceMatch.target.id),
+                        eq(agentWakeupRequests.companyId, agent.companyId),
+                        inArray(agentWakeupRequests.status, [...WAKE_REQUEST_COALESCE_TARGET_STATUSES]),
+                      ),
+                    )
+                    .returning({ id: agentWakeupRequests.id })
+                    .then((rows) => rows[0] ?? null)
+                : null;
+              if (claimedTarget) {
+              const stampedPayload = stampWakeEquivalencePayload(payload, {
+                v: 1,
+                fingerprint: wakeEquivalenceFingerprint,
+                issueId: issue.id,
+              });
+              const coalescedWake = await tx
+                .insert(agentWakeupRequests)
+                .values({
+                  ...durableReceiptFields,
+                  companyId: agent.companyId,
+                  agentId,
+                  source,
+                  triggerDetail,
+                  reason,
+                  payload: stampedPayload,
+                  status: "coalesced",
+                  requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null,
+                  idempotencyKey: opts.idempotencyKey ?? null,
+                  runId: coalesceMatch.target.runId,
+                  finishedAt: coalesceNow,
+                })
+                .returning({ id: agentWakeupRequests.id })
+                .then((rows) => rows[0]);
+              await logActivity(tx as unknown as Db, {
+                companyId: agent.companyId,
+                actorType: "system",
+                actorId: "heartbeat",
+                agentId,
+                runId: coalesceMatch.target.runId,
+                action: WAKE_REQUEST_COALESCED_ACTIVITY_ACTION,
+                entityType: "agent_wakeup_request",
+                entityId: coalescedWake?.id ?? coalesceMatch.target.id,
+                details: {
+                  targetWakeupRequestId: coalesceMatch.target.id,
+                  targetRunId: coalesceMatch.target.runId,
+                  fingerprint: wakeEquivalenceFingerprint,
+                  windowMs: WAKE_REQUEST_COALESCE_WINDOW_MS,
+                  relation: coalesceMatch.decision.relation,
+                  targetStatus: coalesceMatch.target.status,
+                },
+              });
+              logger.info(
+                {
+                  companyId: agent.companyId,
+                  agentId,
+                  issueId: issue.id,
+                  targetWakeupRequestId: coalesceMatch.target.id,
+                  targetRunId: coalesceMatch.target.runId,
+                  fingerprint: wakeEquivalenceFingerprint,
+                  windowMs: WAKE_REQUEST_COALESCE_WINDOW_MS,
+                  relation: coalesceMatch.decision.relation,
+                },
+                "coalesced equivalent wake request",
+              );
+              if (!coalesceMatch.target.runId) return { kind: "deferred" as const };
+              if (targetRun) return { kind: "coalesced" as const, run: targetRun };
+              }
+            }
+          }
+
+          const queuedPayload = wakeEquivalenceFingerprint
+            ? stampWakeEquivalencePayload(payload, {
+                v: 1,
+                fingerprint: wakeEquivalenceFingerprint,
+                issueId: issue.id,
+              })
+            : payload;
           const wakeupRequest = await tx
             .insert(agentWakeupRequests)
             .values({
@@ -27813,7 +28020,7 @@ export function heartbeatService(
               source,
               triggerDetail,
               reason,
-              payload,
+              payload: queuedPayload,
               status: "queued",
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
@@ -27937,7 +28144,7 @@ export function heartbeatService(
             await tx
               .update(agentWakeupRequests)
               .set({
-                payload: withQueuedCommentIdsInWakePayload(payload, adoptedCommentIds),
+                payload: withQueuedCommentIdsInWakePayload(queuedPayload, adoptedCommentIds),
               })
               .where(eq(agentWakeupRequests.id, wakeupRequest.id));
           }
