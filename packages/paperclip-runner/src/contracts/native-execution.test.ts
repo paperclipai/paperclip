@@ -96,6 +96,25 @@ describe("NativeExecutionInputV1", () => {
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", model: null, approvalPolicy: "on-request" },
     });
+    const withDelta = parseNativeExecutionInput({ ...current, continuationPrompt: '{"messages":[{"authorType":"user","body":"Just this new comment"}]}' });
+    // No checkpoint / failed provider recovery must retain full bootstrap input.
+    expect(buildNativeModelEnvelope(withDelta)).toEqual(buildNativeModelEnvelope(current));
+    const delta = buildNativeModelEnvelope(withDelta, { resumedSession: true });
+    expect(delta).toEqual({
+      schema: "paperclip.native-continuation.v1",
+      events: '{"messages":[{"authorType":"user","body":"Just this new comment"}]}',
+      completion: { revision: "1", criterionIds: ["objective"] },
+    });
+    expect(JSON.stringify(delta)).not.toContain(input.task.title);
+    expect(JSON.stringify(delta)).not.toContain(input.completionContract.contract.objective);
+    expect(JSON.stringify(delta)).not.toContain("opaque-binding");
+    const withGuidance = parseNativeExecutionInput({ ...current, initialCommunicationGuidance: "Saved Slack instructions" });
+    expect(buildNativeModelEnvelope(withGuidance).task.prompt).toBe(`Saved Slack instructions\n\n${current.task.prompt}`);
+    // Structured question/approval resumes may use a full envelope rather than
+    // a delta. They still must not repeat initial communication instructions.
+    expect(buildNativeModelEnvelope(withGuidance, { resumedSession: true })).toEqual(buildNativeModelEnvelope(current));
+    expect(buildNativeModelEnvelope(parseNativeExecutionInput({ ...withGuidance, continuationPrompt: "new message" }), { resumedSession: true })).not.toHaveProperty("task");
+    expect(buildNativeModelEnvelope(withGuidance).task.prompt.match(/Saved Slack instructions/g)).toHaveLength(1);
     expect(current).toMatchObject({
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", approvalPolicy: "on-request" },

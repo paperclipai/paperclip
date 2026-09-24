@@ -8,7 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { runnerMatrix } from "./catalog.js";
-import { summarizeExecutionBilling } from "./billing.js";
+import { billingCoverageLabel, summarizeExecutionBilling } from "./billing.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import {
   buildRunnerCampaign,
@@ -104,6 +104,40 @@ async function stageDashboardEvidence(
         .then(() => true)
         .catch(() => false);
       if (didCopy) copied.push(segments.join("/"));
+    }
+    // Playwright renames attachment files with a content hash, while runner
+    // results retain the stable screenshot basename used by the dashboard and
+    // history publisher. Materialize each declared screenshot under that
+    // basename when its hashed attachment is present in the evidence manifest.
+    // The source is still restricted to manifest-listed files, so this cannot
+    // expand the evidence set beyond what the test recorded.
+    for (const screenshot of entry.result.screenshots ?? []) {
+      if (copied.includes(screenshot.file)) continue;
+      const stem = screenshot.file.replace(/\.png$/i, "");
+      const escapedStem = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const hashedAttachment = new RegExp(
+        `^${escapedStem}-[0-9a-f]{8,128}\\.png$`,
+        "i",
+      );
+      const candidates = (entry.evidence?.files ?? []).filter((relative) => {
+        const basename = path.posix.basename(relative);
+        return (
+          basename === screenshot.file ||
+          hashedAttachment.test(basename)
+        );
+      });
+      if (candidates.length !== 1) continue;
+      const segments = safeEvidenceRelative(candidates[0]!);
+      if (!segments) continue;
+      const source = path.join(entry.directory, ...segments);
+      const destination = path.join(output, ...baseSegments, screenshot.file);
+      const didCopy = await mkdir(path.dirname(destination), {
+        recursive: true,
+      })
+        .then(() => copyFile(source, destination))
+        .then(() => true)
+        .catch(() => false);
+      if (didCopy) copied.push(screenshot.file);
     }
     staged.set(entry.result.executionId, {
       baseHref: baseSegments.join("/"),
@@ -334,9 +368,9 @@ async function main() {
           "",
         ]
       : []),
-    `Tokens: ${billing.llm.inputTokens} input / ${billing.llm.outputTokens} output / ${billing.llm.cachedInputTokens} cached`,
+    `Tokens: ${billingCoverageLabel(`${billing.llm.inputTokens} input / ${billing.llm.outputTokens} output / ${billing.llm.cachedInputTokens} cached`, billing.llm.runsWithTokenUsage, billing.llm.runCount)}`,
     "",
-    `Provider-reported LLM cost: $${billing.reportedLlmCostUsd.toFixed(6)} (${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs priced)`,
+    `Provider-reported LLM cost: ${billingCoverageLabel(`$${billing.reportedLlmCostUsd.toFixed(6)}`, billing.llm.runsWithReportedCost, billing.llm.runCount)}`,
     "",
     `Estimated Daytona list-price runtime cost: $${billing.estimatedRuntimeCostUsd.toFixed(6)}`,
     ...(billing.judge ? [`Estimated judge cost: ${billing.judge.estimatedCostUsd === null ? "unknown" : `$${billing.judge.estimatedCostUsd.toFixed(6)}`}; ${billing.judge.attempts} attempts; ${billing.judge.attemptsWithUnknownUsage} with unknown usage; $${billing.judge.reservedCostUsd.toFixed(6)} reserved`] : []),
@@ -351,7 +385,7 @@ async function main() {
       const cell = publicCampaignUrl
         ? `[${resolved.executionId}](${publicCampaignUrl}#execution-${encodeURIComponent(resolved.executionId)})`
         : resolved.executionId;
-      return `| ${cell} | ${resolved.attempt} | ${entry.valid ? "pass" : "fail"} | ${resolved.runtimeMode} | ${Math.round(resolved.durationMs / 1000)}s | ${cellBilling.llm.inputTokens}/${cellBilling.llm.outputTokens} | $${cellBilling.reportedCostUsd.toFixed(6)} (${cellBilling.llm.costStatus}) | ${runtimeCost === undefined ? cellBilling.runtime.costStatus : `$${runtimeCost.toFixed(6)} est.`} | ${detail} |`;
+      return `| ${cell} | ${resolved.attempt} | ${entry.valid ? "pass" : "fail"} | ${resolved.runtimeMode} | ${Math.round(resolved.durationMs / 1000)}s | ${billingCoverageLabel(`${cellBilling.llm.inputTokens}/${cellBilling.llm.outputTokens}`, cellBilling.llm.runsWithTokenUsage, cellBilling.llm.runCount)} | ${billingCoverageLabel(`$${cellBilling.reportedCostUsd.toFixed(6)}`, cellBilling.llm.runsWithReportedCost, cellBilling.llm.runCount)} | ${runtimeCost === undefined ? cellBilling.runtime.costStatus : `$${runtimeCost.toFixed(6)} est.`} | ${detail} |`;
     }),
     "",
   ];

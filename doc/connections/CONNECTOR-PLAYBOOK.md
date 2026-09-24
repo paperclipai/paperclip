@@ -8,15 +8,27 @@ Status: canonical end-to-end authoring guide for Apps v2 catalog connections.
 For connector artwork, follow [Connector icons](./CONNECTOR-ICONS.md): fixed gray Paperclip frames, authentic vendor artwork, explicit theme variants, optical fit and exact provenance. Brand-library additions do not activate connectors. Use the shared registry/resolver and branding generator; do not introduce per-screen logos or outer-surface overrides.
 
 This runbook is the repeatable, agent-executable procedure for adding a vendor
-to the Apps catalog as data, not as a plugin. It follows the accepted
-connections framework in [PAP-13211](/PAP/issues/PAP-13211), the first-30
-rollout matrix in [PAP-2432](/PAP/issues/PAP-2432), and the production
-validation scope in [PAP-12373](/PAP/issues/PAP-12373).
+to the Apps catalog as data, not as a plugin. The architecture, reuse-path
+classification, credential boundaries, and production validation requirements
+are specified below so contributors can implement a connector without access
+to an internal issue tracker.
+
+Inline task connection cards must use the same provider setup controller and
+fields as Apps: URL guidance, authentication options, validation, and recovery.
+Keep dialogs bounded to the form width on wide screens and scrollable on narrow
+screens. A task request locks agent access to its requester and returns to the
+card after completion; reusing an account must preserve its existing access.
+OAuth popups need a normal sign-in link fallback, and callback messages must be
+verified against durable server state before accepting the request.
+
+For chat and email setup, account linking, and ongoing configuration, also follow
+[Chat connector UX](./CHAT-CONNECTOR-UX.md). It covers step navigation, footer
+layout, credential instructions, provider handoffs, identity linking, optional
+message tests, and management pages, with examples for other providers.
 
 Use it when Paperclip acts on an external system through a governed connection: a stored credential, a capability catalog, access profiles and policy rules, and audit. Inbound integrations, such as an external client acting on Paperclip, use gateway or webhook guidance instead.
 
-**A catalog entry is a convenience layer, not a prerequisite.** Since
-[PAP-17087](/PAP/issues/PAP-17087), an operator can connect any
+**A catalog entry is a convenience layer, not a prerequisite.** An operator can connect any
 standards-compliant remote HTTP MCP server from **Connect your own MCP server**
 or **Paste a config** with no Paperclip code change at all — including servers
 that need browser sign-in. Those two routes are the documented baseline; see
@@ -35,7 +47,12 @@ remote MCP methods may opt in to [Vercel Connect](./VERCEL-CONNECT.md), where
 durable provider credentials remain in the operator's Vercel account and
 Paperclip resolves short-lived tokens at invocation time. Before writing a
 connector, read [Identity vs. connections](./README.md#identity-vs-connections)
-for the P1/P2/P3 boundary and the D7 standing rule.
+for background. The boundary is mandatory: sign-in authenticates a person;
+a resource connection authorizes external work; Login with Paperclip issues
+first-party identity tokens to registered clients. Sign-in tokens are never
+reused as resource tokens, and `id.paperclip.ing` never stores resource tokens
+or hosts a connections hub. Keep company-scoped connection credentials and
+agent access under the instance's connection governance.
 
 AI provider credentials use the same vault, applications, grants, installations,
 and delegation model with `connectionPurpose: ai` and `transport: runtime_auth`.
@@ -52,6 +69,8 @@ for compatibility, personal defaults, resolver isolation, and legacy adoption.
 - [Current access defaults](#current-default-access-policy)
 - [Golden-path agent tutorial](#golden-path-agent-tutorial)
 - [Connection UX and user journeys](#connection-ux-and-user-journeys)
+- [Chat and email connector UX](./CHAT-CONNECTOR-UX.md)
+- [Production validation evidence](#step-9-align-with-production-validation)
 - [AppDefinition field reference](#appdefinition-field-reference)
 - [Troubleshooting](#troubleshooting-and-failure-classification)
 - [Definition of done](#definition-of-done)
@@ -70,7 +89,7 @@ A complete connector proposal produces:
 - Credential secret refs into `company_secrets`; never raw env values.
 - Action catalog metadata with risk classes, schemas, resource filters, and quarantine defaults.
 - Default profile and policy behavior for read, write, and destructive actions.
-- A smoke checklist aligned to [PAP-12373](/PAP/issues/PAP-12373): connect,
+- A smoke checklist following [production validation](#step-9-align-with-production-validation): connect,
   discover catalog, allowed read call, correctly governed write call,
   denied/quarantined call when the method declares one, revoke, and audit
   evidence.
@@ -427,6 +446,32 @@ Avoid separate methods for:
 The default setup screen should ask only for information required to make the
 connection work or enforce a real tenant boundary. Follow these rules:
 
+- Do not ask for a Paperclip **Connection name** during setup. Derive the display
+  name from the provider and observed account/workspace identity. A provider-required
+  app/bot name is a separate configuration requirement, not a connection label.
+- Use the traditional Gmail/Google Docs setup structure: a compact horizontal
+  progress header and **Access → Connect**, without a numbered sidebar,
+  tool-permissions step or optional Test step. Authentication and successfully
+  reading the tool catalog are enough to complete setup. Do not require a sample
+  action or add an empty-catalog onboarding detour. Reuse the existing access screen:
+  “Which humans can use this credential?” and “Which agents can use this connection?”
+- After setup, use the regular connection **Permissions** screen: reuse its
+  canonical searchable Actions list, Read/Write filters, Off / Ask first / Allowed
+  controls and per-action Test dialog. Do not build a parallel permissions list or
+  provider-specific testing page. Discovery errors stay inline on Connect; an empty
+  returned catalog belongs to the ordinary saved-connection state.
+- Enable every discovered tool automatically. Put later Allowed / Ask first / Off
+  controls in management, separate from connection access. Reconnect and refresh
+  retain existing restrictions; new tools are Allowed under the existing access rules.
+- Show browser sign-in/pending/return only for a real OAuth handoff supported by
+  the chosen authentication. Zapier's pasted MCP URL or bearer token requires no
+  Paperclip sign-in window. Advanced token/header setups need no invented OAuth step.
+- On an OAuth failure or cancellation, explain the outcome on the return screen
+  and offer a retry of the same saved connection. Do not silently return to a blank
+  setup form or display untrusted provider error text from the callback URL.
+- Resuming a saved connection retains its credential identity. Show that identity
+  as fixed in Access, and start OAuth with the credential policy returned by the
+  server. Do not offer personal/shared choices that the server will ignore.
 - Put optional narrowing in fields marked `advanced: true`.
 - Give hidden fields a `defaultValue`; never create a hidden required field the
   server cannot fill.
@@ -504,6 +549,13 @@ Exercise an actual connector operation through the contributed tool, not just
 its declaration. Record which runtime paths were tested live versus deterministically.
 
 #### Connection UX and user journeys
+
+For chat and email onboarding or management screens, apply
+[Chat connector UX](./CHAT-CONNECTOR-UX.md) alongside this section. Keep the
+provider's actual capabilities and the distinction between resource setup,
+personal identity linking, and company membership explicit. The chat wizard may
+choose its agent before app creation; a separate agent-resource assignment
+wizard, described below, applies when that assignment is an independent action.
 
 Design the whole journey, from finding the app to doing useful work with an
 agent. A successful credential exchange is only one step. Describe who the
@@ -823,8 +875,9 @@ At minimum, add or update tests in these layers:
   declared.
 - Finish setup resumes the exact draft using `resumeConnectionId`.
 - Optional customer OAuth details stay folded when automatic OAuth exists.
-- Setup success leads to the connection's Test page, or to Permissions when a
-  separate agent-resource assignment is the next step. Follow the
+- Successful authentication and tool discovery finish setup and lead to the
+  connection's regular Permissions screen. Testing is available there through each
+  action's Test button; it is never an onboarding step. Follow the
   [connection UX guidance](#connection-ux-and-user-journeys).
 - Interactive Storybooks cover setup and ongoing task interactions, including
   relevant failure states; the walkthrough matches the implemented journey.
@@ -1199,15 +1252,30 @@ A plugin may bundle one or more catalog entries, but it must still create normal
 
 ### Step 2: Classify The Reuse Path
 
-Classify the vendor before writing metadata. Use the [PAP-2432](/PAP/issues/PAP-2432) matrix terms so rollout planning, security review, and QA can compare providers consistently.
+Classify the vendor before writing metadata. Use these definitions so rollout
+planning, security review, and QA can compare providers consistently. The
+examples are starting points; confirm current provider capabilities in Phase 1.
 
-| Reuse path | Use when | Typical transport | Examples from the matrix |
+| Reuse path | Use when | Typical transport | Examples |
 | --- | --- | --- | --- |
 | MCP-direct | The vendor exposes an official or stable MCP server whose tools map cleanly to Paperclip grants. | `mcp_remote`; `local_stdio` only for approved trusted templates. | Linear, Notion, Sentry, Vercel, Exa, Apify, Context7. |
 | OpenAPI-shim | The vendor has a documented REST/OpenAPI surface but no stable MCP server, and a generated/thin shim can expose safe actions. | Shim service or approved template that presents an MCP-compatible catalog to Paperclip. | Datadog, Apollo, QuickBooks, Ramp/Brex, Zendesk. |
 | Vendor-deep-wrapper | The vendor boundary depends on app-installation tokens, event validation, rich domain semantics, resource grants, or high-risk writes. | Vendor-specific wrapper behind the same connection model. | GitHub, Slack, Google Workspace writes, Atlassian, Microsoft 365, Cloudflare, Figma, Stripe, Salesforce, HubSpot, Intercom, PagerDuty. |
 
-Record the classification in the proposal along with the transport and the reason a lighter path is or is not enough.
+Record the classification in the proposal along with the transport and the
+reason a lighter path is or is not enough. For each method, also record auth
+mode, credential owner, required resource filters, initial actions, webhook or
+sync requirements, and security tier. A provider name alone is not a sufficient
+classification: a read-only method and a method that sends messages or changes
+infrastructure can have different risks.
+
+Use the shipped definition and `recommendedDefaultsForApp` for runtime behavior.
+Risk tiers describe exposure; they do not replace action policies. S1 covers
+low-risk reads; S2 covers business data and narrow writes; S3 covers broad
+content or operational access; S4 covers payments, external sends, production
+changes, deletion, or tenant administration. High-impact methods need explicit
+security review and negative access tests. Prove the transport and governance
+path with narrow actions before expanding to broader capabilities.
 
 ### Step 3: Pick Auth And Credential Ownership
 
@@ -1403,20 +1471,59 @@ Recommended defaults for a new catalog entry:
 
 ### Step 9: Align With Production Validation
 
-[PAP-12373](/PAP/issues/PAP-12373) owns real-vendor gallery smoke evidence and connector validation. Do not duplicate that issue's screenshot/evidence matrix in this playbook. A connector proposal should instead state exactly how it will be validated there:
+Validate every exposed provider/method combination against a real account in
+an isolated, production-like instance. Deterministic tests and Storybook cover
+Paperclip behavior; they do not prove provider consent, credential scope, live
+delivery, or revocation. Use the following evidence matrix directly in the
+connector proposal or PR. No separate private validation issue is required.
 
-- Connect succeeds against the real vendor using production-like OAuth/app/key setup.
-- Catalog discovery produces the expected actions and the declared changed-tool
-  behavior.
-- An allowed read call succeeds through the gateway.
-- A write call is Allowed by the new-connection default unless an explicit
-  provider or operator policy narrows it.
-- A blocked/quarantined action, when declared, cannot be listed or invoked by
-  an agent.
-- Revocation removes tools and blocks execution immediately.
-- Activity/audit rows prove actor, run/issue context, resource id, decision, reason code, and outcome.
+| Scenario | Required result | Evidence to retain |
+| --- | --- | --- |
+| Setup and consent | The gallery entry opens the correct method; prerequisites, provider handoff, credentials, and back/resume work. | Redacted setup/review screenshots; method, deployment mode, date, commit, and outcome. |
+| Authentication | The selected OAuth/app/key path succeeds and resolves the intended account/resource. | Redacted auth result, scopes, callback origin/path, credential-source and client-ownership mode; no secret values. |
+| Catalog and configuration | Discovery returns the reviewed actions; resource filters and selected access persist. | Tool names/count, schema hashes, risk/default-policy review, and saved filter names. |
+| Allowed execution | A narrow read succeeds through the gateway; writes follow the effective policy. | Tool, actor, decision, redacted result, and correlated call/audit record. Use a disposable resource for an authorized live write; otherwise mark write execution untested. |
+| Denied execution | Ungranted actors, another company, disallowed resources, revoked connections, and declared blocked/quarantined actions cannot execute. | Expected denial and reason code, with the automated or live test that exercised the boundary. Cover listing where the policy requires tools to be hidden. |
+| Runtime delivery | An actual agent/run-scoped gateway call succeeds when runtime logic changes. Chat/email also routes an incoming message and its reply to the same task. | Redacted task/conversation and call correlation; identify live versus simulated events. |
+| Refresh and recovery | Catalog refresh, token refresh/reconnect, and recoverable failures preserve the correct identity and policy. | Before/after outcome, redacted error code, and successful retry; no duplicated connection. |
+| Revoke and reconnect | Revocation blocks subsequent execution; supported reconnect reuses the intended identity/history. | Removal or denial evidence followed by reconnect result. |
+| Activity and secret handling | Activity explains what occurred and why; stored responses, logs, and artifacts contain no credential values. | Actor, run/issue context, resource, decision, reason code, outcome, plus redaction-check result. |
 
-If a gallery card cannot pass this path against a real vendor, de-list it or mark it unavailable until the missing auth, transport, or governance dependency is fixed.
+Chat task links must use the server-resolved public board origin, including the
+current claimed Cloud origin. Supply the exact task URL in fresh and resumed
+agent context. The native `get_task_context` and `search_tasks` tools also return
+a nullable `url` on task records. Keep webhook ingress and internal API addresses separate from
+human-facing task links. If no safe public URL is configured, say so instead of
+constructing a link. Keep the external-publication URL filter in place.
+
+When checking chat response speed, measure queue time, runner preparation,
+provider turn time, checkpoint/finalization, and provider publication separately.
+Check session-reset reasons before attributing slow follow-ups to the model.
+Temporary managed-credential homes must not change the session fingerprint;
+account, credential, model, permission, and user-configured environment changes
+must retain their existing invalidation behavior.
+
+For chat/email, also verify the applicable UX states in
+[Chat connector UX](./CHAT-CONNECTOR-UX.md#apply-and-verify): new connections deny
+unlinked people by default; linking requires ownership confirmation; nonmembers
+request access before receiving authority; an optional message test never
+becomes an unexplained completion gate. Show verification based on observed
+traffic, and distinguish optional, unobserved callbacks from real failures.
+
+Record **pass**, **fail**, **not run**, or **not applicable** for each scenario,
+with a reason for the last two. Include the environment, method key, commit,
+reproduction steps, expected/actual result, and links to redacted evidence that
+reviewers can access. Put the requirements and conclusions in the PR or a
+repository document; an internal tracker or expiring artifact link must not be
+the only place they exist. Do not publish credentials, OAuth codes, session
+cookies, private tenant content, personal account details, or secret-bearing URLs.
+
+Use Phase 9's lifecycle to collect the evidence. A consent restriction, unavailable
+account, or missing provider feature is a named validation gap, not a passing
+result. If a gallery card cannot complete its required path against a real
+provider, keep it unavailable until the missing auth, transport, or governance
+dependency is fixed. Re-run affected scenarios after a material change rather
+than citing evidence from an older implementation.
 
 ## MCP-Direct Connections (Hosted MCP + OAuth)
 
@@ -1491,8 +1598,7 @@ registers a client on the fly and stores it on the connection:
   `customer` and `dcr` in the method's `ownershipModes` when the vendor
   supports both.
 
-Since [PAP-17087](/PAP/issues/PAP-17087), DCR is **one of four** registration
-tiers, and `ownershipModes` gates only the *curated* path. The broker resolves a
+DCR is **one of four** registration tiers, and `ownershipModes` gates only the *curated* path. The broker resolves a
 client in this order: a deployment-preconfigured client, then a Client ID
 Metadata Document when the authorization server advertises one (requires a public
 HTTPS `PAPERCLIP_PUBLIC_URL`), then DCR, then client credentials the operator
@@ -1510,8 +1616,8 @@ not be auto-registered, and the broker will not fall through to the generic
 registration path for it.
 
 **DCR needs neither Paperclip ID nor Paperclip Connect.** DCR is always
-instance-local (ratified in the PAP-14828 connector-service spec, section 10
-item 8.4: "DCR is always instance-local; the service has no DCR involvement").
+instance-local: the hosted connector service does not register DCR clients
+or hold their credentials.
 Each instance registers its own public client with the vendor and uses its own
 `/api/tools/oauth/callback` redirect. **Cloud-hosted and self-hosted instances
 use the SAME path** — the only per-instance difference is the hostname inside
@@ -1538,7 +1644,7 @@ axes; a private HTTPS host can be fine even when plain HTTP is not.
 ### Documentation standards for every connection doc
 
 Every connection doc — playbook appendix, proposal, or user-facing doc —
-must include all three of the following (they are part of the template below):
+must include all of the following (they are part of the template below):
 
 1. **Service involvement statement.** Say explicitly whether Paperclip ID or
    Paperclip Connect participates in the flow. For RFC 7591 DCR providers the
@@ -1569,7 +1675,7 @@ Copy this section into a connector proposal or implementation issue.
 - App key:
 - App name:
 - Owner:
-- First-30 classification: MCP-direct / OpenAPI-shim / vendor-deep-wrapper
+- Reuse classification: MCP-direct / OpenAPI-shim / vendor-deep-wrapper
 - Reason for classification:
 - Security tier: S1 / S2 / S3 / S4
 - Plugin needed? No / Yes, because:
@@ -1660,7 +1766,9 @@ Copy this section into a connector proposal or implementation issue.
 
 ## Validation Hook
 
-- Real-vendor smoke issue:
+- Environment, method key, date, and tested commit:
+- Reproduction steps and accessible redacted evidence:
+- Per-scenario result (pass / fail / not run / not applicable, with reasons):
 - Connect evidence:
 - Catalog evidence:
 - Allowed read:
@@ -1672,14 +1780,17 @@ Copy this section into a connector proposal or implementation issue.
 
 ## Appendix: Linear Dry Run
 
-This dry run applies the template to Linear, one of the [PAP-2432](/PAP/issues/PAP-2432) Batch A providers.
+This dry run applies the template to Linear as an example of a hosted MCP
+connection with scoped business-data reads and narrow issue writes.
 
 ### Vendor
 
 - App key: `linear`
 - App name: Linear
-- First-30 classification: MCP-direct with a thin GraphQL/resource-filter wrapper if the hosted MCP server cannot enforce all filters itself.
-- Reason for classification: Linear has a hosted MCP endpoint shape in the current gallery, and the first-30 matrix calls Linear a direct MCP/GraphQL thin-wrapper provider.
+- Reuse classification: MCP-direct with a thin GraphQL/resource-filter wrapper if the hosted MCP server cannot enforce all filters itself.
+- Reason for classification: Linear exposes a hosted MCP endpoint; a thin
+  GraphQL/resource-filter wrapper is needed only for restrictions the hosted
+  server and gateway cannot already enforce.
 - Security tier: S2, because it exposes product planning data and narrow issue mutations but not payments, tenant admin, or production infrastructure.
 - Plugin needed: No. The default gallery card, OAuth connect, resource filters, action catalog, profiles, policies, and audit cover the required UX. A plugin would only be warranted later for custom Linear dashboards or background sync workers.
 
@@ -1771,7 +1882,8 @@ before accepting it as an S2 Allowed action.
 
 ### Validation Hook
 
-Linear's real-vendor evidence belongs in [PAP-12373](/PAP/issues/PAP-12373). The smoke pass should prove:
+Record Linear's evidence using the production validation matrix above. The
+smoke pass should prove:
 
 - OAuth connect succeeds with a customer-created Linear OAuth app (or an
   explicitly reviewed external credential source) and the instance callback
@@ -1785,26 +1897,28 @@ Linear's real-vendor evidence belongs in [PAP-12373](/PAP/issues/PAP-12373). The
 - Audit rows include company, connection, run/issue, agent/user actor, tool, decision, reason code, and outcome.
 ### AppDefinition catalog authoring
 
-Connector proposals now target the versioned `AppDefinition` contract in `packages/shared/src/types/app-definition.ts`. Seed data is one JSON file per provider under `packages/shared/src/app-definitions/`; regenerate Wave 1 with `pnpm connections:ingest-app-definitions`. The generator parses all 99 captured templates, validates required placeholders, OAuth ownership modes, and API-key placement, and produces deterministic output for review. FIRST-30 remains authoritative for `riskTier` and `requiredResourceFilters`; managed ownership modes stay data-visible but runtime-hidden until availability is injected.
+Connector proposals now target the versioned `AppDefinition` contract in `packages/shared/src/types/app-definition.ts`. Seed data is one JSON file per provider under `packages/shared/src/app-definitions/`; regenerate Wave 1 with `pnpm connections:ingest-app-definitions`. The generator parses all 99 captured templates, validates required placeholders, OAuth ownership modes, and API-key placement, and produces deterministic output for review. Review `riskTier` and `requiredResourceFilters` against the method capabilities and resource boundaries described above; managed ownership modes stay data-visible but runtime-hidden until availability is injected.
 
 ## Appendix: Notion Dry Run (MCP-Direct With DCR)
 
-This dry run applies the template to Notion, the first MCP-direct connector to
-ship with RFC 7591 dynamic client registration (PAP-16637; server
-implementation PAP-16649, PR #11009). Unlike the Linear appendix, every
-endpoint and constraint below comes from a live request log, not vendor docs
-alone.
+This dry run applies the template to Notion using RFC 7591 dynamic client
+registration. The request sequence and redirect probes below preserve the
+recorded August 6–7, 2026 live observations in this document. Treat provider
+endpoints, token lifetimes, tool availability, and plan restrictions as a dated
+snapshot; recheck them against official documentation and live validation for
+a new implementation.
 
 ### Vendor
 
 - App key: `notion`
 - App name: Notion
-- First-30 classification: MCP-direct. Notion ships an official hosted MCP
+- Reuse classification: MCP-direct. Notion ships an official hosted MCP
   server; its ~20 `notion-*` tools map directly to Paperclip grants.
 - Reason for classification: no shim or wrapper needed — the hosted server
   speaks Streamable HTTP, which `server/src/services/mcp-http.ts` already
-  handles. The FIRST-30 matrix's "thin wrapper for block/database policy" is
-  explicitly deferred; v1 enforcement is gateway policy plus filters-as-config.
+  handles. A separate block/database-policy wrapper is deferred; v1
+  enforcement is gateway policy plus filters-as-config. Verify each advertised
+  restriction at the actual enforcement boundary before claiming support.
 - Security tier: S3 — workspace content read/write, but no payments, tenant
   admin, or production infrastructure.
 - Plugin needed: No. Gallery card, OAuth connect, filters, catalog, profiles,
@@ -1838,8 +1952,13 @@ alone.
 
 ### Connection Flow (mandatory)
 
-Paperclip ID / Paperclip Connect involvement: **none — DCR is instance-local**
-(PAP-14828 spec section 10 item 8.4); **cloud-hosted and self-hosted use the
+The UI examples use `ACME` as a sample company prefix. Replace it and any
+`paperclip.example.com` origin with your own company prefix and instance origin.
+These are example addresses, not a shared test deployment.
+
+Paperclip ID / Paperclip Connect involvement: **none — DCR is instance-local**.
+The instance registers the client, exchanges and refreshes tokens, and stores
+credential references in its own vault. **Cloud-hosted and self-hosted use the
 same path**. The only per-instance difference is the hostname in the redirect
 URI.
 
@@ -1863,7 +1982,7 @@ Redirect constraints (probed): `https-or-loopback-http`.
 sequenceDiagram
     autonumber
     actor U as User's browser
-    participant UI as Paperclip UI<br/>/PAP/apps/connect?source=notion
+    participant UI as Paperclip UI<br/>/ACME/apps/connect?source=notion
     participant S as Paperclip instance server<br/>(cloud or self-hosted — same path)
     participant M as mcp.notion.com<br/>(MCP server + OAuth AS)
     participant N as Notion web<br/>(app.notion.com, notion.com)
@@ -1894,7 +2013,7 @@ sequenceDiagram
     Note over S,M: Later: agent runs reach notion-* tools via the managed MCP gateway.<br/>Server refreshes ahead of use — each refresh ROTATES the refresh token.
 ```
 
-### Dry-Run Request Log (PAP-16649, 2026-08-06/07)
+### Dry-Run Request Log (2026-08-06/07)
 
 The verified request sequence for a first connect:
 
@@ -1937,11 +2056,10 @@ plain-HTTP non-loopback origins.
 - Instance prerequisites: the instance base URL must be HTTPS on any host or
   loopback HTTP (Notion's redirect-URI rule). A plain-HTTP non-loopback origin
   gets "This provider requires an HTTPS or loopback origin. Configure TLS
-  before connecting." — add TLS first (e.g. a tailscale cert, as
-  paperclip-dev did). Apps is a standard product surface and `/apps/*` routes
-  are always available. The connecting user must be allowed to install
+  before connecting." — configure a valid TLS certificate first. Apps is a
+  standard product surface and `/apps/*` routes are always available. The connecting user must be allowed to install
   integrations in their Notion workspace.
-- How to verify: visit `/PAP/apps/connect?source=notion`, complete the Notion
+- How to verify: visit `/ACME/apps/connect?source=notion`, complete the Notion
   consent flow, and land on the wizard's actions step listing `notion-*`
   tools. Then confirm an agent run sees Notion tools through the runtime MCP
   gateway and that a write call such as `notion-create-pages` follows the
@@ -1950,12 +2068,13 @@ plain-HTTP non-loopback origins.
 
 ### Resource Filters
 
-- Required filters: workspace, page, database (per FIRST-30).
+- Required filters: workspace, page, database.
 - Optional filters: object type, database/data-source scope.
 - Write-enabling filters: workspace plus page/database scope for
   create/update.
-- Enforced by: gateway policy plus filters-as-config in v1; the FIRST-30
-  "thin wrapper for block/database policy" is explicitly deferred. Notion-side
+- Enforced by: gateway policy plus filters-as-config in v1; a separate
+  block/database-policy wrapper is deferred. A saved filter is not proof of
+  enforcement: test an out-of-scope request through the gateway. Notion-side
   scoping also applies — the consent step lets the user share only selected
   pages/databases with the integration.
 
@@ -1988,10 +2107,30 @@ The shipped `packages/shared/src/app-definitions/notion.json` (regenerate via
 
 ### Actions
 
-Notion's hosted server exposes ~20 `notion-*` tools. Representative risk
-classes below; the full catalog review with per-tool defaults is PAP-16652
-(P4). Changed-action quarantine applies only when the connection explicitly
-enables `quarantineNewEntries`.
+The recorded Notion catalog exposed about 20 `notion-*` tools. The table below
+is representative, not an exhaustive allowlist. On each implementation or
+catalog change, enumerate the actual tools and complete the following review
+for every tool before enabling it:
+
+1. Record its stable name, input/output schema hash, and read/write/destructive
+   classification based on what it does, not its name or provider annotation alone.
+2. Map workspace, page, and database selectors to the actual enforcement
+   boundary. Prove an out-of-scope call is denied; do not promise a filter that
+   the gateway or provider cannot enforce.
+3. Record profile visibility and the effective policy. The current S3 default
+   allows active actions; any narrower provider/operator policy needs its own
+   explicit rule and test. Keep permanently blocked tools disabled.
+4. Specify argument/result redaction and the expected actor, resource, decision,
+   reason, and outcome audit fields. Test an ungranted actor and revoked connection.
+5. Identify plan-gated tools and unavailable capabilities. Catalog discovery
+   alone does not prove a listed tool can execute for the connected account.
+6. Record how newly discovered or schema-changed tools are treated. Changed-action
+   quarantine applies only when the connection enables `quarantineNewEntries`;
+   test that behavior rather than relying on a manifest declaration.
+
+Keep the completed inventory with the connector's accessible review evidence.
+A new delete/archive/bulk tool requires a fresh risk review; it must not inherit
+a read classification from these examples.
 
 | Tool | Risk | Default status | Filters | Approval default | Audit fields | Negative case |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -2007,7 +2146,7 @@ method S4 or add a reviewed narrow policy and tests before enabling it.
 
 ### Wizard Path
 
-1. Operator opens `/PAP/apps/connect?source=notion` (or the Notion gallery
+1. Operator opens `/ACME/apps/connect?source=notion` (or the Notion gallery
    card → Connect). The deep link POSTs connect immediately and redirects the
    browser to `auth.startUrl`.
 2. Operator completes Notion consent (workspace picker → approve).
@@ -2038,10 +2177,10 @@ the TLS guidance error above — the operator never reaches Notion.
 
 ### Validation Hook
 
-End-to-end evidence belongs to PAP-16654 (P6) and the PAP-12373 matrix:
+Collect end-to-end evidence using the production validation matrix above:
 
 - Zero-setup OAuth connect succeeds on
-  `https://paperclip-dev.tail29c1aa.ts.net/PAP/apps/connect?source=notion`
+  `https://paperclip.example.com/ACME/apps/connect?source=notion`
   with no pre-provisioned OAuth env vars (proves DCR).
 - Catalog discovery lists the expected `notion-*` tools and applies the
   connection's declared changed-tool behavior.
@@ -2051,3 +2190,10 @@ End-to-end evidence belongs to PAP-16654 (P6) and the PAP-12373 matrix:
 - Revocation removes Notion tools and blocks execution.
 - Audit rows prove actor, run/issue context, connection, tool, decision,
   reason code, and outcome.
+
+## Slack task tools
+
+For Slack bot tool contributions, use [Slack task tools](SLACK-TASK-TOOLS.md). It
+documents verified task authority, read/write boundaries, per-user search grants,
+method/scope contracts, delivery and current runtime limitations. Keep bot tools
+separate from the user-authorized Slack MCP connection.

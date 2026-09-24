@@ -684,6 +684,42 @@ describe("provider-neutral events", () => {
     expect(unnamed.payload).toMatchObject({ name: null, operation: "unknown" });
   });
 
+  it("records only ACP tool-input presence without exporting input values", () => {
+    const update = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "tool_call",
+        tag: "tool_call_update",
+        toolCallId: "acpx-input-1",
+        title: "paperclip.search_tasks",
+        kind: "other",
+        status: "pending",
+        rawInput: { query: "private value" },
+      },
+      "fallback",
+    )[0]!;
+    const statusOnly = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "tool_call",
+        tag: "tool_call_update",
+        toolCallId: "acpx-input-1",
+        title: "paperclip.search_tasks",
+        kind: "other",
+        status: "pending",
+      },
+      "fallback",
+    )[0]!;
+    expect(update.payload).toMatchObject({ inputUpdated: true });
+    expect(update.payload).not.toHaveProperty("rawInput");
+    expect(JSON.stringify(update.payload)).not.toContain("private value");
+    expect(statusOnly.payload).not.toHaveProperty("inputUpdated");
+    expect(
+      canonicalProviderEventsFromAcpxRuntimeEvent(
+        { ...statusOnly.payload, type: "tool_call", inputUpdated: false } as never,
+        "fallback",
+      )[0]!.payload,
+    ).toMatchObject({ inputUpdated: false });
+  });
+
   it("presents OpenCode's server-qualified semantic tool with its canonical name", () => {
     const event = canonicalProviderEventsFromOpenCodePart({
       id: "finish-1",

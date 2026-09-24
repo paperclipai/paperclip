@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, type AnchorHTMLAttributes } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ExecutionBlockerNotice } from "./ExecutionBlockerNotice";
 import { agentsApi } from "../api/agents";
 import { activityApi } from "../api/activity";
+vi.mock("../lib/router", () => ({
+  Link: ({ to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => <a href={to} {...props} />,
+}));
 vi.mock("../api/agents", () => ({ agentsApi: { retryFailedRun: vi.fn() } }));
 vi.mock("../api/activity", () => ({ activityApi: { runsForIssue: vi.fn() } }));
 
@@ -45,6 +48,21 @@ describe("stopped task recovery notice", () => {
     </QueryClientProvider>));
     expect(container.textContent).toContain("Verify the external action outcome before continuing.");
     expect(container.textContent).not.toContain("Automatic recovery of this task stopped.");
+  });
+  it.each(["native_continuation_requires_reconciliation", "native_session_cleanup_quarantined"])("links to the source run instead of offering a retry rejected by %s", async (cause) => {
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "failed-run", agentId: "agent",
+        cause,
+        nextAction: "Inspect the original failure and reconcile the previous execution before continuing.",
+      }} />
+    </QueryClientProvider>));
+    expect(container.textContent).toContain("Recovery needed.");
+    expect(container.textContent).not.toContain("Retry");
+    const link = container.querySelector("a")!;
+    expect(link.textContent).toBe("Inspect run");
+    expect(link.getAttribute("href")).toBe("/agents/agent/runs/failed-run");
+    expect(agentsApi.retryFailedRun).not.toHaveBeenCalled();
   });
   it("retries the exact failed run and refreshes the task", async () => {
     vi.mocked(agentsApi.retryFailedRun).mockResolvedValue({} as never);

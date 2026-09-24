@@ -668,6 +668,60 @@ describe("managed AI connections", () => {
     expect((await service.select(selectionInput)).grant.id).toBe(account.grantId);
   });
 
+  it("validates runner account adoption in the inherited sandbox and refuses an unavailable target", async () => {
+    const { agentRoutes } = await import("../routes/agents.js");
+    const { instanceSettingsService } = await import("../services/instance-settings.js");
+    const targetModule = await import("../services/environment-execution-target.js");
+    const runtimeModule = await import("../services/environment-runtime.js");
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const settings = instanceSettingsService(db);
+    const previous = await settings.get();
+    const [environment] = await db.insert(environments).values({ name: "Adoption sandbox", driver: "sandbox", config: { provider: "daytona" } }).returning();
+    await settings.update({ defaultEnvironmentId: environment.id });
+    const id = randomUUID();
+    await db.insert(agents).values({ id, companyId, name: "Runner adoption", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
+    const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: [id], allAgents: false }, "fixture-adoption-key");
+    await service.setDefault(companyId, "alice", account.grantId);
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false })) } } as const;
+    const resolveTarget = vi.spyOn(targetModule, "resolveEnvironmentExecutionTarget").mockResolvedValue(target);
+    const release = vi.fn(async () => undefined);
+    const acquire = vi.fn(async () => ({ lease: { id: randomUUID(), provider: "daytona", providerLeaseId: "test-sandbox", metadata: {} }, leaseContext: {} }));
+    const runtime = vi.spyOn(runtimeModule, "environmentRuntimeService").mockReturnValue({ acquireRunLease: acquire, realizeWorkspace: vi.fn(async () => ({ cwd: "/workspace" })), getDriver: () => ({ releaseRunLease: release }) } as any);
+    const probe = vi.spyOn(requireServerAdapter("paperclip_runner"), "testEnvironment").mockImplementation(async context => ({ adapterType: "paperclip_runner", status: context.executionTarget ? "pass" : "fail", testedAt: new Date().toISOString(), checks: [{ code: context.executionTarget ? "codex_hello_probe_passed" : "host_probe_failed", level: context.executionTarget ? "info" : "error", message: "fixture" }] }));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const selected = { provider: "openai", method: "api_key", mode: "responsible_user" } as const;
+    const providerRequest = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 200 }));
+    try {
+      // Target resolution can return only warning checks. Adoption still must
+      // fail closed, rather than quietly running the probe on the server host.
+      resolveTarget.mockResolvedValueOnce(null);
+      const unavailable = await request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { aiConnection: selected } });
+      expect(unavailable.status, JSON.stringify(unavailable.body)).toBe(422);
+      expect(probe).not.toHaveBeenCalled();
+      expect(providerRequest).not.toHaveBeenCalled();
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
+      const saved = await request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { aiConnection: selected } });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect(saved.body.defaultEnvironmentId).toBeNull();
+      expect(saved.body.runtimeConfig.aiConnection).toEqual(selected);
+      expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ companyId, environment: expect.objectContaining({ id: environment.id }) }));
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target, config: expect.objectContaining({ provider: "codex", model: "gpt-5.6-sol", managedAiConnection: expect.any(Object) }) }));
+      expect(providerRequest).toHaveBeenCalledWith("https://api.openai.com/v1/models", expect.objectContaining({
+        headers: { Authorization: "Bearer fixture-adoption-key" },
+        redirect: "error",
+      }));
+      expect(release).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(saved.body)).not.toContain("fixture-adoption-key");
+    } finally {
+      providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
+      await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
+    }
+  });
+
   it("creates and hires agents with an authorized restricted shared connection", async () => {
     const { agentRoutes } = await import("../routes/agents.js");
     await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));

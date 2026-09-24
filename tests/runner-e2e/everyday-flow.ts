@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { pollUntil, type RunnerApi } from "./api.js";
@@ -12,16 +12,21 @@ import {
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
+import { waitForTaskChatRendered } from "./continuation-screenshot.js";
+import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
 import { setupConnectionReview } from "./connection-reviews.js";
 import {
   pendingStoryDecision,
   StoryDecisionError,
   type StoryInteraction,
 } from "./everyday-decisions.js";
-import { LATE_REQUIREMENT, SLUGIFY_REVISION } from "./everyday-cases.js";
+import { LATE_REQUIREMENT, SLUGIFY_REVISION, requiresEverydayArtifactOracle } from "./everyday-cases.js";
 import {
   isActiveStoryRun,
   isStoryWorkspaceDeferral,
+  isExpectedStoryInterruption,
+  storyUnexpectedRunFailure,
+  storyUnexercisedReviewBoundary,
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
@@ -167,13 +172,14 @@ export async function runEverydayFlow(input: Input) {
     parentBlockedObserved: boolean;
   } | undefined;
   async function workspaceFiles() {
+    const workspaceRoot = input.workspacePath;
     const files: Record<string, string> = {};
-    for (const entry of await readdir(input.workspacePath, {
+    for (const entry of await readdir(workspaceRoot, {
       withFileTypes: true,
     })) {
       if (entry.isFile() && /\.(py|md|zip)$/.test(entry.name))
         files[entry.name] = createHash("sha256")
-          .update(await readFile(path.join(input.workspacePath, entry.name)))
+          .update(await readFile(path.join(workspaceRoot, entry.name)))
           .digest("hex");
     }
     return files;
@@ -226,8 +232,12 @@ export async function runEverydayFlow(input: Input) {
   }
   const taskUrl = (issue: StoryIssue) =>
     `/${prefix}/issues/${issue.identifier ?? issue.id}`;
+  async function openTask(issue: StoryIssue) {
+    await page.goto(taskUrl(issue), { waitUntil: "domcontentloaded" });
+    await waitForTaskChatRendered(page, String(issue.title));
+  }
   async function openParent() {
-    await page.goto(taskUrl(parent!), { waitUntil: "domcontentloaded" });
+    await openTask(parent!);
   }
   function observableAgentIds(state: EverydayEvidence) {
     return [
@@ -304,11 +314,7 @@ export async function runEverydayFlow(input: Input) {
           )),
       reject: (state) => {
         if (state.runs.length > 12) return "bounded execution count exceeded";
-        const bad = state.runs.find(
-          (r) =>
-            ["failed", "timed_out"].includes(r.status) &&
-            !ev.allowedInterruptedRuns.includes(r.id),
-        );
+        const bad = storyUnexpectedRunFailure(state.runs, ev.allowedInterruptedRuns);
         if (bad)
           return `native execution failed ${bad.errorCode ?? ""}: ${bad.error ?? bad.status}`;
         if (
@@ -431,7 +437,7 @@ export async function runEverydayFlow(input: Input) {
       : zips[zips.length - 1];
     if (!attachment) throw new Error("Selected delivery is no longer available");
     const issue = ev.issues.find((i) => i.id === issueId)!;
-    await page.goto(taskUrl(issue), { waitUntil: "domcontentloaded" });
+    await openTask(issue);
     const links = page.locator(
       `a[href*="/api/attachments/${attachment.id}/content"]`,
     );
@@ -470,43 +476,64 @@ export async function runEverydayFlow(input: Input) {
     });
     await openParent();
   }
-  async function sourceReady() {
-    await pollUntil({
-      label: "saved source before interruption",
-      deadlineAt: Math.min(input.deadlineAt, Date.now() + 180_000),
+  async function recordSource(
+    label = "source-saved-before-interruption",
+    evidenceName = "source-before-interruption.json",
+    requireActive = false,
+    maxWaitMs = 180_000,
+  ) {
+    const filePath = path.join(input.workspacePath, "slugify.py");
+    const bytes = await pollUntil({
+      label: requireActive ? "active run with saved source" : "saved source after interruption",
+      deadlineAt: Math.min(input.deadlineAt, Date.now() + maxWaitMs),
       intervalMs: 500,
       load: async () => {
         await refresh();
-        try {
-          return (
-            (await stat(path.join(input.workspacePath, "slugify.py"))).size >
-              0 && ev.runs.some(isActiveStoryRun)
-          );
-        } catch {
-          return false;
-        }
+        const source = await readFile(filePath).catch(() => undefined);
+        return { active: ev.runs.some(isActiveStoryRun), source };
       },
-      accept: Boolean,
+      accept: ({ active, source }) =>
+        requireActive
+          ? isSavedSourceCheckpoint(active, source)
+          : hasPersistedSource(source),
     });
-    const bytes = await readFile(path.join(input.workspacePath, "slugify.py"));
-    await input.evidence("source-before-interruption.json", {
-      body: bytes.toString("utf8"),
-      sha256: createHash("sha256").update(bytes).digest("hex"),
+    if (!bytes.source) throw new Error("Saved source was not available at the controlled boundary");
+    await input.evidence(evidenceName, {
+      body: bytes.source.toString("utf8"),
+      sha256: createHash("sha256").update(bytes.source).digest("hex"),
     });
-    note("source-saved-before-interruption", {
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-      bytes: bytes.length,
+    note(label, {
+      sha256: createHash("sha256").update(bytes.source).digest("hex"),
+      bytes: bytes.source.length,
+      active: bytes.active,
     });
+  }
+  async function sourceReady() {
+    await recordSource("source-saved-before-interruption", "source-before-interruption.json", true);
+  }
+  async function prepareStopBoundary() {
+    // Providers can finish a short first turn before the browser can click
+    // Stop. If that happens, submit one ordinary user follow-up through the
+    // composer and use that fresh run as the controlled interruption boundary.
+    // Save the checkpoint even if a fast provider has already finished. Do
+    // not shorten the normal source-creation budget to manufacture a timeout.
+    await recordSource("source-saved-before-interruption", "source-before-interruption.json");
+    await refresh();
+    if (ev.runs.some(isActiveStoryRun)) return;
+    await submitTaskReply(page, `${SLUGIFY_REVISION}\nContinue working until the source file is saved.`);
+    note("stop-boundary-continuation-submitted");
+    await recordSource(
+      "source-saved-before-interruption",
+      "source-before-interruption.json",
+      true,
+    );
   }
   try {
     await mkdir(path.join(input.privateDir, "snapshots"), { recursive: true });
     const revision = await runCommand("git", ["rev-parse", "HEAD"]);
     if (revision.code === 0) ev.sourceRevision = revision.stdout.trim();
-    const version = await runCommand(
-      execution.profile.provider === "acpx" ? "claude" : "codex",
-      ["--version"],
-    );
-    if (version.code === 0) ev.providerVersion = version.stdout.trim();
+    // Native providers run the packaged runtime (possibly remotely). A host
+    // `claude`/`codex` binary is neither required nor its observed version.
     const harnessFiles = [
       "everyday-flow.ts",
       "everyday-cases.ts",
@@ -536,7 +563,7 @@ export async function runEverydayFlow(input: Input) {
           .join("\n"),
       )
       .digest("hex");
-    if (!caseId.startsWith("service-") && !decliningConnection) {
+    if (requiresEverydayArtifactOracle(caseId)) {
       try {
         const sandbox = await runCommand(process.env.PYTHON ?? "python3", [
           path.join(import.meta.dirname, "everyday-artifact.py"), "--preflight",
@@ -698,7 +725,7 @@ export async function runEverydayFlow(input: Input) {
           );
           return failed
             ? `Review handoff prerequisite failed: ${failed.errorCode}: ${failed.error}`
-            : undefined;
+            : storyUnexercisedReviewBoundary(state.issues, state.runs, parent!.id, fixtures.agent.id);
         },
       });
       const child = boundary.issues.find((issue) => issue.parentId === parent!.id)!;
@@ -783,7 +810,7 @@ export async function runEverydayFlow(input: Input) {
         childId: child.id,
         activeRunIds: ev.runs.filter(isActiveStoryRun).map((r) => r.id),
       });
-      await page.goto(taskUrl(child), { waitUntil: "domcontentloaded" });
+      await openTask(child);
       await reply(LATE_REQUIREMENT, child);
       note("late-feedback-delivered-to-child", { childId: child.id });
       await openParent();
@@ -808,7 +835,8 @@ export async function runEverydayFlow(input: Input) {
           load: refresh,
           accept: (s) => s.runs.some(isActiveStoryRun),
         });
-      } else await sourceReady();
+      } else if (caseId === "stop-redirect") await prepareStopBoundary();
+      else await sourceReady();
       const active = ev.runs.find((r) => r.status === "running");
       if (!active)
         throw new Error(
@@ -825,6 +853,7 @@ export async function runEverydayFlow(input: Input) {
           accept: Boolean,
           intervalMs: 250,
         });
+        await recordSource("source-saved-after-interruption", "source-after-interruption.json");
         stoppedWorkspace = await workspaceFiles();
         note("stopped-workspace-snapshot", stoppedWorkspace);
         await reply(
@@ -1390,7 +1419,7 @@ export async function runEverydayFlow(input: Input) {
         .filter(
           (r) =>
             !isStoryWorkspaceDeferral(r) &&
-            !ev.allowedInterruptedRuns.includes(r.id),
+            !isExpectedStoryInterruption(r, ev.allowedInterruptedRuns),
         )
         .every(
           (r) =>
@@ -1415,13 +1444,7 @@ export async function runEverydayFlow(input: Input) {
       ),
       "No completion confirmation or unanswered interaction remains.",
     );
-    await expect(
-      page
-        .locator(
-          '[data-testid="task-chat-thread"], [data-testid="thread-root"]',
-        )
-        .first(),
-    ).toBeVisible();
+    await waitForTaskChatRendered(page, String(parent!.title));
     const latestAgentComment = ev.issues
       .find((i) => i.id === parent!.id)
       ?.comments?.filter((c: Row) => c.authorAgentId)

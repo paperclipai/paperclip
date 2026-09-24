@@ -36,6 +36,7 @@ import { createLocalDiskStorageProvider } from "../../storage/local-disk-provide
 import { createStorageService } from "../../storage/service.js";
 import type { StorageService } from "../../storage/types.js";
 import { issueService } from "../issues.js";
+import { findHeartbeatRunCompletionComment, resolveHeartbeatRunResponse } from "../heartbeat-run-summary.js";
 import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
@@ -297,6 +298,20 @@ describe("native runner file handoff", () => {
       contentPath: first.contentPath,
       downloadPath: first.downloadPath,
     });
+
+    // Exercise real persisted comments with the actual applied/duplicate receipts.
+    // Preparing the attachment must not consume the agent's final reply slot.
+    const preparedComments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    for (const receipt of [first, replayWithNewKey]) {
+      const resultJson = { semanticToolReceipts: { file: { operationId: "register_deliverable", result: receipt } } };
+      const existingComment = findHeartbeatRunCompletionComment(preparedComments, resultJson);
+      expect(existingComment).toBeNull();
+      expect(resolveHeartbeatRunResponse({
+        resultJson,
+        existingComment,
+        finalAgentMessage: { text: "Here is the requested answer.", channel: "final", sourceEventId: "final-1" },
+      })).toMatchObject({ text: "Here is the requested answer.", decision: { commentAction: "create" } });
+    }
 
     await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
       .resolves.toContain("Completion report accepted");

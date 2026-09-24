@@ -175,6 +175,46 @@ describe("agent-created hires use managed AI connections", () => {
     try { expect(runtime.attribution.connectionId).toBe(f.account.connectionId); } finally { await runtime.cleanup(); }
   });
 
+  it.each([
+    ["codex", { provider: "codex", model: "gpt-5.6-sol", codexPermissionMode: "never", lifecycleMode: "per_turn" }],
+    ["claude", { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" }],
+  ] as const)("caller runtime inheritance preserves safe %s settings only", async (_name, parentConfig) => {
+    const f = await fixture("anthropic", "subscription");
+    await db.update(agents).set({
+      adapterType: "paperclip_runner",
+      adapterConfig: {
+        ...parentConfig,
+        cwd: "/private/parent-workspace",
+        env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "parent-secret" } },
+        instructionsFilePath: "/private/parent-instructions.md",
+        runtimeSessionId: "parent-session",
+      },
+    }).where(eq(agents.id, f.agentId));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+      name: "Inherited teammate", role: "engineer", adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
+    }));
+    expect(agent.adapterConfig).toMatchObject(parentConfig);
+    expect(agent.adapterConfig).not.toHaveProperty("cwd");
+    expect(agent.adapterConfig).not.toHaveProperty("env");
+    expect(agent.adapterConfig.instructionsFilePath).not.toBe("/private/parent-instructions.md");
+    expect(agent.adapterConfig).not.toHaveProperty("runtimeSessionId");
+    expect(agent.runtimeConfig.aiConnection).toMatchObject({
+      provider: parentConfig.provider === "codex" ? "openai" : "anthropic",
+      mode: "responsible_user",
+    });
+  });
+
+  it("rejects caller inheritance when the request supplies competing runtime settings", async () => {
+    const f = await fixture("anthropic", "subscription");
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" } }).where(eq(agents.id, f.agentId));
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+      name: "Conflicting teammate", role: "engineer", adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
+      adapterConfig: { model: "caller.override" },
+    });
+    expect(response.status).toBe(422);
+    expect(response.body.error).toContain("cannot be combined");
+  });
+
   it.each([true, false])("preserves shared connection access boundaries (company access: %s)", async (allAgents) => {
     const f = await fixture("anthropic");
     const account = await aiConnectionService(db).save(f.companyId, f.userId, { provider: "anthropic", method: "api_key", name: "Shared Claude", ownership: "shared", apiKey: "fixture", agentIds: [f.agentId], allAgents }, "fixture");

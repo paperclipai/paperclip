@@ -205,6 +205,8 @@ export const authSessionSchema = z.object({
   // monitoring. The browser reads this value to open its own Sentry gate —
   // see `ui/src/lib/sentry.ts`.
   sentryDsn: z.string().min(1).nullable(),
+  // Optional for browser/server version skew; null leaves the SDK default.
+  sentryEnvironment: z.string().nullable().optional(),
 });
 
 export type AuthSession = z.infer<typeof authSessionSchema>;

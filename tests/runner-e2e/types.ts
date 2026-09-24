@@ -125,6 +125,8 @@ export interface RunnerTaskFixture {
   workMode: RunnerTaskWorkMode;
   flow: RunnerTaskFlow;
   expectedRunCount: number;
+  /** Optional lower bound; expectedRunCount remains the maximum/cost estimate. */
+  minimumExpectedRunCount?: number;
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;
   expectedTerminalState: {
     issue: "done" | "in_review" | "blocked";

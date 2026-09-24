@@ -770,6 +770,8 @@ export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 export interface Issue {
   conversationAgentId?: string | null;
   conversationUserId?: string | null;
+  /** Server-owned Slack lifecycle projection; not writable through task updates. */
+  externalConversationState?: "active" | "waiting" | null;
   conversationState?: "active" | "waiting" | null;
   conversationSessionGeneration?: number;
   conversationBoundaryCommentId?: string | null;
@@ -867,6 +869,7 @@ export interface Issue {
 
 export type CompactIssue = Pick<
   Issue,
+  | "externalConversationState"
   | "id"
   | "companyId"
   | "projectId"

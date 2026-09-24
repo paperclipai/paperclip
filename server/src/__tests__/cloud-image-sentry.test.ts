@@ -14,12 +14,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * Drift guard for the cloud image variant's bundled Sentry server package
+ * Drift guard for the explicit preview image's bundled Sentry server package
  * (Dockerfile `cloud` target).
  *
  * The self-hosted image, built from the `production` target, keeps
  * `@sentry/node` as a true optional peer dependency: the operator installs
- * it themselves. The hosted (cloud) image installs the packages the
+ * it themselves. The explicit preview image installs the packages the
  * `CLOUD_BUNDLED_SERVER_DEPS` build argument names, so a managed tenant
  * gets server error reports with no separate install step. The stage
  * reads each package's version from the `peerDependencies` block of
@@ -30,14 +30,13 @@ import { describe, expect, it } from "vitest";
  * workflow carry no literal version pin (they read the version from
  * `server/package.json` at build time instead); the `cloud-server-deps`
  * stage declares the `CLOUD_BUNDLED_SERVER_DEPS` build argument with a
- * default that names `@sentry/node`; the docker workflow passes that same
- * argument to the cloud build; and no committed manifest re-declares the
+ * default that names `@sentry/node`; and no committed manifest re-declares the
  * version.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
-const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker-cloud.yml"), "utf8");
+const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
 const serverPackageJson = JSON.parse(
   readFileSync(path.join(repoRoot, "server", "package.json"), "utf8"),
 ) as { peerDependencies?: Record<string, string> };
@@ -162,10 +161,6 @@ describe("cloud image Sentry install", () => {
       names,
       "the CLOUD_BUNDLED_SERVER_DEPS default must name @sentry/node",
     ).toContain("@sentry/node");
-  });
-
-  it("passes CLOUD_BUNDLED_SERVER_DEPS to the cloud build in the docker workflow", () => {
-    expect(workflow).toMatch(/^\s*CLOUD_BUNDLED_SERVER_DEPS=@sentry\/node\s*$/m);
   });
 
   it("declares no committed manifest that re-states the version", () => {

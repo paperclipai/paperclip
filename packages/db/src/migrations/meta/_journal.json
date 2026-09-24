@@ -1947,6 +1947,34 @@
       "when": 1789390281190,
       "tag": "0279_tired_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 280,
+      "version": "7",
+      "when": 1789743991329,
+      "tag": "0280_unique_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 281,
+      "version": "7",
+      "when": 1789827314772,
+      "tag": "0281_true_boom_boom",
+      "breakpoints": true
+    },
+    {
+      "idx": 282,
+      "version": "7",
+      "when": 1790004509370,
+      "tag": "0282_colossal_shocker",
+      "breakpoints": true
+    },
+    {
+      "idx": 283,
+      "version": "7",
+      "when": 1790018362070,
+      "tag": "0283_jittery_psynapse",
+      "breakpoints": true
     }
   ]
 }

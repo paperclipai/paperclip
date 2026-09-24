@@ -111,6 +111,7 @@ function renderItem(
             ...item.attachedTurn,
             agentName: item.attachedTurn.agentName ?? item.authorName,
             agentIcon: item.attachedTurn.agentIcon ?? item.agentIcon,
+            agent: item.attachedTurn.agent ?? item.agent,
           }
         : item.attachedTurn;
       const turn = attachedTurnItem ? (
@@ -171,7 +172,7 @@ function renderItem(
         <TaskChatMarker
           item={item}
           onTryAgain={
-            item.id === retryableMarkerId
+            item.id === retryableMarkerId && item.retryable !== false
               ? item.runId && onRetryFailedRun
                 ? () => onRetryFailedRun(item.runId!)
                 : onTryAgainNoLiveExecutionPath

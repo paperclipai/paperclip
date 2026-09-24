@@ -1,3 +1,4 @@
+import { defaultGitHubReviewPolicy } from "../../packages/shared/src/types/chat-github";
 import {
   expect,
   test,
@@ -52,7 +53,7 @@ export const PROVIDERS: ProviderCase[] = [
     secondaryResourceLabel: "#support",
     resourceType: "channel",
     externalUrl: "https://app.slack.com/client/T-E2E/C-E2E/thread/C-E2E-1",
-    setupHeading: /Connect a Slack app/i,
+    setupHeading: /Create a Slack app/i,
     setupButton: "Connect Slack app",
     chatAndTool: true,
   },
@@ -293,6 +294,7 @@ export function endpointFixture(provider: ProviderCase, seed: Seed) {
       webhookUrl: `https://paperclip.example.test/api/chat-webhooks/public-${provider.provider}/${provider.provider}`,
       messagingEndpoint: `https://paperclip.example.test/api/chat-webhooks/public-${provider.provider}/microsoft-teams`,
       command: provider.provider === "slack" ? "/maya-public" : undefined,
+      testStartedAt: null as string | null,
       webhookVerifiedAt: null,
       webhookSecretConfigured: false,
     },
@@ -312,6 +314,8 @@ export type ChatMock = {
   githubPrivateKeyMatchedFile: boolean | null;
   githubPrivateKeyMatchedPaste: boolean | null;
   githubSetupSecretRequests: number;
+  githubRepositoryRefreshes: number;
+  githubIdentityConfirmed: boolean;
   setupAttempts: number;
   updatedResource: boolean;
   resourceUpdates: Array<Array<{ id: string; enabled: boolean }>>;
@@ -326,7 +330,7 @@ export type ChatMock = {
   conversationState: "active" | "waiting";
   removed: boolean;
   setStatus: (status: string) => void;
-  setGitHubWebhookVerified: () => void;
+  setWebhookVerified: () => void;
 };
 
 export async function installChatControlPlaneMock(
@@ -340,6 +344,11 @@ export async function installChatControlPlaneMock(
   }: { enableChatConnectors: boolean; resourceCount?: number; photonShared?: boolean },
 ): Promise<ChatMock> {
   const endpoint = endpointFixture(provider, seed);
+  let slackIdentityLinked = false;
+  let githubAppConnected = false;
+  let githubConfiguration = { revision: 0, configuration: {
+    version: 1, toolsEnabled: false, responsibleUserId: "local-board", memberAccess: "all_linked", people: [], defaults: defaultGitHubReviewPolicy(), repositories: {},
+  }};
   const state: ChatMock & {
     created: boolean;
     failNextGitHubEndpointRead: boolean;
@@ -352,6 +361,8 @@ export async function installChatControlPlaneMock(
     githubPrivateKeyMatchedFile: null,
     githubPrivateKeyMatchedPaste: null,
     githubSetupSecretRequests: 0,
+    githubRepositoryRefreshes: 0,
+    githubIdentityConfirmed: false,
     setupAttempts: 0,
     updatedResource: false,
     resourceUpdates: [],
@@ -368,7 +379,7 @@ export async function installChatControlPlaneMock(
     setStatus: (status) => {
       endpoint.status = status;
     },
-    setGitHubWebhookVerified: () => {
+    setWebhookVerified: () => {
       endpoint.setup.webhookVerifiedAt = new Date().toISOString();
     },
   };
@@ -410,6 +421,40 @@ export async function installChatControlPlaneMock(
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     const method = request.method();
+
+    if (provider.provider === "github" && pathname.startsWith(`/api/chat-endpoints/${endpoint.id}/github/`)) {
+      const operation = pathname.split("/github/")[1];
+      const body = method === "GET" ? {} : bodyOf(route);
+      if (operation === "configuration") {
+        if (method === "PUT") { expect(body.expectedRevision).toBe(githubConfiguration.revision); githubConfiguration = { revision: githubConfiguration.revision + 1, configuration: body.configuration as typeof githubConfiguration.configuration }; }
+        await fulfill(route, githubConfiguration); return;
+      }
+      if (operation === "progress") {
+        Object.assign(endpoint.setup, { github: { appSlug: githubAppConnected ? "maya-paperclip" : undefined, stage: body.stage, managementUrl: "https://github.com/settings/installations/2468" } });
+        await fulfill(route, endpoint); return;
+      }
+      if (operation === "app") {
+        state.setupAttempts++;
+        state.configuredCredentialKeys = Object.keys(body).sort();
+        if (state.setupAttempts === 1) { await fulfill(route, { error: "GitHub rejected the supplied App credentials." }, 422); return; }
+        githubAppConnected = true;
+        Object.assign(endpoint, { status: "attention", botUsername: "maya-paperclip[bot]" });
+        Object.assign(endpoint.setup, { github: { stage: "install", appSlug: "maya-paperclip", installationUrl: "https://github.com/apps/maya-paperclip/installations/new", managementUrl: "https://github.com/settings/installations/2468" } });
+        await fulfill(route, endpoint); return;
+      }
+      if (operation === "repositories/refresh") { state.githubRepositoryRefreshes++; await fulfill(route, resources); return; }
+      if (operation === "verify") {
+        const ready = githubConfiguration.configuration.toolsEnabled;
+        await fulfill(route, { ready, checks: [{ key: "tools", label: "Assigned agent’s effective GitHub tools", ok: ready, detail: ready ? "The bot tools are assigned." : "Assign this bot’s GitHub tools." }] }); return;
+      }
+      if (operation === "personal-connections") { await fulfill(route, [{ connectionId: "personal-github", name: "My GitHub", login: "octocat", enabled: true, status: "active" }]); return; }
+      if (operation === "identity") {
+        expect(body.connectionId).toBe("personal-github");
+        if (body.confirmedGithubUserId) { expect(body.confirmedGithubUserId).toBe("42"); state.githubIdentityConfirmed = true; }
+        await fulfill(route, { githubUserId: "42", login: "octocat", connectionId: "personal-github", avatarUrl: null }); return;
+      }
+      if (operation === "reviews") { await fulfill(route, []); return; }
+    }
 
     if (pathname === `/api/companies/${seed.companyId}/chat-endpoints`) {
       if (method === "GET") {
@@ -504,13 +549,11 @@ export async function installChatControlPlaneMock(
         await fulfill(route, endpoint);
         return;
       }
-      expect(["configure", "verify"]).toContain(action);
+      expect(["configure", "verify", "reconnect"]).toContain(action);
       if (body.action === "configure") {
         state.setupAttempts += 1;
-        state.configuredCredentialKeys = Object.keys(
-          (body.credentials ?? {}) as Record<string, string>,
-        ).sort();
-        if (provider.provider === "github") {
+        if (body.credentials) state.configuredCredentialKeys = Object.keys(body.credentials as Record<string, string>).sort();
+        if (provider.provider === "github" && !githubAppConnected) {
           const privateKey = (
             (body.credentials ?? {}) as Record<string, string>
           ).privateKey;
@@ -542,7 +585,7 @@ export async function installChatControlPlaneMock(
           );
           return;
         }
-      } else {
+      } else if (action !== "reconnect") {
         expect(provider.provider).toBe("slack");
       }
       if (provider.provider === "imessage-photon") {
@@ -558,6 +601,7 @@ export async function installChatControlPlaneMock(
         botLabel: provider.botLabel,
         setup: {
           ...endpoint.setup,
+          testStartedAt: body.action === "verify" ? new Date().toISOString() : endpoint.setup.testStartedAt,
           step:
             provider.provider === "slack" && body.action === "configure"
               ? "provider_setup"
@@ -573,7 +617,7 @@ export async function installChatControlPlaneMock(
       await fulfill(route,{projectId:"project-e2e",projectName:"Photon Test",allocation:photonShared ? "shared" : "dedicated",eligible:true,lines:photonShared ? [] : [{lineId:"line-one",phoneNumber:"+15555550100",eligible:true},{lineId:"line-two",phoneNumber:"+15555550102",eligible:true}]}); return;
     }
     if (
-      pathname === `/api/chat-endpoints/${endpoint.id}/test` &&
+      (pathname === `/api/chat-endpoints/${endpoint.id}/test` || pathname === `/api/chat-endpoints/${endpoint.id}/finish`) &&
       method === "POST"
     ) {
       Object.assign(endpoint, {
@@ -582,6 +626,20 @@ export async function installChatControlPlaneMock(
         setup: { ...endpoint.setup, step: "complete" },
       });
       await fulfill(route, endpoint);
+      return;
+    }
+
+    if (pathname === `/api/chat-endpoints/${endpoint.id}/test-status`) {
+      await fulfill(route, { messageReceivedAt: null });
+      return;
+    }
+    if (pathname === `/api/chat-endpoints/${endpoint.id}/principals/principal-slack-self/link-intent` && method === "POST") {
+      await fulfill(route, { confirmationUrl: `https://paperclip.example.test/${seed.prefix}/chat-identity/confirm?token=e2e-self` });
+      return;
+    }
+    if (pathname === "/api/chat-identity-links/confirm" && method === "POST") {
+      slackIdentityLinked = true;
+      await fulfill(route, { endpointId: endpoint.id, companyId: seed.companyId });
       return;
     }
 
@@ -617,6 +675,12 @@ export async function installChatControlPlaneMock(
     ) {
       await fulfill(route, {
         principals: [
+          ...(provider.provider === "slack" && (slackIdentityLinked || endpoint.setup.step === "test") ? [{
+            id: "link-slack-self", principalId: "principal-slack-self", externalLabel: "Test operator",
+            externalDetail: "operator@slack", lastConnectAt: new Date().toISOString(),
+            paperclipUserId: slackIdentityLinked ? "local-board" : null,
+            status: slackIdentityLinked ? "linked" : "pending",
+          }] : []),
           {
             id: `link-${provider.provider}`,
             principalId: `principal-${provider.provider}`,
@@ -767,6 +831,9 @@ export async function selectMaya(page: Page) {
 
 export async function fillProviderSetup(page: Page, provider: ProviderCase) {
   if (provider.provider === "slack") {
+    await page.getByRole("button", { name: "I already created the app" }).click();
+    await expect(page.getByLabel("Bot User OAuth Token")).toHaveAttribute("type", "password");
+    await expect(page.getByLabel("Signing Secret")).toHaveAttribute("type", "password");
     await page.getByLabel("Bot User OAuth Token").fill("xoxb-e2e-redacted");
     await page.getByLabel("Signing Secret").fill("slack-signing-secret");
   } else if (provider.provider === "github") {
@@ -882,10 +949,13 @@ export function expectedCredentialKeys(provider: Provider): string[] {
 }
 
 export async function expectSetupRail(page: Page) {
-  const rail = page.getByRole("list", { name: "Connection setup progress" });
+  const rail = page.getByRole("navigation", { name: "Connection setup progress" });
   await expect(rail).toBeVisible();
-  await expect(rail.getByRole("listitem")).toHaveCount(3);
-  for (const label of ["Choose agent", "Connect provider", "Try it"]) {
+  const labels = new URL(page.url()).searchParams.get("provider") === "slack"
+    ? ["Choose agent", "Create Slack app", "Add credentials", "Verify Slack connection", "Add avatar", "Connect your Slack account", "Try it"]
+    : ["Choose agent", "Connect provider", "Try it"];
+  await expect(rail.getByRole("listitem")).toHaveCount(labels.length);
+  for (const label of labels) {
     await expect(rail.getByText(label, { exact: true })).toBeVisible();
   }
 }
@@ -904,7 +974,7 @@ features:
     display_name: "maya"
   slash_commands:
     - command: "/maya-public"
-      description: Start or manage work with "Maya"
+      description: "Start or manage work with Maya"
       usage_hint: "status | new | close | <task>"
       should_escape: false
       url: "${webhookUrl}"
@@ -928,6 +998,19 @@ oauth_config:
       - reactions:read
       - reactions:write
       - users:read
+      - emoji:read
+      - pins:read
+      - pins:write
+      - bookmarks:read
+      - bookmarks:write
+      - channels:manage
+      - channels:write.topic
+      - groups:write
+      - groups:write.topic
+      - canvases:read
+      - canvases:write
+      - lists:read
+      - lists:write
 settings:
   org_deploy_enabled: false
   socket_mode_enabled: false
@@ -964,26 +1047,15 @@ settings:
 export async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
   const webhookUrl = `https://paperclip.example.test/api/chat-webhooks/public-${provider.provider}/${provider.provider}`;
   if (provider.provider === "slack") {
-    await expect(page.getByText("From an app manifest")).toBeVisible();
-    await expect(page.getByText("OAuth & Permissions")).toBeVisible();
-    await expect(page.getByText("Basic Information")).toBeVisible();
-    const manifest = await page.getByLabel("Slack app manifest").inputValue();
-    expect(manifest).toBe(expectedSlackManifest(webhookUrl));
-    await expect(page.getByLabel("Slack app manifest")).toHaveAttribute(
-      "readonly",
-      "",
-    );
-    await expect(page.getByLabel("Bot User OAuth Token")).toHaveAttribute(
-      "type",
-      "password",
-    );
-    await expect(page.getByLabel("Signing Secret")).toHaveAttribute(
-      "type",
-      "password",
-    );
-    await expect(
-      page.getByRole("button", { name: "Open Slack app settings" }),
-    ).toBeVisible();
+    await expect(page.getByLabel("Slack app name", { exact: true })).toBeEditable();
+    await expect(page.getByLabel("Bot display name", { exact: true })).toBeEditable();
+    await expect(page.getByLabel("Slash command", { exact: true })).toBeEditable();
+    await page.getByRole("button", { name: "View Slack App Manifest" }).click();
+    const manifest = page.getByRole("textbox", { name: "Slack app manifest", exact: true });
+    await expect(manifest).toHaveValue(expectedSlackManifest(webhookUrl));
+    await expect(manifest).toHaveAttribute("readonly", "");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Create Slack app", exact: true })).toBeVisible();
     return;
   }
 
@@ -1149,14 +1221,16 @@ export async function expectProviderTryInstructions(
   page: Page,
   provider: ProviderCase,
 ) {
+  if (provider.provider === "slack") {
+    for (const text of ["Open a channel and invite @maya-paperclip if needed.", "@maya-paperclip you there?", "Continue the conversation in the thread."]) {
+      await expect(page.getByText(text, { exact: true })).toBeVisible();
+    }
+    await expect(page.getByRole("button", { name: "Copy message" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Open Slack", exact: true })).toHaveCount(0);
+    return;
+  }
   const expected =
-    provider.provider === "slack"
-      ? [
-          "Open a channel and invite the bot if needed.",
-          "Mention @maya-paperclip in a new channel message.",
-          "Reply once in Maya's thread.",
-        ]
-      : provider.provider === "github"
+    provider.provider === "github"
         ? [
             "Open an installed issue or pull request.",
             "Mention @maya-paperclip in a comment.",

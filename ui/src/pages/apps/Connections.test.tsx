@@ -25,8 +25,8 @@ vi.mock("@/api/tools", () => ({
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listAppsAttention: (companyId: string) => listAppsAttentionMock(companyId),
     listProfiles: (companyId: string) => listProfilesMock(companyId),
-    archiveConnection: (connectionId: string, options?: { confirmComposioChildren?: boolean }) =>
-      archiveConnectionMock(connectionId, options),
+    archiveConnection: (connectionId: string) =>
+      archiveConnectionMock(connectionId),
     getCloudConnectorEnrollment: () => getCloudConnectorEnrollmentMock(),
     startCloudConnectorEnrollment: (companyId: string, label?: string) => startCloudConnectorEnrollmentMock(companyId, label),
   },
@@ -414,9 +414,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     });
     await flushReact();
 
-    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github", {
-      confirmComposioChildren: false,
-    });
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github");
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Connection deleted",
@@ -426,48 +424,6 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     );
   });
 
-  it("confirms that deleting a Composio parent removes its child services", async () => {
-    listApplicationsMock.mockResolvedValue({
-      applications: [application({ id: "app-composio", name: "Composio" })],
-    });
-    listConnectionsMock.mockResolvedValue({
-      connections: [
-        connection({
-          id: "composio-parent",
-          applicationId: "app-composio",
-          name: "Composio",
-          config: { sourceTemplateKey: "composio" },
-        }),
-        connection({
-          id: "composio-github",
-          applicationId: "app-composio",
-          name: "GitHub (via Composio)",
-          config: { provider: "composio", parentConnectionId: "composio-parent", toolkitSlug: "github" },
-        }),
-      ],
-    });
-
-    await renderApps();
-    const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete Composio for the organization connection"]',
-    );
-    await act(async () => {
-      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(document.body.textContent).toContain("This also removes 1 connected service");
-    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Delete connection",
-    );
-    await act(async () => {
-      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(archiveConnectionMock).toHaveBeenCalledWith("composio-parent", {
-      confirmComposioChildren: true,
-    });
-  });
 
   it("reports the remaining active connections after deleting one", async () => {
     listApplicationsMock.mockResolvedValue({
@@ -501,9 +457,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     });
     await flushReact();
 
-    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github-primary", {
-      confirmComposioChildren: false,
-    });
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github-primary");
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Connection deleted",

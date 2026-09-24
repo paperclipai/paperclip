@@ -1,4 +1,5 @@
 import path from "node:path";
+import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
 import type { MatrixExecution } from "./types.js";
 
@@ -109,7 +110,7 @@ export function buildRunnerE2EProcessEnvironment(
   delete result.OPENCODE_ALLOW_ALL_MODELS;
   // Hiring needs the opt-in native API surface. Scope this to the explicit
   // manual hiring story; production and other suites retain their defaults.
-  if (executions.some((e) => e.suite.id === "everyday-workflows" && e.task.id === "hire-reuse")) {
+  if (executions.some((e) => isManagedHiringCase(e.suite.id, e.task.id) || chatNeedsApiTools(e.suite.id, e.task.id))) {
     result.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
   }
   if (

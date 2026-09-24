@@ -110,3 +110,8 @@ export const everydayTasks: readonly RunnerTaskFixture[] = definitions.map(
     buildMatchers: () => [], // The workflow records independent artifact and lifecycle checks.
   }),
 );
+
+/** Only these stories execute downloaded Python ZIPs in the pinned oracle. */
+export function requiresEverydayArtifactOracle(caseId: string): boolean {
+  return ["build-revise", "delegate-feedback", "agent-review-handoff", "hire-reuse", "recover-controller", "stop-redirect"].includes(caseId);
+}

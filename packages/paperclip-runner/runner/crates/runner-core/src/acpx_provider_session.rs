@@ -29,6 +29,7 @@ const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 #[serde(rename_all = "kebab-case")]
 pub enum AcpxPermissionMode {
     ApproveAll,
+    ApprovePaperclip,
     ApproveReads,
     DenyAll,
 }
@@ -1304,5 +1305,30 @@ mod tests {
             })
         );
         assert!(sidecar_tools[0].get("operationId").is_none());
+    }
+}
+
+#[cfg(test)]
+mod permission_mode_tests {
+    use super::AcpxPermissionMode;
+
+    #[test]
+    fn paperclip_permission_mode_round_trips_without_widening_legacy_modes() {
+        for (name, mode) in [
+            ("approve-paperclip", AcpxPermissionMode::ApprovePaperclip),
+            ("approve-reads", AcpxPermissionMode::ApproveReads),
+            ("approve-all", AcpxPermissionMode::ApproveAll),
+            ("deny-all", AcpxPermissionMode::DenyAll),
+        ] {
+            let value = serde_json::json!(name);
+            assert_eq!(
+                serde_json::from_value::<AcpxPermissionMode>(value.clone()).unwrap(),
+                mode
+            );
+            assert_eq!(serde_json::to_value(mode).unwrap(), value);
+        }
+        assert!(
+            serde_json::from_value::<AcpxPermissionMode>(serde_json::json!("unknown")).is_err()
+        );
     }
 }

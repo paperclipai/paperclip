@@ -6,6 +6,20 @@ Run scope: `ui/src/components/` and `ui/src/pages/` on branch `design/token-extr
 
 ## Counts
 
+### Independent MCP connection setup — 2026-09-21
+
+`ui/src/features/connections/remote-mcp/RemoteMcpConnectionSetup.tsx` is the controlled
+Access → Connect and management composition for Zapier, Arcade,
+Composio and Executor. It reuses Gmail’s StepHeader and AccessStepContent, plus SetupWizardFooter,
+AppLogo, InlineBanner and existing form/dialog primitives. Saved connections reuse
+the canonical PermissionsPanel ActionsSection and its ActionTestDialog; there is
+no separate setup test or permission list. Each
+provider has an independent state and controller. It does not initiate network
+authentication requests or persist credentials. The shared Test dialog uses normal
+API calls, intercepted by scoped in-memory Storybook fixtures. The first milestone is design review; production
+routes do not use it yet. See `/design-guide` and Storybook **Apps / Connections**
+for the provider variants and complete interactive state matrix.
+
 Execution recovery reuses the existing transcript header and task status. Routine phases add no list badges, status cards, or reconciliation dialogs. Only a transient reconnection changes the header text. Automatic recovery decisions remain in the local run log. Storybook **Tasks / Execution recovery** demonstrates quiet task lists, native and legacy transcript headers, and dashboard composition.
 
 | Area | Count |
@@ -424,3 +438,9 @@ Independently addressable examples live under `Connections/In-task connections` 
 - `AnnouncementCard`: image, eyebrow, headline, description, navigation links and dismissal; accepts an announcement and `onDismiss`.
 - `AnnouncementWell`: one app-shell placement that owns eligibility, dismissal sync, modal deferral and toast priority. Use only once in Layout.
 - Preview variants live in `/design-guide` and Storybook under `Announcements/AnnouncementCard`.
+
+## Shared setup wizard (2026-09-19)
+
+`ui/src/components/SetupWizard.tsx` extracts the Slack setup navigation into reusable numbered steps, a portal sidebar, an optional section-menu takeover outlet, and a single-row footer. `SetupWizardSidebarProvider` owns the portal target and takeover lifecycle. Chat exports retain their existing names and defaults for compatibility. The Design Guide demonstrates the components. The production routine trigger wizard and its Storybook previews share the sidebar takeover, navigation, and footer. `routine-triggers/TriggerWizard.tsx`, `TriggerCard.tsx`, and `WebhookFields.tsx` provide the shared trigger setup, compact editable cards, copyable credentials, and agent instructions.
+
+`routine-triggers/WebhookUrlWarning.tsx` uses `InlineBanner` for non-blocking localhost, private-network, Tailscale, and HTTP guidance. Setup and saved webhook editors share it; the Design Guide shows each warning. URL classification is heuristic, not a public reachability test.

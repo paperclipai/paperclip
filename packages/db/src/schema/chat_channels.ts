@@ -64,6 +64,7 @@ export const chatEndpoints = pgTable(
     botUsername: text("bot_username"),
     botDisplayName: text("bot_display_name"),
     botAvatarUrl: text("bot_avatar_url"),
+    communicationInstructions: text("communication_instructions").notNull().default(""),
     allowDirectMessages: boolean("allow_direct_messages")
       .notNull()
       .default(true),
@@ -378,6 +379,8 @@ export const chatConversations = pgTable(
     externalLabel: text("external_label").notNull(),
     providerUrl: text("provider_url"),
     isDirectMessage: boolean("is_direct_message").notNull().default(false),
+    // Immutable initial task context, never refreshed from endpoint settings.
+    communicationGuidance: text("communication_guidance"),
     state: text("state").notNull().default("active"),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })

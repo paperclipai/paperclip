@@ -285,6 +285,45 @@ describe("issue update comment wakeups", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it.each(["done", "cancelled"])(
+    "keeps %s assignment-only updates from waking completed work",
+    async (status) => {
+      // A parent may restore the assignee after releasing a completed child.
+      // That is recordkeeping, not a request to execute the child again.
+      const existing = makeIssue({ status, assigneeAgentId: null, assigneeUserId: null });
+      const updated = makeIssue({ status, assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockResolvedValue(updated);
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${existing.id}`)
+        .send({ assigneeAgentId: ASSIGNEE_AGENT_ID });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ status, assigneeAgentId: ASSIGNEE_AGENT_ID });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])("still wakes explicitly reopened work (reassigned: %s)", async (reassigned) => {
+    const existing = makeIssue({ status: "done", assigneeAgentId: PREVIOUS_AGENT_ID, assigneeUserId: null });
+    const agentId = reassigned ? ASSIGNEE_AGENT_ID : PREVIOUS_AGENT_ID;
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: agentId, assigneeUserId: null }));
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "todo", ...(reassigned ? { assigneeAgentId: agentId } : {}) });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      reason: reassigned ? "issue_assigned" : "issue_status_changed",
+      payload: expect.objectContaining({ issueId: existing.id }),
+    }));
+  });
+
   it("includes the new comment in assignment wakes from issue updates", async () => {
     const existing = makeIssue();
     const updated = makeIssue({

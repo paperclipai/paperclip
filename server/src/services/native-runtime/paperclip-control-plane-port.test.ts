@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { readCompletedAssistantMessageCandidate, resolveHeartbeatRunResponse, selectHeartbeatRunFinalAgentMessage } from "../heartbeat-run-summary.js";
 import {
@@ -38,6 +39,7 @@ import {
 } from "../../vendor/paperclip-runner/testing.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -957,6 +959,49 @@ describe("PaperclipControlPlanePort conformance", () => {
     await db.update(heartbeatRuns).set({ runnerInstanceId }).where(eq(heartbeatRuns.id, runId));
   });
 
+  it.each(["port", "coordinator"])("does not deadlock %s result persistence against a task mutation that updates its run", async (kind) => {
+    const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: conformanceRunnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+    });
+    const port = kind === "port" ? new PaperclipControlPlanePort(db, {
+      ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: conformanceRunnerId, controlPlaneSourceInstanceId: "result-lock-order",
+    }) : new NativeRunCoordinatorStore(db, {
+      ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
+      normalizedSessionId: identity.sessionId, runnerSourceInstanceId: conformanceRunnerId,
+      completionContractRevision: "standalone-v1", completionContractCriterionIds: ["objective"],
+    });
+    let completion: Promise<unknown> | undefined;
+    try {
+      await db.transaction(async (tx) => {
+        await tx.select().from(issues).where(eq(issues.id, identity.issueId)).for("update");
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+        completion = port.completeRun({
+          result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
+          callerResultId: "result-lock-order",
+        }).then(() => null, (error: unknown) => error);
+        let waiting = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const [state] = await db.execute(sql`select exists (
+            select 1 from pg_stat_activity where ${backend.pid} = any(pg_blocking_pids(pid))
+          ) as waiting`) as unknown as Array<{ waiting: boolean }>;
+          if (state.waiting) { waiting = true; break; }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        await tx.execute(sql`set local lock_timeout = '1s'`);
+        await tx.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+      });
+    } finally {
+      expect(await completion).toBeNull();
+    }
+  });
+
   it("does not let native completion bypass a pending issue interaction", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     const port = new PaperclipControlPlanePort(db, {
@@ -1053,7 +1098,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       backendKind: "mock",
       sourceInstanceId: runnerInstanceId,
     });
-    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const, attentionRequests: [{ kind: "approval" as const, summary: "Approve publication", ownerClass: "human" as const }, { kind: "review" as const, summary: "Review release notes", ownerClass: "agent" as const, targetAgentId: reviewerAgentId }] };
+    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, contractRevision: "phase6-v1" }, reportedWorkDisposition: "needs_review" as const, attentionRequests: [{ kind: "approval" as const, summary: "Approve publication", ownerClass: "human" as const }, { kind: "review" as const, summary: "Review release notes", ownerClass: "agent" as const, targetAgentId: reviewerAgentId }] };
     await expect(nativeCompletionFeedback(db, runId, { ...result, attentionRequests: [] }))
       .rejects.toThrow("needs_review requires");
     await expect(nativeCompletionFeedback(db, runId, {
@@ -1062,6 +1107,10 @@ describe("PaperclipControlPlanePort conformance", () => {
     await expect(nativeCompletionFeedback(db, runId, {
       ...result, attentionRequests: [{ kind: "review", summary: "Review work", ownerClass: "agent", targetAgentId: "99999999-9999-4999-8999-999999999999" }],
     })).rejects.toThrow("not available in this company");
+    await expect(nativeCompletionFeedback(db, runId, {
+      ...result,
+      completionClaim: { ...result.completionClaim, contractRevision: "stale-first-turn" },
+    })).rejects.toThrow(/contractRevision.*phase6-v1/);
     await expect(nativeCompletionFeedback(db, runId, result)).resolves.toContain("Completion report accepted");
     await port.completeRun({
       result,

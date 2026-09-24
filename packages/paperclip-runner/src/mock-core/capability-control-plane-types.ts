@@ -40,6 +40,7 @@ export interface CapabilityFixtureActor {
 }
 
 export interface CapabilityFixtureTask {
+  statusVersion?: number;
   id: string;
   companyId: string;
   identifier: string;
@@ -391,9 +392,11 @@ export type CapabilitySemanticCommand =
       contentRef: string;
       title: string;
     })
+  | (CapabilityBaseCommand & { kind: "reassign_task"; targetTaskId: string; assigneeActorId: string; expectedAssigneeActorId: string | null; expectedStatusVersion: number; reason: string })
   | (CapabilityBaseCommand & { kind: "set_dependencies"; blockedByTaskIds: string[] })
   | (CapabilityBaseCommand & {
       kind: "create_task";
+      status?: "backlog" | "todo";
       title: string;
       description?: string | null;
       assigneeActorId?: string | null;
@@ -482,6 +485,7 @@ export const CAPABILITY_COMMAND_REQUIRED_CLAIMS = {
   resolve_human_input: ["control_plane:interactions"],
   register_deliverable: [],
   set_dependencies: ["dependencies:write"],
+  reassign_task: ["delegation:tasks:assign"],
   create_task: ["delegation:tasks:create"],
   request_approval: ["governance:approvals:request"],
   decide_approval: ["governance:approvals:decide"],
@@ -601,7 +605,7 @@ export function createCapabilityFixtureState(seed: CapabilityFixtureSeed = {}): 
     activeRunId: null,
     company,
     actors: structuredClone(actors),
-    tasks: structuredClone(tasks),
+    tasks: structuredClone(tasks).map(task => ({ ...task, statusVersion: task.statusVersion ?? 0 })),
     outOfScopeTaskIds: structuredClone(seed.outOfScopeTaskIds ?? []),
     comments: structuredClone(seed.comments ?? []),
     documents: structuredClone(seed.documents ?? []),

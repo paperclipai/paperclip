@@ -6,10 +6,12 @@ import { aiProviderForAdapter } from "./ai-connections/AiConnectionField";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { storeProviderApiKey } from "../lib/provider-credential";
 import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
+import { randomAgentAppearance, resolveAgentAppearance, agentAppearanceSchema } from "@paperclipai/shared";
+import { OnboardingCharacter } from "./onboarding/OnboardingCharacter";
 import { useEffect, useState, useMemo, useRef } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MotionConfig, motion } from "motion/react";
+import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import type {
   AdapterEnvironmentTestResult,
   AgentRole,
@@ -130,7 +132,7 @@ import { CredentialModeLink } from "./onboarding/CredentialModeLink";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
-import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
+import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomArrival, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
   ArrowLeft,
@@ -543,6 +545,26 @@ function OnboardingWizardInner({
   // customer mid-flow — and here that would quietly re-open the "create a
   // company" step to a run that already holds one.
   const [entryStep, setEntryStep] = useState<number>((saved?.step as Step) ?? initialStep);
+  /**
+   * A page that opens straight onto the agent step — a cloud-managed
+   * workspace arriving from Cloud's naming screen, or a reload — plays the
+   * hand-off's second half on its first frames rather than mounting cold: the
+   * first paint holds the naming step's layout (hero room and content closed),
+   * the next frame opens them. `arrival` is fixed for the mount; `arrived`
+   * flips once. See heroRoomArrival.
+   */
+  const arrival = entryStep === 3 && beatDelay(1) > 0;
+  const [arrived, setArrived] = useState(!arrival);
+  useEffect(() => {
+    if (arrived) return;
+    const frame = requestAnimationFrame(() => setArrived(true));
+    return () => cancelAnimationFrame(frame);
+  }, [arrived]);
+  // The step before this render's, for choosing an entrance that matches
+  // where the capsule came from; updated after paint, so during the render
+  // in which the step just changed it still names the departed step.
+  const lastStep = useRef(step);
+  useEffect(() => { lastStep.current = step; }, [step]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
@@ -556,6 +578,7 @@ function OnboardingWizardInner({
   // on the customer's behalf that they then have to notice and undo. It is the
   // step's only question, and its CTA gates on it.
   const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "");
+  const [agentAppearance, setAgentAppearance] = useState(() => agentAppearanceSchema.safeParse(saved?.agentAppearance).data ?? randomAgentAppearance());
   // Defaults to `general` rather than empty. The arc stopped asking for a role
   // — a customer naming their first agent is describing what it does, not
   // filing it — but the hire still needs one, and the guard below returns
@@ -776,6 +799,7 @@ function OnboardingWizardInner({
    * hand rather than the one before it.
    */
   function clearCompanyScopedState() {
+    setAgentAppearance(randomAgentAppearance());
     setCreatedCompanyPrefix(null);
     setCompanyName("");
     setCreatedCompanyGoalId(null);
@@ -879,7 +903,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen) return;
     const state = {
       step, companyName,
-      agentName, agentRole, adapterType, cwd, model, command, args, url,
+      agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
@@ -888,7 +912,7 @@ function OnboardingWizardInner({
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName,
-    agentName, agentRole, adapterType, cwd, model, command, args, url,
+    agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
     credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
@@ -1600,6 +1624,7 @@ function OnboardingWizardInner({
     // Back to the mount defaults: an empty name (the step's only question, and
     // what its CTA gates on) and the neutral role every onboarding hire uses.
     setAgentName("");
+    setAgentAppearance(randomAgentAppearance());
     setAgentRole(DEFAULT_AGENT_ROLE);
     setAdapterType("claude_local");
     setModel("");
@@ -2157,6 +2182,7 @@ function OnboardingWizardInner({
       if (existing) {
         if (!isCurrent()) return;
         setCreatedAgentId(existing.id);
+        setAgentAppearance(resolveAgentAppearance(existing.appearance, existing.id));
         queryClient.invalidateQueries({
           queryKey: queryKeys.agents.list(createdCompanyId)
         });
@@ -2171,6 +2197,7 @@ function OnboardingWizardInner({
         // The name is optional; an agent that reaches here without one is
         // named for the job it was hired to do rather than left blank.
         name: hireName,
+        appearance: agentAppearance,
         role: agentRole,
         adapterType,
         adapterConfig: hireAdapterConfig,
@@ -2338,6 +2365,15 @@ function OnboardingWizardInner({
   const showsAgentArcStepper = isAgentArcStep && entryStep >= 3 && !enteredFromCloud;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
+  /**
+   * Whether the step hand-off plays out. Under reduced motion — and where the
+   * platform cannot be asked, which `beatDelay` reads the same way — the next
+   * step's content simply takes the departing one's place: a sequence that
+   * holds the screen for a departure nobody sees is just a slower screen.
+   */
+  const stepHandoff = beatDelay(1) > 0;
+  const heroRoomTarget = step === 1 || !arrived ? heroRoomMotion.closed : arrival && lastStep.current === entryStep ? heroRoomArrival : heroRoomMotion.open;
+  const capsuleTarget = step === 1 || !arrived ? capsuleRoomExit : step === 3 && stepHandoff && lastStep.current === 1 ? capsuleRoomEnter : capsuleHeroMotion.animate;
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
 
   return (
@@ -2454,11 +2490,11 @@ function OnboardingWizardInner({
                 />
               )}
 
-              {/* The hero, above the heading: one PillGuy held in the same tree
+              {/* The hero, above the heading: one character held in the same tree
                   slot across steps 3–5, so React reuses the DOM node and moving
                   between steps never replays the entrance. It is dormant while
                   the agent is being specified and wakes on Review. */}
-              {step >= 3 && step <= 5 && (
+              {(step === 1 || (step >= 3 && step <= 5)) && (
                 // reducedMotion="user" defers to the OS setting, so the hero
                 // arrives in place for anyone who asked for less movement. The
                 // token layer zeroes the CSS durations; this covers the JS half.
@@ -2473,89 +2509,103 @@ function OnboardingWizardInner({
                       the character and the title and belonged to neither. 24px
                       against the 36px used elsewhere, a little over a third
                       less. `mb-9` still holds the block off the step content. */}
-                  <div className="mb-9 space-y-6">
+                  <div className="mb-9">
+                    {/* The hero's room. Closed on the naming step — there is
+                        no agent yet — and opened by the hand-off into the
+                        agent step, the capsule springing up inside it as it
+                        grows. The 24px under the name lives inside the room so
+                        a closed room takes no space. A reload straight onto
+                        the arc mounts it open, as before. */}
+                    <motion.div
+                      className="overflow-hidden"
+                      initial={false}
+                      animate={heroRoomTarget}
+                      aria-hidden={step === 1 || undefined}
+                    >
                     <motion.div
                       initial={capsuleHeroMotion.initial}
-                      animate={capsuleHeroMotion.animate}
+                      animate={capsuleTarget}
                       transition={capsuleHeroMotion.transition}
-                      className="flex flex-col items-center gap-2"
+                      className="flex flex-col items-center gap-2 pb-6"
                     >
-                      {/* Dormant until the agent is actually hired. Review is
-                          the first step where one exists, so that is where it
-                          wakes — the arc's payoff, not a flourish along it. */}
-                      {/* `relative` is load-bearing: the sleep marks anchor
-                          to this box and travel out past its top-right
-                          corner. */}
-                      <div className="relative size-(--sz-72px)">
-                        <PillGuy
-                          state={step === 5 ? "alive" : "dormant"}
-                          className="size-full"
-                        />
-                        {/* Only while it is actually asleep. A still grey
-                            silhouette reads as a placeholder that failed to
-                            load rather than as something waiting its turn. */}
-                        {step < 5 && <SleepingZs />}
+                      {/* Dozing and gray until the agent is actually hired.
+                          Review is the first step where one exists, so that is
+                          where it wakes and takes its colour — the arc's
+                          payoff, not a flourish along it. The sequence itself
+                          is the studio's export; see OnboardingCharacter. */}
+                      <div className="relative size-(--sz-160px)">
+                        <OnboardingCharacter appearance={agentAppearance} awake={step === 5} className="size-full" />
                       </div>
                       <AgentPreview agentName={agentName} agentRole="" />
+                    </motion.div>
                     </motion.div>
 
                     <OnboardingHeading
                       center
+                      // Keyed by step so the new words fade in where the old
+                      // ones stood. Entrance only: the h1 keeps its line the
+                      // whole time, so nothing below it moves for the swap.
                       title={
-                        step === 3
-                          ? "Create your first agent"
-                          : step === 4
-                            ? "Connect a model"
-                            : "Let's get started..."
-                      }
-                      // The agent step carries no lede, as the prototype has it:
-                      // the capsule and the heading say what this is, and a
-                      // sentence restating it only pushes the fields down.
-                      lede={
-                        step === 3 ? undefined : step === 4 ? (
-                          <>Paperclip works with your subscription or API keys.</>
-                        ) : (
-                          <>{agentName.trim() || "Your first agent"} is ready to work!</>
-                        )
+                        <motion.span key={step} {...titleSwapMotion} className="inline-block">
+                          {step === 1
+                            ? "What is the name of your organization?"
+                            : step === 3
+                              ? "Create your first agent"
+                              : step === 4
+                                ? "Connect a model"
+                                : "Let's get started..."}
+                        </motion.span>
                       }
                     />
+                    {/* The lede lives outside the heading primitive so its
+                        room can open and close. The agent step carries none,
+                        as the prototype has it: the capsule and the heading
+                        say what this is, and a sentence restating it only
+                        pushes the fields down. The 8px gap sits inside the
+                        clipped box so a closed lede takes no space at all.
+                        The naming step carries none either: the question is
+                        the whole screen, and Cloud's naming step (which most
+                        walkers see instead) is drawn the same way. */}
+                    <motion.div
+                      className="overflow-hidden text-center"
+                      initial={false}
+                      animate={step === 1 || step === 3 ? ledeMotion.closed : ledeMotion.open}
+                      aria-hidden={step === 1 || step === 3 || undefined}
+                    >
+                      <p className="pt-2 text-base leading-relaxed text-muted-foreground">
+                        <motion.span key={step} {...titleSwapMotion} className="inline-block">
+                          {step === 4
+                            ? "Paperclip works with your subscription or API keys."
+                            : `${agentName.trim() || "Your first agent"} is ready to work!`}
+                        </motion.span>
+                      </p>
+                    </motion.div>
                   </div>
                 </MotionConfig>
               )}
 
               {/* Step content */}
+              {/* Steps 1, 3 and 4 hand their content over inside one presence:
+                  the departing step fades and gives its room back before the
+                  next opens its own, so the footer slides rather than jumps.
+                  See stepContentMotion. */}
+              {/* `initial` only for an arrival: the step's content opens its
+                  room with the hero's instead of being there already. */}
+              <AnimatePresence mode={stepHandoff ? "wait" : "sync"} initial={arrival}>
               {/* Step 1: name the organization — the wizard's first screen now
-                  that the Build / Grow front door is gone. Dressed as the arc
-                  steps that follow it (centred heading, same footer pair)
-                  because a customer walks straight from here into them.
-
-                  The lede carries the welcome the front door used to: one line,
-                  above the field, so the customer lands somewhere that greets
-                  them rather than on a bare question. */}
+                  that the Build / Grow front door is gone. Its heading and
+                  welcome sit in the shared block above, so the walk into the
+                  agent step swaps words rather than screens. The field is the
+                  agent step's field: same label, same filled surface, same
+                  measure — the two questions the wizard asks present the same
+                  target. */}
               {step === 1 && (
-                <div className="mx-auto w-full space-y-9">
-                  <OnboardingHeading
-                    center
-                    title="What is the name of your organization?"
-                    lede="Welcome to Paperclip — let's set up your organization."
-                  />
-                  {/* The field takes the agent step's measure rather than the
-                      column's, so the two questions the wizard asks — name the
-                      organization, name the agent — present the same target.
-                      The heading stays full width above it, as it does there. */}
-                  <div className="group mx-auto w-full max-w-(--sz-320px)">
-                    <label
-                      className={cn(
-                        "text-xs mb-1 block transition-colors",
-                        companyName.trim()
-                          ? "text-foreground"
-                          : "text-muted-foreground group-focus-within:text-foreground"
-                      )}
-                    >
-                      Name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                <motion.div key="step-1" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="mx-auto flex w-full flex-col gap-9">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="onboarding-company-name">Name</Label>
+                    <Input
+                      id="onboarding-company-name"
+                      className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
                       placeholder="e.g. Northwind Labs"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
@@ -2568,7 +2618,7 @@ function OnboardingWizardInner({
                       autoFocus
                     />
                   </div>
-                </div>
+                </motion.div>
               )}
 
               {/* Step 3: the name, and only the name. The role picker went with
@@ -2578,7 +2628,7 @@ function OnboardingWizardInner({
                   `general` role; a specific one can be set later, where there
                   is context to choose it in. */}
               {step === 3 && (
-                <div className="mx-auto flex w-full flex-col gap-9">
+                <motion.div key="step-3" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="mx-auto flex w-full flex-col gap-9">
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="onboarding-agent-name">Agent name</Label>
                     {/*
@@ -2605,12 +2655,12 @@ function OnboardingWizardInner({
                       autoFocus
                     />
                   </div>
-                </div>
+                </motion.div>
               )}
 
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
-                <div className="space-y-8">
+                <motion.div key="step-4" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="space-y-8">
                   <div>
                     {/* Sources come from `recommendedAdapters`, not a list
                         written here — that filter is `recommended` in the
@@ -3002,8 +3052,9 @@ function OnboardingWizardInner({
                       />
                     </div>
                   )}
-                </div>
+                </motion.div>
               )}
+              </AnimatePresence>
 
               {/* Step 5: Review — lead is online (shared capsule above) */}
               {/* Step 5: nothing. The heading names the agent and says it is

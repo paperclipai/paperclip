@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type CloudInstanceEnv = Record<string, string | undefined>;
 
 export type CloudStackContext = {
@@ -49,4 +51,18 @@ export function getCloudStackContext(
     primaryHost: normalizeOptionalEnvValue(env.PAPERCLIP_PRIMARY_HOST),
     cloudOrigin: normalizeOptionalEnvValue(env.PAPERCLIP_CLOUD_API_ORIGIN),
   };
+}
+
+/**
+ * The Cloud-pinned primary company id for a stack: the deterministic
+ * v5-style UUID the trusted-header lane seeds and every Cloud surface pins.
+ * The derivation is frozen — seeded companies fleet-wide already carry
+ * these ids. middleware/auth.ts delegates here; this is the one definition.
+ */
+export function cloudTenantPrimaryCompanyId(stackId: string): string {
+  const bytes = createHash("sha256").update(`paperclip-cloud-tenant-company:${stackId}`).digest();
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }

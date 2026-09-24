@@ -1,4 +1,5 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
+import { isPublicExecutorToolSelector } from "@paperclipai/adapter-utils/command-redaction";
 
 const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
 
@@ -735,7 +736,7 @@ function sanitizeValue(value: unknown): unknown {
   // string leaf after validated protocol discriminators have had a chance to
   // opt in above in sanitizeRecord.
   if (typeof value === "string") {
-    return JWT_VALUE_RE.test(value)
+    return JWT_VALUE_RE.test(value) && !isPublicExecutorToolSelector(value)
       ? REDACTED_EVENT_VALUE
       : redactSensitiveText(value);
   }
@@ -926,6 +927,7 @@ export function sanitizeRecord(
     if (
       typeof value === "string" &&
       JWT_VALUE_RE.test(value) &&
+      !isPublicExecutorToolSelector(value) &&
       !isPaperclipSchemaDiscriminator(key, value)
     ) {
       redacted[key] = REDACTED_EVENT_VALUE;

@@ -29,6 +29,7 @@ import {
 import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
 import { issueService } from "../issues.js";
+import { boundExternalChatProvider } from "./external-chat-provider.js";
 import { resolveExternalChatQuestionResponse } from "./external-chat-question-response.js";
 
 export const LIST_CHAT_ATTACHMENTS_TOOL_NAME = "list_chat_attachments";
@@ -418,17 +419,7 @@ export async function authorizeChatConversationForBoundRun(
     context = answer.authorizationContext;
   }
   const source = typeof context.source === "string" ? context.source : "";
-  const provider = [
-    "slack",
-    "github",
-    "discord",
-    "microsoft-teams",
-    "telegram",
-    "imessage-photon",
-  ].find(
-    (candidate) =>
-      source === `chat:${candidate}` || source === `chat:${candidate}:recovery`,
-  );
+  const provider = boundExternalChatProvider(source);
   const commentIds = wakeCommentIds(context);
   if (
     !provider ||
@@ -549,17 +540,7 @@ function externalChatWaitCandidate(
 ): { provider: string; commentIds: string[] } | null {
   const context = record(contextSnapshot);
   const source = typeof context.source === "string" ? context.source : "";
-  const provider = [
-    "slack",
-    "github",
-    "discord",
-    "microsoft-teams",
-    "telegram",
-    "imessage-photon",
-  ].find(
-    (candidate) =>
-      source === `chat:${candidate}` || source === `chat:${candidate}:recovery`,
-  );
+  const provider = boundExternalChatProvider(source);
   const commentIds = wakeCommentIds(context);
   const wake = record(context.paperclipWake);
   const wakeIssue = record(wake.issue);

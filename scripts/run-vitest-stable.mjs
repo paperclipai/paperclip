@@ -70,13 +70,39 @@ const allModeName = "all";
 const generalServerGroupName = "general-server";
 const generalServerWithoutChatGroupName = "general-server-without-chat";
 const generalChatGroupName = "general-chat";
+const generalServerNativeRunnerGroupName = "general-server-native-runner";
 const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
+// This suite rebuilds the Runner release binaries with cargo in beforeAll.
+// Inside the PR workflow's plain server shards, which carry no Rust cache,
+// that build was a ~4m30s cold compile of every third-party crate on each run
+// (277s of a 291s shard vitest step, actions run 35246999382, 2026-09-17).
+const nativeRunnerSuite =
+  "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
+// In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
+// workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
+// Runner vitest shard runs the native-runner group instead, because those
+// lanes restore the shared release-runner-v1 Rust cache (see
+// packages/paperclip-runner/scripts/run-pr-vitest-lane.mjs). Every other
+// caller — local runs, release-verify.yml under the Release and Cloud
+// readiness workflows — keeps the suite in the server shards, so a renamed or
+// unknown workflow degrades to today's slower-but-covered behavior rather
+// than dropping the suite.
+const prWorkflowName = "PR";
+const nativeRunnerSuiteRunsInRustCachedLane = process.env.GITHUB_WORKFLOW === prWorkflowName;
+const withoutChatExcludedSuites = nativeRunnerSuiteRunsInRustCachedLane
+  ? [chatSuite, nativeRunnerSuite]
+  : [chatSuite];
 const generalWorkspacesAGroupName = "general-workspaces-a";
 const generalWorkspacesBGroupName = "general-workspaces-b";
 const generalWorkspacesAProjects = ["@paperclipai/ui", "paperclipai"];
 const generalWorkspacesBProjects = nonServerProjects.filter((project) => !generalWorkspacesAProjects.includes(project));
 const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName];
-const allowedGeneralGroupNames = [...generalGroupNames, generalServerWithoutChatGroupName, generalChatGroupName];
+const allowedGeneralGroupNames = [
+  ...generalGroupNames,
+  generalServerWithoutChatGroupName,
+  generalChatGroupName,
+  generalServerNativeRunnerGroupName,
+];
 const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
@@ -355,9 +381,21 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
       "chat integration test shard", { index: shardIndex ?? 0, count: shardCount ?? 1 });
     return;
   }
+  if (groupName === generalServerNativeRunnerGroupName) {
+    runVitest(
+      ["--project", "@paperclipai/server", ...serializedServerVitestArgs, nativeRunnerSuite],
+      "native runner vertical-slice suite",
+    );
+    return;
+  }
   if (groupName === generalServerGroupName || groupName === generalServerWithoutChatGroupName) {
+    // In the PR workflow the without-chat group also leaves the native-runner
+    // suite to the Rust-cached vitest lane; the full general-server group
+    // (local runs) keeps both.
     const withoutChat = groupName === generalServerWithoutChatGroupName;
-    const files = withoutChat ? generalServerTestFiles.filter((file) => file !== chatSuite) : generalServerTestFiles;
+    const files = withoutChat
+      ? generalServerTestFiles.filter((file) => !withoutChatExcludedSuites.includes(file))
+      : generalServerTestFiles;
     if (shardCount !== null && shardCount > 1) {
       const shardFiles = selectGeneralServerShard(
         files,
@@ -385,7 +423,11 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
     }
 
     const excludeRouteArgs = routeTests.flatMap((file) => ["--exclude", file.serverPath]);
-    if (withoutChat) excludeRouteArgs.push("--exclude", "src/__tests__/chat-channels.integration.test.ts");
+    if (withoutChat) {
+      for (const suite of withoutChatExcludedSuites) {
+        excludeRouteArgs.push("--exclude", suite.replace(/^server\//, ""));
+      }
+    }
     runVitest(
       [
         "--project",
@@ -474,16 +516,20 @@ if (options.dryRun) {
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
         generalServerSuiteCount: generalServerTestFiles.length,
         selectedGeneralServerSuites:
-          options.mode === generalModeName &&
-          [generalServerGroupName, generalServerWithoutChatGroupName].includes(options.group) &&
-          options.shardCount !== null
-            ? selectGeneralServerShard(
-                options.group === generalServerWithoutChatGroupName ? generalServerTestFiles.filter((file) => file !== chatSuite) : generalServerTestFiles,
-                options.shardIndex,
-                options.shardCount,
-                generalServerShardDurations,
-              )
-            : null,
+          options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
+            ? [nativeRunnerSuite]
+            : options.mode === generalModeName &&
+                [generalServerGroupName, generalServerWithoutChatGroupName].includes(options.group) &&
+                options.shardCount !== null
+              ? selectGeneralServerShard(
+                  options.group === generalServerWithoutChatGroupName
+                    ? generalServerTestFiles.filter((file) => !withoutChatExcludedSuites.includes(file))
+                    : generalServerTestFiles,
+                  options.shardIndex,
+                  options.shardCount,
+                  generalServerShardDurations,
+                )
+              : null,
         workspaceProjects:
           options.group === generalWorkspacesAGroupName
             ? generalWorkspacesAProjects

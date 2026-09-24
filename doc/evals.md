@@ -60,6 +60,18 @@ harness are under `tests/runner-e2e`; the package scripts are `test:e2e:runner`,
 the server and embedded database, creates the company/agent/task through the
 real APIs, drives Chromium, and invokes the selected local or Daytona runner.
 
+The explicit-only `agent-chat-hardening` Product E2E suite covers native chat
+recovery, hiring, status evidence, and review handoff on local and selected warm
+Daytona paths. Its [fixture contract](../tests/runner-e2e/README.md) distinguishes
+startup cancellation from active response cancellation and HTTP send replay
+from ambiguous provider action recovery. Select it explicitly; `--all` excludes it.
+
+The explicit-only `agent-chat-stories` suite covers the experimental settings
+lifecycle for a configured native agent and follow-ups during active work. Its
+fixture-driven file wait and persisted-plan oracle are documented in the
+[Product E2E guide](../tests/runner-e2e/README.md). It does not qualify the native
+onboarding wizard or change the native API-tool rollout defaults.
+
 ## Validation ladder
 
 Start with credential-free checks and a catalog listing. For Product E2E:
@@ -212,3 +224,11 @@ without that record, the helper will refuse to overwrite an existing prefix.
 Verify the public page and its links after publication. This manual refresh
 does not add a scheduled workflow. Preserve the measurement date when choosing
 a newer rendering of the same campaign.
+
+Remaining native chat boundaries are in the explicit-only
+`agent-chat-qualification` suite: active task reassignment, user Retry after
+verified worker process loss, and multi-turn answers grounded in actual task
+records. See the [workflow and qualification limits](../tests/runner-e2e/README.md#remaining-native-agent-chat-qualification).
+The 26 native `first-task` cells exercise onboarding before native selection
+becomes the UI default. Live results and semantic answer reviews must accompany
+any qualification claim; catalog presence alone is not a pass.

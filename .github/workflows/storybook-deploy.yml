@@ -88,6 +88,9 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      # Feature branches omit lockfile commits; resolve their manifests just as PR CI does.
+      - name: Resolve branch dependency lock
+        run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build-storybook
       - name: Record source and validate output

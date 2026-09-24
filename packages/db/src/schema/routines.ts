@@ -18,7 +18,7 @@ import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { folders } from "./folders.js";
-import type { RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
+import type { RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable, RoutineWebhookDelivery } from "@paperclipai/shared";
 
 export const routines = pgTable(
   "routines",
@@ -112,6 +112,9 @@ export const routineTriggers = pgTable(
     kind: text("kind").notNull(),
     label: text("label"),
     enabled: boolean("enabled").notNull().default(true),
+    setupPending: boolean("setup_pending").notNull().default(false),
+    archived: boolean("archived").notNull().default(false),
+    lastWebhookDelivery: jsonb("last_webhook_delivery").$type<RoutineWebhookDelivery>(),
     cronExpression: text("cron_expression"),
     timezone: text("timezone"),
     nextRunAt: timestamp("next_run_at", { withTimezone: true }),
@@ -174,3 +177,14 @@ export const routineRuns = pgTable(
     idempotencyIdx: index("routine_runs_trigger_idempotency_idx").on(table.triggerId, table.idempotencyKey),
   }),
 );
+
+// Content-free receipts prevent sender retries of setup tests from starting work after activation.
+export const routineWebhookTestReceipts = pgTable("routine_webhook_test_receipts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  triggerId: uuid("trigger_id").notNull().references(() => routineTriggers.id, { onDelete: "cascade" }),
+  deliveryKeyHash: text("delivery_key_hash").notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  deliveryUq: uniqueIndex("routine_webhook_test_receipts_delivery_uq").on(table.triggerId, table.deliveryKeyHash),
+}));

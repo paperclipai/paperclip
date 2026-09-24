@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, readFile, realpath, symlink, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -67,7 +68,7 @@ const failures = (r: ReturnType<typeof recording>) =>
 describe("continuation behavioral evaluation", () => {
   it("registers all five cases for both runtime generations and providers", () => {
     const matrix = runnerMatrix.filter((c) => c.suite.id === "continuation");
-    expect(matrix).toHaveLength(22);
+    expect(matrix).toHaveLength(23);
     expect(new Set(matrix.map((c) => c.profile.id))).toEqual(
       new Set([
         "legacy-codex",
@@ -78,9 +79,25 @@ describe("continuation behavioral evaluation", () => {
     );
     expect(matrix.every((c) => !c.suite.manualOnly)).toBe(true);
   });
-  it.each(CONTINUATION_CASES.filter(id => id !== "question-tool-documentation"))("accepts a complete %s recording", (id) =>
+  it.each(CONTINUATION_CASES.filter(id => !["question-tool-documentation", "provider-question-bridge"].includes(id)))("accepts a complete %s recording", (id) =>
     expect(failures(recording(id))).toEqual([]),
   );
+  it("accepts a revision-bound descriptive plan key without counting it as final output", () => {
+    const r = recording("revision-preserves-approval");
+    for (const c of r.checkpoints) {
+      c.documents.push({ key: "welcome-note-plan", body: "After approval, write the note.", latestRevisionId: "plan-v1" });
+      c.interactions.push({ kind: "request_confirmation", payload: { target: { type: "issue_document", issueId: "parent", key: "welcome-note-plan", revisionId: "plan-v1" } } });
+    }
+    expect(failures(r)).toEqual([]);
+    r.checkpoints[0].documents.at(-1)!.latestRevisionId = "unapproved-v2";
+    expect(failures(r)).toContain("initial.no-premature-output");
+  });
+  it("does not treat an arbitrary deliverable targeted for confirmation as a plan", () => {
+    const r = recording();
+    r.checkpoints[0].documents.push({ key: "welcome-note", body: r.marker, latestRevisionId: "v1" });
+    r.checkpoints[0].interactions.push({ kind: "request_confirmation", payload: { target: { type: "issue_document", issueId: "parent", key: "welcome-note", revisionId: "v1" } } });
+    expect(failures(r)).toContain("initial.no-premature-output");
+  });
   it("fails premature output even when the final result is correct", () => {
     const r = recording();
     r.checkpoints[0].documents.push({ key: "output", body: r.marker });
@@ -181,4 +198,43 @@ it("seeds the recorded agent home rather than the harness workspace", async () =
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+function providerQuestionRecording() {
+  const r = recording("provider-question-bridge");
+  const card = { id: "native-card", kind: "ask_user_questions", status: "pending", sourceRunId: "first", payload: { runtimeRequestId: "provider-request" } };
+  r.checkpoints[0].runs[0].status = "running";
+  r.checkpoints[0].interactions = [card];
+  r.checkpoints.at(-1)!.runs = [{ id: "first", status: "succeeded", runtimeMode: "native" }];
+  r.checkpoints.at(-1)!.interactions = [{ ...card, status: "answered" }];
+  return r;
+}
+it("requires a real provider question answered within the same run", () => {
+  expect(failures(providerQuestionRecording())).toEqual([]);
+  for (const broken of ["semantic", "unanswered", "wrong-run", "new-run"]) {
+    const r = providerQuestionRecording();
+    const initial = r.checkpoints[0].interactions[0] as any;
+    if (broken === "semantic") delete initial.payload.runtimeRequestId;
+    if (broken === "unanswered") (r.checkpoints.at(-1)!.interactions[0] as any).status = "pending";
+    if (broken === "wrong-run") initial.sourceRunId = "unrelated";
+    if (broken === "new-run") r.checkpoints.at(-1)!.runs.push({ id: "new", status: "succeeded", runtimeMode: "native" });
+    expect(failures(r)).toContain("native-question-round-trip");
+  }
+});
+
+it("grades verified task attachment bytes and rejects metadata-only, tampered, or duplicate output", () => {
+  const r = recording("answer-updates-scope");
+  const final = r.checkpoints.at(-1)!;
+  const body = final.documents[0].body;
+  const hash = createHash("sha256").update(body).digest("hex");
+  final.documents = [];
+  const attachment = { id: "file", contentVerified: true, body, sha256: hash, contentSha256: hash };
+  final.attachments = [attachment];
+  expect(failures(r)).toEqual([]);
+  final.attachments = [{ ...attachment, contentVerified: false }];
+  expect(failures(r)).toContain("updated-output");
+  final.attachments = [{ ...attachment, body: body + "tampered" }];
+  expect(failures(r)).toContain("updated-output");
+  final.attachments = [attachment, { ...attachment, id: "duplicate" }];
+  expect(failures(r)).toContain("updated-output");
 });

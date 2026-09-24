@@ -1168,6 +1168,9 @@ fn normalize_acpx_tool_call(
                 .unwrap_or(Value::Null)
         },
     });
+    if let Some(input_updated) = payload.get("inputUpdated").and_then(Value::as_bool) {
+        normalized["inputUpdated"] = Value::Bool(input_updated);
+    }
     if let (Some(object), Value::Object(output)) =
         (normalized.as_object_mut(), bounded_output(&output))
     {
@@ -1421,6 +1424,33 @@ mod tests {
                 ),
                 Value::String(location.to_owned()),
             );
+        }
+    }
+
+    #[test]
+    fn preserves_only_typed_acpx_input_update_marker() {
+        for input_updated in [
+            Value::Bool(true),
+            Value::Bool(false),
+            json!("secret"),
+            Value::Null,
+        ] {
+            let events = normalize_acpx_tool_call(
+                &json!({
+                    "type": "tool_call", "tag": "tool_call_update", "status": "pending",
+                    "title": "mcp__paperclip__hire_agent", "inputUpdated": input_updated,
+                    "rawInput": {"private": "secret-input"},
+                }),
+                "provider-tool-id",
+                "execute",
+            );
+            assert_eq!(events[0].event_type, "tool.execution.progressed");
+            if input_updated.is_boolean() {
+                assert_eq!(events[0].payload["inputUpdated"], input_updated);
+            } else {
+                assert!(events[0].payload.get("inputUpdated").is_none());
+            }
+            assert!(!events[0].payload.to_string().contains("secret"));
         }
     }
 

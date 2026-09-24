@@ -776,6 +776,7 @@ function rejectTurnWaiters(terminalTurnId: string, message: string): void {
 
 type BoundedRuntimeToolEvent = AcpRuntimeEvent & {
   paperclipBoundedTool: true;
+  inputUpdated: boolean;
   paperclipOutput: Record<string, unknown>;
 };
 
@@ -802,6 +803,8 @@ function boundRuntimeEventForNormalization(
     text: boundedOptionalText(event.text, "", 4_000),
     status: boundedOptionalText(event.status, "", 100),
     tag: boundedOptionalText(event.tag, "", 160),
+    // Keep only whether this update carried input; rawInput is intentionally dropped.
+    inputUpdated: Object.prototype.hasOwnProperty.call(event, "rawInput") && event.rawInput !== undefined,
     paperclipBoundedTool: true,
     paperclipOutput: safeOutput(event.rawOutput),
   } as BoundedRuntimeToolEvent;
@@ -880,6 +883,10 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
           : null,
       title: toolTitle,
       text: boundedOptionalText(event.text, "", 4_000) || null,
+      // Preserve only the presence bit; rawInput itself never crosses the sidecar boundary.
+      inputUpdated: boundedTool.paperclipBoundedTool === true
+        ? boundedTool.inputUpdated
+        : Object.prototype.hasOwnProperty.call(event, "rawInput") && event.rawInput !== undefined,
       ...toolClassification,
     };
     return boundedSidecarValue(
@@ -1133,13 +1140,14 @@ function requiredPermissionMode(
 ): AcpxSidecarOpenParams["permissionMode"] {
   if (
     value === "approve-all" ||
+    value === "approve-paperclip" ||
     value === "approve-reads" ||
     value === "deny-all"
   ) {
     return value;
   }
   throw new Error(
-    "permissionMode must be approve-all, approve-reads, or deny-all",
+    "permissionMode must be approve-all, approve-paperclip, approve-reads, or deny-all",
   );
 }
 

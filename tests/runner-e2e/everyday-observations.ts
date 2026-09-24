@@ -208,6 +208,61 @@ export function isStoryWorkspaceDeferral(run: StoryRun) {
     !run.processPid
   );
 }
+/** Exempt the injected stop itself, never a later recovery/provider failure on that run. */
+export function isExpectedStoryInterruption(
+  run: StoryRun,
+  allowedRunIds: readonly string[],
+): boolean {
+  if (!allowedRunIds.includes(run.id)) return false;
+  return (
+    (run.status === "cancelled" && (!run.errorCode || run.errorCode === "cancelled")) ||
+    (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") ||
+    (run.status === "failed" && run.errorCode === "process_lost")
+  );
+}
+
+export function storyUnexpectedRunFailure(runs: StoryRun[], allowedRunIds: readonly string[]) {
+  return runs.find((run) =>
+    ["failed", "timed_out", "cancelled", "interrupted"].includes(run.status) &&
+    !isStoryWorkspaceDeferral(run) &&
+    !isExpectedStoryInterruption(run, allowedRunIds),
+  );
+}
+
+/** Called after the boundary matcher; reject only with durable proof of the wrong ordering. */
+export function storyUnexercisedReviewBoundary(
+  issues: StoryIssue[],
+  runs: StoryRun[],
+  parentId: string,
+  leadId: string,
+): string | undefined {
+  if (issues.length === 0 || runs.length === 0) return;
+  if (!issues.every((issue) =>
+    issue.status === "done" && !issue.scheduledRetry && !issue.activeRecoveryAction,
+  )) return;
+  if (!runs.every((run) => run.status === "succeeded")) return;
+  const child = issues.find((issue) => issue.parentId === parentId);
+  const accepted = child?.interactions?.flatMap((interaction) => {
+    const review = storyAcceptedAgentReview(child, interaction.id, leadId, runs);
+    return review ? [review] : [];
+  })[0];
+  const reviewRun = accepted && runs.find((run) => run.id === accepted.resolvedByRunId);
+  const reviewStartedAt = Date.parse(reviewRun?.startedAt ?? "");
+  const parentRuns = runs.filter((run) =>
+    run.nativeIssueId === parentId ||
+    run.contextSnapshot?.issueId === parentId ||
+    run.contextSnapshot?.taskId === parentId,
+  );
+  // Snapshots are fetched separately. Missing review evidence is not proof that it
+  // never happened; wait unless persisted timestamps rule out the required order.
+  if (!Number.isFinite(reviewStartedAt) || parentRuns.length === 0) return;
+  if (!parentRuns.every((run) => {
+    const finishedAt = Date.parse(run.finishedAt ?? "");
+    return Number.isFinite(finishedAt) && finishedAt > reviewStartedAt;
+  })) return;
+  return "Review handoff boundary not exercised: the accepted review started before any parent run finished, so the blocked-parent-before-review ordering was not tested.";
+}
+
 export function storyLifecycleChecks(input: {
   issues: StoryIssue[];
   runs: StoryRun[];
@@ -216,7 +271,7 @@ export function storyLifecycleChecks(input: {
   allowedInterruptedRuns?: string[];
 }): StoryCheck[] {
   const executed = input.runs.filter((r) => !isStoryWorkspaceDeferral(r));
-  const allowed = new Set(input.allowedInterruptedRuns ?? []);
+  const allowed = input.allowedInterruptedRuns ?? [];
   const check = (id: string, passed: boolean, detail: string): StoryCheck => ({
     id,
     passed,
@@ -244,8 +299,8 @@ export function storyLifecycleChecks(input: {
     ),
     check(
       "successful-runs",
-      executed.every((r) => r.status === "succeeded" || allowed.has(r.id)),
-      "Only explicitly interrupted runs may have a non-success terminal state.",
+      executed.every((r) => r.status === "succeeded" || isExpectedStoryInterruption(r, allowed)),
+      "Only the expected stop or process-loss outcome of an injected interruption is exempt.",
     ),
     check(
       "bounded-work",

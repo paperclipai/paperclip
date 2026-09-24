@@ -144,6 +144,27 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 
 See [Supabase pricing](https://supabase.com/pricing) for current details.
 
+## Connection loss during a transaction
+
+When a database connection closes, its transaction fails. Paperclip does not
+replay that transaction. New requests can use a fresh connection from the pool.
+Queries from the failed transaction must keep failing, even after the pool
+reconnects.
+
+Source builds carry `patches/postgres@3.4.9.patch` for this behavior. It rejects
+queued and later queries from a disconnected transaction or reserved connection,
+and prevents a released, closed connection from returning to the open pool.
+The patch covers both ESM and CommonJS. The regression suite terminates real
+PostgreSQL backends and checks rejection, pool recovery, and transaction isolation.
+Remove the patch when an upstream release passes these tests. Installs of the
+unmodified `postgres` package outside this workspace do not include the patch.
+
+Trusted-header actor synchronization retries transient connection failures,
+including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
+idempotent actor synchronization operations, not arbitrary transactions. A
+persistent outage still fails the request after the bounded retries; each
+connection attempt remains subject to the configured database connect timeout.
+
 ## Switching between modes
 
 The database mode is controlled by `DATABASE_URL`:
@@ -175,6 +196,7 @@ When authoring migrations or one-time backfills:
 
 - Create every migration with `pnpm --filter @paperclipai/db generate`. Do not hand-write a snapshot.
 - Do not hand-edit a snapshot to resolve a merge conflict. Renumber your migration and run `generate` again, as `packages/db/.gitattributes` describes.
+- The repo keeps only the newest 5 snapshots. `generate` runs `prune:snapshots` afterwards to delete older ones. Drizzle only reads the newest snapshot, and each snapshot is a full copy of the schema (over 1 MB each). Older snapshots are still in git history.
 - `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
 
 ## Cloud runtime identity singleton
@@ -270,6 +292,15 @@ successor can take the lease immediately only when coordinated handoff or PID
 and process-start evidence proves the prior controller is gone, or when the
 lease expires. Recovery generation changes do not increment the independent
 provider-attempt counter.
+
+## Chat communication snapshots
+
+Chat communication guidance uses two additive columns: endpoint
+`communication_instructions` defaults to empty, and conversation
+`communication_guidance` holds the immutable initial task snapshot. Existing
+conversations retain a null snapshot; there is no backfill that changes an
+ongoing conversation. New Slack tasks receive built-in guidance even when the
+endpoint has no additional instructions.
 
 ## Telegram private draft identities
 

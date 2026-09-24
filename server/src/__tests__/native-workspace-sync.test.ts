@@ -12,6 +12,7 @@ import {
   nativeWorkspaceSyncInternals,
   readNativeWorkspaceSyncReference,
   resumeNativeWorkspaceSync,
+  prepareNativeWorkspaceSync,
 } from "../services/native-runtime/native-workspace-sync.js";
 
 const digest = "a".repeat(64);
@@ -92,6 +93,20 @@ describe("native workspace sync durable metadata", () => {
         sameProviderLease: true,
       }),
     ).toThrow("native_workspace_sync_unexpected_existing_descriptor");
+  });
+
+  it("refuses a different sandbox before preparing restart workspace sync", async () => {
+    const select = vi.fn();
+    await expect(prepareNativeWorkspaceSync({
+      db: { select } as never, runId: "run", companyId: "company", workspaceId: "workspace",
+      workspaceLocalDir: "/tmp/local-workspace", lease: { id: "lease", providerLeaseId: "replacement" } as never,
+      target: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona",
+        sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "replacement" } } as never,
+      restartRecovery: { kind: "reattach_remote_runner", runId: "run", leaseOwner: "controller", controllerGeneration: 2,
+        providerAttempt: 1, restartKind: "graceful", recoveryRequestId: null,
+        remote: { providerLeaseId: "original", remoteCwd: "/workspace" } },
+    })).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    expect(select).not.toHaveBeenCalled();
   });
 
   it("reads backward-compatible references and the resource disposition", () => {

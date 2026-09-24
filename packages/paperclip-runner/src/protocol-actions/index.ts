@@ -1,3 +1,4 @@
+import { reassignTaskAction } from "./reassign-task.js";
 import { createSkillAction } from "./create-skill.js";
 import { createProjectAction } from "./create-project.js";
 import { listProjectRepositoriesAction } from "./list-project-repositories.js";
@@ -21,6 +22,7 @@ import { getTaskHistoryAction } from "./get-task-history.js";
 import { getWorkspaceRuntimeAction } from "./get-workspace-runtime.js";
 import { inspectOperationResultAction } from "./inspect-operation-result.js";
 import { listAgentsAction } from "./list-agents.js";
+import { hireAgentAction } from "./hire-agent.js";
 import { listApprovalsAction } from "./list-approvals.js";
 import { listCasesAction } from "./list-cases.js";
 import { listCompanySkillsAction } from "./list-company-skills.js";
@@ -70,6 +72,7 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   getWorkspaceRuntimeAction,
   inspectOperationResultAction,
   listAgentsAction,
+  hireAgentAction,
   listApprovalsAction,
   listCasesAction,
   listCompanySkillsAction,
@@ -90,6 +93,7 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   scheduleWakeAction,
   searchTasksAction,
   setDependenciesAction,
+  reassignTaskAction,
   syncCompanySkillsAction,
   upsertCaseAction,
   writeDocumentAction,

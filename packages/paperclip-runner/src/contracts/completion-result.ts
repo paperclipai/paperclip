@@ -38,7 +38,7 @@ const completionClaimSchema = {
   additionalProperties: false,
   required: ["contractRevision", "objectiveSatisfied", "criteria", "remainingWork"],
   properties: {
-    contractRevision: { type: "string", minLength: 1 },
+    contractRevision: { type: "string", minLength: 1, description: "Use the current turn completion.revision (or completionContract.revision on the first turn), never a previous turn’s revision. On stale-revision feedback, reassess the current request and correct the report without repeating completed work." },
     objectiveSatisfied: { type: "boolean" },
     criteria: {
       type: "array",

@@ -80,8 +80,8 @@ vi.mock("@/components/AgentConfigForm", () => ({
       onChange={(e) => onChange(e.target.value)}
     />
   ),
-  AdapterLoginPanel: ({ onStored }: { onStored: (id: string) => void }) => (
-    <button onClick={() => onStored("stored-claim")}>
+  AdapterLoginPanel: ({ onConnected }: { onConnected: (id: string) => void }) => (
+    <button onClick={() => onConnected("login-session")}>
       Complete subscription login
     </button>
   ),
@@ -212,6 +212,56 @@ describe("New agent setup", () => {
     await render("pi_local");
     expect(container.textContent).toContain("This adapter is unavailable");
     expect(api.hire).not.toHaveBeenCalled();
+  });
+  it.each(["subscription", "api_key"])("configures Grok on Cloud with an xAI %s connection", async (method) => {
+    cache.setQueryData(queryKeys.health, {
+      status: "ok",
+      cloud: { managed: true },
+    });
+    envApi.list.mockResolvedValue([
+      { id: "sandbox-1", name: "Paperclip Cloud", driver: "sandbox", config: { provider: "daytona" } },
+    ]);
+    envApi.capabilities.mockResolvedValue({
+      sandboxProviders: { daytona: { supportsLoginPty: true } },
+    });
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
+    api.getAdapterAuthSignal.mockResolvedValue({ status: "missing" });
+    api.testEnvironment.mockResolvedValue({ ...pass, adapterType: "grok_local" });
+    await render("grok_local");
+    expect(container.textContent).toContain("Connect Atlas to Grok");
+    if (method === "subscription") {
+      await click("GrokSubscription");
+      await click("Complete subscription login");
+    } else {
+      await click("Use API key insteadUse subscription insteadUse API key instead");
+      await click("GrokAPI");
+      await fill("API key", "example-test-secret");
+      await click("Connect");
+      expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        provider: "xai", method: "api_key", apiKey: "example-test-secret",
+      }));
+    }
+    await fill("Model", "grok-code-fast-1");
+    await click("Run test");
+    const binding = { provider: "xai", method, mode: "responsible_user" };
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "grok_local", expect.objectContaining({
+      environmentId: "sandbox-1",
+      adapterConfig: expect.objectContaining({ model: "grok-code-fast-1" }),
+      aiConnection: binding,
+      testCredentials: {},
+    }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(api.hire.mock.calls[0][1]).toMatchObject({
+      adapterType: "grok_local",
+      defaultEnvironmentId: "sandbox-1",
+      adapterConfig: { model: "grok-code-fast-1" },
+      runtimeConfig: { aiConnection: binding, heartbeat: { enabled: false } },
+    });
+    expect(JSON.stringify(api.testEnvironment.mock.calls)).not.toContain("example-test-secret");
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("example-test-secret");
+    expect(container.textContent).toContain("Your agent is ready");
   });
   it("sends Cursor Cloud repo/ref and transient API key, then saves an organization secret", async () => {
     await render("cursor_cloud");

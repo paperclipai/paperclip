@@ -114,6 +114,14 @@ function installStorybookApiFixtures() {
     }
 
     if (url.pathname === "/api/companies") {
+      // The wizard's naming step creates a company here and reads its id back;
+      // answering the POST with the list instead gave it an array, and the
+      // walk crashed on the step after. Hand back the fixture company as the
+      // one just created, so the arc can be walked from its first screen.
+      if ((init?.method ?? "GET").toUpperCase() === "POST") {
+        const body = init?.body ? (JSON.parse(String(init.body)) as { name?: string }) : {};
+        return Response.json({ ...storybookCompanies[0], name: body.name ?? storybookCompanies[0]?.name });
+      }
       return Response.json(storybookCompanies);
     }
 

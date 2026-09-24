@@ -160,6 +160,19 @@ async function makeCtx(runId: string, cwd: string): Promise<AdapterExecutionCont
 }
 
 describe("grok_local execute", () => {
+  it.each(["grok-4.7", "grok-4.6"])("forwards the explicit %s model and xhigh effort", async (model) => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("model-selection", root);
+    ctx.config = { cwd: root, model, reasoningEffort: "xhigh" };
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+    await execute(ctx);
+
+    const args = runProcessMock.mock.calls[0][3] as string[];
+    expect(args[args.indexOf("--model") + 1]).toBe(model);
+    expect(args[args.indexOf("--reasoning-effort") + 1]).toBe("xhigh");
+  });
+
   beforeEach(() => {
     mocks.state.isRemote = false;
     mocks.state.prepareRuntimeResult = null;

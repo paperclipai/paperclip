@@ -333,7 +333,7 @@ describe("kimi_local execute", () => {
     expect(seenEnv.TERM).toBe("xterm-256color");
   });
 
-  it("forwards configured effort as KIMI_MODEL_THINKING_EFFORT for effort-capable models", async () => {
+  it.each(["kimi-code/k3", "kimi-code/k3-256k", "kimi-code/kimi-for-coding"])("forwards configured effort for %s", async (model) => {
     const root = await makeTempRoot();
     let seenEnv: Record<string, string> = {};
     runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
@@ -341,7 +341,7 @@ describe("kimi_local execute", () => {
       return { exitCode: 0, signal: null, timedOut: false, stdout: KIMI_STDOUT, stderr: "" };
     });
 
-    await execute(makeContext(root, { config: { cwd: root, model: "kimi-code/k3", effort: "high" } }));
+    await execute(makeContext(root, { config: { cwd: root, model, effort: "high" } }));
 
     expect(seenEnv.KIMI_MODEL_THINKING_EFFORT).toBe("high");
   });
@@ -368,7 +368,7 @@ describe("kimi_local execute", () => {
     });
 
     await execute(makeContext(root, {
-      config: { cwd: root, model: "kimi-code/kimi-for-coding", effort: "high" },
+      config: { cwd: root, model: "kimi-code/kimi-for-coding-highspeed", effort: "high" },
     }));
 
     expect(seenEnv.KIMI_MODEL_THINKING_EFFORT).toBeUndefined();

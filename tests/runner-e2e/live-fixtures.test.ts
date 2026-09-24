@@ -4,13 +4,18 @@ import { runnerMatrix } from "./catalog.js";
 import { setupLiveFixtures } from "./live-fixtures.js";
 
 describe("live runner fixtures", () => {
-  it.each(["runner-codex", "runner-acpx-claude"])(
-    "gives %s hiring fixtures a personal managed account without env overrides",
-    async (profile) => {
+  it.each([
+    ["runner-codex", "everyday-workflows", "hire-reuse"],
+    ["runner-acpx-claude", "everyday-workflows", "hire-reuse"],
+    ["runner-codex", "agent-chat-hardening", "hire-delegate-reuse"],
+    ["runner-acpx-claude", "agent-chat-hardening", "hire-delegate-reuse"],
+  ])(
+    "gives %s %s/%s a personal managed account without env overrides",
+    async (profile, suite, task) => {
       const execution = runnerMatrix.find(
         (e) =>
-          e.suite.id === "everyday-workflows" &&
-          e.task.id === "hire-reuse" &&
+          e.suite.id === suite &&
+          e.task.id === task &&
           e.profile.id === profile &&
           e.environment.id === "local",
       )!;

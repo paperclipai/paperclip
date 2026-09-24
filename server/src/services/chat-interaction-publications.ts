@@ -17,9 +17,8 @@ import type {
   RequestConfirmationInteraction,
   SafeExternalChatCardAction,
 } from "@paperclipai/shared";
-import { readConfigFile } from "../config-file.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
-import { safeChatTaskUrl } from "./chat-task-url.js";
+import { publicChatTaskUrl } from "./chat-task-url.js";
 import {
   chatQuestionFormActionRecords,
   createChatQuestionFormDraft,
@@ -110,16 +109,7 @@ function terminalNativeInteractionCopy(
   return null;
 }
 
-export function publicChatInteractionTaskUrl(issueId: string): string | null {
-  const configured =
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
-    process.env.BETTER_AUTH_URL?.trim() ||
-    process.env.BETTER_AUTH_BASE_URL?.trim() ||
-    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
-    readConfigFile()?.auth?.publicBaseUrl?.trim() ||
-    process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim();
-  return safeChatTaskUrl(configured, issueId);
-}
+export const publicChatInteractionTaskUrl = publicChatTaskUrl;
 
 /**
  * Provider callbacks carry this compact, cryptographically random action id.

@@ -19,7 +19,37 @@ function render(props: React.ComponentProps<typeof TaskDetailTasksPanel>) {
   act(() => root.render(<TaskDetailTasksPanel {...props} />));
 }
 
+const ancestors = [
+  { id: "parent", identifier: "PAP-2", title: "Immediate parent", status: "in_progress" },
+  { id: "root", identifier: null, title: "Root task", status: "done" },
+] as NonNullable<Issue["ancestors"]>;
+
 describe("TaskDetailTasksPanel", () => {
+  it("shows ancestors root first above subtasks and folds them independently", () => {
+    render({ ancestors, subtasks: [task("child")], createdTasks: [], projects: [] });
+    const group = container.querySelector('section[aria-label="Ancestors"]')!;
+    expect([...group.querySelectorAll('a')].map((link) => link.getAttribute("href"))).toEqual(["/issues/root", "/issues/PAP-2"]);
+    expect(group.textContent).toContain("Immediate parent");
+    expect(group.querySelector('[role="progressbar"]')).toBeNull();
+    expect([...container.querySelectorAll('h2')].map((heading) => heading.textContent)).toEqual(["Ancestors", "Subtasks"]);
+    expect(ancestors.map((ancestor) => ancestor.id)).toEqual(["parent", "root"]);
+    act(() => (group.querySelector('button') as HTMLButtonElement).click());
+    expect(group.querySelector('a')).toBeNull();
+    expect(container.querySelector('[data-task-id="child"]')).not.toBeNull();
+  });
+
+  it("keeps ancestor-only tasks navigable instead of showing an empty state", () => {
+    render({ ancestors, subtasks: [], createdTasks: [], projects: [] });
+    expect(container.querySelectorAll('a')).toHaveLength(2);
+    expect(container.textContent).not.toContain("No tasks yet.");
+  });
+
+  it("hides the ancestor section for root tasks and preserves the empty state", () => {
+    render({ subtasks: [], createdTasks: [], projects: [] });
+    expect(container.querySelector('section[aria-label="Ancestors"]')).toBeNull();
+    expect(container.textContent).toContain("No tasks yet.");
+  });
+
   it("keeps subtask membership separate from creation membership, including overlap", () => {
     const manual = task("manual-child");
     const overlap = task("created-child", { projectId: project.id });

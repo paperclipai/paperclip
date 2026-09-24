@@ -69,8 +69,10 @@ describe("native runtime context files", () => {
     );
   });
 
-  it("requires requested file deliverables before completion in ordinary native tasks", () => {
+  it("distinguishes durable Paperclip documents from requested file deliverables", () => {
     const constraints = nativeTaskConstraints(runtimeInput("/bundle", "AGENTS.md")).join("\n");
+    expect(constraints).toContain("Paperclip documents directly with write_document");
+    expect(constraints).toContain("unless the user also requests a downloadable file");
     expect(constraints).toContain("register_deliverable");
     expect(constraints).toContain("deliverable:");
     expect(constraints).toContain("download link");
@@ -125,6 +127,9 @@ describe("native runtime context files", () => {
       ],
     } as unknown as NativeExecutionInput;
     const constraints = nativeTaskConstraints(answered);
+    expect(constraints.join("\n")).toContain("current user direction");
+    expect(constraints.join("\n")).toContain("clarification is not approval");
+    expect(constraints.join("\n")).not.toContain("finish the original requested result");
     expect(constraints).toContainEqual(
       expect.stringContaining(
         "message.interactionResponses[2].response.result.answers",
@@ -139,10 +144,10 @@ describe("native runtime context files", () => {
     expect(resolved).not.toContain("answered-question-1");
     expect(resolved).not.toContain("message.interactionResponses[0]");
     expect(resolved).not.toContain("message.interactionResponses[1]");
-    expect(resolved).toContain("use their supplied answers");
-    expect(resolved).toContain("do not invoke request_human_input");
+    expect(resolved).toContain("Apply each answer within its question scope");
+    expect(resolved).toContain("do not ask resolved questions again");
     expect(resolved).toContain(
-      "does not resolve any other pending or new question",
+      "Other pending or new questions remain unresolved",
     );
     expect(resolved).not.toContain("pending-question-2");
     expect(resolved).not.toContain("answered-confirmation-3");

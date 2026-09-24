@@ -438,12 +438,13 @@ function createExecutionState(overrides: Partial<IssueExecutionState> = {}): Iss
   };
 }
 
-function renderPropertiesWithQueryClient(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
+function renderPropertiesWithQueryClient(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>, hiddenSettings: string[] = []) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
     },
   });
+  queryClient.setQueryData(queryKeys.health, { hiddenSettings });
   const root = createRoot(container);
   act(() => {
     root.render(
@@ -888,7 +889,7 @@ describe("IssueProperties", () => {
       expect(container.textContent).not.toContain("Responsible");
       expect(container.textContent).not.toContain("Kicked off by");
       expect(container.textContent).not.toContain("Created by");
-      expect(container.querySelector('[data-shape="square"]')?.textContent).toContain("CodexCoder");
+      expect(container.querySelector('[title="CodexCoder"] [data-slot="agent-avatar"] img')?.getAttribute("src")).toContain("/api/agent-avatars/cap-v1/");
     });
 
     act(() => root.unmount());
@@ -939,7 +940,7 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("Unassigned");
       expect(container.textContent).not.toContain("Responsible");
       expect(container.textContent).not.toContain("Kicked off by");
-      expect(container.querySelector('[data-shape="square"]')?.textContent).toContain("CodexCoder");
+      expect(container.querySelector('[title="CodexCoder"] [data-slot="agent-avatar"] img')?.getAttribute("src")).toContain("/api/agent-avatars/cap-v1/");
     });
 
     act(() => root.unmount());
@@ -3448,6 +3449,21 @@ describe("IssueProperties", () => {
 
     expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
     expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("hides workspace selection but keeps the bound workspace accessible", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({ executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" } })]);
+    const onUpdate = vi.fn();
+    const { root } = renderPropertiesWithQueryClient(container, {
+      issue: createIssue({ projectId: "project-1", executionWorkspaceId: "workspace-1", currentExecutionWorkspace: createExecutionWorkspace() }),
+      childIssues: [], onUpdate, inline: true,
+    }, ["workspaces.isolation"]);
+    await flush();
+    expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
+    expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
 

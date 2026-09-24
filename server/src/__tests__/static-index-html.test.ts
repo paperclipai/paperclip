@@ -16,16 +16,19 @@ describe("static SPA fallback HTML", () => {
     }
   });
 
-  it("includes the operator snippet only in Cloud-served static HTML", () => {
+  it("ignores retired snippet settings in managed and self-hosted static HTML", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cloud-html-"));
     tempDirs.push(dir);
     fs.writeFileSync(path.join(dir, "index.html"), "<html><body>App</body></html>");
     vi.stubEnv("PAPERCLIP_CLOUD_UI_SNIPPET", '<script src="https://example.com/chat.js"></script>');
+    vi.stubEnv("PAPERCLIP_CLOUD_UI_SNIPPET_B64", Buffer.from('<script src="https://example.com/legacy.js"></script>').toString("base64"));
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", undefined);
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
     expect(readBrandedStaticIndexHtml(dir)).not.toContain("chat.js");
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", "{}");
-    expect(readBrandedStaticIndexHtml(dir)).toContain('chat.js"></script>\n</body>');
+    expect(readBrandedStaticIndexHtml(dir)).not.toContain("chat.js");
+    vi.stubEnv("PAPERCLIP_CLOUD_UI_SNIPPET", undefined);
+    expect(readBrandedStaticIndexHtml(dir)).not.toContain("legacy.js");
   });
 
   it("serves the current index.html instead of reusing stale asset hashes", async () => {

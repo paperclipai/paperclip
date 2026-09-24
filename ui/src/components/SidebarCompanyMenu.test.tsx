@@ -9,6 +9,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { SidebarCompanyMenu as SidebarCompanyMenuProduction } from "./SidebarCompanyMenu.production";
 
+vi.mock("./PluginOrganizationSwitcher", () => ({ PluginOrganizationSwitcher: ({ children }: { children: ReactNode }) => children }));
+
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
   signInEmail: vi.fn(),

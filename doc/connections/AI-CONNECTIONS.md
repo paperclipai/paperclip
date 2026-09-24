@@ -90,6 +90,13 @@ save a healthy connection. Reconnect preserves the connection ID, bindings,
 customized name, and access settings. A completed connection remains even if
 subsequent agent creation fails or is cancelled.
 
+Account adoption during Save and the agent runtime test use the selected agent
+environment, or the instance default when no override is set. An unavailable
+remote environment blocks validation rather than probing the server host. The
+runtime test accepts the form’s prospective adapter selection before it is saved.
+For a saved-agent test, omitting `environmentId` uses the agent’s saved override.
+Sending `environmentId: null` tests a change back to the instance default.
+
 ## Runtime isolation
 
 `prepareManagedAiRuntime` is shared by runs, environment tests, and adoption.
@@ -135,9 +142,33 @@ Already-started native sessions retain their existing same-run recovery path;
 they must not be replaced by a fresh execution with a pre-provider receipt.
 
 Session reuse includes grant identity, responsible user, and credential
-generation. A changed identity starts a fresh provider session. Managed native
-executions use per-turn lifecycle cleanup; a suspended native execution whose
-credential identity changed must restart as a new execution.
+generation. A changed identity starts a fresh provider session. Native Codex
+(`paperclip_runner`) honors the configured warm lifecycle. It copies refreshed
+credentials back to the current invocation before deleting that invocation's
+private home. The session-owned credential stays private until idle timeout or
+explicit closure. Each follow-up rechecks current authorization and account
+identity before reusing the session; changing identity retires the previous owner.
+Other managed harnesses retain per-turn cleanup. A suspended native execution
+whose credential identity changed must restart as a new execution.
+
+After a verified provider resume, plain-text Slack follow-ups send the new
+authorized message delta instead of repeating the full task framing. The saved
+run and current message identities and bodies must match. Actual brief edits
+still arrive; historical Slack task titles are not repeated as new directions.
+Attachments, omitted input, questions, approvals, and recovery retain their full
+framing. A fresh provider session always receives the complete bootstrap.
+Retained sandbox runner binaries are reused only after an exact SHA-256 match
+with the controller artifact and the normal capability checks. Run-scoped
+credential changes still require provider process rotation.
+
+
+Warm sandbox execution requires both `reuseLease: true` and
+`runnerLifecycleMode: "warm"` on the environment. `runnerIdleTimeoutMs` bounds
+idle process retention. Chat tasks without a project reuse a sandbox only within
+the same company, environment, task, agent, and runtime configuration. They do
+not need an artificial project workspace. Other tasks, other agents, and ad-hoc
+connection tests cannot claim that retained sandbox. Daytona verifies a matching
+workspace sentinel before accepting either a workspace-scoped or task-scoped lease.
 
 Revocation blocks new invocations and refresh persistence. A running provider
 process may already hold credentials. The revoke confirmation lists attributed
@@ -303,3 +334,13 @@ boundaries, and concurrent runs of one subscription for both providers. The opt-
 [`tests/hiring-ai-connections/README.md`](../../tests/hiring-ai-connections/README.md)
 describes real browser hiring, subtask, connection, and automatic-resume checks on
 local and Daytona environments, plus the production component Storybook checks.
+
+### Managed session compatibility
+
+Resume checks compare the selected account identity with the server-owned
+metadata in the saved task session. Read this metadata before decoding the
+adapter session: adapter codecs intentionally discard unknown fields. A missing
+identity, a different grant or responsible user, or a changed credential generation
+requires a fresh session. The metadata is removed before passing session params
+to an adapter. Temporary authentication-home paths do not change the configuration
+fingerprint. These checks do not relax current connection authorization.

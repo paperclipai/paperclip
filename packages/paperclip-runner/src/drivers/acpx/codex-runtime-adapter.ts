@@ -277,7 +277,11 @@ export async function openQualifiedAcpxRuntime(
         ? "/paperclip-verified/claude-agent-acp"
         : VERIFIED_COMMAND_SENTINEL] },
     }),
-    permissionMode: options.permissionMode,
+    // ACPX does not know the Paperclip-specific mode. Exact SDK rules allow
+    // admitted actions; all remaining requests keep its closed read policy.
+    permissionMode: options.permissionMode === "approve-paperclip"
+      ? "approve-reads"
+      : options.permissionMode,
     elicitationModes: ["form"],
     nonInteractivePermissions: "fail",
     permissionPolicy: {

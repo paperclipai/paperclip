@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cloudAppUrl, cloudStackCreateUrl, cloudStackEnterUrl } from "./cloudLinks";
+import { cloudAppUrl, cloudPortfolioManageUrl, cloudStackCreateUrl, cloudStackEnterUrl } from "./cloudLinks";
 
 describe("cloudLinks", () => {
   it("resolves stack links against the cloud origin", () => {
@@ -9,6 +9,10 @@ describe("cloudLinks", () => {
     expect(cloudStackCreateUrl("https://app.paperclip.app")).toBe(
       "https://app.paperclip.app/stacks/new",
     );
+    expect(cloudPortfolioManageUrl("https://app.paperclip.app")).toBe(
+      "https://app.paperclip.app/orgs?manage=1",
+    );
+    expect(cloudPortfolioManageUrl(null)).toBeNull();
   });
 
   it("drops a control-plane path suffix on the configured origin", () => {

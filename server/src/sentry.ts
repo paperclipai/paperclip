@@ -56,6 +56,7 @@
 // `instrumentation.ts`.
 
 import os from "node:os";
+import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 
@@ -71,17 +72,16 @@ if (legacyFallbackUsed) {
   );
 }
 
-/** The subset of the `@sentry/node` scope surface `captureRunFailure` calls. */
-interface SentryScopeLike {
-  setTag(key: string, value: string): void;
-  setContext(name: string, context: Record<string, unknown> | null): void;
-  setFingerprint(fingerprint: string[]): void;
+/** Event-local context accepted by the optional Sentry package. */
+interface SentryCaptureContext {
+  tags: Record<string, string>;
+  contexts: Record<string, Record<string, unknown>>;
+  fingerprint: string[];
 }
 
 /** The subset of the `@sentry/node` client surface this gate calls. */
 interface SentryHandle {
-  captureException(error: unknown): string;
-  withScope(callback: (scope: SentryScopeLike) => void): void;
+  captureException(error: unknown, context?: SentryCaptureContext): string;
   close(timeout?: number): Promise<boolean>;
 }
 
@@ -148,22 +148,28 @@ export function captureRunFailure(event: RunFailureEvent): void {
   if (!sentryHandle) return;
   const handle = sentryHandle;
   try {
-    handle.withScope((scope) => {
-      const errorCode = event.errorCode ?? "unknown";
-      scope.setTag("run_id", event.runId);
-      scope.setTag("task_id", event.taskId);
-      scope.setTag("error_code", errorCode);
-      scope.setTag("agent_adapter", event.agentAdapter);
-      scope.setTag("run_status", event.runStatus);
-      scope.setContext("run_failure", {
-        taskId: event.taskId,
-        runId: event.runId,
-        errorMessage: event.errorMessage,
-        errorCode,
-        agentAdapter: event.agentAdapter,
-      });
-      scope.setFingerprint([errorCode, event.agentAdapter]);
-      handle.captureException(new Error(event.errorMessage));
+    const errorCode = event.errorCode ?? "unknown";
+    // Sentry's async scope isolation is absent when OTel setup is skipped.
+    // A withScope mutation can then persist into unrelated later captures.
+    // Pass these fields on this event only; do not mutate the ambient scope.
+    handle.captureException(new Error(event.errorMessage), {
+      tags: {
+        run_id: event.runId,
+        task_id: event.taskId,
+        error_code: errorCode,
+        agent_adapter: event.agentAdapter,
+        run_status: event.runStatus,
+      },
+      contexts: {
+        run_failure: {
+          taskId: event.taskId,
+          runId: event.runId,
+          errorMessage: event.errorMessage,
+          errorCode,
+          agentAdapter: event.agentAdapter,
+        },
+      },
+      fingerprint: [errorCode, event.agentAdapter],
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -200,12 +206,13 @@ export function shutdownSentry(): Promise<void> {
  */
 interface SentryModuleLike {
   httpIntegration(options: { breadcrumbs: boolean }): { name: string };
-  onUnhandledRejectionIntegration(options: { mode: string }): { name: string };
+  onUnhandledRejectionIntegration(options: { mode: "strict" }): { name: string };
 }
 
 /** The `Sentry.init` options this gate builds. */
 export interface SentryInitOptions {
   dsn: string;
+  release?: string;
   skipOpenTelemetrySetup: boolean;
   tracesSampleRate: number;
   sendDefaultPii: boolean;
@@ -225,6 +232,7 @@ export function buildSentryInitOptions(
 ): SentryInitOptions {
   return {
     dsn,
+    release: process.env.SENTRY_RELEASE?.trim() || readBuildCommit() || undefined,
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
@@ -278,8 +286,7 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     Sentry.init(buildSentryInitOptions(dsn, Sentry));
 
     sentryHandle = {
-      captureException: (error) => Sentry.captureException(error),
-      withScope: (callback) => Sentry.withScope(callback),
+      captureException: (...args) => Sentry.captureException(...args),
       close: (timeout) => Sentry.close(timeout),
     };
   } catch (err) {

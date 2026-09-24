@@ -69,6 +69,18 @@ export async function currentContinuationOrigins(
   issueId: string,
   context: unknown,
 ): Promise<string[]> {
+  const candidates = continuationOriginCommentIds(context);
+  // A run may create an interaction on another task. Its own comments do not
+  // become authority on that task. Keep unknown references for dispatch to
+  // reject, rather than silently claiming complete context.
+  const foreignComments = candidates.length
+    ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
+        eq(issueComments.companyId, companyId),
+        sql`${issueComments.issueId} != ${issueId}`,
+        inArray(sql<string>`${issueComments.id}::text`, candidates),
+      ))
+    : [];
+  const foreignIds = new Set(foreignComments.map(row => row.id));
   const [latest] = await db
     .select({ id: issueComments.id })
     .from(issueComments)
@@ -86,7 +98,7 @@ export async function currentContinuationOrigins(
     .limit(1);
   return [
     ...new Set([
-      ...continuationOriginCommentIds(context),
+      ...candidates.filter(id => !foreignIds.has(id)),
       ...(latest ? [latest.id] : []),
     ]),
   ];
@@ -144,33 +156,48 @@ export async function buildExecutionContinuation(input: {
   );
   const explicitContinuation = object(input.context.explicitUserContinuation);
   const explicitUserSource = string(explicitContinuation.previousRunId);
-  const sourceRunId =
+  const resumeSourceRunId =
     explicitUserSource ??
-    triggerInteraction?.sourceRunId ??
     string(input.context.retryOfRunId) ??
     string(input.context.previousRunId) ??
     string(input.context.interruptedRunId);
-  const sourceRun = sourceRunId
-    ? (
-        await db
-          .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.companyId, companyId),
-              eq(heartbeatRuns.id, sourceRunId),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            ),
-          )
-      )[0]
-    : null;
-  if (sourceRunId && !sourceRun)
+  const producerRunId = triggerInteraction?.sourceRunId ?? null;
+  const sourceRunId = resumeSourceRunId ?? producerRunId;
+  const loadRun = async (id: string) => (await db
+    .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, id)))
+  )[0];
+  const candidate = sourceRunId ? await loadRun(sourceRunId) : null;
+  // An interaction producer is provenance. Explicit resume history must still
+  // belong to this task, and only task-scoped content can enter the envelope.
+  const sourceRun = object(candidate?.context).issueId === issueId ? candidate : null;
+  if ((sourceRunId && !candidate) || (resumeSourceRunId && !sourceRun))
     throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
+  const producer = producerRunId === sourceRunId ? candidate
+    : producerRunId ? await loadRun(producerRunId) : null;
+  if (producerRunId && !producer) throw new Error("continuation_source_context_missing");
+  const producerIssueId = string(object(producer?.context).issueId);
+  const producerOrigins = new Set(continuationOriginCommentIds(producer?.context));
+  const recordedOrigins = triggerInteraction?.originCommentIds ?? [];
+  const inheritedOrigins = recordedOrigins.filter(id => producerOrigins.has(id));
+  // Older interactions copied the producer's origins without task scope.
+  // Ignore only references proven to be comments on that producer's other
+  // task. Missing rows, unrelated references, and explicit wake origins keep
+  // the existing fail-closed check below.
+  const inheritedForeignComments = producerIssueId && producerIssueId !== issueId && inheritedOrigins.length
+    ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
+        eq(issueComments.companyId, companyId),
+        sql`${issueComments.issueId}::text = ${producerIssueId}`,
+        inArray(sql<string>`${issueComments.id}::text`, inheritedOrigins),
+      ))
+    : [];
+  const inheritedForeignIds = new Set(inheritedForeignComments.map(row => row.id));
   const originCommentIds = [
     ...new Set([
       ...continuationOriginCommentIds(input.context),
       ...continuationOriginCommentIds(sourceRun?.context),
-      ...(triggerInteraction?.originCommentIds ?? []),
+      ...recordedOrigins.filter(id => !inheritedForeignIds.has(id)),
       ...(triggerInteraction?.sourceCommentId
         ? [triggerInteraction.sourceCommentId]
         : []),

@@ -38,6 +38,7 @@ import { commitToolActionReview } from "../services/tool-action-review.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
 import { toolActionDeliveryService } from "../services/tool-action-delivery.js";
 import { secretService } from "../services/secrets.js";
+import { toolAccessService } from "../services/tool-access.js";
 import {
   createToolGatewayService,
   ToolGatewayHttpError,
@@ -381,8 +382,17 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(nativeResponses).toMatchObject([{ interactionId: interaction.id, response: { status: "accepted", result: { toolAction: { status: "executed", resultSummary: expect.stringContaining("bodyLength") } } } }]);
     expect(wakeup).not.toHaveBeenCalled();
     expect((await db.select().from(toolActionDeliveries))[0].deliveredAt).toBeNull();
+    await deliveries.deliverForRun({ companyId: company.id, runId: run.id });
+    expect(wakeup).not.toHaveBeenCalled();
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
     const restarted = toolActionDeliveryService(db, { wakeup });
+    await deliveries.deliverForRun({ companyId: randomUUID(), runId: run.id });
+    await deliveries.deliverForRun({ companyId: company.id, runId: randomUUID() });
+    expect(wakeup).not.toHaveBeenCalled();
+    // The original executor's terminal cleanup must deliver a review that was
+    // approved while it was running, without waiting for the scheduler sweep.
+    await deliveries.deliverForRun({ companyId: company.id, runId: run.id });
+    expect(wakeup).toHaveBeenCalledTimes(1);
     await Promise.all([restarted.sweepPending(), deliveries.sweepPending()]);
     await gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor: { userId: "second-reviewer" } });
     await restarted.sweepPending();
@@ -421,6 +431,32 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect((await db.select().from(toolActionDeliveries)).every(row => row.deliveredAt)).toBe(true);
     const native = await materializeNativeInteractionResponses({ db, companyId: company.id, issueId: issue.id, runId: randomUUID(), agentId: agent.id, interactionIds: payload.interactionIds });
     expect(native).toHaveLength(2);
+  });
+
+  it("keeps reviewed results from different source runs in separate non-coalescing wakes", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    const [secondRun] = await db.insert(heartbeatRuns).values({ companyId: company.id,
+      agentId: agent.id, status: "running", contextSnapshot: { issueId: issue.id } }).returning();
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const gateway = createTestToolGatewayService(db);
+    for (const sourceRun of [run, secondRun]) {
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: sourceRun.id });
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: sourceRun.id, body: "separate origin" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    }
+    const requests = await db.select().from(toolActionRequests);
+    for (const action of requests) await gateway.declineActionRequest({ companyId: company.id, issueId: issue.id,
+      interactionId: action.interactionId!, actionRequestId: action.id, actor: { userId: "reviewer" } });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.companyId, company.id));
+    const wakeup = vi.fn(async (agentId: string, input: any) => (await db.insert(agentWakeupRequests).values({ companyId: company.id,
+      agentId, source: input.source, idempotencyKey: input.idempotencyKey, payload: input.payload }).returning())[0] as any);
+    await toolActionDeliveryService(db, { wakeup }).sweepPending();
+    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect(new Set(wakeup.mock.calls.map(([, input]) => input.payload.sourceRunId))).toEqual(new Set([run.id, secondRun.id]));
+    for (const [, input] of wakeup.mock.calls) {
+      expect(input.allowRunCoalescing).toBe(false);
+      expect(input.payload.toolActionRequestIds).toHaveLength(1);
+    }
+    expect((await db.select().from(toolActionDeliveries)).every(row => row.deliveredAt)).toBe(true);
   });
 
   it("bounds many outcomes and recovers their full-result reference after wake commit", async () => {
@@ -1168,9 +1204,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
       selectors: { riskLevel: "read" },
     });
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response(JSON.stringify({
+    globalThis.fetch = async (_url, init) => new Response(JSON.stringify({
       jsonrpc: "2.0",
-      id: "paperclip-tool-test",
+      id: JSON.parse(String(init?.body)).id,
       result: {
         _meta: {
           elicitation: {
@@ -1303,6 +1339,68 @@ describeEmbeddedPostgres("tool gateway service", () => {
       { method: "notifications/initialized", sessionId: "session-123", protocolVersion: "2025-06-18" },
       { method: "tools/call", sessionId: "session-123", protocolVersion: "2025-06-18" },
     ]);
+  });
+
+  it("hides cached Chat unread filters and blocks agent and board requests before provider dispatch", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection, catalogEntry } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({
+      lastCatalogRefreshAt: new Date(),
+      config: {
+        url: "https://8.8.8.8/mcp",
+        sourceTemplateKey: "google-chat",
+        connectionMethodKey: "customer-read-oauth",
+        oauth: { scopes: ["https://www.googleapis.com/auth/chat.users.readstate.readonly"] },
+      },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.update(toolCatalogEntries).set({
+      name: "search_messages", toolName: "search_messages", description: "Search unread messages.",
+      inputSchema: { type: "object", properties: {
+        searchParameters: { type: "object", properties: {
+          isUnread: { type: "boolean" }, keywords: { type: "array", items: { type: "string" } },
+        } },
+      } },
+    }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+    await db.insert(toolPolicies).values({
+      companyId: company.id, name: "Allow Chat reads", policyType: "allow", selectors: { riskLevel: "read" },
+    });
+    const provider = vi.fn(async (_url, init) => {
+      const payload = JSON.parse(String(init.body));
+      if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return Response.json({ jsonrpc: "2.0", id: payload.id, result: payload.method === "initialize"
+        ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "chat-fixture", version: "1" } }
+        : { content: [{ type: "text", text: "Found matching messages." }] } });
+    });
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.upstreamToolName === "search_messages")!;
+    expect(tool).toBeTruthy();
+    expect(JSON.stringify(tool.parametersSchema)).not.toContain("isUnread");
+    expect(tool.description).toContain("Read/unread filtering is not supported.");
+    const catalog = await toolAccessService(db).listCatalog(connection.id, company.id);
+    expect(JSON.stringify(catalog[0].inputSchema)).not.toContain("isUnread");
+    expect(catalog[0].description).toContain("Read/unread filtering is not supported.");
+
+    for (const isUnread of [true, false]) {
+      const parameters = { searchParameters: { isUnread, keywords: ["release"] } };
+      const error = { status: 400, details: { code: "google_chat_unread_filter_unsupported" } };
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters }))
+        .rejects.toMatchObject(error);
+      await expect(gateway.executeTestCall({
+        companyId: company.id, connectionId: connection.id, agentId: agent.id,
+        userId: "board", toolName: "search_messages", parameters,
+      })).rejects.toMatchObject(error);
+    }
+    expect(provider).not.toHaveBeenCalled();
+
+    const parameters = { searchParameters: { keywords: ["release"], startTime: "2026-09-22T00:00:00Z" }, pageSize: 10 };
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters }))
+      .resolves.toMatchObject({ status: "completed" });
+    const calls = provider.mock.calls.map(([, init]) => JSON.parse(String(init.body)))
+      .filter((payload) => payload.method === "tools/call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params).toEqual({ name: "search_messages", arguments: parameters });
   });
 
   it("explains Google Workspace preview enrollment when a tool call is denied", async () => {
@@ -1756,9 +1854,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
       selectors: { riskLevel: "read" },
     });
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response(JSON.stringify({
+    globalThis.fetch = async (_url, init) => new Response(JSON.stringify({
       jsonrpc: "2.0",
-      id: "paperclip-tool-test",
+      id: JSON.parse(String(init?.body)).id,
       result: { elicitation: { message: "Need input" }, content: [] },
     }), { status: 200, headers: { "content-type": "application/json" } });
     try {

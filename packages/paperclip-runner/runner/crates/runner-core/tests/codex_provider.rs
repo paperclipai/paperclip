@@ -589,6 +589,54 @@ fn codex_transport_buffers_notifications_while_waiting_for_responses() {
 }
 
 #[test]
+fn codex_account_updates_do_not_interrupt_turns_or_publish_account_details() {
+    let directory = temporary_directory("account-notifications");
+    let config = provider_config(&directory, &["--account-notifications"]);
+    let mut provider = CodexProvider::start(&config, None).expect("start fake Codex provider");
+    for _ in 0..2 {
+        provider
+            .start_turn("Are you there?", &config.cwd)
+            .expect("start provider turn");
+        let mut completed = false;
+        let mut account_notices = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            match provider.poll().expect("poll provider event") {
+                Some(CodexProviderEvent::ProtocolFailure { diagnostic }) => {
+                    panic!("account notification interrupted the turn: {diagnostic}");
+                }
+                Some(CodexProviderEvent::Notification { method, params }) => {
+                    if params["providerMethod"]
+                        .as_str()
+                        .is_some_and(|method| method.starts_with("account/"))
+                    {
+                        account_notices += 1;
+                        assert_eq!(method, "warning");
+                        assert_eq!(params["classification"], "unrelated_information");
+                        assert!(!params.to_string().contains("fixture-login"));
+                        assert!(params.get("authMode").is_none());
+                        assert!(params.get("planType").is_none());
+                    }
+                    if method == "turn/completed" {
+                        completed = true;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            completed,
+            "the real provider boundary must deliver the terminal"
+        );
+        assert_eq!(account_notices, 2);
+    }
+    provider.shutdown().expect("stop provider");
+    fs::remove_dir_all(directory).expect("remove account notification test directory");
+}
+
+#[test]
 fn codex_goal_autostart_binds_the_provider_turn_authority() {
     let directory = temporary_directory("goal-autostart");
     let config = provider_config(&directory, &["--goal-autostart"]);
@@ -652,6 +700,75 @@ fn rejected_codex_goal_activation_restores_turn_reconciliation() {
 
     provider.shutdown().expect("stop provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn helper_tool_requests_do_not_terminate_or_borrow_root_authority() {
+    for foreign in [false, true] {
+        let directory = temporary_directory("helper-tool-requests");
+        let mut flags = vec!["--helper-tool-requests"];
+        if foreign {
+            flags.push("--foreign-helper-tool");
+        }
+        let config = provider_config(&directory, &flags);
+        let mut provider =
+            CodexProvider::start_with_tools(&config, [task_context_tool()], None).unwrap();
+        provider
+            .start_turn("Hire a persistent teammate.", &config.cwd)
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut completed = false;
+        let mut root_tool_delivered = false;
+        while std::time::Instant::now() < deadline {
+            match provider.poll().unwrap() {
+                Some(CodexProviderEvent::ProtocolFailure { diagnostic }) => {
+                    assert!(foreign, "recognized helper crashed the root: {diagnostic}");
+                    assert_eq!(diagnostic["code"], "thread_binding_mismatch");
+                    completed = true;
+                    break;
+                }
+                Some(CodexProviderEvent::RuntimeRequest { .. }) => {
+                    panic!("helper borrowed root question authority")
+                }
+                Some(CodexProviderEvent::ToolCall {
+                    call_id,
+                    operation_id,
+                    ..
+                }) => {
+                    assert!(!foreign);
+                    assert_eq!(
+                        call_id, "root-after-helper",
+                        "helper borrowed root tool authority"
+                    );
+                    provider
+                        .deliver_tool_result(&ToolResult {
+                            call_id,
+                            operation_id,
+                            result: json!({"ok":true,"task":{"id":"task-1"}}),
+                            is_error: false,
+                        })
+                        .unwrap();
+                    root_tool_delivered = true;
+                }
+                Some(CodexProviderEvent::Notification { method, .. })
+                    if method == "turn/completed" =>
+                {
+                    assert!(!foreign);
+                    assert!(root_tool_delivered);
+                    completed = true;
+                    break;
+                }
+                _ => std::thread::sleep(std::time::Duration::from_millis(1)),
+            }
+        }
+        assert!(completed, "helper requests did not settle");
+        assert_eq!(
+            call_count(&directory, "helper-request:rejected"),
+            if foreign { 0 } else { 3 }
+        );
+        provider.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[test]
@@ -3521,7 +3638,7 @@ fn durable_backend_rotates_tool_authority_for_fresh_run_attach() {
 }
 
 #[test]
-fn durable_backend_drains_a_bounded_completed_turn_tail_during_warm_attach() {
+fn durable_backend_drains_completed_turn_usage_and_passive_tail_during_warm_attach() {
     let directory = temporary_directory("durable-warm-attach-tail");
     let config = provider_config(
         &directory,

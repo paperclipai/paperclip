@@ -88,7 +88,7 @@ if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
     }).trim();
     assert.equal(
       version,
-      "codex-cli 0.153.4",
+      "codex-cli 0.156.0",
       "qualified_codex_version_required",
     );
     const ledger = join(fixture, "provider-process-starts.txt");
@@ -309,7 +309,7 @@ if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
           kind: "codex",
           provider: "codex",
           driver: "codex_app_server",
-          providerVersion: "0.153.4",
+          providerVersion: "0.156.0",
           command: shim,
           args: [
             "--cd",

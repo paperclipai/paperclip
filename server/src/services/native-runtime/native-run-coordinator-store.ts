@@ -6,6 +6,7 @@ import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   nativeRunFinalizations,
   nativeRunResults,
 } from "@paperclipai/db";
@@ -339,6 +340,11 @@ export class NativeRunCoordinatorStore {
     });
 
     return this.#db.transaction(async (tx) => {
+      // Match task -> run lock ordering before the result's task foreign-key
+      // check; a concurrent task mutation may also need this run row.
+      await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
+        .for("key share");
       const [run] = await tx
         .select()
         .from(heartbeatRuns)

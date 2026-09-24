@@ -639,14 +639,17 @@ describe("claude CLI local hello probe hardening", () => {
     expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
   });
 
-  it("warns without executing when runtime PATH selects a different local Claude executable", async () => {
+  it.each([
+    ["claude-fable-5-1", "2.1.251"],
+    ["claude-opus-5-5", "2.1.280"],
+  ])("warns without executing %s when runtime PATH selects a different executable", async (model, minimumVersion) => {
     const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-runtime-path-"));
     const runtimeClaudePath = path.join(runtimeDir, "claude");
     await writeFile(runtimeClaudePath, "#!/bin/sh\nexit 0\n");
     await chmod(runtimeClaudePath, 0o755);
 
     try {
-      probeResult.value = { exitCode: 0, stdout: "2.1.251 (Claude Code)\n", stderr: "" };
+      probeResult.value = { exitCode: 0, stdout: `${minimumVersion} (Claude Code)\n`, stderr: "" };
 
       const result = await testEnvironment({
         companyId: "company-1",
@@ -654,7 +657,7 @@ describe("claude CLI local hello probe hardening", () => {
         config: {
           engine: "cli",
           command: "claude",
-          model: "claude-fable-5-1",
+          model,
           env: { PATH: runtimeDir },
         },
         executionTarget: null,
@@ -664,6 +667,7 @@ describe("claude CLI local hello probe hardening", () => {
       expect(result.status).toBe("warn");
       expect(result.checks).toContainEqual(expect.objectContaining({
         code: "claude_cli_version_probe_mismatch",
+        hint: `Ensure the runtime-selected Claude Code is ${minimumVersion} or newer. Execution will verify that exact executable before launch.`,
         level: "warn",
       }));
       expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();

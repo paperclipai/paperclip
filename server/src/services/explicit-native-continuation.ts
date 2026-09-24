@@ -1,3 +1,4 @@
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession } from "./native-local-process-stop.js";
@@ -8,7 +9,7 @@ import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
-  issues, nativeRunFinalizations, type Db,
+  issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
@@ -146,6 +147,7 @@ export async function admitExplicitNativeContinuation(input: {
   if (pendingInteraction || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
 
   const sources: Run[] = [];
+  const stoppedSessions: Array<{ evidence: Record<string, unknown>; retire: () => boolean }> = [];
   const cancelledStartupIds = new Set<string>();
   for (const action of actions) {
     const runId = action.evidence.runId ?? action.evidence.sourceRunId;
@@ -195,8 +197,21 @@ export async function admitExplicitNativeContinuation(input: {
     const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
     if (cancelledStartup) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
-    if (!cancelledStartup && coordinator && (coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
-        coordinator.resultId || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
+    // A provider failure can finish the normal result/assessment commit path.
+    // Its accepted failed result is immutable history, not a live controller.
+    // Only a new user turn may pass this gate; the process/lease stop proofs
+    // below remain mandatory and no previous action is automatically replayed.
+    const [committedFailure] = coordinator?.phase === "committed" && coordinator.resultId && run.status === "failed"
+      ? await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+          eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
+          eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
+          eq(nativeRunResults.schemaStatus, "accepted"),
+          sql`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState' = 'failed'`,
+        )).limit(1)
+      : [];
+    if (!cancelledStartup && coordinator && (
+        (coordinator.phase !== "terminal_failure" && !committedFailure) || coordinator.leaseOwner ||
+        (coordinator.resultId && !committedFailure) || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
           run.status === "cancelled" && !coordinator.leaseOwner
             ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."
             : "Waiting for the previous run to finish recovery. Your message will start automatically.");
@@ -222,6 +237,14 @@ export async function admitExplicitNativeContinuation(input: {
         if (run.processGroupId && !processStopped(-run.processGroupId)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
       }
     }
+    if (!remote && run.runtimeMode === "native" && run.errorCode === "native_session_cleanup_quarantined") {
+      // This is new user input, never permission to retry the interrupted turn.
+      if (retry) return blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.");
+      const { verifyStoppedNativeSessionForContinuation } = await import("./native-runtime/native-session-executor.js");
+      const stopped = await verifyStoppedNativeSessionForContinuation(db, run);
+      if (!stopped) return blocked("local_cleanup", "Waiting for the previous provider and its tools to stop. Your message is saved.");
+      stoppedSessions.push(stopped);
+    }
     sources.push(run);
   }
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
@@ -240,6 +263,15 @@ export async function admitExplicitNativeContinuation(input: {
     context: { previousRunId: previous.id, wakeCommentId: commentId },
     summary: null, exposeLowTrustRaw: false });
   if (input.dryRun) return { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}) };
+  for (const stopped of stoppedSessions) {
+    if (!stopped.retire()) return blocked("local_cleanup", "The previous provider cleanup changed. Your message is saved.");
+    await appendHeartbeatRunEvent(db, {
+      companyId, runId: String(stopped.evidence.runId), agentId,
+      eventType: "native.stopped_conversation_verified", stream: "system", level: "info",
+      message: "The old runner and provider stopped. New user input will use a fresh session; prior action outcomes remain recorded.",
+      payload: stopped.evidence,
+    });
+  }
   const authorization = { actorId, commentId, ...(response ? { interactionId: response.source.interactionId } : {}), ...(retry ? { failedRunId: input.failedRunId } : {}),
     ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId } : {}),
     ...(queuedRequest ? { queuedCommentRequestId: input.queuedCommentRequestId } : {}), runId: input.successorRunId,

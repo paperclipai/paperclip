@@ -32,7 +32,9 @@ import {
   selectAgentArtifactAttachments,
   workProductHref,
 } from "@/lib/issue-artifacts";
-import { attachmentOpenPath } from "@/lib/issue-attachments";
+import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
+import { isImageLikeOutput, isVideoLikeOutput } from "@/lib/issue-output";
+import { attachmentDownloadPath, attachmentOpenPath } from "@/lib/issue-attachments";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
@@ -75,7 +77,7 @@ function workProductStatusBadge(status: string): { label: string; cssVar: string
 }
 
 const ROW_CLASS =
-  "flex items-center gap-2 rounded-md border border-border bg-card/50 px-2.5 py-1.5 text-sm";
+  "flex items-center gap-2 rounded-md border border-border bg-card/50 px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /**
  * Work-product row for an eligible Markdown artifact (LOOA-1533 gap): expands
@@ -438,7 +440,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
   }
 
   return (
-    <div className="flex flex-col gap-3 py-2">
+    <div className="@container flex flex-col gap-3 py-2">
       {groupedRows.map((group) => {
         const run = group.runId === "other" ? null : runsById.get(group.runId);
         const agent = run ? agentsById.get(run.agentId) : null;
@@ -454,7 +456,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
                 </time>
               </header>
             ) : null}
-            <ul className="flex flex-col gap-1">
+            <ul className="grid grid-cols-1 gap-2 @xs:grid-cols-2 @2xl:grid-cols-3">
               {group.rows.map((row) => {
                 if (row.kind === "work_product") {
                   const wp = row.value;
@@ -462,7 +464,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
                   if (markdownMetadata) {
                     const reviewKey = artifactReviewDocumentKey(wp.id);
                     return (
-                      <li key={row.id}>
+                      <li key={row.id} className="col-span-full min-w-0">
                         <MarkdownWorkProductRow
                           issueId={issue.id}
                           workProduct={wp}
@@ -473,16 +475,20 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
                       </li>
                     );
                   }
+                  const contentType = typeof wp.metadata?.contentType === "string" ? wp.metadata.contentType : "";
+                  const filename = typeof wp.metadata?.originalFilename === "string" ? wp.metadata.originalFilename : wp.title;
+                  const hasMediaPath = Boolean(wp.metadata?.contentPath || wp.metadata?.openPath || workProductHref(wp));
+                  const media = hasMediaPath && wp.type === "artifact" && (isImageLikeOutput(contentType, filename) || isVideoLikeOutput(contentType, filename));
                   return (
-                    <li key={row.id}>
-                      <RichWorkProductCard workProduct={wp} href={workProductHref(wp)} variant="compact" />
+                    <li key={row.id} className={cn("min-w-0", !media && "col-span-full")}>
+                      <RichWorkProductCard workProduct={wp} href={workProductHref(wp)} variant={media ? "gallery" : "compact"} />
                     </li>
                   );
                 }
                 if (row.kind === "document") {
                   const doc = row.value;
                   return (
-                    <li key={row.id}>
+                    <li key={row.id} className="col-span-full min-w-0">
                       <DocumentRow
                         issueId={issue.id}
                         doc={doc}
@@ -493,8 +499,24 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
                   );
                 }
                 const attachment = row.value;
+                const filename = attachment.originalFilename ?? attachment.objectKey;
+                if (isImageLikeOutput(attachment.contentType, filename) || isVideoLikeOutput(attachment.contentType, filename)) {
+                  return (
+                    <li key={row.id} className="min-w-0">
+                      <MediaArtifactCard
+                        id={attachment.id}
+                        title={filename}
+                        contentPath={attachment.contentPath}
+                        contentType={attachment.contentType}
+                        originalFilename={filename}
+                        downloadPath={attachmentDownloadPath(attachment)}
+                        detail={formatBytes(attachment.byteSize)}
+                      />
+                    </li>
+                  );
+                }
                 return (
-                  <li key={row.id}>
+                  <li key={row.id} className="col-span-full min-w-0">
                     <a href={attachmentOpenPath(attachment)} target="_blank" rel="noreferrer" className={cn(ROW_CLASS, "hover:bg-accent/50")}>
                       <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <span className="min-w-0 flex-1 truncate">{attachment.originalFilename ?? attachment.objectKey}</span>

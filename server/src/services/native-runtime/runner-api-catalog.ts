@@ -43,12 +43,13 @@ function words(text: string): string[] {
 
 function dedicatedTools(method: string, path: string): string[] {
   if (/\/companies\/\{[^}]+\}\/skills$/.test(path) && method === "POST") return ["create_skill"];
+  if (/\/companies\/\{[^}]+\}\/agent-hires$/.test(path) && method === "POST") return ["hire_agent"];
   if (/\/projects$/.test(path)) return method === "GET" ? ["list_projects"] : method === "POST" ? ["create_project"] : [];
   if (/\/project-repositories$/.test(path) && method === "GET") return ["list_project_repositories"];
   if (/\/issues\/\{[^}]+\}\/comments$/.test(path)) return method === "GET" ? ["get_task_history"] : ["report_progress"];
   if (/\/issues\/\{[^}]+\}\/documents/.test(path)) return method === "DELETE" ? [] : method === "GET" ? ["list_documents", "read_document", "list_document_revisions"] : ["write_document"];
   if (/\/issues$/.test(path)) return method === "GET" ? ["search_tasks"] : ["create_task"];
-  if (/\/issues\/\{[^}]+\}$/.test(path)) return method === "GET" ? ["get_task_context"] : ["set_dependencies", "finish_task", "block_task", "request_review"];
+  if (/\/issues\/\{[^}]+\}$/.test(path)) return method === "GET" ? ["get_task_context"] : ["reassign_task", "set_dependencies", "finish_task", "block_task", "request_review"];
   if (/\/agents$/.test(path) && method === "GET") return ["list_agents"];
   if (/\/agents\/(me|\{[^}]+\})$/.test(path) && method === "GET") return ["get_agent"];
   if (/\/approvals$/.test(path) && method === "GET") return ["list_approvals"];
@@ -96,7 +97,9 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
           return descriptor ? [{ name, description: descriptor.description, supportedParameters: Object.keys((descriptor.inputSchema as Json).properties ?? {}) }] : [];
         }),
         runnerRestrictions: [...(restriction ? [restriction] : []), "Active run and assignment must remain authorized.", "Cannot replace checkout, completion, task status/ownership changes, approval decisions, or runner execution control. Dedicated tools retain their existing permissions."],
-        dedicatedToolGuidance: "Use an available dedicated tool for its supported fields. Inspect that tool's advertised schema; call_api may be used for additional API fields, subject to lifecycle restrictions.",
+        dedicatedToolGuidance: dedicatedTools(method, path).includes("hire_agent")
+          ? "Use hire_agent for native teammate identity and persona fields. It fixes the reportsTo and source task context and inherits the caller's native runtime; never use call_api to supply adapter, environment, or credential configuration."
+          : "Use an available dedicated tool for its supported fields. Inspect that tool's advertised schema; call_api may be used for additional API fields, subject to lifecycle restrictions.",
         allowedModes: method === "GET" || method === "HEAD" ? ["standard", "ask", "planning", "skill_test"] : ["standard", "skill_test"],
         ...(skillReference ? { skillReference } : {}),
       });

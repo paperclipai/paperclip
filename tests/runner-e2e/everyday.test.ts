@@ -4,6 +4,8 @@ import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 import {
   isStoryWorkspaceDeferral,
+  storyUnexpectedRunFailure,
+  storyUnexercisedReviewBoundary,
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
@@ -22,9 +24,22 @@ import {
   storyParentCompletionPrecedesReview,
   storyAcceptedAgentReview,
   type StoryRun,
+  type StoryIssue,
 } from "./everyday-observations.js";
+import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
 
 describe("everyday workflow grader and review timing", () => {
+  it("requires nonempty persisted source evidence", () => {
+    expect(hasPersistedSource(undefined)).toBe(false);
+    expect(hasPersistedSource(Buffer.alloc(0))).toBe(false);
+    expect(hasPersistedSource(Buffer.from("source"))).toBe(true);
+  });
+
+  it("requires an active run and saved source at the same Stop checkpoint", () => {
+    expect(isSavedSourceCheckpoint(false, Buffer.from("source"))).toBe(false);
+    expect(isSavedSourceCheckpoint(true, Buffer.alloc(0))).toBe(false);
+    expect(isSavedSourceCheckpoint(true, Buffer.from("source"))).toBe(true);
+  });
   it("uses base grading for review delivery and preserves late max-length cases", () => {
     expect(artifactGradeModeForPhase("reviewed-delivery")).toBe("base");
     expect(artifactGradeModeForPhase("delegated-delivery")).toBe("max-length");
@@ -50,6 +65,49 @@ describe("everyday workflow grader and review timing", () => {
         false,
       ),
     ).toBe(false);
+  });
+});
+
+describe("unexercised review boundary diagnostics", () => {
+  const done = { id: "parent", companyId: "company", title: "task", status: "done" };
+  const completed = {
+    id: "run", companyId: "company", agentId: "lead", status: "succeeded",
+    nativeIssueId: "parent", finishedAt: "2026-09-19T14:47:48.134Z",
+  };
+  const child = {
+    ...done, id: "child", parentId: "parent", interactions: [{
+      id: "card", issueId: "child", kind: "request_confirmation", status: "accepted",
+      addresseeAgentId: "lead", resolvedByAgentId: "lead", resolvedByRunId: "review",
+      createdAt: "2026-09-19T14:47:04.000Z", resolvedAt: "2026-09-19T14:47:21.876Z",
+      payload: { target: { type: "custom", key: "native_completion_review", revisionId: "decision" } },
+      result: { version: 1, outcome: "accepted" },
+    }],
+  };
+  const review = {
+    ...completed, id: "review", nativeIssueId: "child", startedAt: "2026-09-19T14:47:05.802Z",
+    contextSnapshot: { nativeReviewInteractionId: "card", nativeReviewDecisionId: "decision" },
+  };
+  const diagnose = (issues: StoryIssue[] = [done, child], runs: StoryRun[] = [completed, review]) =>
+    storyUnexercisedReviewBoundary(issues, runs, "parent", "lead");
+  it("fails promptly with persisted proof that review preceded parent completion", () => {
+    expect(diagnose()).toContain("not exercised");
+  });
+  it("does not preempt in-flight finalization, recovery, or unfinished work", () => {
+    expect(diagnose([done, child], [{ ...completed, status: "running" }, review])).toBeUndefined();
+    expect(storyUnexercisedReviewBoundary([{ ...done, scheduledRetry: {} }, child], [completed, review], "parent", "lead")).toBeUndefined();
+    expect(storyUnexercisedReviewBoundary([{ ...done, activeRecoveryAction: {} }, child], [completed, review], "parent", "lead")).toBeUndefined();
+    expect(diagnose([{ ...done, status: "blocked" }, child])).toBeUndefined();
+    expect(diagnose([], [])).toBeUndefined();
+  });
+  it("waits when separately fetched snapshots lack review evidence or timestamps", () => {
+    expect(diagnose([done, { ...child, interactions: [] }])).toBeUndefined();
+    expect(diagnose([done, child], [completed])).toBeUndefined();
+    expect(diagnose([done, child], [{ ...completed, finishedAt: "" }, review])).toBeUndefined();
+    expect(diagnose([done, child], [completed, { ...review, startedAt: "" }])).toBeUndefined();
+    expect(diagnose([done, child], [review])).toBeUndefined();
+  });
+  it("does not reject a completed workflow with the required timing", () => {
+    expect(diagnose([done, child], [{ ...completed, finishedAt: review.startedAt }, review])).toBeUndefined();
   });
 });
 
@@ -273,6 +331,28 @@ describe("lifecycle oracle calibrated failures", () => {
       ["run"],
     );
     expect(checks.find((c) => c.id === "successful-runs")?.passed).toBe(false);
+  });
+  it.each(["adapter_failed", "tool_validation_error", "timed_out"])(
+    "does not excuse a later %s on the same deliberately interrupted run",
+    (errorCode) => {
+      const checks = score(
+        [{ ...run, status: "failed", errorCode }],
+        [parent],
+        [run.id],
+      );
+      expect(checks.find((c) => c.id === "successful-runs")?.passed).toBe(false);
+      const failed = { ...run, status: "failed", errorCode };
+      expect(storyUnexpectedRunFailure([failed], [run.id])).toBe(failed);
+    },
+  );
+  it.each([
+    ["cancelled", "cancelled"],
+    ["interrupted", "server_shutdown_interrupted"],
+    ["failed", "process_lost"],
+  ])("accepts an injected interruption with %s / %s", (status, errorCode) => {
+    const checks = score([{ ...run, status, errorCode }], [parent], [run.id]);
+    expect(checks.find((c) => c.id === "successful-runs")?.passed).toBe(true);
+    expect(storyUnexpectedRunFailure([{ ...run, status, errorCode }], [run.id])).toBeUndefined();
   });
   it("excludes a proven pre-dispatch workspace deferral without hiding executed failures", () => {
     const deferred: StoryRun = {

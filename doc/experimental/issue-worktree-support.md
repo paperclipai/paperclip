@@ -22,6 +22,12 @@ We are intentionally not shipping the UI for this yet. The runtime code remains 
 - seeded worktree instances can keep local-encrypted secrets working
 - seeded worktree instances can rebind same-repo project workspace paths onto the current git worktree
 
+## Operator default isolation
+
+When both `enableIsolatedWorkspaces` and `enableIsolatedWorkspacesByDefault` are enabled, projects with a configured workspace and no stored execution workspace policy default to isolated worktrees. A project with no configured workspace keeps using its plain managed directory. Tasks without a project also keep their existing behavior.
+
+Explicit project policies and issue workspace settings still take precedence. A request for a Git worktree still requires a valid Git checkout; a missing or invalid checkout fails validation. Trust policy requirements still apply.
+
 ## Shared workspace concurrency policy
 
 Projects and individual issues can set `sharedWorkspaceConcurrency` in their execution workspace policy/settings:

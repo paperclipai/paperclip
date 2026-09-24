@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
@@ -9,6 +9,10 @@ import {
   agents,
   companies,
   companyMemberships,
+  companySecrets,
+  companySecretVersions,
+  companySecretBindings,
+  secretAccessEvents,
   createDb,
   documentAnnotationAnchorSnapshots,
   documentAnnotationComments,
@@ -101,7 +105,12 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await db.delete(activityLog);
+    await db.delete(secretAccessEvents);
+    await db.delete(companySecretBindings);
+    await db.delete(companySecretVersions);
+    await db.delete(companySecrets);
     await db.delete(documentAnnotationAnchorSnapshots);
     await db.delete(documentAnnotationComments);
     await db.delete(documentAnnotationThreads);
@@ -228,6 +237,154 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
     return { companyId, agentId, projectId, userId };
   }
+
+  it.each(["bearer", "hmac_sha256", "github_hmac", "none"] as const)(
+    "authenticates %s HTTP deliveries, persists payloads, and enforces trigger lifecycle",
+    async (signingMode) => {
+      vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+      vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+      const { companyId, agentId, projectId, userId } = await seedFixture();
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const created = await request(board).post(`/api/companies/${companyId}/routines`).send({
+        projectId, assigneeAgentId: agentId, title: "Webhook {{event}}",
+        description: "Handle {{event}}", variables: [{ name: "event", type: "text", required: true }],
+        concurrencyPolicy: "always_enqueue",
+      });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      const routineId = created.body.id;
+      const configured = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode });
+      expect(configured.status, JSON.stringify(configured.body)).toBe(201);
+      const { trigger, secretMaterial } = configured.body;
+      const detail = await request(board).get(`/api/routines/${routineId}`);
+      expect(detail.body.triggers[0].webhookUrl).toBe(secretMaterial.webhookUrl);
+      const path = new URL(secretMaterial.webhookUrl).pathname;
+      const [{ actorMiddleware }, { boardMutationGuard }, { routineRoutes }, { errorHandler }] = await Promise.all([
+        import("../middleware/auth.js"), import("../middleware/board-mutation-guard.js"),
+        import("../routes/routines.js"), import("../middleware/error-handler.js"),
+      ]);
+      const ingress = express();
+      ingress.use(express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
+      ingress.use(actorMiddleware(db, {
+        deploymentMode: "authenticated",
+        // A webhook must not acquire an ambient board session or need CSRF headers.
+        resolveSession: async () => { throw new Error("Webhook must not resolve a browser session"); },
+      }));
+      ingress.use("/api", boardMutationGuard(), routineRoutes(db));
+      ingress.use(errorHandler);
+      const raw = '{ "event": "deploy", "detail": { "text": "café" } }';
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      function delivery(secret = secretMaterial.webhookSecret, body = raw, ts = timestamp) {
+        const req = request(ingress).post(path).set("Content-Type", "application/json");
+        if (signingMode === "bearer") req.set("Authorization", `Bearer ${secret}`);
+        if (signingMode === "hmac_sha256") {
+          req.set("X-Paperclip-Timestamp", ts).set("X-Paperclip-Signature",
+            `sha256=${createHmac("sha256", secret).update(`${ts}.`).update(raw).digest("hex")}`);
+        }
+        if (signingMode === "github_hmac") req.set("X-Hub-Signature-256",
+          `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}`);
+        return req.send(body);
+      }
+      if (signingMode !== "none") expect((await delivery("wrong-secret")).status).toBe(401);
+      if (signingMode === "hmac_sha256" || signingMode === "github_hmac") {
+        expect((await delivery(undefined, raw.replace("deploy", "tampered"))).status).toBe(401);
+      }
+      if (signingMode === "hmac_sha256") {
+        expect((await delivery(undefined, raw, "1")).status).toBe(401);
+        const malformed = await request(ingress).post(path).set("Content-Type", "application/json")
+          .set("X-Paperclip-Timestamp", timestamp).set("X-Paperclip-Signature", "é".repeat(64)).send(raw);
+        expect(malformed.status).toBe(401);
+      }
+      expect((await request(ingress).post(path).type("text").send(raw)).status).toBe(415);
+      expect((await request(ingress).post(path).send([])).status).toBe(400);
+      const accepted = await delivery();
+      expect(accepted.status, JSON.stringify(accepted.body)).toBe(202);
+      expect(accepted.body).toMatchObject({ source: "webhook", status: "issue_created" });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, accepted.body.linkedIssueId));
+      expect(issue).toMatchObject({ companyId, assigneeAgentId: agentId, title: "Webhook deploy", description: "Handle deploy" });
+      const history = await request(board).get(`/api/routines/${routineId}/runs`);
+      expect(history.body[0].triggerPayload).toMatchObject({ event: "deploy", detail: { text: "café" } });
+      await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, issue.id));
+      if (signingMode === "hmac_sha256") {
+        expect((await delivery()).status).toBe(409);
+      } else {
+        const first = await delivery().set("Idempotency-Key", "delivery-2");
+        const retry = await delivery().set("Idempotency-Key", "delivery-2");
+        expect(retry.status).toBe(202);
+        expect(retry.body.id).toBe(first.body.id);
+        await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, first.body.linkedIssueId));
+      }
+      if (signingMode !== "none") {
+        const rotated = await request(board).post(`/api/routine-triggers/${trigger.id}/rotate-secret`).send({});
+        expect(rotated.status).toBe(200);
+        expect(rotated.body.trigger.lastWebhookDelivery).toBeNull();
+        expect((await delivery()).status).toBe(401);
+        expect((await delivery(rotated.body.secretMaterial.webhookSecret)).status).toBe(202);
+      }
+      await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ enabled: false });
+      expect((await delivery()).status).toBe(409);
+      await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ enabled: true });
+      await request(board).patch(`/api/routines/${routineId}`).send({ status: "paused" });
+      expect((await delivery()).status).toBe(409);
+    },
+  );
+
+  it("keeps setup deliveries out of runs, persists test receipts, and restores removed triggers", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({
+      projectId, assigneeAgentId: agentId, title: "Verify deployment", description: "Inspect deployment", concurrencyPolicy: "always_enqueue",
+    });
+    expect(created.status).toBe(201);
+    const routineId = created.body.id;
+    const configured = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "bearer", setupPending: true });
+    expect(configured.status).toBe(201);
+    const { trigger, secretMaterial } = configured.body;
+    const path = new URL(secretMaterial.webhookUrl).pathname;
+    const publicApp = await createApp({ type: "none" });
+    const deliver = (key: string, secret = secretMaterial.webhookSecret) => request(publicApp).post(path).set("Authorization", `Bearer ${secret}`).set("Idempotency-Key", key).send({ event: "deployment.completed" });
+    await request(board).patch(`/api/routines/${routineId}`).send({ status: "paused" });
+    expect((await deliver("bad", "wrong")).status).toBe(401);
+    let detail = await request(board).get(`/api/routines/${routineId}`);
+    expect(detail.body.triggers[0]).toMatchObject({ setupPending: true, lastWebhookDelivery: { status: "rejected", test: true } });
+    const tested = await deliver("setup-event");
+    expect(tested.status, JSON.stringify(tested.body)).toBe(202);
+    expect(tested.body).toMatchObject({ status: "test_received", routineStarted: false, linkedIssueId: null });
+    expect(await db.select().from(routineRuns)).toHaveLength(0);
+    expect(await db.select().from(issues)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    // Read through a fresh app instance to prove the state is database-backed.
+    const reopened = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    detail = await request(reopened).get(`/api/routines/${routineId}`);
+    expect(detail.body.triggers[0]).toMatchObject({ setupPending: true, lastWebhookDelivery: { status: "received", test: true } });
+    expect(JSON.stringify(detail.body)).not.toContain(secretMaterial.webhookSecret);
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: false })).status).toBe(200);
+    await request(board).patch(`/api/routines/${routineId}`).send({ status: "active" });
+    expect((await deliver("setup-event")).body.status).toBe("test_received");
+    expect(await db.select().from(routineRuns)).toHaveLength(0);
+    const live = await deliver("live-event");
+    expect(live.status, JSON.stringify(live.body)).toBe(202);
+    expect(live.body.status).toBe("issue_created");
+    expect(await db.select().from(issues)).toHaveLength(1);
+    expect((await deliver("live-event")).body.id).toBe(live.body.id);
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "routine.run_triggered"))).toHaveLength(1);
+    expect(await db.select().from(issues)).toHaveLength(1);
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: true })).status).toBe(400);
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ archived: true })).status).toBe(200);
+    expect((await deliver("removed-event")).status).toBe(404);
+    expect((await request(board).get(`/api/routines/${routineId}`)).body.triggers).toHaveLength(0);
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ archived: false })).status).toBe(200);
+    detail = await request(board).get(`/api/routines/${routineId}`);
+    expect(detail.body.triggers[0].webhookUrl).toBe(secretMaterial.webhookUrl);
+    expect((await deliver("restored-event")).status).toBe(202);
+    const schedule = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "schedule", cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" });
+    expect(schedule.status).toBe(201);
+    await request(board).patch(`/api/routine-triggers/${schedule.body.trigger.id}`).send({ archived: true });
+    expect((await request(board).get(`/api/routines/${routineId}`)).body.triggers).toHaveLength(1);
+    await request(board).patch(`/api/routine-triggers/${schedule.body.trigger.id}`).send({ archived: false });
+    expect((await request(board).get(`/api/routines/${routineId}`)).body.triggers).toHaveLength(2);
+  });
 
   it("supports creating, scheduling, and manually running a routine through the API", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();

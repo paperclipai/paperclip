@@ -2,10 +2,11 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { chatEndpointsApi, type ChatProvider } from "@/api/chatEndpoints";
+import { healthApi } from "@/api/health";
 import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
-import { Link, useSearchParams } from "@/lib/router";
+import { Navigate, useSearchParams } from "@/lib/router";
 
 const providerNames: Record<ChatProvider, string> = {
   slack: "Slack",
@@ -21,6 +22,8 @@ export function ChatIdentityConfirm() {
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
   const [confirmed, setConfirmed] = useState(false);
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, retry: false });
+  const local = health.data?.deploymentMode === "local_trusted";
   const session = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -29,7 +32,8 @@ export function ChatIdentityConfirm() {
   const preview = useQuery({
     queryKey: ["chat-identity-link-preview", token],
     queryFn: () => chatEndpointsApi.previewIdentityLink(token),
-    enabled: token.length >= 32,
+    enabled: token.length >= 32 && (local || Boolean(session.data)),
+    refetchInterval: confirmed ? false : 3_000,
     retry: false,
   });
   const confirm = useMutation({
@@ -37,7 +41,14 @@ export function ChatIdentityConfirm() {
     onSuccess: () => setConfirmed(true),
   });
 
-  if (token.length < 32 || preview.isError) {
+  const requestAccess = useMutation({
+    mutationFn: () => chatEndpointsApi.requestIdentityAccess(token),
+  });
+  if (health.isError || (!local && session.isError)) return <main className="mx-auto max-w-lg px-6 py-12 text-sm text-destructive">Couldn&apos;t load your account. Refresh to try again.</main>;
+  if (health.isSuccess && !local && session.isSuccess && !session.data) {
+    return <Navigate to={`/auth?next=${encodeURIComponent(`/chat-identity/confirm?token=${token}`)}`} replace />;
+  }
+  if (token.length < 32 || (!confirmed && preview.isError)) {
     return (
       <main className="mx-auto max-w-lg space-y-4 px-6 py-12">
         <h1 className="text-xl font-bold">This identity link is unavailable</h1>
@@ -48,7 +59,7 @@ export function ChatIdentityConfirm() {
       </main>
     );
   }
-  if (preview.isLoading || session.isLoading || !preview.data) {
+  if (health.isPending || preview.isLoading || (!local && session.isLoading) || !preview.data) {
     return (
       <main className="flex items-center justify-center gap-2 px-6 py-12 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -57,7 +68,7 @@ export function ChatIdentityConfirm() {
     );
   }
   const identity = preview.data;
-  const paperclipAccount =
+  const paperclipAccount = local ? "Local Board" :
     session.data?.user.name?.trim() ||
     session.data?.user.email?.trim() ||
     session.data?.user.id ||
@@ -73,13 +84,7 @@ export function ChatIdentityConfirm() {
             Paperclip permissions in {identity.companyName}.
           </p>
         </div>
-        <Button asChild>
-          <Link
-            to={`/${identity.companyPrefix}/apps/chat/${identity.endpointId}/access`}
-          >
-            Return to connection
-          </Link>
-        </Button>
+        {identity.provider === "slack" && <Button asChild><a href="https://app.slack.com/" target="_blank" rel="noopener noreferrer">Return to Slack</a></Button>}
       </main>
     );
   }
@@ -124,10 +129,17 @@ export function ChatIdentityConfirm() {
           This link could not be confirmed. It may have expired or been revoked.
         </p>
       )}
-      <Button disabled={confirm.isPending} onClick={() => confirm.mutate()}>
+      {identity.canConfirm === false ? (
+        <div className="space-y-3">
+          <p className="text-sm">You need membership in {identity.companyName} before linking this account.</p>
+          {requestAccess.isSuccess ? <p role="status" className="text-sm">Access requested. An admin can approve it in Paperclip. After approval, return here to confirm; if this link expires, send the connect command in Slack again.</p>
+            : <Button disabled={requestAccess.isPending || !identity.selfService} onClick={() => requestAccess.mutate()}>Request access</Button>}
+          {requestAccess.isError && <p role="alert" className="text-sm text-destructive">Couldn&apos;t request access. The link may have expired. Send the connect command again and retry.</p>}
+        </div>
+      ) : <Button disabled={confirm.isPending} onClick={() => confirm.mutate()}>
         {confirm.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
         Confirm identity
-      </Button>
+      </Button>}
     </main>
   );
 }

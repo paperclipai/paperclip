@@ -166,3 +166,20 @@ export async function evaluateMatchers(
     matchers.map((matcher) => evaluateMatcher(matcher, observation)),
   );
 }
+
+
+export function persistedFinalRunMessage(
+  comments: Array<{ id: string; createdByRunId?: string | null; body?: string | null }>,
+  run: { id: string; resultJson?: Record<string, unknown> | null },
+): string {
+  const runComments = comments.filter(comment => comment.createdByRunId === run.id);
+  const decision = run.resultJson?.presentationDecision;
+  const selectedId = decision && typeof decision === "object" && !Array.isArray(decision)
+    ? (decision as Record<string, unknown>).commentId : null;
+  // Read the persisted comment selected for the user, not a finish summary or
+  // attachment preparation message. Missing selected evidence must still fail.
+  if (typeof selectedId === "string") {
+    return runComments.find(comment => comment.id === selectedId)?.body ?? "";
+  }
+  return runComments.map(comment => comment.body ?? "").join("\n");
+}

@@ -154,7 +154,6 @@ describe("chat connector UI contract", () => {
     const setup = source("./ChatEndpointSetup.tsx");
     for (const credential of [
       "botToken",
-      "signingSecret",
       "appId",
       "applicationId",
       "guildId",
@@ -165,7 +164,8 @@ describe("chat connector UI contract", () => {
       expect(setup).toContain(`\"${credential}\"`);
     }
     expect(setup).toContain("credentials.privateKey");
-    expect(setup).toContain("Bring your own Slack app");
+    expect(setup).toContain("credentials.signingSecret");
+    expect(setup).toContain("Create Slack app");
     expect(setup).toContain("Create or connect a GitHub App");
     expect(setup).toContain("create a single-tenant app registration");
     expect(setup).toContain("Create a bot with BotFather");
@@ -246,7 +246,7 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("Only on this account");
     expect(setup).toContain('type="password"');
     expect(setup).not.toContain("WebkitTextSecurity");
-    expect(setup).toContain("Start Slack message test");
+    expect(setup).toContain("Verify Slack connection");
     expect(setup).toContain("member_joined_channel");
     expect(setup).toContain("member_left_channel");
     expect(setup).toContain("channel_left");
@@ -255,8 +255,6 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("group_unarchive");
     expect(setup).toContain("group_rename");
     expect(setup).toContain("app_uninstalled");
-    expect(setup).toContain("Paperclip records Interactivity");
-    expect(setup).toContain("command health only after each signed callback");
     expect(setup).toContain("slackBotNameForAgent");
     expect(setup).not.toContain("- im:write");
     expect(setup).toContain("- reactions:write");

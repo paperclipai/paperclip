@@ -269,9 +269,14 @@ const DECLARED_EXPOSE = {
  * loopback, matching the real managed lane. Readiness then has a real listener
  * to probe, so the lifecycle runs to `ready` exactly as in production.
  */
+// Use the test runner's executable. A login shell can resolve bare `node` to
+// another installation. Keep startup facts in the service log so a readiness
+// failure identifies which executable started and which ports it bound.
+const guestNode = `'${process.execPath.replace(/'/g, "'\\''")}'`;
 const GUEST_COMMAND =
-  "node -e \"const http=require('node:http');const p=Number(process.env.PORT);"
-  + "for(const q of [p,p+10000])http.createServer((_,r)=>{r.statusCode=200;r.end('ok')}).listen(q,'127.0.0.1');"
+  `${guestNode} -e "const http=require('node:http');const p=Number(process.env.PORT);`
+  + "console.log('guest-start',process.execPath,p);"
+  + "for(const q of [p,p+10000])http.createServer((_,r)=>{r.statusCode=200;r.end('ok')}).listen(q,'127.0.0.1',()=>console.log('guest-listening',q));"
   + "setInterval(()=>{},1000)\"";
 
 (embeddedPostgresSupport.supported ? describe : describe.skip)(

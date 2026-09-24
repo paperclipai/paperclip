@@ -454,10 +454,28 @@ describe("AppDetail", () => {
     await flushReact();
   }
 
+  it.each([
+    { transport: "rest_api", config: { sourceTemplateKey: "composio", connectionMethodKey: "api-key" } },
+    { transport: "mcp_remote", config: { provider: "composio", parentConnectionId: "old-parent", toolkitSlug: "github" } },
+  ])("shows replacement and explicit removal for a retired Composio record", async (legacy) => {
+    getConnectionMock.mockResolvedValue(connection({ ...legacy, enabled: false, healthStatus: "error" }));
+    await renderAppDetail();
+    expect(container.textContent).toContain("Connection retired");
+    expect(container.textContent).toContain("Remove each obsolete connection separately");
+    expect(container.textContent).not.toContain("Paused");
+    expect(container.textContent).not.toContain("Refresh actions");
+    const replacement = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Add Composio MCP connection")!;
+    await act(async () => replacement.click());
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=composio");
+    const danger = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Danger zone"))!;
+    await act(async () => danger.click());
+    expect(container.textContent).toContain("Remove app");
+    expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent === "Reconnect")).toBe(false);
+  });
+
   it("uses Permissions as the primary connection page and has no Setup tab", () => {
     expect(APP_TABS.map((tab) => tab.key)).toEqual([
       "permissions",
-      "services",
       "review",
     ]);
   });

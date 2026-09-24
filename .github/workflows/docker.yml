@@ -53,9 +53,8 @@ jobs:
   # ten master commits sampled that day never produced an image at all.
   #
   # Each platform now builds on a runner of its own architecture and pushes by
-  # digest; `merge` assembles the manifest list. arm64 is kept rather than
-  # dropped (the cloud variant below dropped it and is amd64-only) because
-  # this is the self-hosted image, and ARM hosts consume it.
+  # digest; `merge` assembles the manifest list. Both architectures remain
+  # available to self-hosted installations and downstream image composers.
   build-and-push:
     strategy:
       # Independent legs: one architecture failing should still publish
@@ -217,6 +216,7 @@ jobs:
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha
+            type=raw,value=sha-${{ github.sha }},enable=${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
@@ -279,6 +279,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       # Checked out for `packages/db` (schema labels) and the orphan-reaping
       # script the verification step pipes in.
@@ -332,6 +334,7 @@ jobs:
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha
+            type=raw,value=sha-${{ github.sha }},enable=${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
@@ -349,7 +352,7 @@ jobs:
       # until the cgroup pid limit is exhausted and every fork() in the
       # container fails. Run against the pushed manifest rather than a local
       # build: the legs push by digest, so nothing is loaded into this
-      # runner's daemon. The independent cloud workflow checks its own image.
+      # runner's daemon.
       - name: Verify PID 1 reaps orphaned processes
         env:
           # Through the environment, not interpolated into the script body, so
@@ -362,17 +365,28 @@ jobs:
           echo "Verifying orphan reaping in $image"
           docker run --rm -i --pull always "$image" sh -s < scripts/assert-orphan-reaping.sh
 
-  # Master cloud builds start independently in docker-cloud.yml. Tag builds
-  # and manual Docker dispatches call the same implementation, preserving the
-  # release tags and the canary promotion dependency below.
-  build-and-push-cloud:
-    if: github.event_name != 'push' || github.ref != 'refs/heads/master'
-    uses: ./.github/workflows/docker-cloud.yml
-    permissions:
-      contents: read
-      packages: write
+      # This generic contract is useful to any downstream image composer. Only
+      # canonical master pushes own the full-SHA tag and its signed provenance.
+      # Capture exact registry bytes; both the smoke and attestation use their
+      # digest, so later tag movement cannot change what was verified.
+      - name: Resolve standard image digest
+        id: standard
+        if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: node scripts/standard-image-contract.mjs --resolve "$GITHUB_SHA"
+      - name: Verify the immutable standard image
+        if: steps.standard.outputs.digest != ''
+        env:
+          IMAGE_DIGEST: ${{ steps.standard.outputs.digest }}
+        run: docker run --rm -i --pull always "ghcr.io/paperclipai/paperclip@$IMAGE_DIGEST" sh -s < scripts/assert-orphan-reaping.sh
+      - name: Attest the standard production image
+        if: steps.standard.outputs.digest != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ghcr.io/paperclipai/paperclip
+          subject-digest: ${{ steps.standard.outputs.digest }}
+          push-to-registry: true
 
-  # Moves the mutable `:canary` / `:canary-cloud` channel tags. Kept OUT
+  # Moves the mutable `:canary` channel tag. Kept OUT
   # of the build jobs and serialized in its own lane, and — the load-
   # bearing property — CONVERGENT rather than self-interested: a
   # promotion does not promote "its own" canary, it retags the channel
@@ -393,7 +407,7 @@ jobs:
     # merge-and-push, not build-and-push: the per-arch legs push untagged
     # digests, and the production `sha-*` tags this promotion retags only
     # exist once the manifest merge has named them.
-    needs: [merge-and-push, build-and-push-cloud]
+    needs: [merge-and-push]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -422,10 +436,9 @@ jobs:
             exit 0
           fi
           short="$(printf '%s' "$sha" | cut -c1-7)"
-          if ! docker buildx imagetools inspect "$IMAGE:sha-${short}-cloud" >/dev/null 2>&1; then
+          if ! docker buildx imagetools inspect "$IMAGE:sha-${short}" >/dev/null 2>&1; then
             echo "images for ${current} (sha-${short}) not published yet; its own promotion converges the channel"
             exit 0
           fi
           docker buildx imagetools create -t "$IMAGE:canary" "$IMAGE:sha-${short}"
-          docker buildx imagetools create -t "$IMAGE:canary-cloud" "$IMAGE:sha-${short}-cloud"
           echo "channel tags moved to canary ${current} (sha-${short})"

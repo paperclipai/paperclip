@@ -4834,7 +4834,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_tool_results_expose_only_reserved_static_schema_guidance() {
+    fn invalid_tool_results_expose_only_reserved_schema_guidance() {
         let finish_result = schema_rejection(
             "paperclip_finish",
             json!({"secretSubmittedValue": "must-not-appear"}),
@@ -4844,6 +4844,9 @@ mod tests {
         let finish_message = finish_result.result["error"]["message"].as_str().unwrap();
         assert!(finish_message
             .contains("continuation must include kind=response_wake, summary, and idempotencyKey"));
+        assert!(finish_message.contains("/required (missing \"requiredField\")"));
+        assert!(finish_message.contains("/additionalProperties"));
+        assert!(!finish_message.contains("secretSubmittedValue"));
         assert!(finish_message.len() <= 512);
         assert!(!finish_message.chars().any(char::is_control));
         assert!(!finish_result.result.to_string().contains("must-not-appear"));
@@ -4884,7 +4887,7 @@ mod tests {
             CodexProviderConfig {
                 provider: "opencode".to_owned(),
                 driver: "opencode_server".to_owned(),
-                provider_version: "1.18.29".to_owned(),
+                provider_version: "1.18.32".to_owned(),
                 command: PathBuf::from("node"),
                 args: Vec::new(),
                 cwd: std::env::current_dir()
@@ -5245,7 +5248,7 @@ mod tests {
             CodexProviderConfig {
                 provider: "opencode".to_owned(),
                 driver: "opencode_server".to_owned(),
-                provider_version: "1.18.29".to_owned(),
+                provider_version: "1.18.32".to_owned(),
                 command: PathBuf::from("node"),
                 args: Vec::new(),
                 cwd: std::env::current_dir()

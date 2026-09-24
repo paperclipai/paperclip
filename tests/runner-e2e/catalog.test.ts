@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normalizePrpResultSignals } from "../../packages/paperclip-runner/src/protocol/result-normalization.js";
 import {
   connectionReviewSuite,
   runnerEnvironments,
@@ -25,12 +26,41 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("supplies an actionable human review in native warm completion examples", () => {
+    const prompts = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
+    for (const [index, prompt] of prompts.entries()) {
+      const match = prompt.match(/attentionRequests:(\[.*?\]),evidence:/);
+      expect(match).not.toBeNull();
+      const signals = normalizePrpResultSignals({ attentionRequests: JSON.parse(match![1]) });
+      expect(signals.ignoredAttentionRequests).toEqual([]);
+      expect(signals.actionableAttentionRequests).toHaveLength(index === 2 ? 0 : 1);
+      if (index < 2) expect(signals.actionableAttentionRequests[0]).toMatchObject({kind:"review", ownerClass:"human"});
+      expect(prompt).not.toContain("call request_human_input");
+    }
+  });
+
   it("defines sixteen local connection-review journeys without expanding the default matrix", () => {
     expect(connectionReviewSuite.expectedMatrixSize).toBe(16);
     expect(new Set(connectionReviewSuite.profiles.map(profile => profile.id))).toEqual(new Set(["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"]));
     expect(connectionReviewSuite.environments.map(environment => environment.id)).toEqual(["local"]);
     expect(connectionReviewSuite.tasks.map(task => task.toolReviewDecision)).toEqual(["approve", "decline", "always", "restart"]);
     expect(connectionReviewSuite.tasks.every(task => task.flow === "governed_tool_review")).toBe(true);
+  });
+
+  it("tests native chat plans, tasks, and reassignment with production permission defaults", () => {
+    const suite = runnerSuites.find(suite => suite.id === "agent-chat")!;
+    for (const id of ["runner-codex", "runner-acpx-claude"]) {
+      const profile = suite.profiles.find(profile => profile.id === id)!;
+      const payload = profile.buildAgent({
+        executionId: "default-permissions", workspacePath: "/workspace", environmentId: "env-1", environmentFixtureId: "local",
+        secretRefs: {
+          [profile.credential]: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
+        },
+      });
+      expect(payload.adapterConfig).not.toHaveProperty("acpxPermissionMode");
+      expect(payload.adapterConfig).not.toHaveProperty("codexPermissionMode");
+      expect(suite.tasks.map(task => task.id)).toEqual(expect.arrayContaining(["plan-handoff", "reassign-task", "create-backlog"]));
+    }
   });
 
   it("validates the core, local-integrity, breadth, and warm suites", () => {
@@ -41,10 +71,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      22, 38, 52, 24, 42, 14, 10, 2,
+      23, 38, 52, 28, 18, 6, 6, 42, 14, 10, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(204);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(204);
+    expect(validateRunnerCatalog()).toHaveLength(239);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(239);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
@@ -68,7 +98,7 @@ describe("runner E2E catalog", () => {
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(362);
+    ).toBe(371);
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
@@ -561,10 +591,10 @@ describe("runner E2E selectors", () => {
     const jobs = buildMatrixJobs(
       selectRunnerExecutions(parseRunnerSelectors(["--all"])),
     );
-    expect(jobs).toHaveLength(166);
+    expect(jobs).toHaveLength(171);
     expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(23);
-    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(143);
-    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(166);
+    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(148);
+    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(171);
     expect(
       jobs.find(
         (job) =>

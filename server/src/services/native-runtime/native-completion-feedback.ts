@@ -8,6 +8,7 @@ import {
   approvals,
   agents,
   heartbeatRuns,
+  completionContracts,
   issueApprovals,
   issueThreadInteractions,
   issues,
@@ -54,6 +55,27 @@ export async function nativeCompletionFeedback(
     return review?.interaction.status === "pending"
       ? "Review blocker recorded. Paperclip will preserve the task and record the reviewer recovery action."
       : "Review report accepted. The recorded review decision controls task completion; this report cannot override it.";
+  }
+  // Bind feedback to this run, not the first contract from a reused session or
+  // an unrelated newer run. Reject before admitting the result so the provider
+  // can correct the report in the same turn.
+  if (run.completionContractId) {
+    const contract = await db.select().from(completionContracts).where(and(
+      eq(completionContracts.id, run.completionContractId),
+      eq(completionContracts.companyId, run.companyId),
+      eq(completionContracts.issueId, issue.id),
+    )).then((rows) => rows[0]);
+    if (!contract) throw new Error("Completion report's bound contract no longer exists.");
+    const current = contract.contractJson as { revision?: string; criteria?: Array<{ id: string }> };
+    if (result.completionClaim.contractRevision !== current.revision) {
+      throw new Error(`Stale completionClaim.contractRevision. This turn requires ${JSON.stringify(current.revision)} with criterion IDs ${JSON.stringify(current.criteria?.map((c) => c.id) ?? [])}. Reassess the current request and resubmit your report with that revision; do not repeat completed work.`);
+    }
+    const expected = current.criteria?.map((criterion) => criterion.id) ?? [];
+    const received = result.completionClaim.criteria.map((criterion) => criterion.criterionId);
+    if (received.length !== expected.length || new Set(received).size !== received.length || received.some((id) => !expected.includes(id))) {
+      throw new Error(`completionClaim.criteria must contain exactly these criterion IDs, once each: ${JSON.stringify(expected)}. Keep contractRevision ${JSON.stringify(current.revision)} and correct the report without repeating completed work.`);
+    }
+
   }
   const signals = normalizePrpResultSignals(result);
   if (

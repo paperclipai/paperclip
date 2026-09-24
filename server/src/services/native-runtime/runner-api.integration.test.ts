@@ -27,9 +27,9 @@ describe("runner API against real HTTP routes", () => {
     else process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = oldEnabled;
   });
 
-  it.skipIf(!process.env.PAPERCLIP_REQUIRE_RUNNER_API_INTEGRATION && !existsSync(defaultCapabilityRunnerdBinary()))("runs runnerd → PRP → authority → actual authenticated HTTP", async () => {
+  it.skipIf(!process.env.PAPERCLIP_REQUIRE_RUNNER_API_INTEGRATION && !existsSync(defaultCapabilityRunnerdBinary())).each(["current", "legacy_http"])("runs runnerd → PRP → authority → actual authenticated HTTP (%s receipt)", async (receiptFormat) => {
     const fixture = await server.fixture();
-    const provider = join(server.root, "scripted-api-provider.mjs");
+    const provider = join(server.root, `scripted-api-provider-${receiptFormat}.mjs`);
     await writeFile(provider, `#!${process.execPath}
 import { createInterface } from 'node:readline';
 const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
@@ -38,7 +38,16 @@ const calls = [{tool:'search_api',arguments:{query:'list projects'}},{tool:'call
 const next = () => { const c=calls[step++]; if(c) send({id:'call-'+step,method:'item/tool/call',params:{threadId:'api-thread',turnId:'api-turn',itemId:'api-item-'+step,callId:'api-call-'+step,...c}}); else send({method:'turn/completed',params:{turn:{id:'api-turn',status:'completed'}}}); };
 for await (const line of createInterface({input:process.stdin})) {
 const m=JSON.parse(line);
-if(!m.method) {if(String(m.id).startsWith('call-')) next(); continue;}
+if(!m.method) {if(String(m.id).startsWith('call-')) {
+  if(step > 1) {
+    const envelope=JSON.parse(m.result.contentItems[0].text);
+    if(envelope.operationId!=='call_api'||envelope.callId!=='api-call-'+step) throw new Error('API receipt lost semantic call identity');
+    const receipt=envelope.result;
+    if(step===2 && (receipt.status!==200||receipt.data[0].name!=='Aurora')) throw new Error('Provider did not receive successful HTTP result');
+    if(step===3 && (receipt.status!==404||receipt.ok!==false)) throw new Error('Provider did not receive HTTP denial');
+  }
+  next();
+} continue;}
 if(m.method==='initialize') send({id:m.id,result:{userAgent:'scripted-api-provider'}});
 else if(m.method==='thread/start') send({id:m.id,result:{thread:{id:'api-thread',sessionId:'api-session'}}});
 else if(m.method==='turn/start') {send({id:m.id,result:{turn:{id:'api-turn',status:'inProgress'}}});send({method:'turn/started',params:{turn:{id:'api-turn'}}});next();}
@@ -48,7 +57,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     await chmod(provider, 0o700);
     const bundle = createRunnerdCodexTransport({
       runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: provider, codexArgs: [],
-      stateDirectory: join(server.root, "scripted-runner"), lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      stateDirectory: join(server.root, `scripted-runner-${receiptFormat}`), lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
       prpIdentity: { runnerInstanceId: "api-test", environmentLeaseId: "api-test-lease", runId: fixture.runId, normalizedSessionId: "api-test-session", turnId: "api-test-turn", itemId: "api-test-item" },
       controlPlaneRegistration: prp => registerRunnerPrpAuthority({ companyId: fixture.companyId, runId: fixture.runId, authority: prp }),
     });
@@ -59,7 +68,11 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
       results.push(result);
       // Match production's dynamicToolResponse: an extra test-only envelope
       // hides collisions between API response fields and PRP tool identity.
-      return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
+      const { apiOperationId, ...receipt } = result as Record<string, unknown>;
+      const wireResult = receiptFormat === "legacy_http" && params.tool === "call_api"
+        ? { ...receipt, operationId: apiOperationId }
+        : result;
+      return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(wireResult) }] };
     });
     try {
       await bundle.transport.request("initialize", {});
@@ -273,6 +286,8 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(treatment.issueId).toBe(baseline.issueId);
     expect((await treatment.snapshot()).issues[0].billingCode).toBeNull();
     const originalTools = (await baseline.authority.definitions()).map(tool => tool.name);
-    expect((await treatment.authority.definitions()).filter(tool => !["call_api", "search_api"].includes(String(tool.name))).map(tool => tool.name)).toEqual(originalTools);
+    const treatmentTools = (await treatment.authority.definitions()).map(tool => tool.name);
+    expect(treatmentTools.filter(name => !originalTools.includes(name))).toEqual(["hire_agent", "search_api", "call_api"]);
+    expect(treatmentTools.filter(name => !["hire_agent", "search_api", "call_api"].includes(String(name)))).toEqual(originalTools);
   });
 });

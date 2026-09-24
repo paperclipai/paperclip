@@ -1,3 +1,4 @@
+import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import type { Issue, ExecutionWorkspace } from "@paperclipai/shared";
@@ -193,6 +194,7 @@ export function IssueWorkspaceCard({
   onBrowseFiles,
   onOpenFileByPath,
 }: IssueWorkspaceCardProps) {
+  const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
@@ -236,7 +238,7 @@ export function IssueWorkspaceCard({
         projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
         reuseEligible: true,
       }),
-    enabled: Boolean(companyId) && Boolean(issue.projectId) && editing,
+    enabled: Boolean(companyId) && Boolean(issue.projectId) && editing && workspaceIsolationControlsVisible,
   });
 
   const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
@@ -306,15 +308,15 @@ export function IssueWorkspaceCard({
   ]);
 
   useEffect(() => {
-    if (!onDraftChange) return;
+    if (!onDraftChange || !workspaceIsolationControlsVisible) return;
     onDraftChange(buildWorkspaceDraftUpdate(), {
       canSave: canSaveWorkspaceConfig,
       workspaceBranchName: draftWorkspaceBranchName,
     });
-  }, [buildWorkspaceDraftUpdate, canSaveWorkspaceConfig, draftWorkspaceBranchName, onDraftChange]);
+  }, [buildWorkspaceDraftUpdate, canSaveWorkspaceConfig, draftWorkspaceBranchName, onDraftChange, workspaceIsolationControlsVisible]);
 
   const handleSave = useCallback(() => {
-    if (!canSaveWorkspaceConfig) return;
+    if (!canSaveWorkspaceConfig || !workspaceIsolationControlsVisible) return;
     const update = buildWorkspaceDraftUpdate();
     if (!update) return;
     onUpdate(update);
@@ -322,6 +324,7 @@ export function IssueWorkspaceCard({
   }, [
     buildWorkspaceDraftUpdate,
     canSaveWorkspaceConfig,
+    workspaceIsolationControlsVisible,
     onUpdate,
   ]);
 
@@ -333,7 +336,7 @@ export function IssueWorkspaceCard({
 
   if (!policyEnabled || !project) return null;
 
-  const showEditingControls = livePreview || editing;
+  const showEditingControls = workspaceIsolationControlsVisible && (livePreview || editing);
 
   return (
     <div className="rounded-lg border border-border p-3 space-y-2">
@@ -346,37 +349,39 @@ export function IssueWorkspaceCard({
             : configuredWorkspaceLabel(currentSelection, selectedReusableExecutionWorkspace)}
           {workspace ? statusBadge(workspace.status) : statusBadge("idle")}
         </div>
-        <div className="flex items-center gap-1">
-          {showEditingControls ? (
-            <>
+        {workspaceIsolationControlsVisible && (
+          <div className="flex items-center gap-1">
+            {showEditingControls ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs text-muted-foreground"
+                  onClick={handleCancel}
+                >
+                  <X className="h-3 w-3 mr-1" />Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  onClick={handleSave}
+                  disabled={!canSaveWorkspaceConfig}
+                >
+                  Save
+                </Button>
+              </>
+            ) : (
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-6 px-2 text-xs text-muted-foreground"
-                onClick={handleCancel}
+                onClick={() => setEditing(true)}
               >
-                <X className="h-3 w-3 mr-1" />Cancel
+                <Pencil className="h-3 w-3 mr-1" />Edit
               </Button>
-              <Button
-                size="sm"
-                className="h-6 px-2 text-xs"
-                onClick={handleSave}
-                disabled={!canSaveWorkspaceConfig}
-              >
-                Save
-              </Button>
-            </>
-          ) : (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-xs text-muted-foreground"
-              onClick={() => setEditing(true)}
-            >
-              <Pencil className="h-3 w-3 mr-1" />Edit
-            </Button>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Read-only info */}
@@ -448,7 +453,7 @@ export function IssueWorkspaceCard({
       )}
 
       {/* Editing controls */}
-      {editing && (
+      {editing && workspaceIsolationControlsVisible && (
         <div className="space-y-2 pt-1">
           <select
             className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
