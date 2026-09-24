@@ -1,3 +1,4 @@
+import { IssueContextMenu } from "./IssueContextMenu";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
@@ -2153,8 +2154,8 @@ function StreamlinedIssuesList({
                   ) : null;
 
                   return (
+                    <IssueContextMenu key={issue.id} issue={issue}>
                     <div
-                      key={issue.id}
                       data-issue-row-id={issue.id}
                       // Canonical rows use the same tree-guide slots at every width.
                       className={rowPresentation === "legacy" && depth > 0 ? MOBILE_TREE_INDENT[Math.min(depth, MOBILE_TREE_INDENT.length - 1)] : undefined}
@@ -2427,6 +2428,7 @@ function StreamlinedIssuesList({
                         )}
                       />
                     </div>
+                    </IssueContextMenu>
                   );
                 };
 

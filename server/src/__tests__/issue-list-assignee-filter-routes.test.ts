@@ -614,6 +614,72 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(second.headers["x-paperclip-request-cache"]).toBe("hit");
   });
 
+  it("invalidates compact lists after update and deletion only for the affected company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const issueId = randomUUID();
+    for (const id of [companyId, otherCompanyId]) {
+      await db.insert(companies).values({ id, name: "Context menu cache", issuePrefix: uniqueIssuePrefix() });
+      await seedCloudTenantMember(id);
+    }
+    await db.insert(issues).values({ id: issueId, companyId, title: "Move and delete", status: "todo", priority: "medium" });
+    const app = createApp(companyId);
+    const otherApp = createApp(otherCompanyId);
+    const read = () => request(app).get(`/api/companies/${companyId}/issues`).query({ view: "compact" });
+    const readOther = () => request(otherApp).get(`/api/companies/${otherCompanyId}/issues`).query({ view: "compact" });
+    expect((await read()).body[0].status).toBe("todo");
+    await readOther();
+
+    await request(app).patch(`/api/issues/${issueId}`).send({ status: "backlog" }).expect(200);
+    const updated = await read();
+    expect(updated.headers["x-paperclip-request-cache"]).toBe("miss");
+    expect(updated.body[0].status).toBe("backlog");
+    expect((await readOther()).headers["x-paperclip-request-cache"]).toBe("hit");
+
+    await request(app).delete(`/api/issues/${issueId}`).expect(200);
+    const deleted = await read();
+    expect(deleted.headers["x-paperclip-request-cache"]).toBe("miss");
+    expect(deleted.body).toEqual([]);
+    expect((await readOther()).headers["x-paperclip-request-cache"]).toBe("hit");
+  });
+
+  it("does not reuse or cache a compact read started before an update", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "In-flight cache", issuePrefix: uniqueIssuePrefix() });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Concurrent move", status: "todo", priority: "medium" });
+    let started!: () => void;
+    let release!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+    const firstReleased = new Promise<void>((resolve) => { release = resolve; });
+    let computeCount = 0;
+    const app = createApp(companyId, {
+      issueListDiagnostics: {
+        async onComputeStart() {
+          if (++computeCount === 1) { started(); await firstReleased; }
+        },
+      },
+    });
+    const read = () => request(app).get(`/api/companies/${companyId}/issues`).query({ view: "compact" });
+    const first = read().then((response) => response);
+    await firstStarted;
+    try {
+      await request(app).patch(`/api/issues/${issueId}`).send({ status: "backlog" }).expect(200);
+      const next = await read();
+      expect(next.headers["x-paperclip-request-cache"]).toBe("miss");
+      expect(next.body[0].status).toBe("backlog");
+      await request(app).patch(`/api/issues/${issueId}`).send({ status: "todo" }).expect(200);
+    } finally {
+      release();
+      await first;
+    }
+    const final = await read();
+    expect(final.headers["x-paperclip-request-cache"]).toBe("miss");
+    expect(final.body[0].status).toBe("todo");
+    expect(computeCount).toBe(3);
+  });
+
   it("bounds compact issue-list server cache entries", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
