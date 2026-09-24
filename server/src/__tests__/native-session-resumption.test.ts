@@ -522,6 +522,17 @@ describe("P6-25 pre-result native session recovery", () => {
       .where(eq(issueRecoveryActions.sourceIssueId, issueId))).resolves.toEqual([
       expect.objectContaining({ cause: "native_session_interrupted", wakePolicy: null }),
     ]);
+    await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
+      expect.objectContaining({
+        status: "blocked",
+        blockedTransitionAt: expect.any(Date),
+        unblockDescriptor: {
+          owner: "board",
+          action:
+            "Inspect the original provider failure and explicitly resolve recovery; do not open a duplicate provider session.",
+        },
+      }),
+    ]);
   });
 
   it("does not mistake the pre-first-attempt observed coordinator for an orphan", async () => {

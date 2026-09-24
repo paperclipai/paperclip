@@ -19,6 +19,7 @@ import { buildExecutionContinuation } from "./execution-continuation.js";
 import {
   EXECUTION_RECONCILIATION_CAUSES,
   type ExecutionReconciliation,
+  type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
@@ -482,10 +483,17 @@ export async function settleUnrecoverableExecutions(
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         if (current) {
+          const unblockAction = task.unblockDescriptor?.action?.trim() || note;
+          const unblockDescriptor: IssueUnblockDescriptor = {
+            owner: "board",
+            action: unblockAction,
+          };
           const [projected] = await tx
             .update(issues)
             .set({
               status: "blocked",
+              unblockDescriptor,
+              blockedTransitionAt: task.status === "blocked" ? task.blockedTransitionAt : now,
               executionRunId: null,
               checkoutRunId: null,
               updatedAt: now,

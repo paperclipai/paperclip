@@ -4,7 +4,7 @@ import { currentConversationCommentCondition } from "../../../services/agent-con
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
+import { extractIssueReferenceIdentifiers, type IssueUnblockDescriptor } from "@paperclipai/shared";
 import {
   activityLog,
   agentWakeupRequests,
@@ -735,8 +735,17 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     )
     .limit(1);
   let nativeFailureBlock: { runId: string; statusVersion: number } | undefined;
+  const unblockAction =
+    "Inspect the original failure and reconcile the previous execution before continuing. Automatic recovery cannot start another incident.";
   if (issue.status !== "blocked") {
-    const projected = await issueService(tx).update(issue.id, { status: "blocked" }, tx);
+    const projected = await issueService(tx).update(
+      issue.id,
+      {
+        status: "blocked",
+        unblockDescriptor: { owner: "board", action: unblockAction } satisfies IssueUnblockDescriptor,
+      },
+      tx,
+    );
     if (projected) {
       nativeFailureBlock = { runId: run.id, statusVersion: projected.statusVersion };
       await tx.insert(activityLog).values({
@@ -783,8 +792,7 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
       cause: "native_continuation_requires_reconciliation",
       fingerprint: `native-continuation:${run.id}`,
       evidence: { runId: run.id, originalFailureCode: run.errorCode, ...(nativeFailureBlock ? { nativeFailureBlock } : {}) },
-      nextAction:
-        "Inspect the original failure and reconcile the previous execution before continuing. Automatic recovery cannot start another incident.",
+      nextAction: unblockAction,
       maxAttempts: 3,
       wakePolicy: null,
       supersedeOnIdentityChange: true,

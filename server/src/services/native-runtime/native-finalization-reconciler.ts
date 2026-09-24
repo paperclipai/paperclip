@@ -1,6 +1,7 @@
 import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
+import type { IssueUnblockDescriptor } from "@paperclipai/shared";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -467,9 +468,14 @@ export async function claimNativeSessionResumptions(input: {
         // both "running" and "failed") must not send a second Sentry event.
         terminalRunToEmit =
           updatedRun && updatedRun.status !== row.run.status ? updatedRun : null;
+        const unblockAction =
+          "Inspect the original provider failure and explicitly resolve recovery; do not open a duplicate provider session.";
         await issueService(tx as unknown as Db).update(
           row.coordinator.issueId,
-          { status: "blocked" },
+          {
+            status: "blocked",
+            unblockDescriptor: { owner: "board", action: unblockAction } satisfies IssueUnblockDescriptor,
+          },
           tx,
         );
         await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
@@ -488,7 +494,7 @@ export async function claimNativeSessionResumptions(input: {
             providerEventsExist: providerEvent !== null,
             originalFailureCode,
           },
-          nextAction: "Inspect the original provider failure and explicitly resolve recovery; do not open a duplicate provider session.",
+          nextAction: unblockAction,
           wakePolicy: null,
           maxAttempts: 3,
           supersedeOnIdentityChange: true,

@@ -356,8 +356,16 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const entries = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
     if (status === "in_progress") {
       expect(blockedIssue.blockedTransitionAt).not.toBeNull();
+      expect(blockedIssue.unblockDescriptor).toEqual({
+        owner: "board",
+        action:
+          "Inspect the original failure and reconcile the previous execution before continuing. Automatic recovery cannot start another incident.",
+      });
       expect(entries[0]).toMatchObject({ action: "issue.updated", details: { status: "blocked", previousStatus: "in_progress" } });
-    } else expect(entries).toHaveLength(0);
+    } else {
+      expect(blockedIssue.unblockDescriptor).toBeNull();
+      expect(entries).toHaveLength(0);
+    }
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].status).toBe("deferred_issue_execution");
     const action = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0];
     expect(action).toMatchObject({ ownerType: "board", cause: "native_continuation_requires_reconciliation" });
@@ -386,6 +394,10 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await release();
     const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(blocked.status).toBe("blocked");
+    expect(blocked.unblockDescriptor).toEqual({
+      owner: "board",
+      action: "Verify whether email-1 was sent before continuing.",
+    });
     const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
     expect(actions).toHaveLength(1);
     expect(actions[0]).toMatchObject({ id: existing.id, status, cause: existing.cause,
