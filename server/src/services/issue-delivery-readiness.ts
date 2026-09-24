@@ -83,7 +83,7 @@ function combinedRegressionState(evidence: DeliveryEvidence): "missing" | "faile
 
 export function evaluateIssueDoneDeliveryReadiness(input: {
   primaryWorkProduct: DeliveryWorkProduct | null;
-  hasAnyCodeWorkProduct?: boolean;
+  hasActiveCodeWorkProduct?: boolean;
   hasIsolatedGitWorkspace: boolean;
   workspaceDeliveryState?: ExecutionWorkspaceDeliveryState | null;
   workspaceGit?: ExecutionWorkspaceCloseGitReadiness | null;
@@ -95,11 +95,19 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
   const primaryIsCode = Boolean(
     input.primaryWorkProduct && CODE_WORK_PRODUCT_TYPES.has(input.primaryWorkProduct.type),
   );
-  const hasAnyCodeWorkProduct = input.hasAnyCodeWorkProduct ?? primaryIsCode;
+  const hasActiveCodeWorkProduct = input.hasActiveCodeWorkProduct ?? primaryIsCode;
+  const hasVerifiedNoMergeDisposition = hasExplicitNoMergeDisposition(input.primaryWorkProduct);
+  const workspaceGit = input.workspaceGit;
+  const cleanUnchangedWorkspace = input.hasIsolatedGitWorkspace
+    && input.workspaceGitInspectionSucceeded === true
+    && workspaceGit != null
+    && workspaceGit.hasDirtyTrackedFiles === false
+    && workspaceGit.hasUntrackedFiles === false
+    && workspaceGit.aheadCount === 0;
   if (
-    !hasAnyCodeWorkProduct
-    && !input.hasIsolatedGitWorkspace
-    && hasExplicitNoMergeDisposition(input.primaryWorkProduct)
+    !hasActiveCodeWorkProduct
+    && hasVerifiedNoMergeDisposition
+    && (!input.hasIsolatedGitWorkspace || cleanUnchangedWorkspace)
   ) {
     return {
       required: false,
@@ -108,13 +116,13 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
       reasonCodes: [],
     };
   }
-  const required = hasAnyCodeWorkProduct || input.hasIsolatedGitWorkspace;
+  const required = hasActiveCodeWorkProduct || input.hasIsolatedGitWorkspace;
 
   if (!required) {
     return {
       required: false,
       ready: true,
-      disposition: hasExplicitNoMergeDisposition(input.primaryWorkProduct)
+      disposition: hasVerifiedNoMergeDisposition
         ? "no_merge"
         : "not_applicable",
       reasonCodes: [],

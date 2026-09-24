@@ -1350,14 +1350,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           issueId: workspace.sourceIssueId,
         })(remoteUrl).catch(() => null);
         const targetRef = `refs/remotes/paperclip-readiness/${remoteBranch}`;
-        await runGit([
-          ...(auth?.configArgs ?? ["-c", "credential.helper="]),
-          "fetch",
-          "--quiet",
-          "--no-tags",
-          remoteUrl,
-          `+refs/heads/${remoteBranch}:${targetRef}`,
-        ], repoRoot, {
+        await workspaceGitOperationScheduler.run({
+          workspacePath: repoRoot,
+          operation: "delivery_readiness_target_refresh",
+          fairnessKeys: [workspace.companyId, `workspace:${workspace.id}`],
+          cacheTtlMs: 0,
+          args: [
+            ...(auth?.configArgs ?? ["-c", "credential.helper="]),
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            remoteUrl,
+            `+refs/heads/${remoteBranch}:${targetRef}`,
+          ],
           env: {
             ...process.env,
             GIT_TERMINAL_PROMPT: "0",
@@ -1953,7 +1958,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .then((rows) => rows[0] ?? null);
     if (!issue) return null;
 
-    const [primaryWorkProducts, anyCodeWorkProduct] = await Promise.all([
+    const [primaryWorkProducts, activeCodeWorkProduct] = await Promise.all([
       db
         .select()
         .from(issueWorkProducts)
@@ -1971,11 +1976,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           eq(issueWorkProducts.companyId, issue.companyId),
           eq(issueWorkProducts.issueId, issue.id),
           inArray(issueWorkProducts.type, [...CODE_WORK_PRODUCT_TYPES]),
+          inArray(issueWorkProducts.status, [
+            "active",
+            "ready_for_review",
+            "approved",
+            "changes_requested",
+            "draft",
+          ]),
         ))
         .limit(1)
         .then((rows) => rows[0] ?? null),
     ]);
-    const hasAnyCodeWorkProduct = Boolean(anyCodeWorkProduct);
+    const hasActiveCodeWorkProduct = Boolean(activeCodeWorkProduct);
     const primaryWorkProduct = primaryWorkProducts.find((product) =>
       CODE_WORK_PRODUCT_TYPES.has(product.type)
     ) ?? primaryWorkProducts[0] ?? null;
@@ -1991,7 +2003,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     if (!hasIsolatedGitWorkspace || !workspace) {
       return evaluateIssueDoneDeliveryReadiness({
         primaryWorkProduct,
-        hasAnyCodeWorkProduct,
+        hasActiveCodeWorkProduct,
         hasIsolatedGitWorkspace: false,
         issueStatus: issue.status,
         reviewPolicy: issue.reviewPolicy,
@@ -2005,7 +2017,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     });
     return evaluateIssueDoneDeliveryReadiness({
       primaryWorkProduct,
-      hasAnyCodeWorkProduct,
+      hasActiveCodeWorkProduct,
       hasIsolatedGitWorkspace: true,
       workspaceDeliveryState: assessment.deliveryState,
       workspaceGit: inspection.git,

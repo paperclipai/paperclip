@@ -209,7 +209,7 @@ describe("issue Done delivery readiness", () => {
     })).toMatchObject({ required: false, ready: true, disposition: "no_merge" });
   });
 
-  it("does not let no-merge metadata bypass code products or a Git workspace", () => {
+  it("does not let no-merge metadata bypass active code products", () => {
     const product = primary({
       type: "document",
       metadata: {
@@ -226,13 +226,88 @@ describe("issue Done delivery readiness", () => {
     });
     expect(evaluateIssueDoneDeliveryReadiness({
       primaryWorkProduct: product,
-      hasAnyCodeWorkProduct: true,
+      hasActiveCodeWorkProduct: true,
       hasIsolatedGitWorkspace: false,
     })).toMatchObject({ required: true, ready: false });
+  });
+
+  it("accepts verified no-merge for a clean isolated workspace with no commits ahead", () => {
+    const product = primary({
+      type: "document",
+      metadata: {
+        deliveryDisposition: {
+          kind: "no_merge",
+          reason: "Analysis only.",
+          verifiedBy: {
+            kind: "instance_admin",
+            actorId: "local-board",
+            verifiedAt: "2026-09-15T12:00:00.000Z",
+          },
+        },
+      },
+    });
     expect(evaluateIssueDoneDeliveryReadiness({
       primaryWorkProduct: product,
-      hasAnyCodeWorkProduct: false,
+      hasActiveCodeWorkProduct: false,
       hasIsolatedGitWorkspace: true,
+      workspaceGitInspectionSucceeded: true,
+      workspaceGit: {
+        repoRoot: "/repo",
+        workspacePath: "/repo/worktree",
+        branchName: "analysis",
+        baseRef: "main",
+        hasDirtyTrackedFiles: false,
+        hasUntrackedFiles: false,
+        dirtyEntryCount: 0,
+        untrackedEntryCount: 0,
+        aheadCount: 0,
+        behindCount: 0,
+        isMergedIntoBase: false,
+        isPatchEquivalentToBase: false,
+        createdByRuntime: true,
+      },
+    })).toMatchObject({ required: false, ready: true, disposition: "no_merge" });
+  });
+
+  it.each([
+    { label: "ahead", aheadCount: 1, dirty: false, inspected: true },
+    { label: "dirty", aheadCount: 0, dirty: true, inspected: true },
+    { label: "unverified", aheadCount: 0, dirty: false, inspected: false },
+  ])("rejects verified no-merge for a $label isolated workspace", ({ aheadCount, dirty, inspected }) => {
+    const product = primary({
+      type: "document",
+      metadata: {
+        deliveryDisposition: {
+          kind: "no_merge",
+          reason: "Analysis only.",
+          verifiedBy: {
+            kind: "system",
+            actorId: "delivery-reconciler",
+            verifiedAt: "2026-09-15T12:00:00.000Z",
+          },
+        },
+      },
+    });
+    expect(evaluateIssueDoneDeliveryReadiness({
+      primaryWorkProduct: product,
+      hasActiveCodeWorkProduct: false,
+      hasIsolatedGitWorkspace: true,
+      workspaceGitInspectionSucceeded: inspected,
+      workspaceGit: {
+        repoRoot: "/repo",
+        workspacePath: "/repo/worktree",
+        branchName: "analysis",
+        baseRef: "main",
+        hasDirtyTrackedFiles: dirty,
+        hasUntrackedFiles: false,
+        dirtyEntryCount: dirty ? 1 : 0,
+        untrackedEntryCount: 0,
+        aheadCount,
+        behindCount: 0,
+        isMergedIntoBase: false,
+        isPatchEquivalentToBase: false,
+        createdByRuntime: true,
+      },
     })).toMatchObject({ required: true, ready: false });
   });
 
