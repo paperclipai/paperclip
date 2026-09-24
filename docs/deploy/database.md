@@ -88,3 +88,11 @@ The server ends its pools during shutdown (SIGINT/SIGTERM) and when startup fail
 | `postgres://...supabase.com...` | Hosted Supabase |
 
 The Drizzle schema (`packages/db/src/schema/`) is the same regardless of mode.
+
+## Backups
+
+`paperclipai db:backup` takes a one-off logical dump using the current config.
+
+A database dump is never a complete deployment backup on its own — the secrets
+master key and every run log live outside the database. What a backup covers, and
+how to restore one, is in [Backup And Restore](/deploy/backup-restore).
