@@ -103,6 +103,11 @@ const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) 
   select: (selection: Record<string, unknown>) => ({
     from: () => ({
       where: () => {
+        if (Object.keys(selection).includes("sourceIssueId")) {
+          return { limit: async () => mockCrossIssueInfluence.inserted
+            .filter((row) => row.action === "issue.cross_issue_influence_source_bound")
+            .map((row) => ({ sourceIssueId: row.entityId })) };
+        }
         if (Object.keys(selection).includes("count")) {
           return {
             then: (resolve: (rows: unknown[]) => unknown) =>

@@ -66,18 +66,19 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     return { companyId, agentId, runId, targetIssueId, now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT };
   }
 
-  it("exempts a manual run's held issue and counts later writes after completion", async () => {
+  it("binds a manual run's held issue and preserves its source after completion", async () => {
     const input = await seedTasklessRun();
     for (const kind of ["comment", "update", "interaction_resolution"] as const) {
       expect(await observeCrossIssueInfluence(db, { ...input, kind })).toBeNull();
     }
-    expect(await db.select().from(activityLog)).toHaveLength(0);
+    expect(await db.select().from(activityLog)).toHaveLength(1);
     await db.update(issues).set({ status: "done", checkoutRunId: null, executionRunId: null })
       .where(eq(issues.id, input.targetIssueId));
     expect(await observeCrossIssueInfluence(db, { ...input, kind: "comment" }))
-      .toMatchObject({ allowed: true, count: 1 });
+      .toBeNull();
     const [receipt] = await db.select().from(activityLog);
-    expect(receipt.details).toMatchObject({ sourceIssueId: null, targetIssueId: input.targetIssueId });
+    expect(receipt.action).toBe("issue.cross_issue_influence_source_bound");
+    expect(receipt.details).toMatchObject({ sourceIssueId: input.targetIssueId });
   });
 
   it.each(["checkoutRunId", "executionRunId"] as const)(
@@ -127,6 +128,59 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     ]);
     expect(decisions.map((decision) => decision?.allowed).sort()).toEqual([false, true]);
     expect(decisions.map((decision) => decision?.count).sort()).toEqual([20, 21]);
+  });
+
+  it("pins one source when a taskless run holds multiple issues concurrently", async () => {
+    const input = await seedTasklessRun();
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId: input.companyId,
+      title: "Second checkout",
+      status: "in_progress",
+      assigneeAgentId: input.agentId,
+      checkoutRunId: input.runId,
+      executionRunId: input.runId,
+    });
+    const decisions = await Promise.all([
+      observeCrossIssueInfluence(db, { ...input, kind: "comment" }),
+      observeCrossIssueInfluence(db, { ...input, targetIssueId: otherIssueId, kind: "update" }),
+    ]);
+    expect(decisions.filter((decision) => decision === null)).toHaveLength(1);
+    expect(decisions.filter((decision) => decision !== null)).toEqual([
+      expect.objectContaining({ allowed: true, count: 1 }),
+    ]);
+    const receipts = await db.select().from(activityLog);
+    const bindings = receipts.filter((row) => row.action === "issue.cross_issue_influence_source_bound");
+    expect(bindings).toHaveLength(1);
+    const sourceIssueId = bindings[0]!.entityId;
+    const countedIssueId = sourceIssueId === input.targetIssueId ? otherIssueId : input.targetIssueId;
+
+    // Later snapshot writes and release must not move the guard's source.
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: countedIssueId } })
+      .where(eq(heartbeatRuns.id, input.runId));
+    await db.update(issues).set({ assigneeAgentId: null, checkoutRunId: null, executionRunId: null })
+      .where(eq(issues.id, sourceIssueId));
+    expect(await observeCrossIssueInfluence(db, { ...input, targetIssueId: sourceIssueId, kind: "comment" }))
+      .toBeNull();
+    expect(await observeCrossIssueInfluence(db, { ...input, targetIssueId: countedIssueId, kind: "comment" }))
+      .toMatchObject({ allowed: true, count: 2 });
+  });
+
+  it("counts a concurrently released issue without binding stale ownership", async () => {
+    const input = await seedTasklessRun();
+    await db.transaction(async (tx) => {
+      await tx.update(issues).set({ assigneeAgentId: null, checkoutRunId: null, executionRunId: null })
+        .where(eq(issues.id, input.targetIssueId));
+      expect(await observeCrossIssueInfluence(db, { ...input, kind: "comment" }))
+        .toMatchObject({ allowed: true, count: 1 });
+    });
+    const receipts = await db.select().from(activityLog);
+    expect(receipts.map((row) => row.action)).toEqual([
+      "issue.cross_issue_influence_observed",
+    ]);
+    expect(await observeCrossIssueInfluence(db, { ...input, kind: "update" }))
+      .toMatchObject({ allowed: true, count: 2 });
   });
 
   it("allows exactly one of concurrent attempts 20 and 21", async () => {

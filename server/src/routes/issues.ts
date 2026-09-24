@@ -7896,15 +7896,15 @@ export function issueRoutes(
     const startedAt = Date.now();
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    if (req.query.assigneeId !== undefined) {
-      res.status(400).json({
-        error: "assigneeId is not supported. Use assigneeAgentId or assigneeUserId.",
-      });
-      return;
-    }
     if (isTaskBridgeKeyActor(req)) {
       res.status(403).json({
         error: "Task bridge keys cannot use company-wide issue list APIs",
+      });
+      return;
+    }
+    if (req.query.assigneeId !== undefined) {
+      res.status(400).json({
+        error: "assigneeId is not supported. Use assigneeAgentId or assigneeUserId.",
       });
       return;
     }

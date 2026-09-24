@@ -20,7 +20,12 @@ function counterDb(
       from: (table: unknown) => ({
         where: () => {
           if (table === issues) {
-            return { limit: async () => checkedOutIssueId ? [{ id: checkedOutIssueId }] : [] };
+            return { limit: () => ({ for: async () => checkedOutIssueId ? [{ id: checkedOutIssueId }] : [] }) };
+          }
+          if (Object.keys(selection).includes("sourceIssueId")) {
+            return { limit: async () => inserted
+              .filter((row) => row.action === "issue.cross_issue_influence_source_bound")
+              .map((row) => ({ sourceIssueId: row.entityId })) };
           }
           if (Object.keys(selection).includes("count")) {
             return {
@@ -229,7 +234,10 @@ describe("cross-issue influence limit rollout", () => {
         agentId: "33333333-3333-4333-8333-333333333333",
         targetIssueId: issueId, kind, now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
       })).resolves.toBeNull();
-      expect(fake.inserted).toEqual([]);
+      expect(fake.inserted).toEqual([expect.objectContaining({
+        action: "issue.cross_issue_influence_source_bound",
+        entityId: issueId,
+      })]);
     },
   );
 

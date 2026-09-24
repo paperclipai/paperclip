@@ -10,6 +10,7 @@ export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.00
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
 const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap_rejected";
+const CROSS_ISSUE_INFLUENCE_SOURCE_ACTIVITY = "issue.cross_issue_influence_source_bound";
 
 /**
  * Every kind shares one per-run counter. `interaction_resolution` covers the
@@ -110,7 +111,21 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = run.nativeIssueId ?? readRunSourceIssueId(run.contextSnapshot);
+    // An explicit guard binding is immutable for this run. Heartbeat can replace
+    // the context snapshot later, so keep the binding in its own audit receipt.
+    const [binding] = await tx
+      .select({ sourceIssueId: activityLog.entityId })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.runId, input.runId),
+        eq(activityLog.agentId, input.agentId),
+        eq(activityLog.action, CROSS_ISSUE_INFLUENCE_SOURCE_ACTIVITY),
+      ))
+      .limit(1);
+    const sourceIssueId = binding?.sourceIssueId
+      ?? run.nativeIssueId
+      ?? readRunSourceIssueId(run.contextSnapshot);
     if (
       sourceIssueId && (
         sourceIssueId === input.targetIssueId ||
@@ -122,8 +137,8 @@ export async function observeCrossIssueInfluence(
 
     // Manual and timer runs can select work after dispatch. Checkout records
     // ownership on the issue, without adding a source to the run snapshot.
-    // A recorded source stays authoritative; checking out another task cannot
-    // change the exemption for an already scoped run.
+    // Pin only the first verified held issue, under the run-row lock. A later
+    // checkout cannot expand the exemption to a second issue.
     if (!sourceIssueId && isUuidLike(input.targetIssueId)) {
       const [ownedIssue] = await tx
         .select({ id: issues.id })
@@ -138,8 +153,27 @@ export async function observeCrossIssueInfluence(
           or(isNull(issues.executionRunId), eq(issues.executionRunId, input.runId)),
           or(eq(issues.checkoutRunId, input.runId), eq(issues.executionRunId, input.runId)),
         ))
-        .limit(1);
-      if (ownedIssue) return null;
+        .limit(1)
+        // Do not bind ownership being changed by another transaction, or wait
+        // on an issue lock while holding the run lock. Count that attempt instead.
+        .for("update", { skipLocked: true });
+      if (ownedIssue) {
+        await tx.insert(activityLog).values({
+          companyId: input.companyId,
+          actorType: "agent",
+          actorId: input.agentId,
+          agentId: input.agentId,
+          runId: input.runId,
+          responsibleUserId: input.responsibleUserId ?? run.responsibleUserId ?? null,
+          action: CROSS_ISSUE_INFLUENCE_SOURCE_ACTIVITY,
+          entityType: "issue",
+          entityId: ownedIssue.id,
+          details: { sourceIssueId: ownedIssue.id, reason: "current_checkout" },
+        });
+        // This is now the run's fixed source, even after release/completion.
+        // Route permissions still govern the subsequent issue mutation.
+        return null;
+      }
     }
 
     // A valid run without a source still has an attributable, locked counter.

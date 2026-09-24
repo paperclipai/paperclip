@@ -2590,7 +2590,12 @@ describe.sequential("issue comment reopen routes", () => {
                 id: actor.runId, companyId: actor.companyId, agentId: actor.agentId,
                 nativeIssueId: null, contextSnapshot: {},
               }],
-              limit: async () => checkedOut ? [{ id: existing.id }] : [],
+              limit: () => Object.keys(selection).includes("sourceIssueId")
+                ? Promise.resolve(mockTxInsertValues.mock.calls
+                  .map(([row]) => row as Record<string, unknown>)
+                  .filter((row) => row.action === "issue.cross_issue_influence_source_bound")
+                  .map((row) => ({ sourceIssueId: row.entityId })))
+                : { for: async () => checkedOut ? [{ id: existing.id }] : [] },
               then: (resolve: (rows: unknown[]) => unknown) => {
                 expect(selection).toHaveProperty("count");
                 return Promise.resolve([{ count: count++ }]).then(resolve);
