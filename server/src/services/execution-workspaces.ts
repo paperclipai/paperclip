@@ -2720,7 +2720,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       };
 
       const historicalPrimaryCodeProducts = await db
-        .selectDistinct({ issueId: issues.id })
+        .selectDistinct({ issueId: issues.id, updatedAt: issues.updatedAt })
         .from(issues)
         .innerJoin(issueWorkProducts, and(
           eq(issueWorkProducts.companyId, issues.companyId),
@@ -2729,7 +2729,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           inArray(issueWorkProducts.type, [...CODE_WORK_PRODUCT_TYPES]),
         ))
         .where(eq(issues.status, "done"))
-        .orderBy(desc(issues.updatedAt))
+        .orderBy(desc(issues.updatedAt), asc(issues.id))
         .limit(50);
       const deliveryDriftIssueIds = new Set<string>();
       for (const row of historicalPrimaryCodeProducts) {

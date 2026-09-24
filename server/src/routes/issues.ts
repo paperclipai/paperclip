@@ -10682,6 +10682,12 @@ export function issueRoutes(
       )
         return;
       const actor = getActorInfo(req);
+      const deliveryEvidenceAuthority =
+        actor.actorType === "user"
+        && actor.actorId
+        && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
+          ? { kind: "instance_admin" as const, actorId: actor.actorId }
+          : undefined;
       const createInput = {
         ...req.body,
         projectId: req.body.projectId ?? issue.projectId ?? null,
@@ -10743,15 +10749,21 @@ export function issueRoutes(
               .then((rows) => rows[0] ?? null)
           : null;
       const product = existingRunAttachmentProduct
-        ? await workProductsSvc.update(
-            existingRunAttachmentProduct.id,
-            createInput,
-          )
-        : await workProductsSvc.createForIssue(
-            issue.id,
-            issue.companyId,
-            createInput,
-          );
+        ? deliveryEvidenceAuthority
+          ? await workProductsSvc.update(
+              existingRunAttachmentProduct.id,
+              createInput,
+              { deliveryEvidenceAuthority },
+            )
+          : await workProductsSvc.update(existingRunAttachmentProduct.id, createInput)
+        : deliveryEvidenceAuthority
+          ? await workProductsSvc.createForIssue(
+              issue.id,
+              issue.companyId,
+              createInput,
+              { deliveryEvidenceAuthority },
+            )
+          : await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
       if (!product) {
         res.status(422).json({ error: "Invalid work product payload" });
         return;
@@ -11112,6 +11124,12 @@ export function issueRoutes(
       )
         return;
       const actor = getActorInfo(req);
+      const deliveryEvidenceAuthority =
+        actor.actorType === "user"
+        && actor.actorId
+        && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
+          ? { kind: "instance_admin" as const, actorId: actor.actorId }
+          : undefined;
       const patch = { ...req.body };
       const createdByRunId = await resolveWorkProductCreatedByRunId(
         req,
@@ -11140,10 +11158,13 @@ export function issueRoutes(
         }
       }
       const sourceTrust = await sourceTrustForActorWrite(issue, actor);
-      const product = await workProductsSvc.update(id, {
+      const workProductPatch = {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
-      });
+      };
+      const product = deliveryEvidenceAuthority
+        ? await workProductsSvc.update(id, workProductPatch, { deliveryEvidenceAuthority })
+        : await workProductsSvc.update(id, workProductPatch);
       if (!product) {
         res.status(404).json({ error: "Work product not found" });
         return;

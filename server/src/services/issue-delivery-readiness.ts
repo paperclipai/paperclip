@@ -15,6 +15,7 @@ export type IssueDoneDeliveryReasonCode =
   | "combined_regression_checks_missing"
   | "combined_regression_checks_failed"
   | "delivery_not_reconciled"
+  | "delivery_evidence_untrusted"
   | "delivery_evidence_stale"
   | "delivered_commit_not_on_target"
   | "workspace_git_state_unverified"
@@ -30,6 +31,7 @@ export interface IssueDoneDeliveryReadiness {
 type DeliveryEvidence = {
   reconciledAt?: unknown;
   productUpdatedAt?: unknown;
+  verifiedBy?: unknown;
   commitOnTarget?: unknown;
   combinedRegressionChecks?: unknown;
 };
@@ -129,6 +131,16 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
     const reconciledAt = typeof evidence.reconciledAt === "string" ? Date.parse(evidence.reconciledAt) : Number.NaN;
     if (!Number.isFinite(reconciledAt)) {
       reasons.push("delivery_not_reconciled");
+    }
+    const verifier = record(evidence.verifiedBy);
+    if (
+      (verifier?.kind !== "instance_admin" && verifier?.kind !== "system")
+      || typeof verifier.actorId !== "string"
+      || verifier.actorId.trim().length === 0
+      || typeof verifier.verifiedAt !== "string"
+      || !Number.isFinite(Date.parse(verifier.verifiedAt))
+    ) {
+      reasons.push("delivery_evidence_untrusted");
     }
     const evidenceProductUpdatedAt = typeof evidence.productUpdatedAt === "string"
       ? Date.parse(evidence.productUpdatedAt)

@@ -548,6 +548,11 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           combinedRegressionChecks: [{ name: "combined regression", status: "passed" }],
         },
       },
+    }, {
+      deliveryEvidenceAuthority: {
+        kind: "system",
+        actorId: "execution-workspace-test",
+      },
     });
 
     const readiness = await svc.getIssueDoneDeliveryReadiness(issueId);

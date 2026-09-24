@@ -151,6 +151,7 @@ vi.mock("../services/instance-settings.js", () => ({
 
 vi.mock("../services/issues.js", () => ({
   issueService: () => mockIssueService,
+  verifyIssueDoneDeliveryReady: async (issueId: string) => Object.freeze({ issueId }),
 }));
 
 vi.mock("../services/routines.js", () => ({

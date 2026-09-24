@@ -17,6 +17,11 @@ import type { ImportIssueWorkProductRow } from "./import-write-types.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 
+export type DeliveryEvidenceAuthority = {
+  kind: "instance_admin" | "system";
+  actorId: string;
+};
+
 export interface WorkProductDiffSummary {
   additions: number | null;
   deletions: number | null;
@@ -129,6 +134,7 @@ export function stampDeliveryEvidenceRevision(
   metadata: Record<string, unknown> | null | undefined,
   updatedAt: Date,
   minimumCoveredAt?: Date,
+  authority?: DeliveryEvidenceAuthority,
 ): Record<string, unknown> | null | undefined {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
     return metadata;
@@ -142,7 +148,11 @@ export function stampDeliveryEvidenceRevision(
     return metadata;
   }
   const deliveryEvidence = deliveryEvidenceValue as Record<string, unknown>;
-  const { productUpdatedAt: _callerProductUpdatedAt, ...unstampedEvidence } = deliveryEvidence;
+  const {
+    productUpdatedAt: _callerProductUpdatedAt,
+    verifiedBy: _callerVerifiedBy,
+    ...unstampedEvidence
+  } = deliveryEvidence;
   const reconciledAt = typeof deliveryEvidence.reconciledAt === "string"
     ? Date.parse(deliveryEvidence.reconciledAt)
     : Number.NaN;
@@ -155,11 +165,21 @@ export function stampDeliveryEvidenceRevision(
       deliveryEvidence: unstampedEvidence,
     };
   }
+  if (!authority) {
+    return {
+      ...metadata,
+      deliveryEvidence: unstampedEvidence,
+    };
+  }
   return {
     ...metadata,
     deliveryEvidence: {
       ...unstampedEvidence,
       productUpdatedAt: updatedAt.toISOString(),
+      verifiedBy: {
+        ...authority,
+        verifiedAt: updatedAt.toISOString(),
+      },
     },
   };
 }
@@ -282,7 +302,12 @@ export function workProductService(
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
+    createForIssue: async (
+      issueId: string,
+      companyId: string,
+      data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">,
+      options: { deliveryEvidenceAuthority?: DeliveryEvidenceAuthority } = {},
+    ) => {
       const updatedAt = new Date();
       const row = await db.transaction(async (tx) => {
         if (data.isPrimary) {
@@ -301,7 +326,12 @@ export function workProductService(
           .insert(issueWorkProducts)
           .values({
             ...data,
-            metadata: stampDeliveryEvidenceRevision(data.metadata, updatedAt),
+            metadata: stampDeliveryEvidenceRevision(
+              data.metadata,
+              updatedAt,
+              undefined,
+              options.deliveryEvidenceAuthority,
+            ),
             companyId,
             issueId,
             updatedAt,
@@ -312,7 +342,11 @@ export function workProductService(
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
+    update: async (
+      id: string,
+      patch: Partial<typeof issueWorkProducts.$inferInsert>,
+      options: { deliveryEvidenceAuthority?: DeliveryEvidenceAuthority } = {},
+    ) => {
       const row = await db.transaction(async (tx) => {
         const existing = await tx
           .select()
@@ -346,6 +380,7 @@ export function workProductService(
                     patch.metadata,
                     updatedAt,
                     existing.updatedAt,
+                    options.deliveryEvidenceAuthority,
                   ),
                 }),
             updatedAt,

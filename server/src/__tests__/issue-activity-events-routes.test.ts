@@ -74,6 +74,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
+    verifyIssueDoneDeliveryReady: async (issueId: string) => Object.freeze({ issueId }),
   }));
 
   vi.doMock("../services/routines.js", () => ({

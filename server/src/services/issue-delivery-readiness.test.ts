@@ -45,6 +45,11 @@ function primary(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
       deliveryEvidence: {
         reconciledAt: "2026-09-15T12:00:00.000Z",
         productUpdatedAt: "2026-09-15T12:00:00.000Z",
+        verifiedBy: {
+          kind: "instance_admin",
+          actorId: "local-board",
+          verifiedAt: "2026-09-15T12:00:00.000Z",
+        },
         commitOnTarget: true,
         combinedRegressionChecks: [{ name: "server regression", status: "passed" }],
       },
@@ -162,6 +167,24 @@ describe("issue Done delivery readiness", () => {
       reviewPolicy: "not_creator",
     });
     expect(result.reasonCodes).toContain("delivery_evidence_stale");
+  });
+
+  it("rejects caller-controlled evidence without a server verifier", () => {
+    const product = primary();
+    const deliveryEvidence = {
+      ...(product.metadata?.deliveryEvidence as Record<string, unknown>),
+    };
+    delete deliveryEvidence.verifiedBy;
+    const result = evaluateIssueDoneDeliveryReadiness({
+      primaryWorkProduct: {
+        ...product,
+        metadata: { ...product.metadata, deliveryEvidence },
+      },
+      hasIsolatedGitWorkspace: false,
+      issueStatus: "in_review",
+      reviewPolicy: "not_creator",
+    });
+    expect(result.reasonCodes).toContain("delivery_evidence_untrusted");
   });
 
   it("recognizes an explicit analysis-only no-merge disposition even with an isolated workspace", () => {

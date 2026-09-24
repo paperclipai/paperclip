@@ -76,6 +76,11 @@ export const issueWorkProductMetadataSchema = z
     deliveryEvidence: z.object({
       reconciledAt: z.string().datetime(),
       productUpdatedAt: z.string().datetime().optional(),
+      verifiedBy: z.object({
+        kind: z.enum(["instance_admin", "system"]),
+        actorId: z.string().trim().min(1),
+        verifiedAt: z.string().datetime(),
+      }).strict().optional(),
       commitOnTarget: z.boolean().optional(),
       combinedRegressionChecks: z.array(z.object({
         name: z.string().trim().min(1),

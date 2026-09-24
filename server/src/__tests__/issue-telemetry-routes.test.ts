@@ -58,6 +58,16 @@ function registerModuleMocks() {
     getTelemetryClient: mockGetTelemetryClient,
   }));
 
+  vi.doMock("../services/issues.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/issues.js")>(
+      "../services/issues.js",
+    );
+    return {
+      ...actual,
+      verifyIssueDoneDeliveryReady: async (issueId: string) => Object.freeze({ issueId }),
+    };
+  });
+
   vi.doMock("../services/runner-goals.js", () => ({
     runnerGoalService: () => mockRunnerGoalService,
     RunnerGoalActionError: class RunnerGoalActionError extends Error {},

@@ -74,11 +74,42 @@ describe("workProductService", () => {
         productUpdatedAt: "forged-client-value",
         combinedRegressionChecks: [{ name: "server", status: "passed" }],
       },
-    }, updatedAt)).toEqual({
+    }, updatedAt, undefined, {
+      kind: "instance_admin",
+      actorId: "local-board",
+    })).toEqual({
       repo: "paperclipai/paperclip",
       deliveryEvidence: {
         reconciledAt: "2026-09-24T17:00:00.000Z",
         productUpdatedAt: "2026-09-24T17:00:00.000Z",
+        verifiedBy: {
+          kind: "instance_admin",
+          actorId: "local-board",
+          verifiedAt: "2026-09-24T17:00:00.000Z",
+        },
+        combinedRegressionChecks: [{ name: "server", status: "passed" }],
+      },
+    });
+  });
+
+  it("does not trust caller-supplied delivery evidence without an authority", () => {
+    const updatedAt = new Date("2026-09-24T17:00:00.000Z");
+    expect(stampDeliveryEvidenceRevision({
+      deliveryEvidence: {
+        reconciledAt: updatedAt.toISOString(),
+        productUpdatedAt: updatedAt.toISOString(),
+        verifiedBy: {
+          kind: "system",
+          actorId: "forged-client",
+          verifiedAt: updatedAt.toISOString(),
+        },
+        commitOnTarget: true,
+        combinedRegressionChecks: [{ name: "server", status: "passed" }],
+      },
+    }, updatedAt)).toEqual({
+      deliveryEvidence: {
+        reconciledAt: updatedAt.toISOString(),
+        commitOnTarget: true,
         combinedRegressionChecks: [{ name: "server", status: "passed" }],
       },
     });

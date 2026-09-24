@@ -93,6 +93,12 @@ export interface IssueWorkProductDeliveryEvidence {
   reconciledAt: string;
   /** Server-stamped work-product revision covered by this evidence. */
   productUpdatedAt?: string;
+  /** Server-generated identity of the authority that accepted this evidence. */
+  verifiedBy?: {
+    kind: "instance_admin" | "system";
+    actorId: string;
+    verifiedAt: string;
+  };
   /** Required when no local isolated Git workspace is available for verification. */
   commitOnTarget?: boolean;
   combinedRegressionChecks: Array<{
