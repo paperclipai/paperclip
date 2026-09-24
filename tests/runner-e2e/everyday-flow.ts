@@ -646,7 +646,6 @@ export async function runEverydayFlow(input: Input) {
         authenticated: true,
       });
     if (providerChoice || nativeProviderCase) {
-      await api.patch("/api/instance/settings/experimental", {enableMcpAggregators:true});
       if (caseId === "provider-second") aggregatorFixture = await setupAggregatorFixture(api, fixtures.company.id, fixtures.agent.id, `CONTACTS_${nonce}`);
       const state = await api.get<{connections:Row[]}>(`/api/companies/${fixtures.company.id}/tools/connections`);
       initialConnections = state.connections.map(c=>c.id);

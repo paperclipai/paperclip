@@ -2,7 +2,7 @@
 
 Retrieved 2026-09-21 from the providers’ own sites for the independent connector
 design review. Brand-library membership does not publish a catalog connector.
-The four connectors are available for setup only when the MCP aggregators experimental flag is enabled.
+The four connectors are available for setup by default. No experimental flag is required.
 Zapier and Composio reuse the existing reviewed local marks.
 
 | File | Source | SHA-256 |

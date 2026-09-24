@@ -78,8 +78,8 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
     enableApps: true,
+    enableMcpAggregators: true,
     enableChatConnectors: false,
-    enableMcpAggregators: false,
     enableMemoryConnectors: false,
     enablePipelines: false,
     enableCases: false,
@@ -225,17 +225,10 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     }
   });
 
-  it("defaults MCP aggregators off and persists an explicit toggle in both directions", async () => {
+  it("does not offer a retired MCP aggregators toggle", async () => {
     await renderPage();
-    const selector = 'button[aria-label="Toggle MCP aggregators experimental setting"]';
-    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).toContain("Existing MCP connections keep running.");
-    for (const enabled of [true, false]) {
-      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
-      await flushReact();
-      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableMcpAggregators: enabled });
-      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
-    }
+    expect(container.querySelector('button[aria-label="Toggle MCP aggregators experimental setting"]')).toBeNull();
+    expect(container.textContent).not.toContain("MCP aggregators");
   });
 
   it("defaults chat connectors off and persists an explicit toggle in both directions", async () => {
@@ -1062,7 +1055,7 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
 
   it("keeps only permitted controls in alphabetical order, including when hidden features are enabled", async () => {
     setWorktreeRuntimeMeta(true);
-    const visible = new Set(["enableExternalObjects", "enableMcpAggregators", "enableSimplifiedEnglishInteractions"]);
+    const visible = new Set(["enableExternalObjects", "enableMemoryConnectors", "enableSimplifiedEnglishInteractions"]);
     await renderPage(
       INSTANCE_FEATURE_KEYS.filter((key) => !visible.has(key)).map((key) => `instance.experimental.${key}`),
       {
@@ -1078,7 +1071,7 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
 
     expect([...container.querySelectorAll("h3")].map((heading) => heading.textContent)).toEqual([
       "Enable External Objects",
-      "MCP aggregators",
+      "Memory connectors",
       "Simplified English Interactions",
     ]);
     expect([...container.querySelectorAll("section h2")].map((heading) => heading.textContent)).toEqual([

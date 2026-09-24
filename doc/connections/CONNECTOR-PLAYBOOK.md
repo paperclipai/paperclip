@@ -2211,8 +2211,8 @@ direct provider request only when a persisted message from the responsible human
 proves that choice. An agent-supplied query alone does not count. Unclear or missing
 message evidence falls back to a question naming that provider and None; alternatives
 remain a provider-choice question. New human consent must postdate any saved decline
-or different choice. Native administrative restrictions still cannot be bypassed. With
-`enableMcpAggregators` enabled, a missing built-in match can return eligible
+or different choice. Native administrative restrictions still cannot be bypassed. A
+missing built-in match can return eligible
 Composio, Arcade, Executor, and Zapier routes in that order. Search itself makes no
 provider requests and starts no authorization.
 

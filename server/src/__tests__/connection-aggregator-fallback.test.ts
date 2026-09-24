@@ -22,7 +22,6 @@ import {
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
-import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -142,9 +141,6 @@ const support = await getEmbeddedPostgresTestSupport();
       await db
         .delete(toolApplications)
         .where(eq(toolApplications.companyId, claims.company_id));
-      await instanceSettingsService(db).updateExperimental({
-        enableMcpAggregators: true,
-      });
     }
     async function selectProvider(
       option: string,
@@ -439,22 +435,12 @@ const support = await getEmbeddedPostgresTestSupport();
         }),
       ).rejects.toMatchObject({ status: 403 });
     });
-    it("gates fallback and direct aggregator requests behind the experiment", async () => {
+    it("offers fallback and direct aggregator requests without an experimental opt-in", async () => {
       await resetQuestions();
-      await instanceSettingsService(db).updateExperimental({
-        enableMcpAggregators: false,
-      });
-      const result = await connectionIntentService(db).search(
-        claims,
-        "hubspot",
-      );
-      expect(result.results.some((item) => item.source === "aggregator")).toBe(
-        false,
-      );
-      expect(result.providerQuestion).toBeUndefined();
-      await expect(
-        connectionIntentService(db).request(claims, "composio"),
-      ).rejects.toMatchObject({ status: 422 });
+      const result = await connectionIntentService(db).search(claims, "hubspot");
+      expect(result.results.some((item) => item.source === "aggregator")).toBe(true);
+      expect(result.providerQuestion).toBeDefined();
+      await expect(connectionIntentService(db).request(claims, "composio")).resolves.toMatchObject({ state: "needs_user_action" });
     });
     it("reuses an allowed selected provider without claiming the underlying app is ready", async () => {
       await resetQuestions();

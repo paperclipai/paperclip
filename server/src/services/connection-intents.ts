@@ -35,7 +35,6 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { toolAccessService } from "./tool-access.js";
-import { instanceSettingsService } from "./instance-settings.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 
@@ -343,7 +342,6 @@ export function connectionIntentService(db: Db) {
 
   async function search(claims: ConnectionRunClaims, query: string, options: { retryProviderChoice?: boolean } = {}): Promise<ConnectionsSearchResult> {
     const { run, agent, issue } = await loadRunContext(claims);
-    const aggregatorsEnabled = (await instanceSettingsService(db).getExperimental()).enableMcpAggregators;
     const normalized = query.trim().toLocaleLowerCase();
     const tokens = normalized.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
     const inventory = await connectionInventory(run.companyId);
@@ -353,7 +351,6 @@ export function connectionIntentService(db: Db) {
         sourceSlugForConnection(connection, inventory.applicationsById)?.startsWith("connection:")
         && connection.status !== "archived").map((connection) => `connection:${connection.id}`)];
     for (const service of services) {
-      if (!aggregatorsEnabled && isRemoteMcpConnectorId(service)) continue;
       let app;
       try { app = await resolveService(service, run.companyId, run.responsibleUserId!, agent.id); }
       catch (error) { if (service.startsWith("connection:") && (error as { status?: number }).status === 404) continue; throw error; }
@@ -401,7 +398,7 @@ export function connectionIntentService(db: Db) {
     const explicitConsent = explicit && await hasExplicitProviderRequest(run.companyId, issue.id, run.responsibleUserId!, targetService, explicit.provider, previous[0]);
     if (exact.length && (!explicitConsent || exact.some(({ item }) => item.state === "unavailable"))) return directSearchResult(query, exact.map(({ item }) => item));
     const alternatives: ConnectionSearchResultItem[] = [];
-    if (aggregatorsEnabled && /^[a-z0-9][a-z0-9-]{0,79}$/.test(targetService)) {
+    if (/^[a-z0-9][a-z0-9-]{0,79}$/.test(targetService)) {
       for (const provider of AGGREGATOR_PRIORITY) {
         // Broad execute/search descriptions are not evidence of app support. Only a
         // namespaced action (or an explicitly listed Executor integration) qualifies.
@@ -563,7 +560,6 @@ export function connectionIntentService(db: Db) {
       upstreamService = { slug: route.targetService, name: selected.aggregator.targetName, selectionInteractionId: options.selectionInteractionId };
       serviceSlug = route.provider;
     }
-    if (isRemoteMcpConnectorId(serviceSlug) && !(await instanceSettingsService(db).getExperimental()).enableMcpAggregators) throw unprocessable("Experimental MCP aggregators are disabled");
     const app = await resolveService(serviceSlug, context.run.companyId, context.run.responsibleUserId!, context.agent.id, options.purpose);
     if (!app.available || app.methods.length === 0) {
       throw unprocessable(`Connection service ${serviceSlug} is not available`);

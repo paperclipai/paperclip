@@ -11869,16 +11869,10 @@ export function toolAccessService(
     return `${base.slice(0, 151).trimEnd()} (${randomUUID().slice(0, 6)})`;
   }
 
-  async function assertExperimentalConnectorSetupEnabled(provider: unknown, method: unknown, existing = false) {
+  async function assertExperimentalConnectorSetupEnabled(provider: unknown, existing = false) {
     if (!existing && isMemoryConnectorId(provider)
       && !(await instanceSettingsService(db).getExperimental()).enableMemoryConnectors) {
       throw forbidden("Enable memory connectors in Settings → Experimental to set up this connection", { code: "memory_connectors_disabled" });
-    }
-    if (isRemoteMcpConnectorMethod(provider, method)
-      && !(await instanceSettingsService(db).getExperimental()).enableMcpAggregators) {
-      throw forbidden("Enable MCP aggregators in Settings → Experimental to set up this connection", {
-        code: "mcp_aggregators_disabled",
-      });
     }
   }
 
@@ -12030,7 +12024,7 @@ export function toolAccessService(
       ? connectionMethodFor(galleryEntry, inferredMethodKey)
       : null;
     const remoteMcpConnector = isRemoteMcpConnectorMethod(galleryEntry?.slug, method?.key);
-    await assertExperimentalConnectorSetupEnabled(galleryEntry?.slug, method?.key, Boolean(
+    await assertExperimentalConnectorSetupEnabled(galleryEntry?.slug, Boolean(
       input.reconnectConnectionId && requestedResumeConnection?.status !== "draft"
       && requestedResumeConnection?.config.sourceTemplateKey === galleryEntry?.slug,
     ));
@@ -13960,7 +13954,7 @@ export function toolAccessService(
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId, companyId);
     assertSupportedConnection(connection);
-    await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.config.connectionMethodKey, connection.status !== "draft");
+    await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");
     if (connection.status === "archived")
       throw conflict("Archived app connections cannot be reconnected");
     if (connection.credentialSource === "vercel_connect") {
@@ -14139,7 +14133,7 @@ export function toolAccessService(
   ): Promise<ToolOAuthStartResult> {
     let connection = await getConnectionRow(connectionId, companyId);
     assertSupportedConnection(connection);
-    await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.config.connectionMethodKey, connection.status !== "draft");
+    await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");
     if (connection.status === "archived")
       throw conflict("Archived app connections cannot start sign in");
     const sourceTemplateKey =
@@ -16636,7 +16630,7 @@ export function toolAccessService(
     if (!app || app.availability?.available === false)
       throw notFound("App not found");
     const method = connectionMethodFor(app, methodKey);
-    await assertExperimentalConnectorSetupEnabled(app.slug, method.key);
+    await assertExperimentalConnectorSetupEnabled(app.slug);
     if (method.transport !== "mcp_remote" || !method.defaults?.serverUrl) {
       throw unprocessable(
         "This app method does not use a hosted remote MCP endpoint",

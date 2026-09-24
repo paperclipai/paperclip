@@ -1,6 +1,5 @@
 import { RemoteMcpProductionSetup } from "./remote-mcp/RemoteMcpProductionSetup";
 import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
-import { useMcpAggregatorsEnabled } from "@/hooks/useMcpAggregatorsEnabled";
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { ConnectionChoiceList } from "./ConnectionChoiceList";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
@@ -539,7 +538,6 @@ export function ConnectionSetupFlow(props: ConnectionSetupFlowProps = {}) {
   const [searchParams] = useSearchParams();
   const params = useParams<{ appKey?: string }>();
   const { selectedCompanyId } = useCompany();
-  const aggregators = useMcpAggregatorsEnabled();
   const memory = useMemoryConnectorsEnabled();
   const interactionId = props.interactionId || searchParams.get("intent") || undefined;
   const source = props.serviceSlug || searchParams.get("source") || params.appKey || searchParams.get("appKey");
@@ -562,8 +560,6 @@ export function ConnectionSetupFlow(props: ConnectionSetupFlowProps = {}) {
   }
   if (!props.byoOnly && (props.credentialSource ?? "paperclip_vault") === "paperclip_vault"
     && isRemoteMcpConnectorId(provider) && (!method || isRemoteMcpConnectorMethod(provider, method))) {
-    if (!aggregators.loaded) return <p className="p-6 text-sm text-muted-foreground">Loading connection settings…</p>;
-    if (!aggregators.enabled) return <p role="status" className="p-6 text-sm text-muted-foreground">Enable MCP aggregators in Settings → Experimental to set up this connection.</p>;
     return <RemoteMcpProductionSetup key={`${interactionId || "page"}:${provider}`} {...props} interactionId={interactionId} providerId={provider} connection={existing.data} />;
   }
   return <StandardConnectionSetupFlow {...props} />;
