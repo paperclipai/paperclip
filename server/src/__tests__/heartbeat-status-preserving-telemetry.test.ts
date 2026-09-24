@@ -22,6 +22,15 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: () => mockTelemetryClient,
 }));
 
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async () => {
+  const actual = await vi.importActual<typeof import("../sentry.js")>("../sentry.js");
+  return {
+    ...actual,
+    captureRunFailure: mockCaptureRunFailure,
+  };
+});
+
 import { heartbeatService } from "../services/heartbeat.ts";
 
 function agentTaskRunCalls(fromIndex: number) {
@@ -128,6 +137,9 @@ describeEmbeddedPostgres(
         errorCode: "native_execution_ownership_unverified",
       });
       expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
+      // A status-preserving write is not a new transition, so it must not
+      // report a second Sentry event for the same terminal failure.
+      expect(mockCaptureRunFailure).not.toHaveBeenCalled();
     });
   },
 );

@@ -1,3 +1,4 @@
+import { ObservedStateTimeout } from "./api.js";
 import type { FailureClass } from "./types.js";
 
 const TRANSIENT =
@@ -14,8 +15,13 @@ const NON_RETRYABLE_ACPX_SESSION_OPEN =
   /native_session_recovery_failed[\s\S]*ACPX sidecar command session\.open was rejected\s*\([^)]*\bretryable\s*=\s*false\b/i;
 const CANDIDATE =
   /(?:matcher|expected.*observed|marker|issue status|run status|runtime mode|wrong output|missing output)/i;
+// File-transfer deadlines are sandbox transport failures. Do not generalize
+// this to all RPC timeouts: runner protocol defects must remain visible.
+const SANDBOX_TRANSFER_TIMEOUT =
+  /RPC call "environmentSync(?:In|Out)" timed out after \d+ms/i;
 
 export function classifyFailure(error: unknown): FailureClass {
+  if (error instanceof ObservedStateTimeout) return error.failureClass;
   const message =
     error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   if (/browser bootstrap failed before task creation/i.test(message))
@@ -34,7 +40,8 @@ export function classifyFailure(error: unknown): FailureClass {
     NON_RETRYABLE_ACPX_SESSION_OPEN.test(message)
   )
     return "candidate_failure";
-  if (TRANSIENT.test(message)) return "transient_infrastructure";
+  if (TRANSIENT.test(message) || SANDBOX_TRANSFER_TIMEOUT.test(message))
+    return "transient_infrastructure";
   if (CANDIDATE.test(message)) return "candidate_failure";
   return "candidate_failure";
 }

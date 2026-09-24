@@ -35,6 +35,16 @@ import {
 } from "../../realtime/runner-prp-ws.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
+
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../../sentry.js", async () => {
+  const actual = await vi.importActual<typeof import("../../sentry.js")>("../../sentry.js");
+  return {
+    ...actual,
+    captureRunFailure: mockCaptureRunFailure,
+  };
+});
+
 import {
   claimNativeRestartRecoveries,
   type NativeControllerIdentity,
@@ -353,6 +363,37 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       })
       .where(eq(nativeRunFinalizations.runId, input.fixture.runId));
   }
+
+  it.each([null, process.pid])("claims sandbox recovery without interpreting remote PID %s locally", async (remotePid) => {
+    const fixture = await seedRun(`remote-${remotePid ?? "warm"}`);
+    await fixture.db.update(heartbeatRuns).set({
+      processPid: remotePid,
+      processStartedAt: new Date("2020-01-01T00:00:00Z"),
+      runnerProfileJson: {
+        nativeWorkspaceSync: {
+          schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+          descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+          workspaceId: "workspace", leaseId: "lease", providerLeaseId: "sandbox",
+          remoteCwd: "/workspace",
+        },
+        sessionCheckpoint: {
+          identity: { companyId, agentId, issueId: fixture.issueId, runId: fixture.runId,
+            sessionId: fixture.native.normalizedSessionId },
+          providerSessionId: "provider-session",
+          process: { providerPid: process.pid },
+        },
+      },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "graceful", runIds: [fixture.runId] });
+    expect(claim).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId,
+      providerAttempt: 0, remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } });
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator?.recoveryState).toBe("awaiting_runner_reattach");
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run?.status).toBe("running");
+    expect(run?.processPid).toBe(remotePid);
+  });
 
   realProcessIt("adopts one active runner across hot and hard controller restarts without duplicating steering", async () => {
     const fixture = await seedRun("LIVE");
@@ -985,8 +1026,25 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     } } }).where(eq(heartbeatRuns.id, fixture.runId));
     await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 }).where(eq(nativeRunFinalizations.runId, fixture.runId));
     const input = { db: fixture.db, controller: successor, restartKind: "hard" as const, runIds: [fixture.runId] };
+    const captureCallsBeforeFirstClaim = mockCaptureRunFailure.mock.calls.length;
     expect(await claimNativeRestartRecoveries(input)).toEqual([{ kind: "blocked", runId: fixture.runId, reason: "provider_checkpoint_permanently_failed" }]);
+    // The report fires without being awaited, so wait for it before asserting.
+    await vi.waitFor(() => {
+      expect(mockCaptureRunFailure.mock.calls.length).toBeGreaterThan(captureCallsBeforeFirstClaim);
+    });
+    const firstClaimCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBeforeFirstClaim);
+    expect(firstClaimCaptures).toHaveLength(1);
+    expect(firstClaimCaptures[0]?.[0]).toMatchObject({
+      runId: fixture.runId,
+      runStatus: "failed",
+      errorCode: "native_restart_recovery_blocked",
+    });
+
+    const captureCallsBeforeReplay = mockCaptureRunFailure.mock.calls.length;
     expect(await claimNativeRestartRecoveries(input)).toEqual([]);
+    // A replay that finds no eligible candidate must not report a second event.
+    expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBeforeReplay)).toHaveLength(0);
+
     const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
     const [issue] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
     expect(run).toMatchObject({ status: "failed", nativePhase: "terminal_failure", errorCode: "native_restart_recovery_blocked" });

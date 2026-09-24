@@ -11,7 +11,7 @@ import {
 // without touching TypeScript. These loaders read those files at runtime the
 // same way loadDefaultAgentInstructionsBundle reads default/ and ceo/ (the build
 // copies src/onboarding-assets/. into dist/onboarding-assets/), and fill the
-// {{agentName}} / {{organizationName}} / {{proposalStep}} placeholders.
+// {{agentName}} / {{organizationName}} / {{proposalMode}} placeholders.
 
 export interface OnboardingFirstTaskPlaceholders {
   agentName?: string | null;
@@ -20,7 +20,7 @@ export interface OnboardingFirstTaskPlaceholders {
 
 // The opening card seeded on the first task right after the greeting: one
 // single-select question with two options, "interview me" or "I have a task in
-// mind" (free text). The brief refers to these ids, so they are fixed here;
+// mind" (free text). The first-task skill refers to these ids, so they are fixed here;
 // only the wording lives in opening-question.json.
 export const ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID = "first-task-opening";
 export const ONBOARDING_FIRST_TASK_OPENING_INTERVIEW_OPTION_ID = "interview";
@@ -120,19 +120,13 @@ export async function buildOnboardingFirstTaskOpeningQuestion(): Promise<AskUser
   });
 }
 
-// Layer A — the first task's description. brief.md carries {{proposalStep}},
-// which is replaced by the proposal file the toggle selects.
+// Layer A — the first task's hidden description invokes the assigned skill.
+// Capture the toggle as a mode here so later changes do not alter this task.
 export async function buildOnboardingFirstTaskBrief(options: {
   usePlanProposal: boolean;
 }): Promise<string> {
-  const [brief, proposal] = await Promise.all([
-    loadFirstTaskAsset("brief.md"),
-    loadFirstTaskAsset(options.usePlanProposal ? "proposal-plan.md" : "proposal-confirmation.md"),
-  ]);
-  const proposalStep = proposal.replace(/\s+$/, "");
-  // Use a function replacement so `$` sequences in the proposal text are not
-  // interpreted as replacement patterns.
-  return brief.replace("{{proposalStep}}", () => proposalStep).trim();
+  const brief = await loadFirstTaskAsset("brief.md");
+  return brief.replace("{{proposalMode}}", options.usePlanProposal ? "plan" : "confirmation").trim();
 }
 
 // Layer B — the chief-of-staff persona seeded over the first agent's entry

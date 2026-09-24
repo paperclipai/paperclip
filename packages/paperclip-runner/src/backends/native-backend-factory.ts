@@ -96,6 +96,7 @@ export function createNativeSessionBackend(
         : {}),
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.acpxDynamicToolHandler,
+      completionFeedback: options.completionFeedback,
     });
   }
   if (input.provider.kind !== "codex") {

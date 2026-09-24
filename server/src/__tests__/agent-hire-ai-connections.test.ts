@@ -6,7 +6,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueThreadInteractions, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
 import { type AiConnectionBinding } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
@@ -175,6 +175,46 @@ describe("agent-created hires use managed AI connections", () => {
     try { expect(runtime.attribution.connectionId).toBe(f.account.connectionId); } finally { await runtime.cleanup(); }
   });
 
+  it.each([
+    ["codex", { provider: "codex", model: "gpt-5.6-sol", codexPermissionMode: "never", lifecycleMode: "per_turn" }],
+    ["claude", { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" }],
+  ] as const)("caller runtime inheritance preserves safe %s settings only", async (_name, parentConfig) => {
+    const f = await fixture("anthropic", "subscription");
+    await db.update(agents).set({
+      adapterType: "paperclip_runner",
+      adapterConfig: {
+        ...parentConfig,
+        cwd: "/private/parent-workspace",
+        env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "parent-secret" } },
+        instructionsFilePath: "/private/parent-instructions.md",
+        runtimeSessionId: "parent-session",
+      },
+    }).where(eq(agents.id, f.agentId));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+      name: "Inherited teammate", role: "engineer", adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
+    }));
+    expect(agent.adapterConfig).toMatchObject(parentConfig);
+    expect(agent.adapterConfig).not.toHaveProperty("cwd");
+    expect(agent.adapterConfig).not.toHaveProperty("env");
+    expect(agent.adapterConfig.instructionsFilePath).not.toBe("/private/parent-instructions.md");
+    expect(agent.adapterConfig).not.toHaveProperty("runtimeSessionId");
+    expect(agent.runtimeConfig.aiConnection).toMatchObject({
+      provider: parentConfig.provider === "codex" ? "openai" : "anthropic",
+      mode: "responsible_user",
+    });
+  });
+
+  it("rejects caller inheritance when the request supplies competing runtime settings", async () => {
+    const f = await fixture("anthropic", "subscription");
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" } }).where(eq(agents.id, f.agentId));
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+      name: "Conflicting teammate", role: "engineer", adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
+      adapterConfig: { model: "caller.override" },
+    });
+    expect(response.status).toBe(422);
+    expect(response.body.error).toContain("cannot be combined");
+  });
+
   it.each([true, false])("preserves shared connection access boundaries (company access: %s)", async (allAgents) => {
     const f = await fixture("anthropic");
     const account = await aiConnectionService(db).save(f.companyId, f.userId, { provider: "anthropic", method: "api_key", name: "Shared Claude", ownership: "shared", apiKey: "fixture", agentIds: [f.agentId], allAgents }, "fixture");
@@ -202,47 +242,7 @@ describe("agent-created hires use managed AI connections", () => {
 });
 
 describe("hired agents sharing a subscription", () => {
-  it("waits for the openai parent and resumes without asking for a new connection", async () => {
-    const provider = "openai";
-    const f = await fixture(provider, "subscription");
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Waiting teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { cwd: home, engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
-    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Subscription child task", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
-    const parentRuntime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { cwd: home } });
-    const execute = vi.fn(async () => {
-      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issue.id));
-      return { exitCode: 0, signal: null, timedOut: false, resultJson: {} };
-    });
-    registerServerAdapter({ ...getServerAdapter(f.adapterType), execute });
-    const heartbeat = heartbeatService(db);
-    let parentReleased = false;
-    try {
-      const run = await heartbeat.invoke(agent.id, "assignment", { issueId: issue.id, wakeReason: "issue_assigned", responsibleUserId: f.userId }, "system");
-      expect(run).not.toBeNull();
-      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).not.toBe("running");
-      expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: "ai_connection_busy" });
-      let retry: typeof heartbeatRuns.$inferSelect | undefined;
-      await expect.poll(async () => { [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id)); return retry?.status; }, { timeout: 10_000 }).toBe("scheduled_retry");
-      expect(execute).not.toHaveBeenCalled();
-      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id))).toHaveLength(0);
-      expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].executionRunId).toBe(retry!.id);
-      parentReleased = true;
-      await parentRuntime.cleanup();
-      const promoted = await heartbeat.promoteDueScheduledRetries(new Date(retry!.scheduledRetryAt!.getTime() + 1000));
-      expect(promoted.runIds).toContain(retry!.id);
-      await heartbeat.resumeQueuedRuns();
-      await expect.poll(async () => (await heartbeat.getRun(retry!.id))?.status, { timeout: 20_000 }).toBe("succeeded");
-      expect(execute).toHaveBeenCalledTimes(1);
-      expect((await heartbeat.getRun(retry!.id))?.contextSnapshot?.aiConnection).toMatchObject({ connectionId: f.account.connectionId, responsibleUserId: f.userId, method: "subscription" });
-    } finally {
-      if (!parentReleased) await parentRuntime.cleanup();
-      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
-      await heartbeat.drainActiveRunExecutions();
-      unregisterServerAdapter(f.adapterType);
-    }
-  });
-
-  it("runs the anthropic child alongside a live parent and inherits its connection", async () => {
-    const provider = "anthropic";
+  it.each(["openai", "anthropic"] as const)("runs the %s child alongside a live parent and inherits its connection", async (provider) => {
     const f = await fixture(provider, "subscription");
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { cwd: home, engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Subscription child task", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();

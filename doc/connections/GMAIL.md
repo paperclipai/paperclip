@@ -302,8 +302,9 @@ keys before they deploy a binary that enables the Cloud connector.
 Gmail uses the same credential ownership choice as the rest of the Apps setup:
 
 - **Just me** stores the Gmail credential on the connecting user's grant.
-- **Any human in the company** stores it on the default organization grant so a
-  deliberately shared mailbox or Workspace account can back company-wide use.
+- **Any human in the organization** stores it on the default organization grant
+  so a deliberately shared mailbox or Workspace account can back
+  organization-wide use.
 - The disclosure states that Gmail access can search/read mail and create
   drafts. Sending mail is not enabled.
 - A user grant does not automatically authorize an agent. The user must also

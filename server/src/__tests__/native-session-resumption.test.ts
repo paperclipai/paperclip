@@ -40,6 +40,7 @@ import {
 } from "../vendor/paperclip-runner/testing.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import {
   claimNativeSessionResumptions,
   dispatchNativeSessionResumptions,
@@ -65,6 +66,12 @@ vi.mock("../adapters/index.js", async () => {
       supportsLocalAgentJwt: false,
     })),
   };
+});
+
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async () => {
+  const actual = await vi.importActual<typeof import("../sentry.js")>("../sentry.js");
+  return { ...actual, captureRunFailure: mockCaptureRunFailure };
 });
 
 import { heartbeatService } from "../services/heartbeat.js";
@@ -527,6 +534,75 @@ describe("P6-25 pre-result native session recovery", () => {
       .where(eq(nativeRunFinalizations.runId, initialRunId))).resolves.toEqual([
       expect.objectContaining({ phase: "observed", attempt: 0, failureCode: null }),
     ]);
+  });
+
+  it("sends exactly one Sentry event when a sweep resolves a run from running to failed", async () => {
+    const freshRunId = "79000000-0000-4000-8000-000000000101";
+    await db.insert(heartbeatRuns).values({
+      id: freshRunId,
+      companyId,
+      agentId,
+      nativeIssueId: issueId,
+      status: "running",
+      runtimeMode: "native",
+      runtimeModeResolvedAt: new Date(),
+      runnerProfileJson: {
+        nativeExecutionInput: {
+          ...persistedProfile.nativeExecutionInput,
+          binding: { runId: freshRunId },
+        },
+      },
+      contextSnapshot: { issueId },
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId: freshRunId,
+      companyId,
+      issueId,
+      phase: "retryable_failure",
+      attempt: 1,
+    });
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
+    // The reconciler reports asynchronously; an unrelated database round trip
+    // does not guarantee that callback has completed.
+    await waitForPendingRunFailureReports();
+    expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(1);
+    const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
+    expect(newCaptures[0]?.[0]).toMatchObject({ runId: freshRunId, runStatus: "failed" });
+  });
+
+  it("sends no Sentry event when a sweep finds a run that is already failed", async () => {
+    const freshRunId = "79000000-0000-4000-8000-000000000102";
+    await db.insert(heartbeatRuns).values({
+      id: freshRunId,
+      companyId,
+      agentId,
+      nativeIssueId: issueId,
+      status: "failed",
+      runtimeMode: "native",
+      runtimeModeResolvedAt: new Date(),
+      runnerProfileJson: {
+        nativeExecutionInput: {
+          ...persistedProfile.nativeExecutionInput,
+          binding: { runId: freshRunId },
+        },
+      },
+      contextSnapshot: { issueId },
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId: freshRunId,
+      companyId,
+      issueId,
+      phase: "retryable_failure",
+      attempt: 1,
+    });
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
+    await waitForPendingRunFailureReports();
+
+    expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(0);
   });
 });
 

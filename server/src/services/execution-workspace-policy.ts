@@ -165,8 +165,8 @@ export function gateProjectExecutionWorkspacePolicy(
 }
 
 /**
- * Operator default: a project that stores no policy of its own runs its tasks
- * in an isolated per-task worktree instead of the shared project checkout.
+ * Operator default: a project with a configured workspace and no policy of its
+ * own runs its tasks in an isolated per-task worktree.
  *
  * This substitutes a policy rather than moving the terminal fallback in
  * `resolveExecutionWorkspaceMode`, and the distinction is load-bearing:
@@ -176,7 +176,10 @@ export function gateProjectExecutionWorkspacePolicy(
  *   an isolated + `git_worktree` task that has neither `projectId` nor
  *   `projectWorkspaceId`. Moving the terminal fallback would resolve isolated
  *   for project-less tasks (agent chat, for example) and strand them before
- *   dispatch. `hasProject` keeps them on the untouched path.
+ *   dispatch. A project without a configured workspace also uses a plain
+ *   managed directory, not a Git checkout. `hasProjectWorkspace` keeps both
+ *   cases on their existing path; configured checkouts are still validated
+ *   before a worktree is created.
  * - `buildExecutionWorkspaceAdapterConfig` only supplies the default
  *   `git_worktree` strategy when some layer actually asserts workspace
  *   control. A moved fallback would leave `hasWorkspaceControl` false and
@@ -192,10 +195,10 @@ export function gateProjectExecutionWorkspacePolicy(
 export function applyDefaultIsolatedExecutionWorkspacePolicy(input: {
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   defaultIsolatedWorkspacesEnabled: boolean;
-  hasProject: boolean;
+  hasProjectWorkspace: boolean;
 }): ProjectExecutionWorkspacePolicy | null {
   if (!input.defaultIsolatedWorkspacesEnabled) return input.projectPolicy;
-  if (!input.hasProject) return input.projectPolicy;
+  if (!input.hasProjectWorkspace) return input.projectPolicy;
   if (input.projectPolicy) return input.projectPolicy;
   return { enabled: true, defaultMode: "isolated_workspace" };
 }

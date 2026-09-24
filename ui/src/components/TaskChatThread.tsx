@@ -1,5 +1,6 @@
 import type { ActivityEvent } from "@paperclipai/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
+import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
 import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
@@ -401,6 +402,7 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
   initialHistoryPending?: boolean;
   initialHistoryError?: boolean;
   onRetryInitialHistory?: () => void;
+  onOpenSkill?: (skillId: string, name: string) => void;
 };
 
 type PendingComposerInput =
@@ -539,6 +541,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     liveIssueIds,
     onResumeAssignee,
     resumeAssigneePending = false,
+    onOpenSkill,
   } = props;
   const retryFailedRunHandler =
     isTerminalIssueStatus(issueStatus) ||
@@ -574,6 +577,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const canRetryFailedRun = Boolean(retryFailedRunHandler);
   const queryClient = useQueryClient();
   const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
+  const createdSkillItems = useMemo(() => skillCreatedItems(props.creationActivity ?? []), [props.creationActivity]);
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
     string | null
   >(null);
@@ -1308,11 +1312,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const item of createdProjectItems) {
       entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
     }
+    for (const item of createdSkillItems) {
+      entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
+    }
     return entries.sort(
       (a, b) => a.ms - b.ms || a.order - b.order || a.id.localeCompare(b.id),
     );
   }, [
     createdProjectItems,
+    createdSkillItems,
     comments,
     projectedComments,
     commentItems,
@@ -1606,6 +1614,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
+            retryable: code !== "native_session_cleanup_quarantined",
             collapsible: true,
             runId: source.id,
             createdAtIso: finishedAt
@@ -1614,6 +1623,50 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             runHref: runAgent
               ? `/agents/${encodeURIComponent(runAgent.urlKey)}/runs/${encodeURIComponent(source.id)}`
               : undefined,
+          },
+        });
+      }
+      // A failed run still needs its own retry target when it produced output
+      // or a final comment. Otherwise the thread keeps retrying an older run.
+      const sourceHasLegacyStop = !sourceIsPaperclipRunner && (
+        source.status === "failed" || source.status === "timed_out" ||
+        (source.status === "cancelled" && entries.length === 0)
+      );
+      if (sourceHasLegacyStop) {
+        settledRunIds.add(source.id);
+        const code = meta?.errorCode ?? "native_runner_process_exited";
+        const retryDetail = meta?.scheduledRetryAt
+          ? "Retry scheduled automatically."
+          : canRetryFailedRun
+            ? "You can retry this message now."
+            : "Your message is preserved.";
+        const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
+        const detail = aiRequest
+          ? aiRequest.status === "pending"
+            ? "The selected AI account is unavailable. Fix it in the connection card."
+            : "This run stopped because its AI account was unavailable."
+          : source.status === "cancelled"
+            ? code === "execution_reconciliation_required"
+              ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
+              : "Execution was stopped before returning an answer."
+            : code === "provider_frame_too_large"
+            ? `Provider output exceeded the safe limit. ${retryDetail}`
+            : code.startsWith("workspace_git_scan_")
+            ? `Workspace setup failed before the agent started. ${retryDetail}`
+            : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
+        const id = `${source.id}:failure`;
+        entriesWithFailures.push({
+          ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
+          order: 3,
+          id,
+          item: {
+            id,
+            kind: "marker",
+            variant: "interrupted",
+            label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+            runId: source.status === "cancelled" ? undefined : source.id,
+            tone: source.status === "cancelled" ? "neutral" : "error",
+            detail,
           },
         });
       }
@@ -1648,6 +1701,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               agentName:
                 meta?.agentName ??
                 (meta?.agentId ? agentMap?.get(meta.agentId)?.name : undefined),
+              agent: meta?.agentId ? agentMap?.get(meta.agentId) ?? { id: meta.agentId } : undefined,
               agentIcon: meta?.agentId
                 ? agentMap?.get(meta.agentId)?.icon
                 : undefined,
@@ -1666,45 +1720,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           });
           settledRunIds.add(source.id);
           settledReplyRunIds.add(source.id);
-        } else if (
-          !sourceIsPaperclipRunner &&
-          (source.status === "failed" || source.status === "timed_out" || source.status === "cancelled")
-        ) {
-          settledRunIds.add(source.id);
-          const code = meta?.errorCode ?? "native_runner_process_exited";
-          const retryDetail = meta?.scheduledRetryAt
-            ? "Retry scheduled automatically."
-            : canRetryFailedRun
-              ? "You can retry this message now."
-              : "Your message is preserved.";
-          const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
-          const detail = aiRequest
-            ? aiRequest.status === "pending"
-              ? "The selected AI account is unavailable. Fix it in the connection card."
-              : "This run stopped because its AI account was unavailable."
-            : source.status === "cancelled"
-              ? code === "execution_reconciliation_required"
-                ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
-                : "Execution was stopped before returning an answer."
-              : code === "provider_frame_too_large"
-              ? `Provider output exceeded the safe limit. ${retryDetail}`
-              : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
-          const id = `${source.id}:failure`;
-          entriesWithFailures.push({
-            ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
-            order: 3,
-            id,
-            item: {
-              id,
-              kind: "marker",
-              variant: "interrupted",
-              label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
-              runId: source.status === "cancelled" ? undefined : source.id,
-              tone: source.status === "cancelled" ? "neutral" : "error",
-              detail,
-            },
-          });
-        } else if (!sourceHasNativeStop && !lastCommentIdByRun.has(source.id)) {
+        } else if (!sourceHasNativeStop && !sourceHasLegacyStop && !lastCommentIdByRun.has(source.id)) {
           settledRunIds.add(source.id);
           const id = `${source.id}:terminal-notice`;
           entriesWithFailures.push({
@@ -1863,7 +1879,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             agentName:
               meta?.agentName ??
               (meta?.agentId ? agentMap?.get(meta.agentId)?.name : undefined),
-            agentIcon: meta?.agentId
+            agent: meta?.agentId ? agentMap?.get(meta.agentId) ?? { id: meta.agentId } : undefined,
+              agentIcon: meta?.agentId
               ? agentMap?.get(meta.agentId)?.icon
               : undefined,
             standaloneHeader: sourceIsPaperclipRunner,
@@ -1953,6 +1970,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 (liveRun.agentId
                   ? agentMap?.get(liveRun.agentId)?.name
                   : undefined),
+              agent: liveRun.agentId ? agentMap?.get(liveRun.agentId) ?? { id: liveRun.agentId } : undefined,
               agentIcon: liveRun.agentId
                 ? agentMap?.get(liveRun.agentId)?.icon
                 : undefined,
@@ -2263,6 +2281,28 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       item: TaskChatRuntimeRequestItem,
       decision: TaskChatRuntimeRequestDecision,
     ) => {
+      const projected = (interactions ?? []).find((interaction) =>
+        interaction.kind === "ask_user_questions" && interaction.sourceRunId === item.runId &&
+        interaction.payload.runtimeRequestId === item.requestId);
+      if (projected?.kind === "ask_user_questions") {
+        if (projected.status !== "pending") throw new Error("This question has already been answered or closed.");
+        if (decision.action === "cancel") {
+          if (!onCancelInteraction) throw new Error("Cancelling this question is unavailable.");
+          await onCancelInteraction(projected);
+          return;
+        }
+        if (decision.action !== "submit" || !("response" in decision) || !projected.payload.questionSet || !onSubmitInteractionAnswers) {
+          throw new Error("Submit the answer through the saved question card.");
+        }
+        const response = decision.response;
+        await onSubmitInteractionAnswers(projected, projected.payload.questionSet.questions.map(question => {
+          const answer = response.answers[question.id];
+          const otherText = question.answerMode === "text" ? answer?.text?.trim() : answer?.customText?.trim();
+          return { questionId: question.id, optionIds: question.answerMode === "text" ? [] : (answer?.selectedOptionIds ?? []),
+            ...(otherText ? { otherText } : {}) };
+        }));
+        return;
+      }
       if (!item.turnId || !item.requestKind) {
         throw new Error(
           "This runtime request is missing the provider turn identity needed to resolve it.",
@@ -2298,14 +2338,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         resolution,
       });
     },
-    [],
+    [interactions, onSubmitInteractionAnswers, onCancelInteraction],
   );
   const pendingComposerInputs = useMemo<PendingComposerInput[]>(() => {
     const result: PendingComposerInput[] = [];
     const runtimeKey = pendingRuntimeRequest
       ? `runtime:${pendingRuntimeRequest.runId}:${pendingRuntimeRequest.requestId}`
       : null;
-    if (pendingRuntimeRequest && runtimeKey) {
+    // A projected card owns the durable answer and forwards it to the live
+    // provider. Bypassing it leaves a pending card that blocks completion.
+    const projectedRuntime = pendingRuntimeRequest && (interactions ?? []).some(interaction =>
+      interaction.kind === "ask_user_questions" && interaction.sourceRunId === pendingRuntimeRequest.runId &&
+      interaction.payload.runtimeRequestId === pendingRuntimeRequest.requestId);
+    if (pendingRuntimeRequest && runtimeKey && !projectedRuntime) {
       result.push({
         key: runtimeKey,
         kind: "runtime",
@@ -2333,7 +2378,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ? `runtime:${interaction.sourceRunId}:${interaction.payload.runtimeRequestId}`
           : null;
       const key = recoveredRuntimeKey ?? `interaction:${interaction.id}`;
-      if (key === runtimeKey) continue;
+
       result.push({
         key,
         kind: "durable",
@@ -2674,6 +2719,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     initialHistoryPending ||
     planLoading ||
     initialRuns.some((run) => {
+      // A scheduled retry has not started and has no log to hydrate yet.
+      if (run.status === "scheduled_retry") return false;
       if (
         run.runtimeMode === "native" &&
         (hydratedNativeRunIds
@@ -2830,6 +2877,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     }
                     onRetryFailedRun={retryFailedRunHandler}
                     retryFailedRunId={retryFailedRunId}
+                    onOpenSkill={onOpenSkill}
                     tail={
                       tailRunId ||
                       optimisticRunnerStartup ||
@@ -2848,6 +2896,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                   }
                                   agentName={visibleTailAgentName}
                                   agentIcon={visibleTailAgentIcon}
+                            agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
                                   items={tailItems}
                                   status={
                                     optimisticRunnerStartup
@@ -2890,7 +2939,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                             ? liveRun.currentStatusMessage
                                             : null) ||
                                           (tailStatus === "failed"
-                                            ? "This run stopped before a response was available. Review the task’s connection or recovery action below."
+                                            ? linkedRunMetaById.get(tailRunId ?? "")?.errorCode?.startsWith("workspace_git_scan_")
+                                              ? "Workspace setup failed before the agent started."
+                                              : "This run stopped before a response was available. Review the task’s connection or recovery action below."
                                             : "Waiting for transcript...")
                                     }
                                   />

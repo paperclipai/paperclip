@@ -40,6 +40,7 @@ export interface CapabilityFixtureActor {
 }
 
 export interface CapabilityFixtureTask {
+  statusVersion?: number;
   id: string;
   companyId: string;
   identifier: string;
@@ -315,6 +316,8 @@ export interface CapabilityFixtureState {
   outOfScopeTaskIds: string[];
   comments: CapabilityFixtureComment[];
   documents: CapabilityFixtureDocument[];
+  skills?: Array<{ id: string; companyId: string; name: string; slug: string; description: string; markdown: string; versionId: string }>;
+
   interactions: CapabilityFixtureInteraction[];
   approvals: CapabilityFixtureApproval[];
   artifacts: CapabilityFixtureArtifact[];
@@ -355,6 +358,7 @@ interface CapabilityBaseCommand {
 }
 
 export type CapabilitySemanticCommand =
+  | (CapabilityBaseCommand & { kind: "create_skill"; name: string; slug?: string; description: string; markdown: string })
   | (CapabilityBaseCommand & { kind: "report_progress"; body: string })
   | (CapabilityBaseCommand & {
       kind: "write_document";
@@ -388,9 +392,11 @@ export type CapabilitySemanticCommand =
       contentRef: string;
       title: string;
     })
+  | (CapabilityBaseCommand & { kind: "reassign_task"; targetTaskId: string; assigneeActorId: string; expectedAssigneeActorId: string | null; expectedStatusVersion: number; reason: string })
   | (CapabilityBaseCommand & { kind: "set_dependencies"; blockedByTaskIds: string[] })
   | (CapabilityBaseCommand & {
       kind: "create_task";
+      status?: "backlog" | "todo";
       title: string;
       description?: string | null;
       assigneeActorId?: string | null;
@@ -472,12 +478,14 @@ export type CapabilityCommandOutcome =
  * bypass these checks.
  */
 export const CAPABILITY_COMMAND_REQUIRED_CLAIMS = {
+  create_skill: [],
   report_progress: [],
   write_document: [],
   request_human_input: [],
   resolve_human_input: ["control_plane:interactions"],
   register_deliverable: [],
   set_dependencies: ["dependencies:write"],
+  reassign_task: ["delegation:tasks:assign"],
   create_task: ["delegation:tasks:create"],
   request_approval: ["governance:approvals:request"],
   decide_approval: ["governance:approvals:decide"],
@@ -521,6 +529,7 @@ export interface CapabilityFixtureSeed {
   outOfScopeTaskIds?: string[];
   comments?: CapabilityFixtureComment[];
   documents?: CapabilityFixtureDocument[];
+  skills?: CapabilityFixtureState["skills"];
   interactions?: CapabilityFixtureInteraction[];
   approvals?: CapabilityFixtureApproval[];
   artifacts?: CapabilityFixtureArtifact[];
@@ -596,10 +605,11 @@ export function createCapabilityFixtureState(seed: CapabilityFixtureSeed = {}): 
     activeRunId: null,
     company,
     actors: structuredClone(actors),
-    tasks: structuredClone(tasks),
+    tasks: structuredClone(tasks).map(task => ({ ...task, statusVersion: task.statusVersion ?? 0 })),
     outOfScopeTaskIds: structuredClone(seed.outOfScopeTaskIds ?? []),
     comments: structuredClone(seed.comments ?? []),
     documents: structuredClone(seed.documents ?? []),
+    ...(seed.skills ? { skills: structuredClone(seed.skills) } : {}),
     interactions: structuredClone(seed.interactions ?? []),
     approvals: structuredClone(seed.approvals ?? []),
     artifacts: structuredClone(seed.artifacts ?? []),

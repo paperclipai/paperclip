@@ -4,13 +4,14 @@ import {
   emailConnectionSchema,
   emailEndpointSetupSchema,
   emailSendSchema,
+  isUuidLike,
 } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { emailConnectionService } from "../services/email-connections.js";
 import { accessService } from "../services/access.js";
-import { forbidden, notFound } from "../errors.js";
+import { badRequest, forbidden, notFound } from "../errors.js";
 import type {
   EmailChannelService,
   EmailActor,
@@ -188,14 +189,18 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
   router.get("/companies/:companyId/email/tasks/:issueId", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const issueId = req.params.issueId as string;
+    if (issueId !== issueId.trim() || !isUuidLike(issueId)) {
+      throw badRequest("Task ID must be a UUID");
+    }
     await service.authorizeRead(
       companyId,
-      req.params.issueId as string,
+      issueId,
       actor(req),
     );
     const thread = await service.thread(
       companyId,
-      req.params.issueId as string,
+      issueId,
     );
     if (
       thread &&

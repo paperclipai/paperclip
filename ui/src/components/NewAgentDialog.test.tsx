@@ -132,7 +132,7 @@ it.each([false, undefined])(
   },
 );
 
-it("offers only Claude, Codex, and OpenCode on Cloud, even with the runner enabled", async () => {
+it("offers Claude, Codex, OpenCode, and Grok on Cloud, even with the runner enabled", async () => {
   await act(async () => {
     cache.setQueryData(queryKeys.health, {
       status: "ok",
@@ -160,8 +160,15 @@ it("offers only Claude, Codex, and OpenCode on Cloud, even with the runner enabl
     [...document.querySelectorAll<HTMLInputElement>('input[type="radio"]')].map(
       (input) => input.value,
     ),
-  ).toEqual(["claude_local", "codex_local", "opencode_local"]);
+  ).toEqual(["claude_local", "codex_local", "opencode_local", "grok_local"]);
   expect(document.body.textContent).not.toContain("CLI harness");
+  await act(async () =>
+    document.querySelector<HTMLInputElement>('input[value="grok_local"]')!.click(),
+  );
+  await click("Configure agent");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("adapterType")).toBe("grok_local");
+  expect(query.get("name")).toBe("Ada & Co");
 });
 
 it("keeps agent-only invitations reachable from the new-agent flow", async () => {

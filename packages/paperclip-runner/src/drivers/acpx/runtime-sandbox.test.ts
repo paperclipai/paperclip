@@ -51,6 +51,18 @@ describe("ACPX runtime sandbox", () => {
     },
   );
 
+  it("pins Claude's exact model in isolated settings on open and recovery", async () => {
+    const fixture = await sandboxFixture("claude");
+    for (const model of ["claude-sonnet-5", "custom-claude-model"]) {
+      const binding = { ...fixture.binding, requestedModel: model, effectiveModel: model };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const sandbox = await prepareAcpxRuntimeSandbox({ binding, agent: "claude" });
+        const settings = JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"));
+        expect(settings).toMatchObject({ model, availableModels: [model] });
+      }
+    }
+  });
+
   it.each([
     ["pi", "OPENROUTER_API_KEY", "pi-home"],
     ["claude", "ANTHROPIC_API_KEY", "claude-home"],

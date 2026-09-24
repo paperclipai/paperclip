@@ -224,6 +224,7 @@ export interface ConnectionGrant {
         expiresAt?: string;
       };
     };
+    slackSearch?: { endpointId: string; workspaceId: string; slackUserId: string; clientRevision: string };
     github?: {
       userId: string;
       login: string;
@@ -1657,6 +1658,17 @@ export interface ToolConnectionTestAgentAccessResponse {
   access: ToolConnectionAccessSummary;
 }
 
+export interface ToolUpstreamPending {
+  kind: "authorization" | "approval";
+  links: Array<{ url: string; host: string; elicitationId?: string }>;
+  executionId?: string;
+  elicitationId?: string;
+  resumeTool?: string;
+  expiresAt?: string;
+  message?: string;
+  requestedSchema?: Record<string, unknown>;
+}
+
 /** Result of `POST /tool-connections/:id/test-calls`. */
 export interface ToolConnectionTestCallResult {
   decision: ToolConnectionTestDecision;
@@ -1667,6 +1679,8 @@ export interface ToolConnectionTestCallResult {
   error?: { message: string; reasonCode: ToolAccessReasonCode | string | null };
   /** Present (with `decision: "ask_first"`) — the parked approval request. */
   actionRequestId?: string;
+  /** Provider handoff, distinct from a Paperclip permission approval. */
+  upstreamPending?: ToolUpstreamPending;
 }
 
 /**
@@ -1692,6 +1706,7 @@ export interface ToolConnectionTestCallStatus {
   parameters?: Record<string, unknown> | null;
   /** Present once `phase === "done"` and the tool succeeded. */
   result?: unknown;
+  upstreamPending?: ToolUpstreamPending;
   /** Present once `phase === "done"` and the tool failed, or when the request was denied/expired. */
   error?: { message: string; reasonCode: ToolAccessReasonCode | string | null };
   /** Wall-clock duration of the executed call in ms, when known. */

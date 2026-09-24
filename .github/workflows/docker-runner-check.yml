@@ -33,6 +33,9 @@ jobs:
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       # Compile the real target, then change source in a disposable context.
       # A fresh builder must import dependencies and produce changed binary metadata.
-      # No registry credentials, external cache, or image publication.
+      # The baseline build anonymously seeds from the public BuildKit cache at
+      # ghcr.io/paperclipai/paperclip:buildcache-{amd64,arm64}; the verification
+      # build imports only this run's locally exported cache on a fresh builder.
+      # No registry credentials or image publication.
       - name: Verify native build and dependency cache reuse
         run: bash scripts/check-docker-runner-cache.sh

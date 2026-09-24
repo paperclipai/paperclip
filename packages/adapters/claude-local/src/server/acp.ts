@@ -31,6 +31,8 @@ import type {
   AcpxEngineExecutorOptions,
   AcpxRemoteManagedHomeContext,
   AcpxRemoteManagedHomeResult,
+  AcpxTerminalSessionFailure,
+  AcpxTerminalFailureClassification,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asBoolean,
@@ -51,8 +53,8 @@ import {
 } from "./probe-diagnostics.js";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
-import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
+import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -314,10 +316,31 @@ async function prepareClaudeRemoteManagedHome(
   return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
 }
 
+export function classifyClaudeTerminalSessionFailure(
+  failure: AcpxTerminalSessionFailure,
+  now: Date,
+): AcpxTerminalFailureClassification | null {
+  // `limit` also includes context, turn, rate and configured budget limits.
+  // Only the provider's quota wording qualifies for a quota wait.
+  if (failure.category !== "limit") return null;
+  const surface = { errorMessage: [failure.title, failure.details].filter(Boolean).join("\n") };
+  // claude-agent-acp uses this exact quota_exhausted fallback when no provider
+  // title is available. It does not match the CLI's usage-limit wording.
+  const isQuotaFallback = failure.title === "The Claude account has no available quota.";
+  if (!isQuotaFallback && !isClaudeProviderQuotaError(surface)) return null;
+  const retryNotBefore = extractClaudeRetryNotBefore(surface, now)?.toISOString();
+  return {
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    ...(retryNotBefore ? { retryNotBefore } : {}),
+  };
+}
+
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
     prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
+    classifyTerminalSessionFailure: classifyClaudeTerminalSessionFailure,
     ...options,
     adapterType: "claude_local",
     moduleDir,
@@ -627,6 +650,9 @@ export async function probeClaudeAcpSandboxLogin(input: {
     cwd = asString(config.cwd, process.cwd());
   }
 
+  Object.assign(env, claudeSandboxPermissionEnv({
+    dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true), targetIsSandbox,
+  }));
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
   if (config.managedAiConnection) args.push("--setting-sources", "user");
   args.push(

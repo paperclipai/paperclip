@@ -20,6 +20,8 @@ export interface CodexAppServerDriverOptions {
   approvalPolicy?: "never" | "on-request" | "untrusted";
   baseInstructions?: string;
   includeSkillInstructions?: boolean;
+  /** Explicit selected skills, resolved from this task's assigned runtime assets. */
+  skillInputs?: readonly import("../../contracts/runtime-context.js").NativeSkillInput[];
   conversationMode?: "task" | "direct";
   requestedCollaborationMode?: "default" | "plan";
   /**

@@ -26,6 +26,7 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
+  selectInitialCommunicationGuidance,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
@@ -3053,6 +3054,24 @@ describe("selectPaperclipTaskMarkdown", () => {
     ).toBe(compactMarkdown);
   });
 
+  it("adds saved communication guidance only to a fresh session, including after recovery", () => {
+    const context = {
+      paperclipTaskMarkdown: fullMarkdown,
+      paperclipTaskMarkdownCompact: compactMarkdown,
+      paperclipTaskCommunicationGuidance: "## Communication in Slack\nSaved initial guidance",
+      paperclipWake: wake("issue_commented"),
+    };
+    expect(selectPaperclipTaskMarkdown(context)).toContain("Saved initial guidance");
+    expect(selectInitialCommunicationGuidance({ paperclipTaskCommunicationGuidance: "  Slack preference  " })).toBe("Slack preference");
+    expect(selectInitialCommunicationGuidance(context, { resumedSession: true })).toBe("");
+    expect(selectInitialCommunicationGuidance({})).toBe("");
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(compactMarkdown);
+    expect(selectPaperclipTaskMarkdown(context, { includeCommunicationGuidance: false })).toBe(fullMarkdown);
+    context.paperclipWake = { ...wake("issue_monitor_recovery"), recovery: { cause: "process_lost" } } as typeof context.paperclipWake;
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(fullMarkdown);
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: false }).match(/Saved initial guidance/g)).toHaveLength(1);
+  });
+
   it("falls back to the full markdown when no compact variant exists", () => {
     expect(
       selectPaperclipTaskMarkdown(
@@ -3696,6 +3715,16 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
     // Paperclip did not assign this PAPERCLIP_*-named key for the run, so the
     // configured value flows through to the spawned process.
     expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
+  });
+
+  it("does not restore the retired wake JSON variable from config", () => {
+    const env: Record<string, string> = {};
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: { PAPERCLIP_WAKE_PAYLOAD_JSON: "stale wake" },
+      workspaceCwd: null,
+    });
+    expect(env).not.toHaveProperty("PAPERCLIP_WAKE_PAYLOAD_JSON");
   });
 
   it("never accepts PAPERCLIP_API_KEY from config env", () => {

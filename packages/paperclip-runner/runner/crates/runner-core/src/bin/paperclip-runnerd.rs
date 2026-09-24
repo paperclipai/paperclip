@@ -119,6 +119,7 @@ fn build_metadata() -> serde_json::Value {
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
+        "durableSessionCapabilities": ["unlimited_runtime", "connection_lease_renewal"],
         "nativeExecutionVersion": 1,
         "harnessDriverVersion": 1,
         "prp": {
@@ -398,6 +399,10 @@ mod tests {
         let metadata = build_metadata();
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
+        assert_eq!(
+            metadata["durableSessionCapabilities"],
+            json!(["unlimited_runtime", "connection_lease_renewal"])
+        );
         assert_eq!(
             metadata["prpTransportModes"],
             json!(["dial_ws_loopback", "dial_wss", "listen_ws"])

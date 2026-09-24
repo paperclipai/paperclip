@@ -41,6 +41,7 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
 import { ApiError } from "../api/client";
+import type { issuesApi } from "../api/issues";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -2156,6 +2157,46 @@ describe("IssueDetail", () => {
     });
   });
 
+  it.each([false, true])("reveals new artifacts once in the task panel (mobile: %s)", async (isMobile) => {
+    mockSidebarState.isMobile = isMobile;
+    mockPanelState.panelVisible = false;
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>);
+    });
+    await waitForAssertion(() => {
+      expect(queryClient.getQueryData(queryKeys.issues.attachments("PAP-1"))).toEqual([]);
+    });
+    await flushReact();
+    const panelProps = () => (isMobile
+      ? mockTaskSidePanelRender.mock.calls.at(-1)?.[0]
+      : mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props) as {
+        artifactsOpenRequestId?: number;
+        onArtifactsOpened: (requestId: number) => void;
+      };
+    const file = createAttachment({ id: "new-output", createdByAgentId: "agent-1" });
+    act(() => { queryClient.setQueryData(queryKeys.issues.attachments("PAP-1"), [file]); });
+    await waitForAssertion(() => expect(panelProps()?.artifactsOpenRequestId).toBe(1));
+    if (isMobile) {
+      expect(document.querySelector('[data-testid="mobile-task-side-panel"]')).not.toBeNull();
+      expect(mockSetPanelVisible).not.toHaveBeenCalled();
+      expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props.artifactsOpenRequestId).toBeUndefined();
+    } else {
+      expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+    }
+
+    act(() => panelProps().onArtifactsOpened(1));
+    await waitForAssertion(() => expect(panelProps().artifactsOpenRequestId).toBeUndefined());
+    act(() => { queryClient.setQueryData(queryKeys.issues.attachments("PAP-1"), [{ ...file, originalFilename: "Renamed output" }]); });
+    await flushReact();
+    expect(panelProps().artifactsOpenRequestId).toBeUndefined();
+
+    act(() => { queryClient.setQueryData(queryKeys.issues.attachments("PAP-1"), [file,
+      createAttachment({ id: "next-output", createdByAgentId: "agent-1" }),
+    ]); });
+    await waitForAssertion(() => expect(panelProps().artifactsOpenRequestId).toBe(2));
+  });
+
   it("opens the mobile properties sheet for a document deep link", async () => {
     mockSidebarState.isMobile = true;
     mockLocation.hash = "#document-qa-evidence";
@@ -2219,8 +2260,9 @@ describe("IssueDetail", () => {
     expect(panel?.querySelector('[data-slot="sheet-close"]')).not.toBeNull();
   });
 
-  it("loads subtask membership and created work independently and refreshes on issue activity", async () => {
-    const source = createIssue();
+  it("loads ancestors, subtask membership and created work independently and refreshes on issue activity", async () => {
+    const ancestors = [{ id: "parent-task", identifier: "PAP-0", title: "Parent task", status: "in_progress" }] as Issue["ancestors"];
+    const source = createIssue({ ancestors });
     const child = createIssue({ id: "manual-child", parentId: source.id, title: "Manual child" });
     const created = createIssue({ id: "created-task", parentId: null, title: "Created elsewhere" });
     mockIssuesApi.get.mockResolvedValue(source);
@@ -2233,7 +2275,8 @@ describe("IssueDetail", () => {
     const taskProjection = () => mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props.tasksTab;
     expect(taskProjection()?.content.props.subtasks.map((row: Issue) => row.id)).toEqual([child.id]);
     expect(taskProjection()?.content.props.createdTasks.map((row: Issue) => row.id)).toEqual([created.id]);
-    expect(taskProjection()?.count).toBe(2);
+    expect(taskProjection()?.content.props.ancestors).toEqual(ancestors);
+    expect(taskProjection()?.count).toBe(3);
 
     const next = createIssue({ id: "new-created-task", parentId: source.id });
     mockIssuesApi.list.mockImplementation((_companyId, filters?: { descendantOf?: string; createdFromIssueId?: string }) =>
@@ -2241,7 +2284,7 @@ describe("IssueDetail", () => {
     );
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(source.companyId) }); });
     await flushReact();
-    expect(taskProjection()?.count).toBe(3);
+    expect(taskProjection()?.count).toBe(4);
     expect(taskProjection()?.content.props.createdTasks.map((row: Issue) => row.id)).toContain(next.id);
   });
 
@@ -5248,6 +5291,93 @@ describe("IssueDetail", () => {
       "Draft follow-up message",
     );
     localStorage.removeItem("paperclip:issue-comment-draft:issue-1");
+  });
+
+  describe.each([false, true])("composer tree control (mobile=%s)", (isMobile) => {
+    const treeControlKey = ["issues", "tree-control-state", "PAP-1"];
+    const composerProps = () => mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      composerDisabledReason: string | null;
+      composerPause: TaskComposerPause | null;
+      onAdd: (body: string) => Promise<void>;
+    };
+
+    async function renderWithPendingTreeControl() {
+      mockSidebarState.isMobile = isMobile;
+      mockIssuesApi.get.mockResolvedValue(createIssue());
+      let resolve!: (value: Awaited<ReturnType<typeof issuesApi.getTreeControlState>>) => void;
+      let reject!: (reason: Error) => void;
+      const promise = new Promise<Awaited<ReturnType<typeof issuesApi.getTreeControlState>>>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      const response = { promise, resolve, reject };
+      mockIssuesApi.getTreeControlState.mockReturnValue(response.promise);
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await waitForAssertion(() => {
+        expect(mockIssuesApi.getTreeControlState).toHaveBeenCalledWith("PAP-1");
+        expect(mockIssueChatThreadRender).toHaveBeenCalled();
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("pending");
+        expect(queryClient.getQueryState(treeControlKey)?.fetchStatus).toBe("fetching");
+      });
+      return response;
+    }
+
+    it("allows a message while tree control is pending and remains enabled after success", async () => {
+      mockIssuesApi.addComment.mockClear().mockResolvedValue(createIssueComment({ body: "Keep working" }));
+      const response = await renderWithPendingTreeControl();
+      expect(composerProps().composerDisabledReason).toBeNull();
+      expect(composerProps().composerPause).toBeNull();
+      await act(async () => {
+        await composerProps().onAdd("Keep working");
+      });
+      expect(mockIssuesApi.addComment).toHaveBeenCalledWith(
+        "PAP-1", "Keep working", undefined, undefined, undefined, expect.any(String),
+      );
+      expect(queryClient.getQueryState(treeControlKey)?.status).toBe("pending");
+
+      response.resolve({ activePauseHold: null });
+      await waitForAssertion(() => {
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("success");
+        expect(composerProps().composerDisabledReason).toBeNull();
+        expect(composerProps().composerPause).toBeNull();
+      });
+    });
+
+    it("blocks the composer when the pending tree control request fails", async () => {
+      const response = await renderWithPendingTreeControl();
+      response.reject(new Error("tree control unavailable"));
+      await waitForAssertion(() => {
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("error");
+        expect(composerProps().composerDisabledReason).toBe(
+          "Couldn’t check whether this task is paused. Refresh to try again.",
+        );
+      });
+    });
+
+    it.each([true, false])("applies a late pause response (root=%s)", async (isRoot) => {
+      const response = await renderWithPendingTreeControl();
+      response.resolve({
+        activePauseHold: {
+          holdId: "hold-1",
+          rootIssueId: isRoot ? "issue-1" : "parent-1",
+          issueId: "issue-1",
+          isRoot,
+          mode: "pause",
+          reason: null,
+          releasePolicy: { strategy: "manual" },
+        },
+      });
+      await waitForAssertion(() => {
+        expect(composerProps().composerPause?.scope).toBe(isRoot ? "leaf" : "subtree");
+        expect(container.querySelector('[data-testid="paused-composer-takeover"]')).not.toBeNull();
+      });
+    });
   });
 
   it("renders a quiet task pause notice and defaults leaf resume to wake the assignee", async () => {

@@ -38,6 +38,8 @@
 // (`GlobalHandlers`), the two React error boundaries, deduplicates a repeat
 // event (`Dedupe`), and links a caused-by chain (`LinkedErrors`).
 
+import { buildBrowserErrorContext, type BrowserErrorDetails } from "./browser-error-context";
+
 let queue: Promise<void> = Promise.resolve();
 
 /** Run gate operations one at a time, in call order. */
@@ -65,12 +67,12 @@ let sentry: SentryBrowserModule | null = null;
  * — the session query can refetch and call this again, and a second call is
  * a no-op because a client is already started.
  */
-export function initBrowserErrorMonitoring(dsn: string): Promise<void> {
+export function initBrowserErrorMonitoring(dsn: string, environment?: string | null): Promise<void> {
   return enqueue(async () => {
     if (sentry) return;
     try {
       const Sentry = await import("@sentry/browser");
-      Sentry.init(buildBrowserSentryInitOptions(dsn));
+      Sentry.init(buildBrowserSentryInitOptions(dsn, environment));
       sentry = Sentry;
     } catch (err) {
       // The dynamic import or the init call failed. Fall through with a
@@ -135,10 +137,17 @@ export function teardownBrowserErrorMonitoring(): Promise<void> {
  * control flow. A no-op before the gate opens, when the gate never opens (no
  * DSN on the session), or when bootstrap failed.
  */
-export function captureBrowserException(error: unknown): void {
+export function captureBrowserException(error: unknown, details?: BrowserErrorDetails): void {
+  let context: ReturnType<typeof buildBrowserErrorContext> | undefined;
+  try {
+    if (details) context = buildBrowserErrorContext(details);
+  } catch {
+    // Diagnostics must never replace the original exception or its recovery UI.
+  }
   void enqueue(async () => {
     try {
-      sentry?.captureException(error);
+      if (context) sentry?.captureException(error, context);
+      else sentry?.captureException(error);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Sentry captureBrowserException failed", err);
@@ -152,9 +161,18 @@ export function captureBrowserException(error: unknown): void {
  * `@sentry/browser` module and assert the resolved integration list and the
  * captured-event shape against the true SDK, not a stand-in.
  */
-export function buildBrowserSentryInitOptions(dsn: string): BrowserSentryInitOptions {
+export function buildBrowserSentryInitOptions(
+  dsn: string,
+  environment?: string | null,
+): BrowserSentryInitOptions {
   return {
     dsn,
+    environment: environment ?? undefined,
+    // Use the loaded bundle's build, even when the server has since deployed.
+    release:
+      typeof __PAPERCLIP_BUILD_COMMIT__ === "string"
+        ? __PAPERCLIP_BUILD_COMMIT__
+        : undefined,
     tracesSampleRate: 0,
     sendDefaultPii: false,
     integrations: (defaults) =>

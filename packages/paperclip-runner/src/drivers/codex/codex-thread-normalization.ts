@@ -207,7 +207,7 @@ export function safeCodexRequestResponse(
   if (method === "item/permissions/requestApproval") {
     return { permissions: {}, scope: "turn" };
   }
-  if (method === "mcpServer/elicitation/request") {
+  if (method === "mcpServer/elicitation/request" || method === "elicitation/create") {
     return { action, content: null, _meta: null };
   }
   if (

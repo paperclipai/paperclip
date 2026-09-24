@@ -1,0 +1,62 @@
+name: Sentry SDK contract
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/sentry-contract.yml
+      - server/package.json
+      - server/src/sentry*.ts
+      - server/src/peer-version-check.ts
+      - server/src/__tests__/*sentry*.test.ts
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/sentry-contract.yml
+      - server/package.json
+      - server/src/sentry*.ts
+      - server/src/peer-version-check.ts
+      - server/src/__tests__/*sentry*.test.ts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sentry-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sentry-contract:
+    name: Real Sentry SDK isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install the audited optional SDK outside the workspace
+        shell: bash
+        run: |
+          sentry_version=$(node -p 'require("./server/package.json").peerDependencies["@sentry/node"]')
+          npm install --prefix "$RUNNER_TEMP/sentry-contract-sdk" --ignore-scripts --no-audit --no-fund --package-lock=false "@sentry/node@$sentry_version"
+
+      - name: Verify run failure isolation with the real SDK
+        env:
+          NODE_PATH: ${{ runner.temp }}/sentry-contract-sdk/node_modules
+          PAPERCLIP_REQUIRE_SENTRY_TEST_SDK: "1"
+        run: pnpm --filter @paperclipai/server exec vitest run src/__tests__/run-failure-sentry-real-sdk.test.ts

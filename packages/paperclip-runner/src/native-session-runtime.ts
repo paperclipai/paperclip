@@ -2329,7 +2329,9 @@ export async function executeNativeSession(
           }
           await checkpoint();
         } else if (shouldStartFreshTurn) {
-          const modelEnvelope = buildNativeModelEnvelope(input);
+          let modelEnvelope = recovered
+            ? buildNativeModelEnvelope(input, { resumedSession: true })
+            : buildNativeModelEnvelope(input);
           const dispositionOnlyRecovery = Boolean(
             recovered &&
             !recoveredSnapshot.semanticResult &&
@@ -2346,6 +2348,7 @@ export async function executeNativeSession(
                 })
               : false;
           if (dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) {
+            modelEnvelope = buildNativeModelEnvelope(input);
             modelEnvelope.task.prompt = [
               "Paperclip semantic-result recovery for a prior completed provider turn.",
               "The prior turn already performed the work and its user-facing final answer is recorded.",
@@ -2355,6 +2358,8 @@ export async function executeNativeSession(
           }
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
+            ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
+              ? { continuation: true as const } : {}),
             requestedCollaborationMode:
               "executionMode" in input ? input.executionMode : "default",
           });

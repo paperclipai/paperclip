@@ -2,10 +2,10 @@
 
 When work produces a user-inspectable file, upload true deliverables to the current issue before final disposition. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
 
-Use the helper bundled with this skill. From an installed `paperclip` skill directory, the helper lives at `scripts/paperclip-upload-artifact.sh`:
+Use Bash to run the helper bundled with this skill; installed skill files may not retain executable permissions. From an installed `paperclip` skill directory, the helper lives at `scripts/paperclip-upload-artifact.sh`:
 
 ```bash
-scripts/paperclip-upload-artifact.sh path/to/output.webm \
+bash scripts/paperclip-upload-artifact.sh path/to/output.webm \
   --title "Walkthrough render" \
   --summary "Rendered walkthrough for review"
 ```
@@ -102,7 +102,7 @@ part of the response intended for that external conversation, have the upload
 helper bind that specific file to an explicit response comment:
 
 ```bash
-scripts/paperclip-upload-artifact.sh path/to/result.png \
+bash scripts/paperclip-upload-artifact.sh path/to/result.png \
   --title "Requested image" \
   --chat-comment "Here is the requested image."
 ```
@@ -140,3 +140,19 @@ response comment; never also claim that it appears above or is attached.
 Do not infer sharing intent from other files on the task or bind every
 attachment from a run. Only the file passed with `--chat-comment` is eligible
 for external publication; unbound artifacts remain Paperclip-only.
+
+**Native runner**
+
+When `register_deliverable` is available, use it for files in the bound local or
+remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
+`contentType`, exact `byteSize` and SHA-256, `title`, and a stable `idempotencyKey`.
+The tool verifies the file, stores an attachment and artifact work product, and
+binds it to the response. Generic API tools and a legacy API key are unnecessary.
+
+Wait for the receipt. It includes `attachmentId`, `contentPath`, and
+`downloadPath`, along with the existing command, revision, entity references,
+and disposition. Reuse the original key after an ambiguous result. A receipt
+confirms storage and response binding in Paperclip; it does not confirm delivery
+to an external chat provider. If registration fails, use the returned error to
+resolve the failure or explain the limitation; do not describe a workspace path
+as an uploaded file.

@@ -19,7 +19,9 @@ import type {
   ToolConnectionTestCallResult,
   ToolConnectionTestCallStatus,
   ToolConnectionTestDecision,
+  ToolUpstreamPending,
 } from "@paperclipai/shared";
+import { checkOAuthEndpointUrl } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
@@ -828,7 +830,8 @@ function splitRequiredOptional(schema: JsonSchemaNode): JsonSchemaNode {
   const props = schema.properties ?? {};
   const next: Record<string, JsonSchemaNode> = {};
   for (const [key, prop] of Object.entries(props)) {
-    next[key] = required.has(key) ? prop : { ...prop, "x-paperclip-advanced": true };
+    const presented = key === "code" && prop.type === "string" && !prop.format ? { ...prop, format: "textarea" } : prop;
+    next[key] = required.has(key) ? presented : { ...presented, "x-paperclip-advanced": true };
   }
   return { ...schema, properties: next };
 }
@@ -969,7 +972,7 @@ function ActionTester({
       <p className="text-xs text-muted-foreground">{GUT_CHECK[decision](appName, agent.name)}</p>
 
       <div className="flex items-center gap-2">
-        <Button onClick={onRun} disabled={running} size="sm">
+        <Button onClick={onRun} disabled={running || !!outcome?.result.upstreamPending?.resumeTool || outcome?.result.decision === "ask_first"} size="sm">
           {running ? (
             <>
               <Loader2 className="h-3.5 w-3.5 animate-spin" /> Running…
@@ -985,6 +988,8 @@ function ActionTester({
         </Button>
       </div>
 
+      {(outcome?.result.decision === "ask_first" || outcome?.result.upstreamPending?.resumeTool) && <p className="text-xs text-muted-foreground">Finish the existing request below. Use Reset only when you intend to start a new call.</p>}
+
       {running && (
         <RunningCard entry={entry} appName={appName} agentName={agent.name} elapsedMs={elapsedMs} onCancel={onCancelRunning} />
       )}
@@ -996,7 +1001,7 @@ function ActionTester({
       )}
 
       {outcome && !running && (
-        <ResultPanel outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} />
+        <ResultPanel outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} agent={agent} />
       )}
     </div>
   );
@@ -1048,15 +1053,18 @@ function ResultPanel({
   entry,
   appName,
   connectionId,
+  agent,
 }: {
   outcome: RunOutcome;
   entry: ToolCatalogEntry;
   appName: string;
   connectionId: string;
+  agent?: TestAgentWithAccess;
 }) {
   const { result } = outcome;
+  if (result.upstreamPending) return <ProviderPendingResult pending={result.upstreamPending} appName={appName} connectionId={connectionId} agent={agent} />;
   if (result.decision === "ask_first") {
-    return <AskFirstResult outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} />;
+    return <AskFirstResult outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} agent={agent} />;
   }
   if (result.decision === "off") {
     return (
@@ -1073,6 +1081,80 @@ function ResultPanel({
     return <ErrorResult outcome={outcome} appName={appName} connectionId={connectionId} error={toolError} />;
   }
   return <AllowedResult outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} />;
+}
+
+function ProviderPendingResult({ pending, appName, connectionId, agent }: { pending: ToolUpstreamPending; appName: string; connectionId: string; agent?: TestAgentWithAccess }) {
+  const [resumed, setResumed] = useState<{ outcome: RunOutcome; entry: ToolCatalogEntry; action: "accept" | "decline" | "cancel" } | null>(null);
+  const resumeError = resumed && (resumed.outcome.result.error ?? mcpToolError(resumed.outcome.result.result));
+  const stoppedByUser = resumed && resumeError?.reasonCode === "tool_error" &&
+    ((resumed.action === "decline" && /request was declined by the user/i.test(resumeError.message)) ||
+      (resumed.action === "cancel" && /request was cancelled by the user/i.test(resumeError.message)));
+  if (stoppedByUser) return <div role="status" className="space-y-2 rounded-md border border-border bg-muted/40 p-4 text-sm">
+    <p className="font-medium">{resumed.action === "decline" ? "Request declined" : "Request cancelled"}</p>
+    <p>{resumeError.message}</p>
+    <p className="text-muted-foreground">The original call was not repeated.</p>
+    {pending.executionId && <p>Execution: <code className="break-all">{pending.executionId}</code></p>}
+  </div>;
+  if (resumed) return <ResultPanel outcome={resumed.outcome} entry={resumed.entry} appName={appName} connectionId={connectionId} agent={agent} />;
+  return (
+    <div role="status" className="space-y-3 rounded-md border border-border bg-muted/40 p-4 text-sm">
+      <p className="font-medium">{pending.kind === "approval" ? "Approval needed" : "Authorization needed"} in {appName}</p>
+      <p className="text-muted-foreground">Paperclip allowed this call. The provider needs your input before it can continue.</p>
+      {pending.links.map((link) => {
+        const checked = checkOAuthEndpointUrl(link.url);
+        return checked.ok ? <Button key={checked.url} variant="outline" asChild><a href={checked.url} target="_blank" rel="noopener noreferrer">Continue at {checked.host}</a></Button> : null;
+      })}
+      {pending.message && <p className="whitespace-pre-wrap break-words">{pending.message}</p>}
+      {pending.links.length === 0 && !pending.resumeTool && <p>Open the provider dashboard to complete this request.</p>}
+      {pending.executionId && <p>Execution: <code className="break-all">{pending.executionId}</code></p>}
+      {pending.elicitationId && <p>Request: <code className="break-all">{pending.elicitationId}</code></p>}
+      {pending.expiresAt && <p>Approval expires {new Date(pending.expiresAt).toLocaleTimeString()}.</p>}
+      {pending.resumeTool && agent ? <ProviderResumeControls pending={pending} connectionId={connectionId} agent={agent} onResult={setResumed} /> :
+      <p className="text-muted-foreground">{pending.resumeTool
+        ? `After approval, test the ${pending.resumeTool} action with this execution ID. Do not start the original action again.`
+        : "After authorizing, check the provider's result before using Run again. Paperclip will not repeat the call automatically."}</p>}
+    </div>
+  );
+}
+
+function ProviderResumeControls({ pending, connectionId, agent, onResult }: {
+  pending: ToolUpstreamPending; connectionId: string; agent: TestAgentWithAccess;
+  onResult: (result: { outcome: RunOutcome; entry: ToolCatalogEntry; action: "accept" | "decline" | "cancel" }) => void;
+}) {
+  const catalog = useQuery({ queryKey: queryKeys.tools.catalog(connectionId), queryFn: () => toolsApi.listCatalog(connectionId) });
+  const entry = catalog.data?.catalog.find((item) => item.toolName === pending.resumeTool && item.status === "active");
+  const schema = (pending.requestedSchema ?? { type: "object", properties: {} }) as JsonSchemaNode;
+  const [content, setContent] = useState<Record<string, unknown>>(() => getDefaultValues(schema));
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const resume = useMutation({
+    mutationFn: async (action: "accept" | "decline" | "cancel") => {
+      const started = Date.now();
+      const result = await toolsApi.runTestCall(connectionId, { agentId: agent.id, toolName: entry!.toolName,
+        parameters: { executionId: pending.executionId, action, ...(action === "accept" ? { content: JSON.stringify(content) } : {}) } });
+      return { result, durationMs: Date.now() - started, agentName: agent.name, ranAt: new Date() };
+    }, onSuccess: (outcome, action) => { if (entry) onResult({ outcome, entry, action }); },
+  });
+  const expired = !!pending.expiresAt && Date.parse(pending.expiresAt) <= Date.now();
+  const permission = agent.effectiveAccess.tools.find((tool) => tool.toolName === entry?.toolName)?.decision ?? "off";
+  const submit = (action: "accept" | "decline" | "cancel") => {
+    const validation = action === "accept" ? validateJsonSchemaForm(schema, content) : {};
+    setErrors(validation);
+    if (!Object.keys(validation).length) resume.mutate(action);
+  };
+  return <div className="space-y-3">
+    <p className="text-muted-foreground">Review the provider's request, then resume this execution as {agent.name}. The original action will not be started again.</p>
+    <div className="flex items-center gap-2"><span>Resume permission</span><DecisionBadge decision={permission} /></div>
+    {Object.keys(schema.properties ?? {}).length > 0 && <JsonSchemaForm schema={schema} values={content} onChange={setContent} errors={errors} disabled={resume.isPending} />}
+    <div className="flex flex-wrap gap-2">
+      <Button disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("accept")}>{resume.isPending ? "Resuming…" : "Approve and resume"}</Button>
+      <Button variant="outline" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("decline")}>Decline</Button>
+      <Button variant="ghost" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("cancel")}>Cancel request</Button>
+    </div>
+    {expired && <p>This provider approval expired. Check the provider before starting a new action.</p>}
+    {permission === "off" && <p>Allow the resume action in Permissions before continuing.</p>}
+    {catalog.isError && <p role="alert">Could not load the resume action. Close this test and try again.</p>}
+    {resume.isError && <p role="alert">{resume.error instanceof Error ? resume.error.message : "Could not resume. Check the provider before trying again."}</p>}
+  </div>;
 }
 
 /**
@@ -1341,11 +1423,13 @@ function AskFirstResult({
   entry,
   appName,
   connectionId,
+  agent,
 }: {
   outcome: RunOutcome;
   entry: ToolCatalogEntry;
   appName: string;
   connectionId: string;
+  agent?: TestAgentWithAccess;
 }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -1378,6 +1462,7 @@ function AskFirstResult({
   // Once the call has been approved and run, mutate into the real result shape
   // so the tester sees the response (or failure) without re-running.
   if (phase === "done" && status) {
+    if (status.upstreamPending) return <ProviderPendingResult pending={status.upstreamPending} appName={appName} connectionId={connectionId} agent={agent} />;
     // Same as the allowed path: an approved call can still fail at the MCP tool
     // layer (isError:true in the envelope) without a top-level error.
     const toolError = status.error ?? mcpToolError(status.result);

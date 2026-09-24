@@ -90,7 +90,23 @@ save a healthy connection. Reconnect preserves the connection ID, bindings,
 customized name, and access settings. A completed connection remains even if
 subsequent agent creation fails or is cancelled.
 
+Account adoption during Save and the agent runtime test use the selected agent
+environment, or the instance default when no override is set. An unavailable
+remote environment blocks validation rather than probing the server host. The
+runtime test accepts the form’s prospective adapter selection before it is saved.
+For a saved-agent test, omitting `environmentId` uses the agent’s saved override.
+Sending `environmentId: null` tests a change back to the instance default.
+
 ## Runtime isolation
+
+Codex ACP terminal failures with category `limit` and explicit usage-exhaustion
+wording enter provider-quota recovery. A supported reset clock uses the existing
+Codex parser; when none is available, recovery uses its existing quota backoff.
+Context, turn, rate, storage-capacity and configured-budget limits retain their
+existing handling. The adapter inspects bounded provider text only in memory
+and retains recovery labels and a parsed timestamp, without copying the text to
+run results or logs. A historical generic terminal-limit message alone does not
+establish quota exhaustion.
 
 `prepareManagedAiRuntime` is shared by runs, environment tests, and adoption.
 Claude ACP validates working directories on the selected execution target. A
@@ -108,26 +124,23 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
-A subscription invocation takes a grant-scoped transaction advisory lease only
-when it writes a provider authentication file back to the grant. OpenAI and xAI
-subscriptions do this, because their refresh tokens are single use. An
-Anthropic subscription invocation writes no file back, so it takes no lease;
-two Anthropic invocations of one grant run at the same time. The reserved
-database client keeps one transaction open until cleanup, including on
-transaction-pooling proxies such as PgBouncer. Session-level advisory locks must
-not be used here: a pooled connection can return to a different backend for
-cleanup and leave the original lock behind. The lease transaction disables its
-idle timeout and contains no application data writes; cleanup rolls it back.
-Two
-different users' grants can run concurrently; a second invocation of the same
-file-backed subscription receives a retryable busy response while it is in
-use. Refreshes are merged only into the originating active grant, with
-reconnect/revocation version checks. Temporary homes are removed on normal
-completion or failure.
+A subscription invocation takes no lease. Two invocations of one grant, from
+the same or a different provider account, run at the same time. At cleanup,
+each invocation re-reads the credential stored at that moment under a row
+lock on the grant, then compares it against its own refreshed copy using the
+provider's own freshness field: Codex compares `last_refresh` and bounds it
+against the host clock; Grok compares `expires_at`. The newer credential
+persists; a tie or an unparseable freshness value keeps the stored
+credential, so a spent single-use refresh token never overwrites a good one.
+Refreshes are merged only into the originating active grant, with a
+revocation check. Temporary homes are removed on normal completion or
+failure.
 
-For a fresh task execution, subscription contention creates a durable scheduled
-retry checked every 60–120 seconds. The task shows “Waiting for AI subscription”
-and does not request a reconnect or consume its provider-failure retry allowance.
+A fresh task execution cannot enter subscription contention. The freshest-write
+rule above resolves the conflict instead. A run that already entered this wait
+keeps a durable scheduled retry, checked every 60–120 seconds. The task shows
+“Waiting for AI subscription”. It does not request a reconnect, and it does not
+consume its provider-failure retry allowance.
 Each attempt rechecks task eligibility, ownership, budget, and current credential
 access. Revocation and other configuration failures still require user action.
 Authorized comment wakes that started as non-assignee runs can resume without
@@ -138,9 +151,33 @@ Already-started native sessions retain their existing same-run recovery path;
 they must not be replaced by a fresh execution with a pre-provider receipt.
 
 Session reuse includes grant identity, responsible user, and credential
-generation. A changed identity starts a fresh provider session. Managed native
-executions use per-turn lifecycle cleanup; a suspended native execution whose
-credential identity changed must restart as a new execution.
+generation. A changed identity starts a fresh provider session. Native Codex
+(`paperclip_runner`) honors the configured warm lifecycle. It copies refreshed
+credentials back to the current invocation before deleting that invocation's
+private home. The session-owned credential stays private until idle timeout or
+explicit closure. Each follow-up rechecks current authorization and account
+identity before reusing the session; changing identity retires the previous owner.
+Other managed harnesses retain per-turn cleanup. A suspended native execution
+whose credential identity changed must restart as a new execution.
+
+After a verified provider resume, plain-text Slack follow-ups send the new
+authorized message delta instead of repeating the full task framing. The saved
+run and current message identities and bodies must match. Actual brief edits
+still arrive; historical Slack task titles are not repeated as new directions.
+Attachments, omitted input, questions, approvals, and recovery retain their full
+framing. A fresh provider session always receives the complete bootstrap.
+Retained sandbox runner binaries are reused only after an exact SHA-256 match
+with the controller artifact and the normal capability checks. Run-scoped
+credential changes still require provider process rotation.
+
+
+Warm sandbox execution requires both `reuseLease: true` and
+`runnerLifecycleMode: "warm"` on the environment. `runnerIdleTimeoutMs` bounds
+idle process retention. Chat tasks without a project reuse a sandbox only within
+the same company, environment, task, agent, and runtime configuration. They do
+not need an artificial project workspace. Other tasks, other agents, and ad-hoc
+connection tests cannot claim that retained sandbox. Daytona verifies a matching
+workspace sentinel before accepting either a workspace-scoped or task-scoped lease.
 
 Revocation blocks new invocations and refresh persistence. A running provider
 process may already hold credentials. The revoke confirmation lists attributed
@@ -215,8 +252,8 @@ unmanaged legacy agents retain their existing authentication paths.
 
 `server/src/__tests__/ai-connections.test.ts` exercises storage, isolation,
 defaults, human audiences, agent access, reconnect races, refresh ownership,
-subscription locking, migration replay, and redacted API failures against a real
-embedded database. Existing login, adapter, tool, and channel suites cover their
+concurrent subscription write-backs, migration replay, and redacted API
+failures against a real embedded database. Existing login, adapter, tool, and channel suites cover their
 shared integration paths. The onboarding tests cover managed reuse and keeping a
 successfully connected account after failed agent creation.
 
@@ -291,15 +328,28 @@ inside the task. Connecting installs access for that agent and resumes the pendi
 work automatically. Explicit incompatible bindings and shared-account permission
 denials still fail; hiring never expands a restricted shared account's audience.
 
-Concurrent runs using the same subscription wait through scheduled retries while
-the credential lease is held. They do not request new credentials or consume the
-provider-failure retry allowance. Each retry revalidates the account and existing
-run-dispatch rules still suppress cancelled, reassigned, or otherwise ineligible work.
-Assignee retries must retain execution-lock ownership at scheduling, promotion, and dispatch.
+Concurrent runs of one subscription do not wait for each other. No credential
+lease exists to hold them, so a fresh task execution cannot enter a contention
+wait. A run that already entered this wait keeps its scheduled retries. It does
+not request new credentials, and it does not consume the provider-failure retry
+allowance. Each retry revalidates the account, and existing run-dispatch rules
+still suppress cancelled, reassigned, or otherwise ineligible work. An assignee
+retry must still keep execution-lock ownership at scheduling, promotion, and
+dispatch.
 
 `server/src/__tests__/agent-hire-ai-connections.test.ts` covers both creation routes,
 both providers and methods, approval gates, native provider mapping, shared access
-boundaries, and subscription contention. The opt-in
+boundaries, and concurrent runs of one subscription for both providers. The opt-in
 [`tests/hiring-ai-connections/README.md`](../../tests/hiring-ai-connections/README.md)
 describes real browser hiring, subtask, connection, and automatic-resume checks on
 local and Daytona environments, plus the production component Storybook checks.
+
+### Managed session compatibility
+
+Resume checks compare the selected account identity with the server-owned
+metadata in the saved task session. Read this metadata before decoding the
+adapter session: adapter codecs intentionally discard unknown fields. A missing
+identity, a different grant or responsible user, or a changed credential generation
+requires a fresh session. The metadata is removed before passing session params
+to an adapter. Temporary authentication-home paths do not change the configuration
+fingerprint. These checks do not relax current connection authorization.

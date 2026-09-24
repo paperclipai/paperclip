@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
+import { activityLog } from "@paperclipai/db";
+import { persistActivity, publishActivity } from "../services/activity-log.js";
+import { projectToolContext } from "../services/project-tool-context.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -40,7 +45,7 @@ import {
   listCatalogSkillsOrEmpty,
   readCatalogSkillFile,
 } from "../services/skills-catalog.js";
-import { badRequest, forbidden, unauthorized } from "../errors.js";
+import { badRequest, conflict, forbidden, unauthorized } from "../errors.js";
 import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import {
@@ -1013,26 +1018,49 @@ export function companySkillRoutes(db: Db) {
       await assertCanMutateCompanySkills(req, companyId, "skills.create", {
         sourceType: "generated",
       });
-      const result = await svc.createLocalSkill(companyId, req.body, skillActor(req));
-
+      const { idempotencyKey, ...input } = req.body;
       const actor = getActorInfo(req);
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "company.skill_created",
-        entityType: "company_skill",
-        entityId: result.id,
-        details: {
-          slug: result.slug,
-          name: result.name,
-        },
+      const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
+        ? await projectToolContext(db, req.actor, true, "Skill") : null;
+      const event = (skill: Awaited<ReturnType<typeof svc.createLocalSkill>>) => ({
+        companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId,
+        runId: actor.runId, agentApiKeyId: actor.agentApiKeyId, issueId: runContext?.issue.id,
+        action: "company.skill_created", entityType: "company_skill", entityId: skill.id,
+        details: { slug: skill.slug, name: skill.name, description: skill.description,
+          sourceIssueId: runContext?.issue.id ?? null, versionId: skill.currentVersionId },
       });
-
-      res.status(201).json(result);
+      if (!idempotencyKey) {
+        const skill = await svc.createLocalSkill(companyId, input, skillActor(req));
+        await logActivity(db, event(skill));
+        res.status(201).json(skill);
+        return;
+      }
+      // Scope to task and actor, not run: a replacement runner must recover the
+      // same result after a lost acknowledgement. The route still reauthorizes.
+      const receiptKey = `skill:${companyId}:${actor.actorId}:${runContext?.issue.id ?? "board"}:${idempotencyKey}`;
+      const fingerprint = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const result = await db.transaction(async tx => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${receiptKey}, 0))`);
+        if (runContext) await projectToolContext(tx as unknown as Db, req.actor, true, "Skill");
+        const [prior] = await tx.select().from(activityLog).where(and(
+          eq(activityLog.companyId, companyId), eq(activityLog.action, "company.skill_created"),
+          sql`${activityLog.details}->>'idempotencyKey' = ${receiptKey}`,
+        ));
+        const service = companySkillService(tx as unknown as Db);
+        if (prior) {
+          if (prior.details?.fingerprint !== fingerprint) throw conflict("Skill idempotency key was used with different inputs");
+          const skill = await service.getById(companyId, prior.entityId);
+          if (!skill) throw conflict("Previously created skill is no longer available");
+          return { skill, publication: null, duplicate: true };
+        }
+        const skill = await service.createLocalSkill(companyId, input, skillActor(req));
+        const activity = await persistActivity(tx as unknown as Db, {
+          ...event(skill), details: { ...event(skill).details, idempotencyKey: receiptKey, fingerprint },
+        });
+        return { skill, publication: activity.publication, duplicate: false };
+      });
+      if (result.publication) publishActivity(result.publication);
+      res.status(result.duplicate ? 200 : 201).json(result.skill);
     },
   );
 

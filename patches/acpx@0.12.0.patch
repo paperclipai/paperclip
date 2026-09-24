@@ -1,5 +1,5 @@
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
-index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e9f5a3dac 100644
+index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e160b2d1a3 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
 @@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
@@ -124,21 +124,39 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt);
-@@ -6079,6 +6120,9 @@ async function runPromptTurn(params) {
+@@ -6079,6 +6120,19 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
 +		const terminalFailureCategory = typedTerminalSessionFailureCategory(response);
-+		if (terminalFailureCategory !== null)
++		if (terminalFailureCategory !== null) {
++			// Inspect provider text only in memory, before emitting the safe category.
++			const failure = response._meta.jetbrains.air.sessionFailure;
++			try {
++				params.onTerminalSessionFailure?.({
++					category: terminalFailureCategory,
++					...(typeof failure.title === "string" ? { title: failure.title.slice(0, 4096) } : {}),
++					...(typeof failure.details === "string" ? { details: failure.details.slice(0, 4096) } : {})
++				});
++			} catch {}
 +			throw new Error(`ACP agent reported a terminal ${terminalFailureCategory} failure.`);
++		}
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
  		return {
  			stopReason: response.stopReason,
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index ccdbe5b032521518022223733049b8b38793473b..a04948e2b1ab8e169778e0d839ab5bf680573266 100644
+index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770f9f7b0a9 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
-@@ -266,6 +266,10 @@ type AcpRuntimeOptions = {
+@@ -45,6 +45,7 @@ type AcpRuntimeTurnAttachment = {
+   data: string;
+ };
+ type AcpRuntimeTurnInput = {
++  onTerminalSessionFailure?: (failure: { category: string; title?: string; details?: string }) => void;
+   handle: AcpRuntimeHandle;
+   text: string;
+   attachments?: AcpRuntimeTurnAttachment[];
+@@ -266,6 +267,10 @@ type AcpRuntimeOptions = {
    timeoutMs?: number;
    probeAgent?: string;
    verbose?: boolean;
@@ -149,8 +167,24 @@ index ccdbe5b032521518022223733049b8b38793473b..a04948e2b1ab8e169778e0d839ab5bf6
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
+@@ -302,6 +307,7 @@ declare class AcpRuntimeManager {
+   private createAndSaveRuntimeRecord;
+   private keepPersistentClient;
+   startTurn(input: {
++    onTerminalSessionFailure?: (failure: { category: string; title?: string; details?: string }) => void;
+     handle: AcpRuntimeHandle;
+     text: string;
+     attachments?: AcpRuntimeTurnAttachment[];
+@@ -334,6 +340,7 @@ declare class AcpRuntimeManager {
+   private finalizeRuntimeTurn;
+   private finalizeRuntimeTurnRecord;
+   runTurn(input: {
++    onTerminalSessionFailure?: (failure: { category: string; title?: string; details?: string }) => void;
+     handle: AcpRuntimeHandle;
+     text: string;
+     attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..7ec28ecf778623c6e63a2149a599172c184c49bd 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f8626e697ad 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
@@ -163,6 +197,30 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..7ec28ecf778623c6e63a2149a599172c
  	}
  	async readPendingPersistentClient(record, options) {
  		const pendingClient = this.pendingPersistentClients.get(record.acpxRecordId);
+@@ -982,6 +983,7 @@ var AcpRuntimeManager = class {
+ 				client: turn.client,
+ 				sessionId,
+ 				prompt: task.promptInput,
++				onTerminalSessionFailure: task.input.onTerminalSessionFailure,
+ 				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
+ 				conversation: turn.conversation,
+ 				promptMessageId: turn.promptMessageId
+@@ -1586,6 +1588,7 @@ var AcpxRuntime = class {
+ 		const turnPromise = this.getManager().then((manager) => manager.startTurn({
+ 			handle,
+ 			text: input.text,
++			onTerminalSessionFailure: input.onTerminalSessionFailure,
+ 			attachments: input.attachments,
+ 			mode: input.mode,
+ 			sessionMode: state.mode,
+@@ -1614,6 +1617,7 @@ var AcpxRuntime = class {
+ 		yield* (await this.getManager()).runTurn({
+ 			handle,
+ 			text: input.text,
++			onTerminalSessionFailure: input.onTerminalSessionFailure,
+ 			attachments: input.attachments,
+ 			mode: input.mode,
+ 			sessionMode: state.mode,
 diff --git a/dist/session-options-jkYbBxGE.d.ts b/dist/session-options-jkYbBxGE.d.ts
 index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..22dda59e0b7616a20ad45218913e5d8f884bae49 100644
 --- a/dist/session-options-jkYbBxGE.d.ts

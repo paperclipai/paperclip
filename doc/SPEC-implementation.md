@@ -1003,6 +1003,13 @@ stack id to the Cloud tenant portfolio endpoint. Client-supplied user ids are
 never forwarded. Successful responses are cached briefly per user; self-hosted
 instances return `404`.
 
+On Cloud-managed instances, the Members page offers **Invite people** to the
+current stack's owner/admin. It opens that stack's Cloud People settings with a
+full-page navigation. The destination uses the configured Cloud origin and the
+current stack from the authenticated portfolio. The action stays hidden until
+that role is known, or when the portfolio request fails. Hiding the tenant-local
+Invites tab does not hide this Cloud action.
+
 ## 10.2 Goals
 
 - `GET /companies/:companyId/goals`
@@ -1576,6 +1583,12 @@ Export/import behavior in V1:
 - import preview reports skill-policy and legacy-grant mappings before apply and rejects unknown policy schema versions
 - GitHub imports warn on unpinned refs instead of blocking
 
+## Agent visual identity
+
+Agent appearances are stable, versioned ClipLab end-cap personas, separate from
+behavioral instructions. Compact surfaces use on-demand cached PNG URLs; larger
+placements may use a lazy live character. See [agent-personas.md](agent-personas.md)
+for persistence, migration, rendering, and integration contracts.
 ### Experimental task-backed agent chat (2026-09-10)
 
 `enableAgentChat` is an instance experimental flag, default false. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.

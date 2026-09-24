@@ -57,8 +57,8 @@
     },
     {
       "id": "delegation_dependencies",
-      "description": "Create delegated work and maintain dependency edges.",
-      "operationIds": ["create_task", "set_dependencies"]
+      "description": "Create or reassign delegated work and maintain dependency edges.",
+      "operationIds": ["create_task", "reassign_task", "set_dependencies", "hire_agent"]
     },
     {
       "id": "governance",
@@ -87,8 +87,8 @@
     },
     {
       "id": "company_skills",
-      "description": "Inspect company skills and synchronize the current agent's skills.",
-      "operationIds": ["list_company_skills", "sync_company_skills"]
+      "description": "Create or inspect company skills and synchronize the current agent's skills.",
+      "operationIds": ["create_skill", "list_company_skills", "sync_company_skills"]
     },
     {
       "id": "secrets",
@@ -180,9 +180,9 @@
       "legacyGroup": 6,
       "name": "Subtasks",
       "owner": "optional delegation tools",
-      "operationIds": ["create_task"],
+      "operationIds": ["create_task", "reassign_task", "hire_agent"],
       "controlPlaneOperationIds": ["route_wake"],
-      "realSurface": "company issue create, child issue, assignment, and wake services",
+      "realSurface": "company issue create, child issue, guarded reassignment, and wake services",
       "mockStateDomains": ["company", "task", "actor", "blockers", "wake", "audit"],
       "prpEvidence": "company/task state diff, audit reference, and continuation wake evidence",
       "gap": "create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency."
@@ -264,12 +264,12 @@
       "legacyGroup": 13,
       "name": "Reference files",
       "owner": "optional domain tools + test-only escape hatch",
-      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project"],
+      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "create_skill", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project"],
       "controlPlaneOperationIds": ["append_audit_record"],
       "realSurface": "project, case, routine, company-skill, secret, portability, and administration services",
       "mockStateDomains": ["company", "cases", "routines", "skills", "secrets", "audit", "fault"],
       "prpEvidence": "bounded domain projections, redacted broker receipts, company diffs, and audit references",
-      "gap": "Project creation and API tools require the live server authority; generic_api_request is test-only and the remaining domain operations are scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage."
+      "gap": "Project and skill creation and API tools require the live server authority; generic_api_request is test-only and the remaining domain operations are scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage."
     },
     {
       "id": "mh",

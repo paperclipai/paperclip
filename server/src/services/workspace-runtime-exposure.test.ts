@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   deriveViteHmrPort,
@@ -31,24 +31,27 @@ const HANDLE = "handle-abcdef1234567890";
 // The shared test setup pins the automatic default off so unrelated suites do
 // not probe for a real host broker. This suite is about the default, so it opts
 // back in and restores the harness value afterwards.
-let previousHttpsMode: string | undefined;
-beforeEach(() => {
-  previousHttpsMode = process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS;
-  process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS = "auto";
+beforeEach(async () => {
+  vi.stubEnv("PAPERCLIP_MANAGED_RUNTIME_HTTPS", "auto");
+  // Registry records and append-only logs must not share a developer's instance
+  // or a previous test's service identity.
+  vi.stubEnv("PAPERCLIP_HOME", await fs.mkdtemp(path.join(guestDir, "home-")));
 });
 
 afterEach(async () => {
-  if (previousHttpsMode === undefined) delete process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS;
-  else process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS = previousHttpsMode;
   // These tests spawn real loopback backends on dedicated-range ports; reap them
   // rather than leaving one squatting 42xxx/52xxx for every test in the file.
-  await resetRuntimeServicesForTests({ terminateProcesses: true });
+  try {
+    await resetRuntimeServicesForTests({ terminateProcesses: true });
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 function serviceCommand() {
   // Answers `/api/health` the way a real Paperclip dev runtime does: managed
   // publication requires semantic health, not just a 200 (PAP-17572).
-  return `node -e 'const http=require("http");const p=Number(process.env.PORT);for(const q of [p,p+10000].filter(q=>q<65536))http.createServer((rq,r)=>{if(rq.url==="/api/health"){r.setHeader("content-type","application/json");r.end(JSON.stringify({status:"ok"}));return}r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1");setInterval(()=>{},1000)'`;
+  return `node -e 'console.log("fixture started",process.pid,Date.now());const http=require("http");const p=Number(process.env.PORT);for(const q of [p,p+10000].filter(q=>q<65536))http.createServer((rq,r)=>{if(rq.url==="/api/health"){r.setHeader("content-type","application/json");r.end(JSON.stringify({status:"ok"}));return}r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1",()=>console.log("fixture listening",q,Date.now()));setInterval(()=>{},1000)'`;
 }
 
 /**
@@ -131,18 +134,10 @@ setInterval(() => {}, 1000);
  * exposure-port pool. The start must surface the failure terminally after a single
  * allocation.
  */
-const SYNTHETIC_EADDRINUSE_ON_BASE_PORT_GUEST = `
-import http from "node:http";
+const SYNTHETIC_EADDRINUSE_ON_ASSIGNED_PORT_GUEST = `
 const p = Number(process.env.PORT);
-if (p === 42000) {
-  process.stderr.write("node:events:497\\nError: listen EADDRINUSE: address already in use 127.0.0.1:" + p + "\\n");
-  process.exit(1);
-}
-const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
-for (const q of [p, p + 10000]) {
-  http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, "127.0.0.1");
-}
-setInterval(() => {}, 1000);
+process.stderr.write("node:events:497\\nError: listen EADDRINUSE: address already in use 127.0.0.1:" + p + "\\n");
+process.exit(1);
 `;
 
 /**
@@ -189,7 +184,7 @@ beforeAll(async () => {
   // collision the host cannot confirm. The start must not quarantine the pair.
   await fs.writeFile(
     path.join(guestDir, "dev-runner-eaddrinuse-synthetic.mjs"),
-    SYNTHETIC_EADDRINUSE_ON_BASE_PORT_GUEST,
+    SYNTHETIC_EADDRINUSE_ON_ASSIGNED_PORT_GUEST,
   );
   // A guest that fails on a fixed auxiliary port, not on its assigned app or HMR
   // port. It models an unrelated helper listener that an external process holds.
@@ -370,7 +365,24 @@ function startInput(options?: {
 describe("workspace runtime tailscale_https lifecycle", () => {
   it("reserves before spawn, exposes after backend readiness, and removes on stop", async () => {
     const { broker, calls } = createBroker();
-    installDeps({ broker });
+    let reservedPorts: number[] = [];
+    installDeps({
+      broker: {
+        ...broker,
+        async reserve(runtimeId, listeners) {
+          reservedPorts = listeners.map((listener) => listener.port);
+          for (const port of reservedPorts) expect(await isLoopbackPortFree(port)).toBe(true);
+          return broker.reserve(runtimeId, listeners);
+        },
+        async expose(...args) {
+          for (const port of reservedPorts) {
+            const response = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(5_000) });
+            expect(await response.text()).toBe("ok");
+          }
+          return broker.expose(...args);
+        },
+      },
+    });
 
     const [runtime] = await startRuntimeServicesForWorkspaceControl(startInput());
     expect(calls.slice(0, 2)).toEqual(["reserve", "expose"]);
@@ -383,6 +395,7 @@ describe("workspace runtime tailscale_https lifecycle", () => {
       runtimeServiceId: runtime.id,
     });
     expect(calls).toEqual(["reserve", "expose", "remove"]);
+    for (const port of reservedPorts) expect(await isLoopbackPortFree(port)).toBe(true);
   }, 15_000);
 
   it("fails closed and removes the mapping when external HTTPS validation fails", async () => {
@@ -757,7 +770,7 @@ describe("the deployed failure shape: loopback app port, wildcard HMR (PAP-17256
   }, 20_000);
 });
 
-describe("recovers when a guest loses its assigned exposure port during startup (PAP-17256)", () => {
+describe.each([false, true])("guest exposure-port collision reporting (base pair occupied: %s)", (basePairOccupied) => {
   // The quarantine decision itself is unit-tested through
   // `classifyExposureHostCollisions` below. A deterministic end-to-end quarantine
   // test is not reachable here: a real host listener that holds the assigned port
@@ -773,7 +786,12 @@ describe("recovers when a guest loses its assigned exposure port during startup 
         return broker.reserve(runtimeId, requested);
       },
     };
-    installDeps({ broker: recordingBroker });
+    installDeps({
+      broker: recordingBroker,
+      isPortAvailable: (port) => basePairOccupied &&
+        [RUNTIME_EXPOSURE_APP_PORT_MIN, deriveViteHmrPort(RUNTIME_EXPOSURE_APP_PORT_MIN)].includes(port)
+        ? Promise.resolve(false) : isLoopbackPortFree(port),
+    });
 
     const logs: string[] = [];
     const error = await startRuntimeServicesForWorkspaceControl({
@@ -788,12 +806,14 @@ describe("recovers when a guest loses its assigned exposure port during startup 
       },
     }).then(() => null, (err: unknown) => err as Error);
 
-    // No host listener owns 42000, so the printed EADDRINUSE line is unverified.
+    // The assigned pair is free, so the printed EADDRINUSE line is unverified.
     // The start fails terminally after ONE allocation and never burns the pool.
     expect(error).not.toBeNull();
-    expect(error!.message).toContain("42000");
+    expect(error!.message).toContain(String(reservedAppPorts[0]));
     expect(error!.message).toContain("not verified");
-    expect(reservedAppPorts).toEqual([42_000]);
+    expect(reservedAppPorts).toHaveLength(1);
+    expect(reservedAppPorts[0]).toBeGreaterThanOrEqual(RUNTIME_EXPOSURE_APP_PORT_MIN + (basePairOccupied ? 1 : 0));
+    expect(reservedAppPorts[0]).toBeLessThanOrEqual(RUNTIME_EXPOSURE_APP_PORT_MAX);
 
     // No quarantine and no re-allocation happened for the unverified claim.
     const diagnosis = logs.join("");
@@ -811,7 +831,12 @@ describe("recovers when a guest loses its assigned exposure port during startup 
         return broker.reserve(runtimeId, requested);
       },
     };
-    installDeps({ broker: recordingBroker });
+    installDeps({
+      broker: recordingBroker,
+      isPortAvailable: (port) => basePairOccupied &&
+        [RUNTIME_EXPOSURE_APP_PORT_MIN, deriveViteHmrPort(RUNTIME_EXPOSURE_APP_PORT_MIN)].includes(port)
+        ? Promise.resolve(false) : isLoopbackPortFree(port),
+    });
 
     const logs: string[] = [];
     const error = await startRuntimeServicesForWorkspaceControl({
@@ -831,7 +856,9 @@ describe("recovers when a guest loses its assigned exposure port during startup 
     // burns the bounded retries on a valid pair.
     expect(error).not.toBeNull();
     expect(error!.message).toContain("39999");
-    expect(reservedAppPorts).toEqual([42_000]);
+    expect(reservedAppPorts).toHaveLength(1);
+    expect(reservedAppPorts[0]).toBeGreaterThanOrEqual(RUNTIME_EXPOSURE_APP_PORT_MIN + (basePairOccupied ? 1 : 0));
+    expect(reservedAppPorts[0]).toBeLessThanOrEqual(RUNTIME_EXPOSURE_APP_PORT_MAX);
 
     // No quarantine and no re-allocation happened for the auxiliary conflict.
     const diagnosis = logs.join("");
@@ -849,7 +876,12 @@ describe("recovers when a guest loses its assigned exposure port during startup 
         return broker.reserve(runtimeId, requested);
       },
     };
-    installDeps({ broker: recordingBroker });
+    installDeps({
+      broker: recordingBroker,
+      isPortAvailable: (port) => basePairOccupied &&
+        [RUNTIME_EXPOSURE_APP_PORT_MIN, deriveViteHmrPort(RUNTIME_EXPOSURE_APP_PORT_MIN)].includes(port)
+        ? Promise.resolve(false) : isLoopbackPortFree(port),
+    });
 
     const logs: string[] = [];
     const error = await startRuntimeServicesForWorkspaceControl({
@@ -864,13 +896,15 @@ describe("recovers when a guest loses its assigned exposure port during startup 
       },
     }).then(() => null, (err: unknown) => err as Error);
 
-    // The assigned port 42000 appears on a benign line, but EADDRINUSE names only
+    // The assigned port appears on a benign line, but EADDRINUSE names only
     // the auxiliary port 39999. The parser matches the error and the port on the
     // same line, so the assigned pair is not a collision. The start fails
     // terminally after ONE allocation and never quarantines the valid pair.
     expect(error).not.toBeNull();
     expect(error!.message).toContain("39999");
-    expect(reservedAppPorts).toEqual([42_000]);
+    expect(reservedAppPorts).toHaveLength(1);
+    expect(reservedAppPorts[0]).toBeGreaterThanOrEqual(RUNTIME_EXPOSURE_APP_PORT_MIN + (basePairOccupied ? 1 : 0));
+    expect(reservedAppPorts[0]).toBeLessThanOrEqual(RUNTIME_EXPOSURE_APP_PORT_MAX);
 
     const diagnosis = logs.join("");
     expect(diagnosis).not.toContain("Quarantined pair");

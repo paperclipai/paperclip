@@ -32,6 +32,7 @@ import {
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { reportRunFailure } from "../run-failure-report.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
 import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
 import {
@@ -461,7 +462,11 @@ export async function claimNativeSessionResumptions(input: {
             : "Persisted native session state is ambiguous and cannot be resumed safely",
           updatedAt: now,
         }).where(eq(heartbeatRuns.id, row.run.id)).returning();
-        terminalRunToEmit = updatedRun ?? null;
+        // Only a genuine transition into "failed" is a new terminal failure.
+        // A candidate that is already "failed" (the filter above admits
+        // both "running" and "failed") must not send a second Sentry event.
+        terminalRunToEmit =
+          updatedRun && updatedRun.status !== row.run.status ? updatedRun : null;
         await issueService(tx as unknown as Db).update(
           row.coordinator.issueId,
           { status: "blocked" },
@@ -520,6 +525,7 @@ export async function claimNativeSessionResumptions(input: {
     // the remaining candidates in this loop, so fire it and do not await it.
     if (terminalRunToEmit) {
       void emitAgentTaskRun(input.db, terminalRunToEmit);
+      void reportRunFailure(input.db, terminalRunToEmit);
     }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
   }

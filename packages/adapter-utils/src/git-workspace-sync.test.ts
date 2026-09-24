@@ -105,6 +105,35 @@ describe("git workspace sync", () => {
     expect(snapshot?.ignoredPaths).toContain(ignoredName);
   });
 
+  it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "workspace_git_scan_output_limit", "workspace_git_scan_cancelled", "workspace_git_scan_failed"])("preserves %s instead of reporting a non-Git folder", async (code) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scan-failure-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const failure = Object.assign(new Error("Git enumeration failed"), { code });
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      if (input.operation === "adapter_sync.ignored_files") throw failure;
+      return runLocalGit(input.localDir, [...input.args]);
+    });
+    await expect(readGitWorkspaceSnapshot(repo, false)).rejects.toBe(failure);
+  });
+
+  it("lists ignored paths without traversing ignored directory contents", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-ignored-scan-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await writeFile(path.join(repo, ".gitignore"), "dependencies/\n*.secret\n");
+    await mkdir(path.join(repo, "dependencies", "nested"), { recursive: true });
+    await writeFile(path.join(repo, "dependencies", "nested", "private"), "private");
+    await writeFile(path.join(repo, "token.secret"), "private");
+    let ignoredArgs: readonly string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      if (input.operation === "adapter_sync.ignored_files") ignoredArgs = input.args;
+      return runLocalGit(input.localDir, [...input.args]);
+    });
+    expect((await readGitWorkspaceSnapshot(repo))?.ignoredPaths).toEqual(["dependencies", "token.secret"]);
+    expect(ignoredArgs).toEqual(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
+  });
+
   async function createRepo(rootDir: string): Promise<string> {
     const repo = path.join(rootDir, "repo");
     await mkdir(repo, { recursive: true });

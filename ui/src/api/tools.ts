@@ -1,11 +1,7 @@
 import type {
-  ComposioConnectLinkResponse,
-  ComposioDisconnectResponse,
-  ComposioServiceStatusResponse,
-  ComposioServicesResponse,
-} from "@/pages/apps/composio-services";
-import type {
   ToolApplication,
+  ConfigureRailwaySsh,
+  RailwaySshSetup,
   ToolConnection,
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
@@ -405,11 +401,13 @@ export const toolsApi = {
     api.post<ToolConnection>(`/companies/${companyId}/tools/connections`, input),
   updateConnection: (connectionId: string, input: UpdateToolConnectionInput) =>
     api.patch<ToolConnection>(`/tool-connections/${connectionId}`, input),
+  configureRailwaySsh: (connectionId: string, input: ConfigureRailwaySsh) =>
+    api.post<RailwaySshSetup | null>(`/tool-connections/${connectionId}/railway/ssh`, input),
   // Removal is a credential-revoking teardown (PAP-17119), so the response
   // carries the cleanup receipt alongside the archived connection.
-  archiveConnection: (connectionId: string, options: { confirmComposioChildren?: boolean } = {}) =>
+  archiveConnection: (connectionId: string) =>
     api.delete<ToolConnection & { removal: ToolConnectionRemovalSummary }>(
-      `/tool-connections/${connectionId}${options.confirmComposioChildren ? "?confirmComposioChildren=true" : ""}`,
+      `/tool-connections/${connectionId}`,
     ),
   checkConnectionHealth: (connectionId: string) =>
     api.post<ToolConnectionHealthCheckResult>(`/tool-connections/${connectionId}/health-check`, {}),
@@ -444,24 +442,6 @@ export const toolsApi = {
   getTestCallStatus: (connectionId: string, actionRequestId: string) =>
     api.get<ToolConnectionTestCallStatus>(
       `/tool-connections/${connectionId}/test-calls/${actionRequestId}`,
-    ),
-  // --- Composio services (PAP-17865) ---
-  // A Composio connection brokers many toolkits; these four read and change the
-  // per-toolkit state the Services tab renders.
-  listComposioServices: (connectionId: string) =>
-    api.get<ComposioServicesResponse>(`/tool-connections/${connectionId}/services`),
-  startComposioServiceConnect: (connectionId: string, toolkitSlug: string) =>
-    api.post<ComposioConnectLinkResponse>(
-      `/tool-connections/${connectionId}/services/${encodeURIComponent(toolkitSlug)}/connect`,
-      {},
-    ),
-  getComposioServiceStatus: (connectionId: string, toolkitSlug: string) =>
-    api.get<ComposioServiceStatusResponse>(
-      `/tool-connections/${connectionId}/services/${encodeURIComponent(toolkitSlug)}/status`,
-    ),
-  disconnectComposioService: (connectionId: string, toolkitSlug: string) =>
-    api.delete<ComposioDisconnectResponse>(
-      `/tool-connections/${connectionId}/services/${encodeURIComponent(toolkitSlug)}`,
     ),
   importMcpJson: (companyId: string, body: { mcpJson: unknown }) =>
     api.post<McpJsonImportPreview>(`/companies/${companyId}/tools/mcp/import-json`, body),

@@ -1,3 +1,5 @@
+import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
+import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
@@ -489,6 +491,13 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   // process starts. Known transient preflight failures use dedicated bounded
   // retry paths instead of generic issue continuation recovery.
   "setup_failed",
+  // Setup owns the shared durable retry budget for temporary Git scans.
+  // Generic continuation must not retry permanent failures or reset that budget.
+  "workspace_git_scan_timeout",
+  "workspace_git_scan_saturated",
+  "workspace_git_scan_cancelled",
+  "workspace_git_scan_output_limit",
+  "workspace_git_scan_failed",
   "low_trust_isolation_unavailable",
   "low_trust_requires_isolated_workspace",
   "low_trust_boundary_mismatch",
@@ -2829,7 +2838,8 @@ export function recoveryService(
       );
   }
 
-  async function healthyOpenChildIssues(issue: typeof issues.$inferSelect) {
+  async function healthyOpenChildIssues(issue: typeof issues.$inferSelect, sameWorkspaceOnly = false) {
+    if (sameWorkspaceOnly && !issue.projectWorkspaceId) return [];
     const childCandidates = await db
       .select()
       .from(issues)
@@ -2837,6 +2847,7 @@ export function recoveryService(
         and(
           eq(issues.companyId, issue.companyId),
           eq(issues.parentId, issue.id),
+          ...(sameWorkspaceOnly ? [eq(issues.projectWorkspaceId, issue.projectWorkspaceId!)] : []),
           visibleIssueCondition(),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
@@ -2848,7 +2859,7 @@ export function recoveryService(
       });
       if (
         childState.hasActiveExecutionPath ||
-        childState.hasDurableWaitingPath
+        (!sameWorkspaceOnly && childState.hasDurableWaitingPath)
       ) {
         openChildren.push({ id: child.id, identifier: child.identifier });
       }
@@ -4199,6 +4210,12 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
+      if (issue.originKind === "chat_channel") {
+        await settleSlackConversation(db, issue.companyId, issue.id);
+        const [current] = await db.select({ externalConversationState: externalConversationStateSql() })
+          .from(issues).where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)));
+        if (current?.externalConversationState === "waiting") { result.skipped += 1; continue; }
+      }
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
         if (lastRun?.status === "succeeded") {
@@ -4995,6 +5012,17 @@ export function recoveryService(
       }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
         const successfulRun = latestRun;
+
+        // A child with a live or durable waiting path must get a chance to use
+        // the shared workspace. Repeated automatic parent continuations can
+        // otherwise reacquire it before the child's resource retry is due.
+        // This only gates recovery; explicit messages still follow admission.
+        const workspace = parseObject(parseObject(successfulRun.contextSnapshot).paperclipWorkspace);
+        if (workspace.mode === "shared_workspace" && (await healthyOpenChildIssues(issue, true)).length > 0) {
+          result.productiveContinuationObserved += 1;
+          result.skipped += 1;
+          continue;
+        }
 
         if (!isProductiveContinuationRun(successfulRun)) {
           result.successfulContinuationObserved += 1;

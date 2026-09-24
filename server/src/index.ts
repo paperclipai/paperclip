@@ -5,6 +5,7 @@
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
+import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
@@ -1992,6 +1993,7 @@ async function startServerWithDatabaseTeardown(
       shutdownAppServices: appShutdown,
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
+      drainPendingRunFailureReports: waitForPendingRunFailureReports,
       closeDatabase: closeDatabaseClients,
       stopEmbeddedPostgres,
       shutdownInstrumentation,

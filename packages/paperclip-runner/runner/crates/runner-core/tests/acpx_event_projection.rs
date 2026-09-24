@@ -79,6 +79,23 @@ fn projects_authorized_tools_with_exact_durable_correlation() {
 }
 
 #[test]
+fn projects_reserved_completion_tool_input_for_server_feedback_roundtrip() {
+    let events = project(AcpxProviderStateEvent::ToolCall {
+        call_id: "finish-1".to_owned(),
+        operation_id: "paperclip_finish".to_owned(),
+        input: json!({"reportedWorkDisposition":"needs_review"}),
+    });
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "semantic_tool.input");
+    assert_eq!(
+        events[0].payload["semantic_tool"]["operationId"],
+        "paperclip_finish"
+    );
+    assert_eq!(events[0].payload["semantic_tool"]["callId"], "finish-1");
+}
+
+#[test]
 fn keeps_durable_correlation_separate_from_the_active_provider_turn() {
     let mut context = context();
     context.provider_turn_id = Some("provider-turn-1".to_owned());

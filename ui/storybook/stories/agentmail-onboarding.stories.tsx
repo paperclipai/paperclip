@@ -297,7 +297,7 @@ function AgentMailJourney({
     </div>
   );
   const humanLabel =
-    humanAccess === "organization" ? "Any human in the company" : "Just me";
+    humanAccess === "organization" ? "Any human in the organization" : "Just me";
   const agentLabel =
     agentAccess === "all"
       ? "Any agent"
@@ -429,7 +429,7 @@ function AgentMailJourney({
                     connections: [],
                     chatEndpoints: [],
                   }}
-                  allConnections={[]}
+
                   userProfileById={new Map()}
                   onNavigate={() => go(connected ? "permissions" : "access")}
                   onRequestRemove={() => {}}

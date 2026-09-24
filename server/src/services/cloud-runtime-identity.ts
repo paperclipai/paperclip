@@ -449,6 +449,8 @@ export const CLOUD_CONTROL_ACTIONS = [
   "task-drain:read",
   "task-drain:start",
   "task-drain:stop",
+  "lifecycle:read",
+  "lifecycle:unarchive-primary",
 ] as const;
 export type CloudControlAction = (typeof CLOUD_CONTROL_ACTIONS)[number];
 

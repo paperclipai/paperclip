@@ -15,8 +15,10 @@ import {
 import { randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { tmpdir } from "node:os";
-import { and, eq, inArray } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -54,6 +56,11 @@ const support = externalDatabaseUrl
       );
       db = createDb(database.connectionString);
     }, 30_000);
+    afterEach(async () => {
+      // Each sweep scans all companies. Keep earlier tests' unresolved runs out
+      // of later tests so every case exercises only its own recovery fixtures.
+      await db.execute(sql`TRUNCATE companies CASCADE`);
+    });
     afterAll(async () => {
       if (externalDatabaseUrl) await db?.$client.end();
       else await database?.cleanup();
@@ -109,6 +116,73 @@ const support = externalDatabaseUrl
       });
       return { companyId, agentId, issueId, runId };
     }
+    it.each(["verified", "unproven", "unknown_action"] as const)(
+      "preserves saved work and a queued request at a controlled recovery boundary (%s)",
+      async (mode) => {
+        // The stopped-session verifier is the injected boundary here. These are
+        // scheduler/database tests, not evidence that SIGKILL is a safe boundary.
+        const workspace = await mkdtemp(join(tmpdir(), "paperclip-recovery-work-"));
+        try {
+          const file = join(workspace, "saved.txt");
+          const saved = "Completed work from before the interruption.\n";
+          await writeFile(file, saved);
+          const source = await seed(2);
+          await db.update(heartbeatRuns).set({ runnerProfileJson: {
+            recoveryEventInventoryVersion: 1,
+            nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+          } }).where(eq(heartbeatRuns.id, source.runId));
+          await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" })
+            .where(eq(nativeRunFinalizations.runId, source.runId));
+          const projected = await issueService(db).update(source.issueId, { status: "blocked" });
+          await db.insert(issueRecoveryActions).values({
+            companyId: source.companyId, sourceIssueId: source.issueId,
+            kind: "active_run_watchdog", cause: "native_session_cleanup_quarantined", fingerprint: source.runId,
+            ownerType: "board", returnOwnerAgentId: source.agentId, status: "resolved", outcome: "blocked",
+            evidence: { runId: source.runId, nativeFailureBlock: { runId: source.runId, statusVersion: projected!.statusVersion } },
+            nextAction: "Verify the stopped execution before restarting.",
+          });
+          const body = "Keep the saved work and explain the result.";
+          const comment = await issueService(db).addComment(source.issueId, body, { userId: "operator" });
+          if (mode === "unknown_action") await appendHeartbeatRunEvent(db, {
+            companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+            eventType: "tool.execution.started", stream: "system",
+            payload: { name: "send_email", executionId: "unconfirmed-write", transport: "process" },
+          });
+          const retire = vi.fn(() => true);
+          const verifyStoppedSession = vi.fn(async (run: typeof heartbeatRuns.$inferSelect) =>
+            run.id === source.runId && mode !== "unproven" ? { evidence: {}, retire } : null);
+          // Repeated sweeps must not create duplicate successors or user messages.
+          await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+          await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+          const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+          expect(successors).toHaveLength(mode === "verified" ? 1 : 0);
+          expect(await readFile(file, "utf8")).toBe(saved);
+          const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, source.issueId));
+          expect(comments.filter((row) => row.id === comment.id)).toMatchObject([{ body }]);
+          expect(comments.filter((row) => row.body === body)).toHaveLength(1);
+          const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+          if (mode === "verified") {
+            expect(retire).toHaveBeenCalledOnce();
+            expect(task!.status).toBe("in_progress");
+            const continuation = await buildExecutionContinuation({
+              db, companyId: source.companyId, issueId: source.issueId, agentId: source.agentId,
+              context: successors[0]!.contextSnapshot!, summary: null, exposeLowTrustRaw: false,
+            });
+            expect(continuation.messages.filter((message) => message.id === comment.id)).toHaveLength(1);
+            expect(continuation.objective).toBe(body);
+          } else {
+            expect(retire).not.toHaveBeenCalled();
+            expect(task!.status).toBe("blocked");
+            if (mode === "unknown_action") {
+              const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+              expect(decision!.failureDetail?.replacementDenied).toBe("uncertain_provider_action");
+            }
+          }
+        } finally {
+          await rm(workspace, { recursive: true, force: true });
+        }
+      },
+    );
     it.each(["unproven", "changed", "verified"] as const)("requires stopped-session proof through commit (%s)", async (mode) => {
       const source = await seed(2);
       await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" }).where(eq(nativeRunFinalizations.runId, source.runId));

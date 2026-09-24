@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 
-export const MAX_REMOTE_DELIVERABLE_BYTES = 10 * 1024 * 1024;
+import { MAX_ATTACHMENT_BYTES } from "../../attachment-types.js";
+
+export const MAX_REMOTE_DELIVERABLE_BYTES = MAX_ATTACHMENT_BYTES;
 const PREFIX = "paperclip_runner_file_handoff_";
 const READ_TIMEOUT_MS = 10_000;
 

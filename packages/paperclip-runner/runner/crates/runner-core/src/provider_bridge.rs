@@ -223,7 +223,7 @@ pub struct ProviderToolBridge {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderBridgeError {
     message: String,
-    safe_provider_message: Option<&'static str>,
+    safe_provider_message: Option<String>,
 }
 
 impl ProviderBridgeError {
@@ -242,8 +242,46 @@ impl ProviderBridgeError {
         };
         Self {
             message: format!("provider arguments for {operation_id} failed JSON Schema validation"),
-            safe_provider_message,
+            safe_provider_message: safe_provider_message.map(str::to_owned),
         }
+    }
+
+    fn with_schema_locations(mut self, validator: &jsonschema::Validator, input: &Value) -> Self {
+        // Only completion tools have a provider-safe hint. Report bounded paths
+        // into the authorized schema, never the submitted values or unknown keys.
+        if let Some(message) = self.safe_provider_message.as_mut() {
+            let locations = validator
+                .iter_errors(input)
+                .take(3)
+                .map(|error| {
+                    let location = error
+                        .schema_path()
+                        .to_string()
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || "/_~.-".contains(*c))
+                        .take(128)
+                        .collect::<String>();
+                    match error.kind() {
+                        jsonschema::error::ValidationErrorKind::Required { property } => {
+                            // Required property names come from the authorized schema.
+                            let name = property
+                                .to_string()
+                                .chars()
+                                .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                                .take(64)
+                                .collect::<String>();
+                            format!("{location} (missing {name})")
+                        }
+                        _ => location,
+                    }
+                })
+                .collect::<Vec<_>>();
+            message.push_str(" Check these input schema locations: ");
+            message.push_str(&locations.join(", "));
+            message.push('.');
+            message.truncate(message.len().min(512));
+        }
+        self
     }
 
     fn active_turn_receipt_limit() -> Self {
@@ -254,8 +292,8 @@ impl ProviderBridgeError {
         self.message == ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE
     }
 
-    pub fn safe_provider_message(&self) -> Option<&'static str> {
-        self.safe_provider_message
+    pub fn safe_provider_message(&self) -> Option<&str> {
+        self.safe_provider_message.as_deref()
     }
 }
 
@@ -612,7 +650,8 @@ impl ProviderToolBridge {
             ))
         })?;
         if !validator.is_valid(&input) {
-            return Err(ProviderBridgeError::input_schema_validation(&operation_id));
+            return Err(ProviderBridgeError::input_schema_validation(&operation_id)
+                .with_schema_locations(&validator, &input));
         }
         if matches!(
             operation_id.as_str(),
@@ -1520,6 +1559,65 @@ mod tests {
             Some(COMPLETION_INPUT_SCHEMA_HINT)
         );
         assert!(!over_limit.has_call_receipt("call-over-limit"));
+    }
+
+    #[test]
+    fn completion_validation_identifies_schema_location_without_echoing_input() {
+        let mut bridge = completion_bridge();
+        let error = bridge
+            .begin_call(
+                "bad-summary".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({"summary": {"PRIVATE_FIELD": "PRIVATE_VALUE"}}),
+            )
+            .unwrap_err();
+        let message = error.safe_provider_message().unwrap();
+        assert!(message.contains("/properties/summary/type"), "{message}");
+        assert!(!message.contains("PRIVATE_FIELD"));
+        assert!(!message.contains("PRIVATE_VALUE"));
+        assert!(!bridge.has_call_receipt("bad-summary"));
+        bridge
+            .begin_call(
+                "corrected-summary".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({"summary": "Saved the requested output."}),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn completion_validation_names_missing_fields_and_bounds_feedback() {
+        let mut bridge = completion_bridge();
+        let error = bridge
+            .begin_call(
+                "missing-summary".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({}),
+            )
+            .unwrap_err();
+        assert!(error
+            .safe_provider_message()
+            .unwrap()
+            .contains("/required (missing \"summary\")"));
+
+        let schema = json!({"type": "object", "properties": {
+            "a": {"type": "string"}, "b": {"type": "string"},
+            "c": {"type": "string"}, "d": {"type": "string"},
+        }});
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let error = ProviderBridgeError::input_schema_validation("paperclip_finish")
+            .with_schema_locations(&validator, &json!({"a": 1, "b": 2, "c": 3, "d": 4}));
+        assert_eq!(
+            error
+                .safe_provider_message()
+                .unwrap()
+                .matches("/properties/")
+                .count(),
+            3
+        );
+        let other = ProviderBridgeError::input_schema_validation("some_other_tool")
+            .with_schema_locations(&validator, &json!({"a": 1}));
+        assert_eq!(other.safe_provider_message(), None);
     }
 
     #[test]

@@ -1,11 +1,11 @@
 /**
  * Catalog of the redesign's motion tokens. This mirrors the `--motion-*`
- * custom properties declared in ui/src/index.css :root, and is the list the dev
+ * custom properties declared in ui/src/index.css and its motion token import, and is the list the dev
  * tweak panel renders controls from.
  *
- * A finish-line test parses index.css for `--motion-*` declarations and asserts
+ * A finish-line test parses the token layer for `--motion-*` declarations and asserts
  * this catalog is 1:1 with them, so the two can never silently drift: add a
- * token to index.css and you must add it here (and vice-versa).
+ * shared --motion-* token to the token layer and you must add it here (and vice-versa).
  */
 
 export type MotionTokenKind = "time" | "easing";
@@ -55,7 +55,6 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-approval-pulse", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-plan-entry-stagger", group: "States", kind: "time", min: 0, max: 300, step: 5 },
   { name: "--motion-plan-check", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
-  { name: "--motion-question-confirm", group: "States", kind: "time", min: 0, max: 1000, step: 10 },
   { name: "--motion-question-page-enter", group: "States", kind: "time", min: 0, max: 1000, step: 10 },
   { name: "--motion-count-tween", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-streaming-cursor-blink", group: "States", kind: "time", min: 0, max: 3000, step: 20 },

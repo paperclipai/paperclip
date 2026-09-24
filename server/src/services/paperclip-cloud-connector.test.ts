@@ -79,6 +79,23 @@ describe("Paperclip Cloud connector", () => {
     }
   });
 
+  it.each(["chat.read", "chat.write"] as const)("signs reduced Chat scopes for %s", async (profile) => {
+    const keys = config();
+    const scopes = ["chat.spaces.readonly", "chat.messages.readonly", ...(profile === "chat.write" ? ["chat.messages.create"] : [])]
+      .map((scope) => `https://www.googleapis.com/auth/${scope}`);
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const claims = JSON.parse(Buffer.from(body.request.split(".")[1], "base64url").toString("utf8"));
+      expect(claims.prf).toBe(profile);
+      expect(claims.scp).toEqual(scopes);
+      return Response.json({ confirmationUrl: "https://my.example.test/connections/confirm?session=chat", expiresAt: "2099-01-01T00:00:00Z" });
+    });
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+    await connector.startAuthorization({ subject, companyId, profile,
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback", returnState: "chat-state" });
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("starts a signed session with exact endpoint audience and scope contract", async () => {
     const keys = config();
     const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {

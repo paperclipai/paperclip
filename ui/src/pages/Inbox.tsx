@@ -2693,7 +2693,7 @@ function StreamlinedInbox() {
         <BlockedInboxView
           companyId={selectedCompanyId!}
           searchQuery={searchQuery}
-          agentNameById={agentById}
+          agentNameById={agentById} agents={agents}
           userLabelById={companyUserLabelMap}
           issueLinkState={issueLinkState}
           groupBy={blockedGroupBy}
@@ -2787,7 +2787,7 @@ function StreamlinedInbox() {
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -2886,7 +2886,7 @@ function StreamlinedInbox() {
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                         )
                       ) : undefined}
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
@@ -2906,6 +2906,8 @@ function StreamlinedInbox() {
                               defaultProjectWorkspaceIdByProjectId,
                             })}
                             assigneeName={agentName(issue.assigneeAgentId)}
+                            assigneeAgent={agents?.find((agent) => agent.id === issue.assigneeAgentId)}
+                            creatorAgent={agents?.find((agent) => agent.id === issue.createdByAgentId)}
                             assigneeUserName={
                               formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, companyUserLabelMap)
                               ?? assigneeUserProfile?.label

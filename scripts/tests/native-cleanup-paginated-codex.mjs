@@ -1,7 +1,7 @@
 // Opt-in real Codex qualification; no model turn or live account data.
 // Run from the repository root:
 // node --import ./server/node_modules/tsx/dist/loader.mjs scripts/tests/native-cleanup-paginated-codex.mjs
-// PAPERCLIP_TEST_CODEX_BINARY may select the exact installed Codex 0.153.4 binary.
+// PAPERCLIP_TEST_CODEX_BINARY may select the exact installed Codex 0.156.0 binary.
 // Fresh synthetic fixture directories are retained for inspection; never reuse live homes.
 import { spawn, execFileSync } from "node:child_process";
 import {
@@ -26,10 +26,10 @@ if (
   execFileSync(codexBinary, ["--version"], {
     encoding: "utf8",
     timeout: 10000,
-  }).trim() !== "codex-cli 0.153.4"
+  }).trim() !== "codex-cli 0.156.0"
 ) {
   throw new Error(
-    "This opt-in qualification requires Codex CLI 0.153.4. Requalify deliberately before changing the pin.",
+    "This opt-in qualification requires Codex CLI 0.156.0. Requalify deliberately before changing the pin.",
   );
 }
 const home = await mkdtemp(join(tmpdir(), "paperclip-paginated-probe-"));
@@ -132,7 +132,7 @@ const lines =
         timestamp,
         cwd: home,
         originator: "codex",
-        cli_version: "0.153.4",
+        cli_version: "0.156.0",
         source: "cli",
         model_provider: "openai",
         selected_capability_roots: [],

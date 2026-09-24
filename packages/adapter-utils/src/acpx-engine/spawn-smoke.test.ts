@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createAcpxEngineExecutor } from "./execute.js";
 
 const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
@@ -166,7 +166,8 @@ it("keeps a typed retry warning nonfatal when the turn produces an answer", asyn
   const answer = "Recovered after the transient connection warning.";
   const warningCanary = "typed-warning-is-not-terminal";
   const logs: string[] = [];
-  const execute = createAcpxEngineExecutor();
+  const classifyTerminalSessionFailure = vi.fn(() => null);
+  const execute = createAcpxEngineExecutor({ classifyTerminalSessionFailure });
 
   const result = await execute({
     runId: "typed-warning-smoke",
@@ -190,6 +191,7 @@ it("keeps a typed retry warning nonfatal when the turn produces an answer", asyn
 
   expect(result.exitCode).toBe(0);
   expect(result.summary).toBe(answer);
+  expect(classifyTerminalSessionFailure).not.toHaveBeenCalled();
   expect(JSON.stringify(result)).not.toContain(warningCanary);
   expect(logs.join("\n")).not.toContain(warningCanary);
 });

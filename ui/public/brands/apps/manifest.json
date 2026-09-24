@@ -21,6 +21,12 @@
       "darkAsset": "/brands/apps/anthropic-dark.svg"
     },
     {
+      "slug": "arcade",
+      "provider": "Arcade",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/arcade.png"
+    },
+    {
       "slug": "asana",
       "provider": "Asana",
       "catalogVisible": true,
@@ -86,7 +92,7 @@
     {
       "slug": "composio",
       "provider": "Composio",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/composio.svg",
       "darkAsset": "/brands/apps/composio-dark.svg"
     },
@@ -115,6 +121,12 @@
       "provider": "Embat",
       "catalogVisible": false,
       "localAsset": "/brands/apps/embat.svg"
+    },
+    {
+      "slug": "executor",
+      "provider": "Executor",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/executor.png"
     },
     {
       "slug": "github",
@@ -418,6 +430,13 @@
       "localAsset": "/brands/apps/xero.svg"
     },
     {
+      "slug": "youcom",
+      "provider": "You.com",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/youcom.svg",
+      "darkAsset": "/brands/apps/youcom-dark.svg"
+    },
+    {
       "slug": "zapier",
       "provider": "Zapier",
       "catalogVisible": true,
@@ -459,6 +478,19 @@
       "aliases": [
         "jam"
       ]
+    },
+    {
+      "slug": "railway",
+      "provider": "Railway",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/railway.svg",
+      "darkAsset": "/brands/apps/railway-dark.svg"
+    },
+    {
+      "slug": "fireflies",
+      "provider": "Fireflies",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/fireflies.svg"
     }
   ]
 }

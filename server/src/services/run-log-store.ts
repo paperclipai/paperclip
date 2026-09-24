@@ -209,8 +209,11 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     const stat = await fs.stat(filePath).catch(() => null);
     if (!stat) return null;
     const start = Math.max(0, Math.min(offset, stat.size));
-    const end = Math.max(start, Math.min(start + limitBytes - 1, stat.size - 1));
-    if (start > end) return { content: "", nextOffset: start };
+    // No lower clamp to `start`: when the reader is fully caught up
+    // (offset === size) that clamp made end === start and produced a
+    // 1-byte-past-EOF range instead of an empty read.
+    const end = Math.min(start + limitBytes - 1, stat.size - 1);
+    if (start > end) return { content: "", nextOffset: start < stat.size ? start : undefined };
 
     const chunks: Buffer[] = [];
     try {
@@ -243,8 +246,12 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     if (!head.exists) throw notFound("Run log not found");
     const total = head.contentLength ?? 0;
     const start = Math.max(0, Math.min(offset, total));
-    const end = Math.max(start, Math.min(start + limitBytes - 1, total - 1));
-    if (start > end || total === 0) return { content: "", nextOffset: start < total ? start : undefined };
+    // Unlike local file streams, S3 rejects a range that starts at or past
+    // EOF with 416 InvalidRange, so a caught-up reader (offset === total)
+    // must short-circuit to an empty read instead of clamping end up to
+    // start and requesting `bytes=total-total`.
+    const end = Math.min(start + limitBytes - 1, total - 1);
+    if (total === 0 || start > end) return { content: "", nextOffset: start < total ? start : undefined };
 
     const result = await s3.provider.getObject({ objectKey: key, range: { start, end } });
     const chunks: Buffer[] = [];

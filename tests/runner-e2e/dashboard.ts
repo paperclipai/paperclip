@@ -1,8 +1,11 @@
+import { isIncompleteFirstTaskResult, renderCaseOutcome } from "./case-outcome.js";
+import { renderFirstTaskDetails } from "./first-task-report.js";
 import {
   discoverReportCatalog,
   type ReportExecution,
 } from "./report-catalog.js";
 import type {
+  RunnerE2EBillingSummary,
   RunnerE2ECampaign,
   RunnerE2EHistoryIndex,
   RunnerE2EResult,
@@ -10,6 +13,7 @@ import type {
 } from "./types.js";
 import {
   aggregateCampaignBilling,
+  billingCoverageLabel,
   summarizeExecutionBilling,
 } from "./billing.js";
 
@@ -55,11 +59,17 @@ function durationLabel(durationMs: number) {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-function tokenLabel(value: number) {
-  return new Intl.NumberFormat("en-US").format(value);
+function tokenLabel(value: number, llm?: RunnerE2EBillingSummary["llm"]) {
+  const formatted = new Intl.NumberFormat("en-US").format(value);
+  return llm ? billingCoverageLabel(formatted, llm.runsWithTokenUsage, llm.runCount) : formatted;
 }
 
-function usdLabel(value: number) {
+function llmCostLabel(value: number, llm: RunnerE2EBillingSummary["llm"]) {
+  return billingCoverageLabel(usdLabel(value), llm.runsWithReportedCost, llm.runCount);
+}
+
+function usdLabel(value: number | null) {
+  if (value === null) return "Unknown";
   return `$${value.toFixed(value < 0.01 ? 6 : 4)}`;
 }
 
@@ -150,7 +160,9 @@ function renderCase(
       ? "missing"
       : entry.valid
         ? "passed"
-        : "failed";
+        : isIncompleteFirstTaskResult(entry.result, entry.errors)
+          ? "incomplete"
+          : "failed";
   const label = state.replace("-", " ");
   const detail =
     entry?.errors.join("; ") ||
@@ -159,9 +171,21 @@ function renderCase(
       : selected
         ? "No result artifact was uploaded"
         : "Not selected");
-  const screenshots = resolveScreenshots(entry);
+  const screenshots = resolveScreenshots(entry).map((item) =>
+    state === "incomplete" && /failure/i.test(item.label)
+      ? { ...item, label: "Task state when recording stopped" }
+      : item,
+  );
   const billing = entry ? summarizeExecutionBilling(entry.result) : null;
-  const matcherResults = entry?.result.matcherResults ?? [];
+  const firstTaskChecks = entry?.result.firstTask?.checks;
+  const notReached = firstTaskChecks?.filter((c) => c.notReached).length ?? 0;
+  const matcherResults = firstTaskChecks?.length
+    ? firstTaskChecks.filter((c) => !c.notReached).map((c) => ({
+        matcher: { kind: "json_path" as const, path: `firstTask.checks.${c.id}`, expected: true },
+        passed: c.passed,
+        detail: c.detail,
+      }))
+    : entry?.result.matcherResults ?? [];
   const passedMatchers = matcherResults.filter(
     (result) => result.passed,
   ).length;
@@ -186,14 +210,25 @@ function renderCase(
     !availableFiles || availableFiles.has("html-report/index.html")
       ? safeEvidenceHref(entry?.evidenceBaseHref, "html-report/index.html")
       : null;
+  const structuredLinks = [
+    ["snapshots/first-task.json", "Full conversation and instruction JSON"],
+    ["snapshots/first-task-run-evidence.json", "Full run / tool-event JSON"],
+    ["regraded-result.json", "Regraded result JSON"],
+    ["result.json", availableFiles?.has("regraded-result.json") ? "Original result JSON" : "Complete result JSON"],
+  ].flatMap(([file, label]) => {
+    if (!availableFiles?.has(file)) return [];
+    const href = safeEvidenceHref(entry?.evidenceBaseHref, file);
+    return href ? [`<a href="${html(href)}">${html(label)}</a>`] : [];
+  });
   const links =
-    screenshots.length > 0 || playwright
+    screenshots.length > 0 || playwright || structuredLinks.length > 0
       ? `<nav class="evidence-links" aria-label="Evidence for ${html(execution.id)}">
           ${screenshots.map((item) => `<a href="${html(item.href)}" target="_blank" rel="noreferrer">Open ${html(item.label.toLowerCase())}</a>`).join("")}
           ${playwright ? `<a href="${html(playwright)}">Open Playwright report</a>` : ""}
+          ${structuredLinks.join("")}
         </nav>`
       : "";
-  const matcherRows = (entry?.result.matcherResults ?? [])
+  const matcherRows = matcherResults
     .map(
       (result) => `<tr class="matcher-${result.passed ? "passed" : "failed"}">
         <td><span class="matcher-state" aria-label="${result.passed ? "Passed" : "Failed"}">${result.passed ? "Pass" : "Fail"}</span></td>
@@ -229,15 +264,15 @@ function renderCase(
             data-gallery-profile="${html(execution.profile.label)}"
             data-gallery-generation="${html(execution.profile.generation)}"
             data-gallery-provider="${html(execution.profile.provider)}"
-            data-gallery-model="${html(execution.profile.model)}"
+            data-gallery-model="${html(entry?.result.model ?? (execution.suite.id === "first-task" ? "Production onboarding default" : execution.profile.model))}"
             data-gallery-environment="${html(execution.environment.label)}"
             data-gallery-environment-provider="${html(execution.environment.provider)}"
             data-gallery-execution-target="${html(execution.environment.expectedExecutionTarget.kind)}"
             data-gallery-runtime="${html(entry?.result.runtimeMode ?? execution.profile.expectedRuntimeMode)}"
             data-gallery-status="${html(label)}"
             data-gallery-duration="${html(entry ? durationLabel(entry.result.durationMs) : "Not run")}"
-            data-gallery-tokens="${html(billing ? `${tokenLabel(billing.llm.inputTokens)} in · ${tokenLabel(billing.llm.outputTokens)} out` : "Unavailable")}"
-            data-gallery-matchers="${html(matcherResults.length > 0 ? `${passedMatchers}/${matcherResults.length} matchers passed` : "No matchers recorded")}"
+            data-gallery-tokens="${html(billing ? `${tokenLabel(billing.llm.inputTokens, billing.llm)} in · ${tokenLabel(billing.llm.outputTokens, billing.llm)} out` : "Unavailable")}"
+            data-gallery-matchers="${html(matcherResults.length > 0 ? `${passedMatchers}/${matcherResults.length} matchers passed${notReached ? ` · ${notReached} not reached` : ""}` : "No matchers recorded")}"
             aria-label="Open ${html(item.label)} for ${html(execution.id)} in gallery"
           >
             <span class="screenshot-frame"><img src="${html(item.href)}" loading="lazy" alt="${html(item.label)} for ${html(execution.id)}"></span>
@@ -248,8 +283,8 @@ function renderCase(
     : "";
   const billingStrip = billing
     ? `<div class="billing-strip" aria-label="Billing for ${html(execution.id)}">
-        <div><span>Tokens</span><strong>${html(tokenLabel(billing.llm.inputTokens))} in · ${html(tokenLabel(billing.llm.outputTokens))} out</strong><small>${html(tokenLabel(billing.llm.cachedInputTokens))} cached · ${billing.llm.runsWithTokenUsage}/${billing.llm.runCount} runs covered</small></div>
-        <div><span>LLM spend</span><strong>${billing.llm.runsWithReportedCost > 0 ? html(usdLabel(billing.reportedCostUsd)) : html(billing.llm.costStatus)}</strong><small>${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs provider-priced</small></div>
+        <div><span>Tokens</span><strong>${html(tokenLabel(billing.llm.inputTokens, billing.llm))} in · ${html(tokenLabel(billing.llm.outputTokens, billing.llm))} out</strong><small>${html(tokenLabel(billing.llm.cachedInputTokens, billing.llm))} cached · ${billing.llm.runsWithTokenUsage}/${billing.llm.runCount} runs covered</small></div>
+        <div><span>LLM spend</span><strong>${html(llmCostLabel(billing.reportedCostUsd, billing.llm))}</strong><small>${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs provider-priced</small></div>
         <div><span>Execution</span><strong>${billing.runtime.estimatedListCostUsd === undefined ? html(billing.runtime.costStatus === "not_metered" ? "Local · not metered" : "Cost unavailable") : `${html(usdLabel(billing.runtime.estimatedListCostUsd))} est.`}</strong><small>${html(durationLabel(billing.runtime.agentRunDurationMs))} agent${billing.runtime.leaseDurationMs === null ? "" : ` · ${html(durationLabel(billing.runtime.leaseDurationMs))} lease`}</small></div>
       </div>`
     : "";
@@ -268,8 +303,11 @@ function renderCase(
       <strong>${html(execution.task.label)}</strong>
       <span class="status">${html(label)}</span>
     </div>
+    ${entry ? renderCaseOutcome(entry.result, entry.valid, entry.errors) : ""}
     ${gallery}
     ${billingStrip}
+    ${links}
+    ${renderFirstTaskDetails(entry?.result)}
     <code class="execution-id">${html(execution.id)}</code>
     <details class="case-context">
       <summary>Matchers and test context</summary>
@@ -291,7 +329,6 @@ function renderCase(
     ${turnTimingRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Turn</th><th>Run</th><th>Lease</th><th>Scheduler</th><th>Run duration</th><th>Response</th></tr></thead><tbody>${turnTimingRows}</tbody></table></div>` : ""}
     ${matcherRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Result</th><th>Matcher</th><th>Expectation</th><th>Detail</th></tr></thead><tbody>${matcherRows}</tbody></table></div>` : `<p class="detail">No matcher result was recorded.</p>`}
     ${entry ? `<details class="usage"><summary>Usage and billing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null }, null, 2))}</pre></details>` : ""}
-    ${links}
     </details>
   </article>`;
 }
@@ -299,7 +336,7 @@ function renderCase(
 function renderTrendChart(input: {
   history: RunnerE2EHistoryIndex;
   label: string;
-  value(campaign: RunnerE2EHistoryIndex["campaigns"][number]): number;
+  value(campaign: RunnerE2EHistoryIndex["campaigns"][number]): number | null;
   format(value: number): string;
   include?(campaign: RunnerE2EHistoryIndex["campaigns"][number]): boolean;
   fingerprint?(campaign: RunnerE2EHistoryIndex["campaigns"][number]): string;
@@ -311,7 +348,12 @@ function renderTrendChart(input: {
   if (campaigns.length === 0) {
     return `<article class="trend-card"><span>${html(input.label)}</span><strong>No complete campaigns</strong></article>`;
   }
-  const values = campaigns.map(input.value);
+  const rawValues = campaigns.map(input.value);
+  const values = rawValues.filter((value): value is number => value !== null);
+  if (values.length !== rawValues.length) {
+    const latest = rawValues.at(-1);
+    return `<article class="trend-card"><span>${html(input.label)}</span><strong>${latest == null ? "Unknown" : html(input.format(latest))}</strong><small>Unknown measurements are not plotted. Inspect campaign billing and reserved judge budgets.</small></article>`;
+  }
   const maximum = Math.max(...values, 1);
   const pointRows = values.map((value, index) => {
     const x =
@@ -459,7 +501,7 @@ function renderHistory(history: RunnerE2EHistoryIndex | undefined) {
     .join("");
   const rows = history.campaigns
     .map((campaign) => {
-      const status = campaign.failed === 0 ? "passed" : "failed";
+      const status = campaign.failed > 0 ? "failed" : (campaign.incomplete ?? 0) > 0 ? "incomplete" : "passed";
       const sha = campaign.source.sha;
       const searchable = [
         campaign.campaignId,
@@ -480,9 +522,9 @@ function renderHistory(history: RunnerE2EHistoryIndex | undefined) {
       return `<tr data-history-campaign data-history-date="${html(campaign.generatedAt.slice(0, 10))}" data-history-status="${status}" data-history-complete="${campaign.complete}" data-history-suites="${html(campaign.suites.map((suite) => suite.suiteId).join(" "))}" data-history-search="${html(searchable)}">
         <td><a href="${html(campaign.publicUrl)}">${html(campaign.campaignId)}</a><small>${html(new Date(campaign.generatedAt).toLocaleString("en-US", { timeZone: "UTC" }))} UTC</small></td>
         <td>${sha ? `<code>${html(sha.slice(0, 10))}</code>` : "Unknown"}<small>${html(campaign.source.ref ?? "unknown ref")}</small></td>
-        <td><span class="status history-${status}">${status}</span><small>${campaign.passed}/${campaign.passed + campaign.failed} passed · ${campaign.complete ? "complete" : "partial"}</small></td>
-        <td>${html(tokenLabel(campaign.billing.llm.inputTokens))} / ${html(tokenLabel(campaign.billing.llm.outputTokens))}<small>input / output · ${html(tokenLabel(campaign.billing.llm.cachedInputTokens))} cached</small></td>
-        <td>${html(usdLabel(campaign.billing.reportedLlmCostUsd))}<small>${html(usdLabel(campaign.billing.estimatedRuntimeCostUsd))} runtime estimate</small></td>
+        <td><span class="status history-${status}">${status}</span><small>${campaign.passed}/${campaign.selected} passed${campaign.incomplete ? ` · ${campaign.incomplete} incomplete` : ""} · ${campaign.complete ? "complete" : "partial"}</small></td>
+        <td>${html(tokenLabel(campaign.billing.llm.inputTokens, campaign.billing.llm))} / ${html(tokenLabel(campaign.billing.llm.outputTokens, campaign.billing.llm))}<small>input / output · ${html(tokenLabel(campaign.billing.llm.cachedInputTokens, campaign.billing.llm))} cached</small></td>
+        <td>${html(llmCostLabel(campaign.billing.reportedLlmCostUsd, campaign.billing.llm))}<small>${html(usdLabel(campaign.billing.estimatedRuntimeCostUsd))} runtime estimate</small></td>
         <td>${html(durationLabel(campaign.billing.agentRunDurationMs))}<small>${html(durationLabel(campaign.billing.leaseDurationMs))} lease</small></td>
       </tr>`;
     })
@@ -504,7 +546,7 @@ function renderHistory(history: RunnerE2EHistoryIndex | undefined) {
     <div class="history-filters">
       <label>Search <input type="search" data-history-query placeholder="SHA, model, profile, case"></label>
       <label>Suite <select data-history-suite><option value="">All suites</option>${suiteIds.map((suiteId) => `<option value="${html(suiteId)}">${html(suiteId)}</option>`).join("")}</select></label>
-      <label>Status <select data-history-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option></select></label>
+      <label>Status <select data-history-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="incomplete">Incomplete</option></select></label>
       <label>From <input type="date" data-history-from></label>
       <label>Through <input type="date" data-history-through></label>
       <label class="history-checkbox"><input type="checkbox" data-history-partial> Include partial campaigns</label>
@@ -555,7 +597,7 @@ function renderSuiteMatrix(input: {
         .join("");
       return `<tr data-report-profile-row><th scope="row" class="profile-cell"><div class="profile-sticky">
         <span class="agent-capsule agent-${(profileIndex % 10) + 1}" aria-hidden="true"></span>
-        <span class="profile-copy"><span><strong>${html(profile.label)}</strong><span class="generation">${html(profile.generation)}</span></span><small>${html(profile.provider)} · ${html(profile.model)}</small></span>
+        <span class="profile-copy"><span><strong>${html(profile.label)}</strong><span class="generation">${html(profile.generation)}</span></span><small>${html(profile.provider)} · ${html(suite.id === "first-task" ? "Production onboarding default" : profile.model)}</small></span>
       </div></th>${columns}</tr>`;
     })
     .join("");
@@ -571,9 +613,9 @@ function renderSuiteMatrix(input: {
   const summary = input.summary;
   const summaryHtml = summary
     ? `<div class="suite-summary" aria-label="${html(suite.label)} current campaign summary">
-        <div><span>Pass rate</span><strong>${summary.selected > 0 ? ((summary.passed / summary.selected) * 100).toFixed(1) : "0.0"}%</strong><small>${summary.passed}/${summary.selected} passed</small></div>
-        <div><span>Tokens</span><strong>${html(tokenLabel(summary.billing.llm.totalTokens))}</strong><small>${html(tokenLabel(summary.billing.llm.inputTokens))} input · ${html(tokenLabel(summary.billing.llm.outputTokens))} output</small></div>
-        <div><span>Cost</span><strong>${html(usdLabel(summary.billing.observedAndEstimatedCostUsd))}</strong><small>reported LLM + runtime estimate</small></div>
+        <div><span>Pass rate</span><strong>${summary.selected > 0 ? ((summary.passed / summary.selected) * 100).toFixed(1) : "0.0"}%</strong><small>${summary.passed}/${summary.selected} passed${summary.incomplete ? ` · ${summary.incomplete} incomplete` : ""}</small></div>
+        <div><span>Tokens</span><strong>${html(tokenLabel(summary.billing.llm.totalTokens, summary.billing.llm))}</strong><small>${html(tokenLabel(summary.billing.llm.inputTokens, summary.billing.llm))} input · ${html(tokenLabel(summary.billing.llm.outputTokens, summary.billing.llm))} output</small></div>
+        <div><span>Known spend</span><strong>${html(summary.billing.llm.runsWithReportedCost > 0 || summary.billing.estimatedRuntimeCostUsd > 0 || summary.billing.judge ? `${usdLabel(summary.billing.observedAndEstimatedCostUsd)}${summary.billing.testsWithCompleteBilling < summary.billing.testCount ? " (partial)" : ""}` : "Unavailable")}</strong><small>reported LLM + runtime${summary.billing.judge ? " + judge" : ""} estimate</small></div>
         <div><span>Agent time</span><strong>${html(durationLabel(summary.billing.agentRunDurationMs))}</strong><small>${html(durationLabel(summary.billing.leaseDurationMs))} lease</small></div>
         <div><span>Execution</span><strong>${summary.executed}/${summary.selected}</strong><small>${summary.retries} retries · cleanup ${summary.cleanupPassed ? "passed" : "failed"}</small></div>
       </div>`
@@ -585,6 +627,7 @@ function renderSuiteMatrix(input: {
     <div class="table-wrap"><table class="matrix"><colgroup><col class="profile-column">${environments.map(() => '<col class="environment-column">').join("")}</colgroup><thead><tr><th scope="col">Agent profile</th>${environmentHeaders}</tr></thead><tbody>${rows}</tbody></table></div>
   </section>`;
 }
+
 
 export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
   const catalog = discoverReportCatalog({
@@ -600,7 +643,10 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     expected.has(entry.result.executionId),
   );
   const passed = selectedEntries.filter((entry) => entry.valid).length;
-  const failed = input.expected.length - passed;
+  const incomplete = selectedEntries.filter((entry) =>
+    !entry.valid && isIncompleteFirstTaskResult(entry.result, entry.errors),
+  ).length;
+  const failed = input.expected.length - passed - incomplete;
   const totalDuration = selectedEntries.reduce(
     (total, entry) => total + entry.result.durationMs,
     0,
@@ -687,6 +733,11 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       --idle-text: #52585d;
       --idle-border: #a8aeb2;
       --radius: 8px;
+      /* TaskChatBubble: right-aligned human bubbles use Paperclip's liveness blue. */
+      --chat-human-background: #2563eb;
+      --chat-human-foreground: #ffffff;
+      --chat-bubble-radius: 1rem;
+      --chat-body-size: 0.875rem;
       --navigation-sticky-offset: 58px;
       --font-sans: "Paperclip Inter", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
@@ -792,7 +843,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .status, .matcher-state { display: inline-block; flex: none; padding: 3px 8px; border: 1px solid; border-radius: 999px; font: 600 10px/1.4 var(--font-sans); letter-spacing: .05em; text-transform: uppercase; }
     .case-passed .status, .matcher-passed .matcher-state { border-color: var(--pass-border); background: var(--pass-bg); color: var(--pass-text); }
     .case-failed .status, .matcher-failed .matcher-state { border-color: var(--fail-border); background: var(--fail-bg); color: var(--fail-text); }
-    .case-missing .status { border-color: var(--missing-border); background: var(--missing-bg); color: var(--missing-text); }
+    .case-incomplete .status, .gallery-status[data-status="incomplete"], .case-missing .status { border-color: var(--missing-border); background: var(--missing-bg); color: var(--missing-text); }
     .case-not-selected { opacity: .68; }
     .case-not-selected .status { border-color: var(--idle-border); background: var(--idle-bg); color: var(--idle-text); }
     code, pre, .execution-id { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -883,9 +934,65 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .history-table td small { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 10px; }
     .history-table .status { margin-bottom: 2px; }
     .history-passed { border-color: var(--pass-border); background: var(--pass-bg); color: var(--pass-text); }
+    .history-incomplete { border-color: var(--missing-border); background: var(--missing-bg); color: var(--missing-text); }
     .history-failed { border-color: var(--fail-border); background: var(--fail-bg); color: var(--fail-text); }
     .history-empty { padding: 24px 0; color: var(--muted-foreground); text-align: center; }
     .case-context > summary, .usage > summary { width: fit-content; cursor: pointer; color: var(--foreground); font-size: 12px; font-weight: 600; }
+    .case-outcome { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); font-size: 12px; }
+    .case-outcome p { margin: 8px 0; }
+    .failure-reason { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 var(--font-mono); }
+    .conversation-details { margin: 16px 0; }
+    .transcript { display: flex; flex-direction: column; gap: 22px; max-width: 56rem; margin: 18px auto; }
+    .transcript-about { color: var(--muted-foreground); font-size: 11px; }
+    .transcript summary { cursor: pointer; }
+    .transcript-entry { min-width: 0; width: 100%; align-self: flex-start; }
+    .transcript-entry header { display: flex; align-items: center; gap: 8px; padding: 0 4px; font-size: 12px; overflow-wrap: anywhere; }
+    .transcript-avatar { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 24px; height: 24px; border-radius: 50%; background: var(--raised); border: 1px solid var(--border); font-size: 10px; }
+    .transcript-bubble { min-width: 0; padding: 8px 4px; font-size: var(--chat-body-size); line-height: 1.65; }
+    .transcript-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .transcript-text + .transcript-text { margin-top: 10px; }
+    .transcript-entry ul { padding-left: 20px; margin: 8px 0; }
+    .transcript-entry footer { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-start; gap: 6px 12px; margin: 4px 0 0; padding: 0 4px; color: var(--muted-foreground); font: 10px/1.5 var(--font-sans); overflow-wrap: anywhere; }
+    .transcript-entry footer a { color: inherit; text-decoration: none; }
+    .transcript-entry footer a:hover { text-decoration: underline; }
+    .transcript-task code { display: block; padding-top: 4px; overflow-wrap: anywhere; }
+    .transcript-human { width: fit-content; max-width: 85%; align-self: flex-end; }
+    .transcript-human header { justify-content: flex-end; margin-bottom: 5px; color: var(--muted-foreground); font-size: 11px; }
+    .transcript-human .transcript-bubble { padding: 10px 14px; border-radius: var(--chat-bubble-radius) var(--chat-bubble-radius) 4px var(--chat-bubble-radius); background: var(--chat-human-background); color: var(--chat-human-foreground); }
+    .transcript-human footer { justify-content: flex-end; }
+    .transcript-answer .transcript-text:first-child { font-size: 12px; font-weight: 600; }
+    .transcript-card { padding: 14px; border: 1px solid var(--border); border-radius: calc(var(--radius) * 1.5); background: var(--raised); }
+    .transcript-card header { font-size: 12px; }
+    .transcript-event { color: var(--muted-foreground); border-left: 2px solid var(--border); padding-left: 12px; }
+    .transcript-event header, .transcript-event .transcript-bubble { font-size: 11px; }
+    .transcript-event .transcript-bubble { padding-top: 0; padding-bottom: 0; }
+    .transcript-raw { margin-top: 8px; font-size: 11px; }
+    .report-interaction { display: flex; flex-direction: column; gap: 12px; }
+    .interaction-heading, .interaction-question-heading, .interaction-tags, .interaction-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .interaction-heading, .interaction-question-heading { color: var(--muted-foreground); font-size: 11px; justify-content: space-between; }
+    .interaction-badge { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 500; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+    .interaction-title { font-size: 14px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .interaction-copy, .interaction-help { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .interaction-help { font-size: 12px; color: var(--muted-foreground); margin: 4px 0; }
+    .interaction-question { display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) * 1.5); }
+    .interaction-option { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); font-size: 13px; overflow-wrap: anywhere; }
+    .interaction-option > span { min-width: 0; flex: 1; }
+    .interaction-option input { flex: 0 0 auto; margin-top: 4px; accent-color: var(--chat-human-background); }
+    .interaction-option .interaction-badge { margin-left: 8px; }
+    .interaction-option.is-selected { border-color: var(--chat-human-background); background: color-mix(in srgb, var(--chat-human-background) 8%, var(--card)); }
+    .interaction-textbox { padding: 12px; min-height: 58px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .interaction-textbox.is-placeholder { color: var(--muted-foreground); font-size: 12px; }
+    .interaction-action { padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--foreground); font: 500 12px var(--font-sans); white-space: normal; }
+    .interaction-action:disabled { opacity: 1; cursor: default; }
+    .interaction-action.is-primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+    .interaction-action.is-selected { outline: 2px solid var(--chat-human-background); outline-offset: 2px; }
+    .interaction-target, .interaction-resolution { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+    .interaction-target > strong { margin-left: 8px; font-size: 12px; }
+    .interaction-field { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; overflow-wrap: anywhere; }
+    .interaction-field > span { color: var(--muted-foreground); min-width: 80px; }
+    .interaction-arguments { font-size: 12px; }
+    .transcript a:focus-visible, .transcript summary:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 3px; border-radius: 2px; }
+    @media (max-width: 600px) { .transcript { gap: 18px; } .transcript-human { max-width: 92%; } .transcript-card { padding: 10px; } }
     pre { max-height: 240px; overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: calc(var(--radius) * .8); background: var(--raised); color: var(--foreground); font-size: 10px; white-space: pre-wrap; }
     footer { display: flex; justify-content: space-between; gap: 16px; padding-top: 16px; color: var(--muted-foreground); font: 11px/1.4 var(--font-mono); }
     dialog.gallery-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; color: #fafafa; }
@@ -1004,12 +1111,13 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <div>
         <p class="eyebrow">Full-stack acceptance campaign</p>
         <h1>${html(input.title)}</h1>
-        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Declared PNG screenshots and sanitized structured evidence are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.</p>
+        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Declared PNG screenshots and normalized results are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.</p>
       </div>
       <div class="report-actions">
         <div class="summary" aria-label="Campaign summary">
           <div class="metric"><strong>${passed}/${input.expected.length}</strong><span>Passed</span></div>
           <div class="metric"><strong>${failed}</strong><span>Failed</span></div>
+          ${incomplete ? `<div class="metric"><strong>${incomplete}</strong><span>Incomplete</span></div>` : ""}
           <div class="metric"><strong>${html(durationLabel(totalDuration))}</strong><span>Test time</span></div>
         </div>
         <button class="gallery-launch" type="button" data-gallery-open ${screenshotCount === 0 ? "disabled" : ""}>${screenshotCount === 0 ? "Visual evidence · workflow artifact only" : `View gallery · ${screenshotCount}`}</button>
@@ -1017,11 +1125,12 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </header>
     ${publicSummaryImageHref ? `<figure class="public-summary"><img src="${html(publicSummaryImageHref)}" alt="Runner E2E campaign status summary"></figure>` : ""}
     <section class="billing-overview" aria-label="Campaign billing summary">
-      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens))}</strong><span>Input tokens</span></div>
-      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens))}</strong><span>Output tokens</span></div>
-      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.cachedInputTokens))}</strong><span>Cached tokens</span></div>
-      <div class="billing-metric"><strong>${html(usdLabel(campaignBilling.reportedLlmCostUsd))}</strong><span>LLM reported subtotal</span></div>
+      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens, campaignBilling.llm))}</strong><span>Input tokens</span></div>
+      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens, campaignBilling.llm))}</strong><span>Output tokens</span></div>
+      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.cachedInputTokens, campaignBilling.llm))}</strong><span>Cached tokens</span></div>
+      <div class="billing-metric"><strong>${html(llmCostLabel(campaignBilling.reportedLlmCostUsd, campaignBilling.llm))}</strong><span>LLM reported subtotal</span></div>
       <div class="billing-metric"><strong>${html(usdLabel(campaignBilling.estimatedRuntimeCostUsd))}</strong><span>Daytona list estimate</span></div>
+      ${campaignBilling.judge ? `<div class="billing-metric"><strong>${html(usdLabel(campaignBilling.judge.estimatedCostUsd))}</strong><span>Judge estimate · ${campaignBilling.judge.attempts} attempts · ${campaignBilling.judge.attemptsWithUnknownUsage} unknown usage</span><small>${html(tokenLabel(campaignBilling.judge.inputTokens))} in / ${html(tokenLabel(campaignBilling.judge.outputTokens))} out · $${campaignBilling.judge.reservedCostUsd.toFixed(6)} reserved</small></div>` : ""}
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.agentRunDurationMs))}</strong><span>Agent execution time</span></div>
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.leaseDurationMs))}</strong><span>Daytona lease time</span></div>
       <div class="billing-metric"><strong>${campaignBilling.llm.runsWithReportedCost}/${campaignBilling.llm.runCount}</strong><span>Runs provider-priced</span></div>
@@ -1037,13 +1146,13 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <label><span>Agent profile</span><select data-report-profile><option value="">All profiles</option>${filterProfiles.map((profile) => `<option value="${html(profile.id)}">${html(profile.label)}</option>`).join("")}</select></label>
       <label><span>Environment</span><select data-report-environment><option value="">All environments</option>${filterEnvironments.map((environment) => `<option value="${html(environment.id)}">${html(environment.label)}</option>`).join("")}</select></label>
       <label><span>Suite</span><select data-report-suite><option value="">All suites</option>${suites.map((suite) => `<option value="${html(suite.id)}">${html(suite.label)}</option>`).join("")}</select></label>
-      <label><span>Status</span><select data-report-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="missing">Missing</option><option value="not-selected">Not selected</option></select></label>
+      <label><span>Status</span><select data-report-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="incomplete">Incomplete</option><option value="missing">Missing</option><option value="not-selected">Not selected</option></select></label>
       <button class="filter-reset" type="button" data-report-reset>Reset</button>
       <p class="filter-result" data-report-result aria-live="polite"></p>
     </section>
     ${suiteSections}
     ${historySection}
-    <footer><span>Generated ${html(input.generatedAt)}</span><span>${catalog.length} catalog executions · Declared screenshots and sanitized structured evidence published</span></footer>
+    <footer><span>Generated ${html(input.generatedAt)}</span><span>${catalog.length} catalog executions · Declared screenshots and normalized results published</span></footer>
   </main>
   <dialog class="gallery-dialog" data-gallery-dialog aria-labelledby="gallery-title">
     <div class="gallery-shell">
@@ -1052,7 +1161,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
           <strong id="gallery-title" data-gallery-title>Screenshot evidence</strong>
           <div class="gallery-context">
             <span><strong data-gallery-profile></strong><em data-gallery-profile-detail></em></span>
-            <span><strong data-gallery-environment></strong><em data-gallery-environment-detail></em></span>
+            <span><em>Environment:</em><strong data-gallery-environment></strong><em data-gallery-environment-detail></em></span>
             <span><strong data-gallery-case></strong><em data-gallery-runtime></em></span>
           </div>
           <div class="gallery-facts">
@@ -1076,6 +1185,15 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </div>
   </dialog>
   <script>
+    document.addEventListener("click", (event) => {
+      const link = event.target.closest("a[href^='#first-task-']");
+      if (!link) return;
+      const target = document.getElementById(link.getAttribute("href").slice(1));
+      if (!target) return;
+      for (let node = target; node; node = node.parentElement) {
+        if (node.tagName === "DETAILS") node.open = true;
+      }
+    });
     (() => {
       const dialog = document.querySelector("[data-gallery-dialog]");
       const items = Array.from(document.querySelectorAll("[data-gallery-item]"));
@@ -1114,7 +1232,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         profile.textContent = item.dataset.galleryProfile;
         profileDetail.textContent = item.dataset.galleryGeneration + " · " + item.dataset.galleryProvider + " · " + item.dataset.galleryModel;
         environment.textContent = item.dataset.galleryEnvironment;
-        environmentDetail.textContent = item.dataset.galleryEnvironmentProvider + " · " + item.dataset.galleryExecutionTarget;
+        environmentDetail.textContent = "Provider: " + item.dataset.galleryEnvironmentProvider + " · Target: " + item.dataset.galleryExecutionTarget;
         caseLabel.textContent = item.dataset.galleryCase;
         runtime.textContent = item.dataset.galleryRuntime + " runtime";
         status.textContent = item.dataset.galleryStatus;

@@ -73,14 +73,16 @@ export function TaskChatLiveRunPill({
 
   return (
     <div
-      className="flex min-w-0 items-center gap-2.5 px-1 py-2"
+      className="flex min-w-0 items-center gap-2 py-2"
       data-testid="task-chat-live-run-pill"
     >
       <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
         {active ? (
-          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          </span>
         ) : (
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+          <span className="flex size-5 shrink-0 items-center justify-center">
             <span className={cn("h-1.5 w-1.5 rounded-full", (failed || active) ? "bg-muted-foreground/40" : "bg-emerald-500/70")} />
           </span>
         )}

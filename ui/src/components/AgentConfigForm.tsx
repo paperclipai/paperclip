@@ -1,6 +1,7 @@
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
+import { setupEfforts } from "../lib/agent-setup-fields";
 import { RuntimeTestCard } from "./RuntimeTestCard";
 import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
 import type { AdapterConfigSection } from "../adapters/types";
@@ -1268,6 +1269,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
+          : adapterType === "grok_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
@@ -1283,7 +1285,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : claudeThinkingEffortOptions;
+              : adapterType === "claude_local" || adapterType === "grok_local"
+                ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType, currentModelId).map((id) => ({
+                    id,
+                    label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
+                  }))]
+                : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1713,10 +1720,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 models={models}
                 value={currentModelId}
                 onChange={(v) => {
-                  const supportedEfforts = codexReasoningEffortOptions(v, "Auto");
-                  const clearUnsupportedEffort = adapterType === "codex_local"
+                  const supportedEfforts = setupEfforts(adapterType, v);
+                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(adapterType)
                     && Boolean(currentThinkingEffort)
-                    && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
+                    && !supportedEfforts.includes(String(currentThinkingEffort));
                   if (isCreate) {
                     set!({
                       model: v,

@@ -2165,7 +2165,7 @@ describe("TaskChatComposer", () => {
       });
     });
 
-    it("advances single selections, preserves answers when going back, and skips optional answers", async () => {
+    it("advances on Next, preserves answers when going back, and skips optional answers", async () => {
       const onSubmit = vi.fn();
       render(
         <TaskChatComposer
@@ -2219,17 +2219,24 @@ describe("TaskChatComposer", () => {
       const byLabel = (label: string) =>
         buttons().find((button) => button.textContent?.trim() === label);
 
-      // Page 1: required, so no Skip; Next waits for an answer.
+      // Page 1: required, so no Skip; Next waits for an answer. Answering
+      // enables Next but stays put — only Next moves on.
       expect(byLabel("Skip")).toBeUndefined();
       expect(byLabel("Next")?.disabled).toBe(true);
       flushSync(() => byLabel("Staging")?.click());
+      await flushAsync();
+      expect(container.textContent).toContain("Where?");
+      expect(byLabel("Next")?.disabled).toBe(false);
+      flushSync(() => byLabel("Next")?.click());
       await flushAsync();
       expect(onSubmit).not.toHaveBeenCalled();
       expect(container.textContent).toContain("When?");
       expect(document.activeElement?.textContent).toBe("When?");
 
-      // Page 2: pick advances. Go back to confirm it is saved, then skip.
+      // Page 2: answer, then Next. Go back to confirm it is saved, then skip.
       flushSync(() => byLabel("Today")?.click());
+      await flushAsync();
+      flushSync(() => byLabel("Next")?.click());
       await flushAsync();
       expect(container.textContent).toContain("Who?");
       flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-label="Previous question"]')?.click());
@@ -2253,7 +2260,7 @@ describe("TaskChatComposer", () => {
       expect(response.answers.who).toEqual({ selectedOptionIds: ["me"] });
     });
 
-    it.each(["click", "keyboard"])("advances a single choice by %s, while Other and multi-select stay put", async (input) => {
+    it.each(["click", "keyboard"])("records a single choice by %s without leaving the question", async (input) => {
       const onSubmit = vi.fn();
       render(<QuestionForm
         id="selection-modes"
@@ -2284,6 +2291,13 @@ describe("TaskChatComposer", () => {
         else byLabel("SQLite").dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
       });
       await flushAsync();
+      // Answering re-enables Next and closes Other, but the reader stays here.
+      expect(container.textContent).toContain("1 of 3");
+      expect(container.querySelector('[data-testid="question-other-answer-composer"]')).toBeNull();
+      expect(byLabel("SQLite").getAttribute("aria-checked")).toBe("true");
+      expect(byLabel("Next").disabled).toBe(false);
+      flushSync(() => byLabel("Next").click());
+      await flushAsync();
       expect(container.textContent).toContain("2 of 3");
       expect(document.activeElement?.textContent).toBe("Features?");
       flushSync(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "1", repeat: true, bubbles: true })));
@@ -2305,71 +2319,130 @@ describe("TaskChatComposer", () => {
       });
     });
 
-    describe("single-choice confirmation animation", () => {
+    describe("single-choice selection stays on the page", () => {
       const questionSet = {
         schema: "paperclip.question_set.v1" as const,
         questions: ["First", "Second", "Third"].map((prompt) => ({
           id: prompt, prompt, required: true, answerMode: "single_select" as const,
-          options: [{ id: "yes", label: "Yes" }], customAnswer: { enabled: true as const },
+          options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }],
+          customAnswer: { enabled: true as const },
         })),
       };
-      const form = (disabled = false) => (
-        <QuestionForm id="animated" questionSet={questionSet} disabled={disabled} onSubmit={vi.fn()} />
+      const form = () => (
+        <QuestionForm id="stationary" questionSet={questionSet} onSubmit={vi.fn()} />
       );
       const click = (selector: string) => act(() => {
         flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
       });
-      beforeEach(() => {
-        vi.useFakeTimers();
-        document.documentElement.style.setProperty("--motion-question-confirm", "160ms");
-      });
-      afterEach(() => {
-        render(<div />);
-        vi.useRealTimers();
-        document.documentElement.style.removeProperty("--motion-question-confirm");
-      });
+      const buttonByText = (text: string) =>
+        Array.from(container.querySelectorAll("button")).find(
+          (button) => button.textContent?.trim() === text,
+        );
 
-      it("shows the selected radio before advancing exactly one page", () => {
+      it("records the answer without navigating", () => {
         render(form());
         click('[role="radio"]');
         expect(container.querySelector('[role="radio"]')?.getAttribute("aria-checked")).toBe("true");
-        expect(container.querySelector(".tc-question-choice-confirm")).not.toBeNull();
         expect(container.textContent).toContain("1 of 3");
-        act(() => vi.advanceTimersByTime(159));
+        expect(container.textContent).toContain("First");
+      });
+
+      it("lets the reader change their mind before moving on", () => {
+        render(form());
+        click('[role="radio"]');
+        const radios = () => Array.from(container.querySelectorAll('[role="radio"]'));
+        act(() => { flushSync(() => (radios()[1] as HTMLButtonElement).click()); });
+        expect(radios()[0]?.getAttribute("aria-checked")).toBe("false");
+        expect(radios()[1]?.getAttribute("aria-checked")).toBe("true");
         expect(container.textContent).toContain("1 of 3");
-        act(() => vi.advanceTimersByTime(1));
+      });
+
+      it("advances only on an explicit Next", () => {
+        render(form());
+        click('[role="radio"]');
+        expect(container.textContent).toContain("1 of 3");
+        act(() => { flushSync(() => buttonByText("Next")!.click()); });
         expect(container.textContent).toContain("2 of 3");
         expect(document.activeElement?.textContent).toBe("Second");
-        act(() => vi.advanceTimersByTime(160));
-        expect(container.textContent).toContain("2 of 3");
       });
 
-      it.each(["navigation", "custom answer", "disabled", "unmount"])("cancels the pending advance on %s", (reason) => {
+      it("keeps number-key selection on the same question", () => {
         render(form());
-        click('[role="radio"]');
-        if (reason === "navigation") {
-          click('[aria-label="Next question"]');
-          click('[aria-label="Next question"]');
-        } else if (reason === "custom answer") {
-          click('#animated-First-custom');
-        } else if (reason === "disabled") {
-          render(form(true));
-          render(form(false));
-        } else {
-          render(<div>Closed</div>);
-        }
-        act(() => vi.advanceTimersByTime(160));
-        expect(container.textContent).toContain(
-          reason === "navigation" ? "3 of 3" : reason === "unmount" ? "Closed" : "1 of 3",
+        const page = container.querySelector<HTMLElement>(".tc-question-page")!;
+        act(() => {
+          flushSync(() => page.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "2", bubbles: true }),
+          ));
+        });
+        expect(Array.from(container.querySelectorAll('[role="radio"]'))[1]?.getAttribute("aria-checked"))
+          .toBe("true");
+        expect(container.textContent).toContain("1 of 3");
+      });
+
+      // Selection now clears the form error, which it did not do on the last
+      // page before. A failed send has to outlive it: the answers are still
+      // unsent, so wiping the message would leave no sign of that at all.
+      it("keeps a failed send visible while the reader changes their answer", async () => {
+        const onSubmit = vi.fn().mockRejectedValue(new Error("Network unreachable"));
+        render(
+          <QuestionForm
+            id="failed-send"
+            questionSet={{
+              schema: "paperclip.question_set.v1" as const,
+              questions: [{
+                id: "only", prompt: "Only", required: true,
+                answerMode: "single_select" as const,
+                options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }],
+              }],
+            }}
+            onSubmit={onSubmit}
+          />,
         );
+        const radios = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+        act(() => { flushSync(() => radios()[0]!.click()); });
+        act(() => { flushSync(() => buttonByText("Submit answers")!.click()); });
+        await flushAsync();
+        expect(onSubmit).toHaveBeenCalledOnce();
+        expect(container.textContent).toContain("Network unreachable");
+        act(() => { flushSync(() => radios()[1]!.click()); });
+        expect(radios()[1]?.getAttribute("aria-checked")).toBe("true");
+        expect(container.textContent).toContain("Network unreachable");
       });
 
-      it("advances immediately when the motion token is zero", () => {
-        document.documentElement.style.setProperty("--motion-question-confirm", "0ms");
-        render(form());
-        click('[role="radio"]');
-        expect(container.textContent).toContain("2 of 3");
-        expect(container.querySelector(".tc-question-choice-confirm")).toBeNull();
+      // The other half of the same rule: the one complaint a selection does
+      // answer still goes away when it is answered.
+      it("clears a missing-answer complaint once that question is answered", async () => {
+        render(
+          <QuestionForm
+            id="missing-answer"
+            questionSet={{
+              schema: "paperclip.question_set.v1" as const,
+              questions: [
+                {
+                  id: "First", prompt: "First", required: true,
+                  answerMode: "single_select" as const,
+                  options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }],
+                },
+                {
+                  id: "Second", prompt: "Second", required: false,
+                  answerMode: "single_select" as const,
+                  options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }],
+                },
+              ],
+            }}
+            onSubmit={vi.fn()}
+          />,
+        );
+        const radios = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+        // The pagination arrow browses without validating, so the reader can
+        // reach the end with the first question still blank. Skip on the last
+        // question then sends, which is where the complaint comes from.
+        click('[aria-label="Next question"]');
+        act(() => { flushSync(() => buttonByText("Skip")!.click()); });
+        await flushAsync();
+        expect(container.textContent).toContain("Question 1 needs an answer");
+        act(() => { flushSync(() => radios()[0]!.click()); });
+        expect(container.textContent).not.toContain("Question 1 needs an answer");
       });
     });
 
@@ -2419,6 +2492,8 @@ describe("TaskChatComposer", () => {
           container.querySelectorAll<HTMLButtonElement>("button"),
         ).find((button) => button.textContent?.trim() === label);
       flushSync(() => byLabel("Staging")?.click());
+      await flushAsync();
+      flushSync(() => byLabel("Next")?.click());
       await flushAsync();
       expect(container.textContent).toContain("Anything else?");
       flushSync(() => byLabel("Skip")?.click());

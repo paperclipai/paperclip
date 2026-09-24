@@ -262,6 +262,19 @@ describe("SidebarRecentTasks", () => {
     expect(menu?.textContent).toContain("Pause/Restart");
   });
 
+  it("keeps an idle Slack conversation in recent history and labels it Idle", async () => {
+    const issue = {
+      id: "issue-1", companyId: "company-1", title: "Slack conversation", identifier: "PAP-1",
+      status: "in_review" as const, externalConversationState: "waiting" as const,
+      updatedAt: new Date(1), hiddenAt: null,
+    };
+    recordRecentTask(issue, "user-1");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    await render();
+    expect(container.textContent).toContain("Slack conversation");
+    expect(container.textContent).toContain("Idle");
+  });
+
   it("archives a task from the inbox without hiding or removing the recent task", async () => {
     const issue = {
       id: "issue-1",

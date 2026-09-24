@@ -25,7 +25,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
 
   override componentDidCatch(error: unknown, info: ErrorInfo): void {
     console.error("App shell crashed", { error, componentStack: info.componentStack });
-    captureBrowserException(error);
+    captureBrowserException(error, { boundary: "app", componentStack: info.componentStack });
   }
 
   override render() {

@@ -11,6 +11,7 @@ import {
   isConfigurationIncompleteFailedRun,
   isWorkspaceValidationFailedRun,
   readNonEmptyString,
+  parseObject,
 } from "../domain/values.js";
 import type {
   AdmitWakeBehindIssueExecutionResult,
@@ -822,8 +823,12 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
       }));
+    // Each resolved card has its own immutable decision and continuation. Never
+    // merge it with comments or another card, in either arrival order.
+    const interactionReceipt = Boolean(input.contextSnapshot.interactionId || input.payload?.interactionId);
     const decision = decideWakeAdmission({
-      allowRunCoalescing: input.allowRunCoalescing,
+      allowRunCoalescing: interactionReceipt || parseObject(input.activeExecutionRun.contextSnapshot).interactionId
+        ? false : input.allowRunCoalescing,
       sameDurableActor,
       isSameExecutionAgent,
       shouldDeferFollowupWake,
@@ -865,7 +870,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     // existing deferred wake, so the coalesce path (the common path) never
     // pays for this query.
     const existingDeferred =
-      input.allowRunCoalescing === false
+      (interactionReceipt || input.allowRunCoalescing === false)
         ? null
         : await deps.reader.findExistingDeferredWake(scope, {
             companyId: input.companyId,
@@ -881,7 +886,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
               : {}),
           });
 
-    if (existingDeferred) {
+    if (existingDeferred && !existingDeferred.payload?.interactionId && !existingDeferred.deferredContext.interactionId) {
       const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
         existingDeferred.deferredContext,
         input.contextSnapshot,

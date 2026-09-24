@@ -140,6 +140,15 @@ vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
 }));
 
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.ts", async () => {
+  const actual = await vi.importActual<typeof import("../sentry.ts")>("../sentry.ts");
+  return {
+    ...actual,
+    captureRunFailure: mockCaptureRunFailure,
+  };
+});
+
 vi.mock("../services/native-runtime/native-session-executor.js", async () => {
   const actual = await vi.importActual<
     typeof import("../services/native-runtime/native-session-executor.js")
@@ -203,6 +212,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
 import {
   claimNativeRestartRecoveries,
   currentNativeControllerIdentity,
@@ -2405,6 +2415,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
+    // The legacy engine writes this terminal status through the same
+    // guarded emitter that reports a genuine failed transition to Sentry.
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    expect(mockCaptureRunFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId,
+        errorCode: "process_lost",
+        runStatus: "failed",
+      }),
+    );
     const [action] = await db
       .select()
       .from(issueRecoveryActions)
@@ -2418,6 +2438,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId)),
     ).toHaveLength(2);
+    // A replay over the same already-failed run must not report a second
+    // Sentry event for one terminal failure.
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
 
     const issue = await waitForValue(async () =>
       db
@@ -4199,8 +4222,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("schedules an infra retry for a setup failure caused by a transient sandbox provider worker restart", async () => {
-    // Reproduces the production incident: the "Kubernetes Sandbox" plugin
-    // worker was mid-restart when a run tried to acquire a lease. The lease
+    // Model a configured plugin manager whose worker is mid-restart when
+    // a run tries to acquire a lease. A missing manager is a wiring error,
+    // not a worker restart. The lease
     // acquisition fails BEFORE the adapter is ever dispatched (no call to
     // mockAdapterExecute), so this hits the setup-failure catch (errorCode
     // "setup_failed") rather than the adapter-failure catch. The condition is
@@ -4320,16 +4344,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .set({ status: "in_progress" })
       .where(eq(issues.id, issueId));
 
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, {
+      pluginWorkerManager: {
+        isRunning: () => false,
+        call: vi.fn(),
+      } as unknown as PluginWorkerManager,
+    });
     await heartbeat.resumeQueuedRuns();
 
+    // The real manager waits up to five seconds for worker readiness before
+    // lease acquisition fails and the heartbeat can schedule its retry.
     const runs = await waitForValue(async () => {
       const rows = await db
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
       return rows.length >= 2 ? rows : null;
-    });
+    }, 10_000);
     expect(runs).toHaveLength(2);
 
     const failedRun = runs?.find((row) => row.id === runId);
@@ -12583,6 +12614,44 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       source: "issue.productive_terminal_continuation_recovery",
     });
     if (retryRun) await waitForRunToSettle(heartbeat, retryRun.id);
+  });
+
+  it("lets a child waiting for the shared workspace run before recovering its lead", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", livenessState: "advanced" });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, paperclipWorkspace: { mode: "shared_workspace" } } }).where(eq(heartbeatRuns.id, runId));
+    const projectId = randomUUID(), workspaceId = randomUUID(), childId = randomUUID(), workerId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Shared project" });
+    await db.insert(projectWorkspaces).values({ id: workspaceId, companyId, projectId, name: "Primary", sourceType: "local_path", cwd: "/tmp/recovery-shared", isPrimary: true });
+    await db.update(issues).set({ projectId, projectWorkspaceId: workspaceId }).where(eq(issues.id, issueId));
+    await db.insert(agents).values({ id: workerId, companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {} });
+    await db.insert(issues).values({ id: childId, companyId, parentId: issueId, title: "Build the project", status: "in_progress", assigneeAgentId: workerId, projectId, projectWorkspaceId: workspaceId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId: workerId, status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60_000), scheduledRetryReason: "workspace_busy", contextSnapshot: { issueId: childId } });
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(1);
+    // Once the child finishes, normal recovery can continue the lead.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, childId));
+    expect((await heartbeat.reconcileStrandedAssignedIssues()).continuationRequeued).toBe(1);
+    const next = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).find((r) => r.id !== runId);
+    if (next) await waitForRunToSettle(heartbeat, next.id);
+  });
+
+  it("resumes a shared-workspace lead when its child needs review", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", livenessState: "advanced" });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, paperclipWorkspace: { mode: "shared_workspace" } } }).where(eq(heartbeatRuns.id, runId));
+    const projectId = randomUUID(), workspaceId = randomUUID(), childId = randomUUID(), workerId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Shared project" });
+    await db.insert(projectWorkspaces).values({ id: workspaceId, companyId, projectId, name: "Primary", sourceType: "local_path", cwd: "/tmp/recovery-shared", isPrimary: true });
+    await db.update(issues).set({ projectId, projectWorkspaceId: workspaceId }).where(eq(issues.id, issueId));
+    await db.insert(agents).values({ id: workerId, companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {} });
+    await db.insert(issues).values({ id: childId, companyId, parentId: issueId, title: "Review the project", status: "in_review", assigneeAgentId: workerId, projectId, projectWorkspaceId: workspaceId });
+    await db.insert(issueThreadInteractions).values({ companyId, issueId: childId, kind: "request_confirmation", status: "pending", addresseeAgentId: agentId, payload: { prompt: "Review this delivery" } });
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    const next = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).find((r) => r.id !== runId);
+    if (next) await waitForRunToSettle(heartbeat, next.id);
   });
 
   it("leaves the productive-but-stranded continuation path unchanged under the new classifier", async () => {

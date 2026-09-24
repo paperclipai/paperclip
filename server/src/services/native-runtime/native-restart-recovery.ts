@@ -1,3 +1,4 @@
+import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
@@ -13,6 +14,7 @@ import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 
 export type NativeControllerIdentity = {
@@ -37,6 +39,16 @@ export type NativeRestartRecoveryClaim =
         processGroupId: number | null;
         startedAt: string;
       };
+    }
+  | {
+      kind: "reattach_remote_runner";
+      runId: string;
+      leaseOwner: string;
+      controllerGeneration: number;
+      providerAttempt: number;
+      restartKind: NativeRestartKind;
+      recoveryRequestId: string | null;
+      remote: { providerLeaseId: string; remoteCwd: string };
     }
   | {
       kind: "resume_dead_runner";
@@ -69,7 +81,8 @@ export function nextNativeProviderAttempt(
   currentAttempt: number,
   recoveryKind?: NativeRestartRecoveryClaim["kind"],
 ): number {
-  return recoveryKind === "reattach_existing_runner"
+  return recoveryKind === "reattach_existing_runner" ||
+    recoveryKind === "reattach_remote_runner"
     ? currentAttempt
     : currentAttempt + 1;
 }
@@ -272,6 +285,7 @@ export async function evaluateNativeProviderProcesses(input: {
 export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerPidAlive: boolean;
   runnerGroupAlive: boolean;
+  remoteSandbox?: boolean;
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -289,6 +303,19 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
       claimKind: null,
       reason: "provider_checkpoint_permanently_failed",
     };
+  // Sandbox PIDs belong to another host. This claim only authorizes remote
+  // inspection; the executor must prove the original lease and authenticate
+  // the surviving runner before it can resume delivery.
+  if (input.remoteSandbox) {
+    return input.hasCheckpoint &&
+      input.checkpointIdentityMatches === true &&
+      input.hasProviderEvidence
+      ? {
+          claimKind: "reattach_remote_runner",
+          reason: "remote_runner_requires_sandbox_verification",
+        }
+      : { claimKind: null, reason: "ambiguous_remote_recovery_evidence" };
+  }
   if (input.runnerPidAlive && input.processStartMatches) {
     return {
       claimKind: "reattach_existing_runner",
@@ -368,7 +395,8 @@ function historyEntry(input: {
     disposition: input.disposition,
     reason: input.reason,
     stateRootAction:
-      input.disposition === "reattach_existing_runner"
+      input.disposition === "reattach_existing_runner" ||
+      input.disposition === "reattach_remote_runner"
         ? "reopen_exact_root"
         : input.disposition === "resume_dead_runner"
           ? "reuse_exact_root"
@@ -473,6 +501,10 @@ export async function claimNativeRestartRecoveries(input: {
 
   const dispositions: NativeRestartRecoveryDisposition[] = [];
   for (const candidate of candidates) {
+    // Set inside the transaction only when the write below genuinely
+    // transitions the run into "failed". Read after the transaction
+    // commits, so a rolled-back write never reports a false failure.
+    let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
     const disposition = await input.db.transaction(async (tx) => {
       await tx.execute(
         sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -579,8 +611,15 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
-      const runnerPidAlive = processIsAlive(row.run.processPid);
-      const runnerGroupAlive = processGroupIsAlive(row.run.processGroupId);
+      const profile = row.run.runnerProfileJson ?? {};
+      const remoteWorkspace = readNativeWorkspaceSyncReference(
+        profile.nativeWorkspaceSync,
+      );
+      const remoteSandbox = profile.nativeWorkspaceSync != null;
+      const runnerPidAlive =
+        !remoteSandbox && processIsAlive(row.run.processPid);
+      const runnerGroupAlive =
+        !remoteSandbox && processGroupIsAlive(row.run.processGroupId);
       const observedRunnerStart =
         row.run.processPid && runnerPidAlive
           ? await observedProcessStart(row.run.processPid)
@@ -590,7 +629,6 @@ export async function claimNativeRestartRecoveries(input: {
         row.run.processPid !== null &&
         sameProcessStart(row.run.processStartedAt, observedRunnerStart);
 
-      const profile = row.run.runnerProfileJson ?? {};
       const checkpoint = profile.sessionCheckpoint;
       const checkpointRecord =
         checkpoint &&
@@ -704,7 +742,7 @@ export async function claimNativeRestartRecoveries(input: {
         }
       }
       const providerProcesses = await evaluateNativeProviderProcesses({
-        identities: providerProcessIdentities.filter(
+        identities: (remoteSandbox ? [] : providerProcessIdentities).filter(
           (identity) => identity.pid !== row.run.processPid,
         ),
       });
@@ -712,6 +750,7 @@ export async function claimNativeRestartRecoveries(input: {
         hasCheckpointProviderIdentity || providerEvents.length > 0;
 
       const classification = classifyNativeRunnerRecoveryEvidence({
+        remoteSandbox,
         runnerPidAlive,
         runnerGroupAlive,
         processStartMatches: exactRunnerIdentity,
@@ -719,7 +758,9 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
         hasCheckpoint,
-        checkpointIdentityMatches,
+        checkpointIdentityMatches:
+          checkpointIdentityMatches &&
+          (!remoteSandbox || remoteWorkspace !== null),
         hasProviderEvidence,
         checkpointFailed:
           (checkpointRecord.terminal as Record<string, unknown> | undefined)
@@ -782,7 +823,7 @@ export async function claimNativeRestartRecoveries(input: {
               eq(nativeRunFinalizations.phase, row.coordinator.phase),
             ),
           );
-        await tx
+        const [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
             status: "failed",
@@ -794,7 +835,11 @@ export async function claimNativeRestartRecoveries(input: {
             error: reason,
             updatedAt: now,
           })
-          .where(eq(heartbeatRuns.id, row.run.id));
+          .where(eq(heartbeatRuns.id, row.run.id))
+          .returning();
+        if (updatedRun && updatedRun.status !== row.run.status) {
+          terminalRunToReport = updatedRun;
+        }
         await tx
           .update(issues)
           .set({ executionRunId: null, updatedAt: now })
@@ -876,7 +921,8 @@ export async function claimNativeRestartRecoveries(input: {
           controllerProcessStartedAt: controller.processStartedAt,
           controllerGeneration: generation,
           recoveryState:
-            claimKind === "reattach_existing_runner"
+            claimKind === "reattach_existing_runner" ||
+            claimKind === "reattach_remote_runner"
               ? "awaiting_runner_reattach"
               : claimKind === "resume_dead_runner"
                 ? "resuming_session"
@@ -910,7 +956,10 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
-      if (claimKind !== "reattach_existing_runner") {
+      if (
+        claimKind !== "reattach_existing_runner" &&
+        claimKind !== "reattach_remote_runner"
+      ) {
         await recordNativeLocalProcessStop(tx as unknown as Db, row.run);
       }
 
@@ -923,7 +972,8 @@ export async function claimNativeRestartRecoveries(input: {
           errorCode: null,
           nativePhase: "observed",
           nativePhaseUpdatedAt: now,
-          ...(claimKind === "reattach_existing_runner"
+          ...(claimKind === "reattach_existing_runner" ||
+          claimKind === "reattach_remote_runner"
             ? {}
             : {
                 processPid: null,
@@ -942,6 +992,16 @@ export async function claimNativeRestartRecoveries(input: {
         restartKind: input.restartKind,
         recoveryRequestId: input.recoveryRequestId ?? null,
       };
+      if (claimKind === "reattach_remote_runner") {
+        return {
+          kind: claimKind,
+          ...common,
+          remote: {
+            providerLeaseId: remoteWorkspace!.providerLeaseId,
+            remoteCwd: remoteWorkspace!.remoteCwd,
+          },
+        } satisfies NativeRestartRecoveryClaim;
+      }
       if (claimKind === "reattach_existing_runner") {
         return {
           kind: claimKind,
@@ -958,6 +1018,8 @@ export async function claimNativeRestartRecoveries(input: {
         ...common,
       } satisfies NativeRestartRecoveryClaim;
     });
+    if (terminalRunToReport)
+      void reportRunFailure(input.db, terminalRunToReport);
     dispositions.push(disposition);
   }
   return dispositions;

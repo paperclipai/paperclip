@@ -29,6 +29,8 @@ describe("runner E2E Daytona image contract", () => {
       ),
     ]);
     const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
+    const daytonaImageJob = workflow.match(/^  daytona_image:\n[\s\S]*?(?=^  \w+:)/m)?.[0];
+    expect(daytonaImageJob).toBeDefined();
     expect(dockerfile).toContain("--bin paperclip-runnerd");
     expect(dockerfile).toContain("build-provider-pack.mjs /provider-pack");
     expect(normalizedDockerfile).not.toContain(
@@ -93,6 +95,22 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(
       '--build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}"',
     );
+    expect(daytonaImageJob).toContain(
+      "TARGET_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}",
+    );
+    expect(daytonaImageJob).toContain(
+      '[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]',
+    );
+    expect(daytonaImageJob).toContain(
+      '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
+    );
+    expect(
+      daytonaImageJob!.indexOf('[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]'),
+    ).toBeLessThan(
+      daytonaImageJob!.indexOf(
+        '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
+      ),
+    );
     expect(workflow).toContain(
       "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
     );
@@ -111,7 +129,9 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
     expect(workflow).toContain(`--format '{{json .Image}}'`);
     expect(workflow).not.toContain(`docker --config "$anonymous_config" pull`);
-    expect(workflow).not.toContain("docker image inspect");
+    // Remote Daytona manifests must use registry inspection. Local oracle
+    // images in the test job can still use the Docker daemon.
+    expect(daytonaImageJob).not.toContain("docker image inspect");
     expect(workflow).not.toContain("docker buildx prune --all --force");
     expect(workflow).not.toContain("docker system prune --all --force");
     expect(workflow).toContain('.architecture == "amd64"');

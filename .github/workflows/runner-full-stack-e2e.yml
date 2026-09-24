@@ -9,6 +9,10 @@ on:
         description: "Branch in paperclipai/paperclip to test; the trusted workflow still runs from master"
         type: string
         required: false
+      max_parallel:
+        description: "Optional lower concurrency for this campaign (cannot exceed the configured limit)"
+        type: string
+        required: false
       all:
         description: "Run the complete paid matrix when no narrower selector is supplied"
         type: boolean
@@ -84,7 +88,15 @@ jobs:
             echo "RUNNER_E2E_ALLOWED_ACTOR_IDS must be a non-empty JSON array of numeric GitHub user IDs." >&2
             exit 1
           fi
-          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          # Retry transient transport/server failures, but never proceed without
+          # a successfully resolved identity and the allowlist checks below.
+          for attempt in 1 2 3; do
+            if triggering_actor_id="$(timeout 30s gh api "users/$TRIGGERING_ACTOR" --jq .id)"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep "$((attempt * 2))"
+          done
           if [ "$triggering_actor_id" != "$ACTOR_ID" ] && [ "$TRIGGERING_ACTOR" = "$ACTOR" ]; then
             echo "GitHub actor identity contexts disagree; refusing the paid run." >&2
             exit 1
@@ -278,6 +290,7 @@ jobs:
           SELECT_ID: ${{ inputs.id }}
           MAX_PARALLEL: ${{ vars.RUNNER_E2E_MAX_PARALLEL || needs.authorize.outputs.max_parallel_default }}
           MAX_PARALLEL_LIMIT: ${{ needs.authorize.outputs.max_parallel_limit }}
+          REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}
         run: |
           set -euo pipefail
           args=(--matrix-json)
@@ -338,12 +351,20 @@ jobs:
             echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 1 through $MAX_PARALLEL_LIMIT for the selected runner." >&2
             exit 1
           fi
+          if [ -n "${REQUESTED_MAX_PARALLEL:-}" ]; then
+            if ! [[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]{0,2}$ ]] || [ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL" ]; then
+              echo "max_parallel must be an integer from 1 through the configured campaign limit." >&2
+              exit 1
+            fi
+            MAX_PARALLEL="$REQUESTED_MAX_PARALLEL"
+          fi
           echo "max_parallel=$MAX_PARALLEL" >> "$GITHUB_OUTPUT"
 
   daytona_image:
     name: Publish verified Daytona image
     needs: [authorize, target_lock, catalog]
-    runs-on: ubuntu-latest
+    # Keep image builds on the same authorized fleet as campaign execution.
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -411,6 +432,7 @@ jobs:
           IMAGE_TAG: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${{ needs.catalog.outputs.daytona_image_content_id }}
           IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          TARGET_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
           TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -424,6 +446,7 @@ jobs:
             exit 0
           fi
           [[ "$IMAGE_CONTENT_ID" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]
           identity="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/runner-full-stack-e2e.yml@"
           if docker buildx imagetools inspect "$IMAGE_TAG" >/dev/null 2>&1; then
             digest="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
@@ -443,6 +466,7 @@ jobs:
               --platform linux/amd64 \
               --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}" \
               --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}" \
+              --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}" \
               --file docker/daytona-runner/Dockerfile \
               --tag "$IMAGE_TAG" \
               "${cache_args[@]}" \
@@ -779,7 +803,15 @@ jobs:
           set -euo pipefail
           test "$REF" = "refs/heads/$DEFAULT_BRANCH"
           jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null
-          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          # Retry transient transport/server failures, but never proceed without
+          # a successfully resolved identity and the allowlist checks below.
+          for attempt in 1 2 3; do
+            if triggering_actor_id="$(timeout 30s gh api "users/$TRIGGERING_ACTOR" --jq .id)"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep "$((attempt * 2))"
+          done
           jq -e --argjson candidate "$triggering_actor_id" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
           jq -e --argjson candidate "$ACTOR_ID" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
 
@@ -858,6 +890,10 @@ jobs:
         if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth')
         run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
+      - name: Install checksum-verified Grok executable
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-acpx-grok' || matrix.profileId == 'runner-acpx-grok-subscription')
+        run: node packages/grok-acp/install.mjs
+
       - name: Download immutable campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -928,7 +964,12 @@ jobs:
 
       - name: Install pinned legacy Claude CLI
         if: matrix.profileId == 'legacy-claude'
-        run: npm install --global --omit=dev @anthropic-ai/claude-code@2.1.19
+        run: |
+          npm install --global --omit=dev --ignore-scripts @anthropic-ai/claude-code@2.1.277
+          launcher="$(npm root --global)/@anthropic-ai/claude-code/cli-wrapper.cjs"
+          chmod +x "$launcher"
+          ln -sf "$launcher" "$(npm prefix --global)/bin/claude"
+          claude --version
 
       - name: Qualify preinstalled Chrome
         if: needs.authorize.outputs.playwright_channel == 'chrome'
@@ -971,7 +1012,7 @@ jobs:
       # This definition executes only from the authorized default-branch workflow.
       # Provision host policy before credentials reach target-controlled tests.
       - name: Provision Codex sandbox on the disposable trusted runner
-        if: matrix.environmentId == 'local' && matrix.profileId == 'runner-codex'
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-codex' || matrix.profileId == 'runner-codex-mini' || matrix.profileId == 'runner-acpx-codex')
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from "node:child_process";
@@ -1002,11 +1043,22 @@ jobs:
           execFileSync("sudo", ["-n", "apparmor_parser", "-r", profilePath], {timeout:15000, stdio:"pipe"});
           NODE
 
+      - name: Prepare pinned Python artifact oracle image
+        if: (matrix.suiteId == 'everyday-workflows' || matrix.suiteId == 'grok-qualification' || matrix.suiteId == 'grok-subscription-qualification') && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')
+        run: |
+          set -euo pipefail
+          oracle_image='python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285'
+          timeout 30s docker version --format '{{.Server.Version}}'
+          timeout 120s docker pull "$oracle_image"
+          timeout 30s docker image inspect "$oracle_image" --format '{{.Id}}'
+
       - name: Run paid cell
         env:
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
+          GROK_AUTH_JSON: ${{ matrix.credentialName == 'GROK_AUTH_JSON' && secrets.GROK_AUTH_JSON || '' }}
           DAYTONA_API_KEY: ${{ matrix.environmentId == 'daytona' && secrets.DAYTONA_API_KEY || '' }}
           PAPERCLIP_E2E_DAYTONA_IMAGE: ${{ needs.daytona_image.outputs.image }}
           PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: ${{ github.workspace }}/packages/paperclip-runner/provider-pack
@@ -1060,6 +1112,9 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # Resolve from this trusted checkout only. Never use the target branch's
+      # lockfile or install scripts in the publication job.
+      - run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
       - run: pnpm install --frozen-lockfile
 
       - name: Resolve workflow job attempts
@@ -1202,6 +1257,11 @@ jobs:
         with:
           version: 9.15.4
 
+      # Resolve the trusted publication checkout's lockfile without lifecycle
+      # scripts, then install the exact result. This matches the report job's
+      # frozen-install preparation while keeping target-controlled code out of
+      # the AWS credentialed publisher.
+      - run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
       - run: pnpm install --frozen-lockfile
 
       - name: Install publisher-only Chromium

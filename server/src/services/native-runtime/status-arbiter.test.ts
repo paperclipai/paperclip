@@ -44,6 +44,23 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("a reviewer finishes its decision without completing rejected or still-reviewed work", () => {
+    for (const priorIssueStatus of ["in_progress", "in_review"] as const) {
+      const decision = arbitrate({ priorIssueStatus, nativeReviewOutcome: "resolved" });
+      expect(decision).toMatchObject({ statusAction: "preserve", toStatus: priorIssueStatus });
+      expect(decision.effects).not.toContainEqual(expect.objectContaining({ kind: "enqueue_continuation" }));
+    }
+  });
+
+  it("routes an unfinished reviewer action to bounded recovery instead of retrying the worker task", () => {
+    const decision = arbitrate({ priorIssueStatus: "in_review", nativeReviewOutcome: "pending" });
+    expect(decision).toMatchObject({ statusAction: "preserve", toStatus: "in_review" });
+    expect(decision.effects).toContainEqual(expect.objectContaining({
+      kind: "record_recovery", cause: "native_review_unresolved", agentId: "agent",
+    }));
+    expect(decision.effects.some((effect) => ["enqueue_continuation", "schedule_retry"].includes(effect.kind))).toBe(false);
+  });
+
   it("treats only the authorized Board response_wake as passive and preserves governance", () => {
     const passive = assessment({
       reportedDisposition: "yielded",
@@ -460,7 +477,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v5",
+        policyVersion: "phase6-v6",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

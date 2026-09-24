@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -113,4 +116,38 @@ describe("gemini_local ACP startup fallback", () => {
 
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
+
+  it.each(["fresh", "resumed", "missing"] as const)(
+    "supplies initial communication guidance at the CLI attempt boundary (%s)", async (state) => {
+      const cwd = await mkdtemp(path.join(tmpdir(), "gemini-communication-"));
+      const prompts: string[] = [];
+      try {
+        if (state === "missing") {
+          runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+            exitCode: 1, signal: null, timedOut: false, stdout: "",
+            stderr: "Unknown session 'previous'", pid: 123, startedAt: new Date().toISOString(),
+          });
+        }
+        const ctx = buildContext({ engine: "cli", cwd });
+        await execute({
+          ...ctx,
+          runtime: { ...ctx.runtime, sessionId: state === "fresh" ? null : "previous" },
+          context: { paperclipTaskCommunicationGuidance: "Frozen Slack preferences." },
+          onMeta: async (meta) => { prompts.push(meta.prompt ?? ""); },
+        });
+        if (state === "fresh") {
+          expect(prompts).toHaveLength(1);
+          expect(prompts[0]?.match(/Frozen Slack preferences\./g)).toHaveLength(1);
+        } else {
+          expect(prompts[0]).not.toContain("Frozen Slack preferences.");
+          expect(prompts).toHaveLength(state === "missing" ? 2 : 1);
+          if (state === "missing") {
+            expect(prompts[1]?.match(/Frozen Slack preferences\./g)).toHaveLength(1);
+          }
+        }
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
 });

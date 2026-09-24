@@ -56,6 +56,7 @@ const TaskProgressSpinner = createLucideIcon("TaskProgressSpinner", [
 
 /** Status → Lucide icon. `in_queue` borrows the blocked icon; its colour var resolves to blue. */
 const STATUS_ICON: Record<string, LucideIcon> = {
+  idle: Circle,
   backlog: CircleDashed,
   todo: Circle,
   in_progress: TaskProgressSpinner,

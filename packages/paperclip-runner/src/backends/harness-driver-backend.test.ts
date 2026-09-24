@@ -956,6 +956,20 @@ describe("HarnessDriverBackend", () => {
     await expect(iterator.next()).rejects.toThrow("provider transport lost after resolution");
   });
 
+  it("does not start provider work when Stop arrives before the first turn", async () => {
+    const provider = new FakeHarnessSession();
+    const start = vi.spyOn(provider, "startTurn");
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return provider; } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" },
+      workingDirectory: "/workspace",
+    });
+    await session.cancel({ reason: "user stop during startup", signal: new AbortController().signal }).cleanup;
+    await expect(session.startTurn({ message: { role: "user", text: "cancelled work" } }))
+      .rejects.toThrow("native_session_cancelled");
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("does not synthesize a fallback after explicit run cancellation", async () => {
     class CancelledProviderSession extends FakeHarnessSession {
       override async *events() {

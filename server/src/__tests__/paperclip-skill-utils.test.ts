@@ -23,7 +23,7 @@ async function makeArtifactHelperHarness(
   cleanupDirs: Set<string>,
   options: {
     apiUrl?: string;
-    ambiguousHttpStatusAfterCommit?: "408" | "502";
+    ambiguousHttpStatusAfterCommit?: "408" | "409" | "502";
     commitAfterDropDelaySeconds?: string;
     dropFirstUpload?: boolean;
     dropWithoutCommit?: boolean;
@@ -151,7 +151,7 @@ if [[ "$method" == "POST" && "$url" == */attachments ]]; then
   printf '%s' "$PAPERCLIP_RUN_ID" >"$FAKE_CURL_STATE_DIR/originating-run-id"
   if [[ -n "\${FAKE_CURL_AMBIGUOUS_STATUS:-}" && ! -f "$FAKE_CURL_STATE_DIR/upload-status-used" ]]; then
     : >"$FAKE_CURL_STATE_DIR/upload-status-used"
-    respond '{"error":"ambiguous upstream response"}' "$FAKE_CURL_AMBIGUOUS_STATUS"
+    respond '{"error":"ambiguous upstream response","outcome":"indeterminate","retryable":false}' "$FAKE_CURL_AMBIGUOUS_STATUS"
     exit 0
   fi
   if [[ "\${FAKE_CURL_MALFORMED_SUCCESS:-0}" == "1" && ! -f "$FAKE_CURL_STATE_DIR/malformed-success-used" ]]; then
@@ -311,7 +311,7 @@ describe("paperclip skill utils", () => {
     expect(normalizedShortcut).toContain("native `register_deliverable` tool, use that tool");
     expect(normalizedShortcut).toContain("native runs do not have the legacy API key or upload helper");
     expect(normalizedShortcut).toContain(
-      "For non-native adapters, invoke `scripts/paperclip-upload-artifact.sh` directly",
+      "For non-native adapters, invoke `bash scripts/paperclip-upload-artifact.sh`",
     );
     expect(normalizedShortcut).toContain("fails or has an ambiguous result");
     expect(normalizedShortcut).toContain("use the full heartbeat procedure below");
@@ -336,7 +336,7 @@ describe("paperclip skill utils", () => {
     expect(await fs.readFile(path.join(harness.stateDir, "upload-count"), "utf8")).toBe("1");
   });
 
-  it.each(["408", "502"] as const)(
+  it.each(["408", "409", "502"] as const)(
     "keeps upload ambiguity after an HTTP %s until the immutable attachment is observed",
     async (status) => {
       const harness = await makeArtifactHelperHarness(cleanupDirs, {

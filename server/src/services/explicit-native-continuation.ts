@@ -1,3 +1,5 @@
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
@@ -7,7 +9,7 @@ import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
-  issues, nativeRunFinalizations, type Db,
+  issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
@@ -83,7 +85,7 @@ export async function admitExplicitNativeContinuation(input: {
   if (input.actorType !== "user" || !actorId) return null;
   const retry = input.reason === "retry_failed_run" &&
     z.string().guid().safeParse(input.failedRunId).success;
-  if (!retry && (!commentId || !z.string().guid().safeParse(commentId).success ||
+  if (!retry && !input.queuedCommentInterruptId && (!commentId || !z.string().guid().safeParse(commentId).success ||
       !["issue_commented", "issue_reopened_via_comment"].includes(input.reason ?? ""))) return null;
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
@@ -96,8 +98,10 @@ export async function admitExplicitNativeContinuation(input: {
     sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
     sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt'->>'actorId' = ${actorId}`,
   )) : [];
-  const queuedInterrupt = Boolean(interruptQueue && commentId &&
-    queuedCommentIdsFromWakePayload(interruptQueue.payload).includes(commentId));
+  const response = interruptQueue
+    ? await readQueuedInteractionResponse(db, companyId, issueId, interruptQueue.payload) : null;
+  const queuedInterrupt = Boolean(interruptQueue && (response || (commentId &&
+    queuedCommentIdsFromWakePayload(interruptQueue.payload).includes(commentId))));
   if (input.queuedCommentInterruptId && !queuedInterrupt) return null;
   const [savedQueue] = input.queuedCommentRequestId ? await db.select().from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.id, input.queuedCommentRequestId),
@@ -114,17 +118,17 @@ export async function admitExplicitNativeContinuation(input: {
     const undelivered = await undeliveredLegacyUserCommentIds(db, companyId, issueId, agentId, ids);
     if (undelivered.length !== ids.length) return null;
   }
-  const [comment] = retry ? [] : await db.select().from(issueComments).where(and(
+  const [comment] = retry || response ? [] : await db.select().from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
     eq(issueComments.id, commentId!), eq(issueComments.authorType, "user"),
     queuedInterrupt ? undefined : eq(issueComments.authorUserId, actorId), isNull(issueComments.createdByRunId),
     isNull(issueComments.deletedAt),
   ));
-  if (!retry && !comment?.body.trim()) return null;
-  const authorizedAt = comment?.createdAt ?? new Date();
+  if (!retry && !response && !comment?.body.trim()) return null;
+  const authorizedAt = response?.comment.createdAt ?? comment?.createdAt ?? new Date();
   const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
   if (!agent || (!isConversationAdapter(agent.adapterType) && agent.adapterType !== "paperclip_runner")) return null;
-  if (queuedInterrupt && !isConversationAdapter(agent.adapterType)) return null;
+  if (queuedInterrupt && !isConversationAdapter(agent.adapterType) && !response?.source.requiresFreshSession) return null;
   const actions = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
@@ -143,6 +147,7 @@ export async function admitExplicitNativeContinuation(input: {
   if (pendingInteraction || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
 
   const sources: Run[] = [];
+  const stoppedSessions: Array<{ evidence: Record<string, unknown>; retire: () => boolean }> = [];
   const cancelledStartupIds = new Set<string>();
   for (const action of actions) {
     const runId = action.evidence.runId ?? action.evidence.sourceRunId;
@@ -162,7 +167,8 @@ export async function admitExplicitNativeContinuation(input: {
     const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
       isConversationAdapter(agent.adapterType);
-    if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission) return null;
+    if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission &&
+        !(queuedInterrupt && response?.source.requiresFreshSession && run.runtimeMode === "native")) return null;
     // Saved input is a request for a new turn, never permission to undo an
     // operator Stop or redeliver a message already consumed by this run.
     if (queuedRequest && !queuedInterrupt && ((run.status === "cancelled" && !unusedAdmission) ||
@@ -191,8 +197,21 @@ export async function admitExplicitNativeContinuation(input: {
     const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
     if (cancelledStartup) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
-    if (!cancelledStartup && coordinator && (coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
-        coordinator.resultId || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
+    // A provider failure can finish the normal result/assessment commit path.
+    // Its accepted failed result is immutable history, not a live controller.
+    // Only a new user turn may pass this gate; the process/lease stop proofs
+    // below remain mandatory and no previous action is automatically replayed.
+    const [committedFailure] = coordinator?.phase === "committed" && coordinator.resultId && run.status === "failed"
+      ? await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+          eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
+          eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
+          eq(nativeRunResults.schemaStatus, "accepted"),
+          sql`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState' = 'failed'`,
+        )).limit(1)
+      : [];
+    if (!cancelledStartup && coordinator && (
+        (coordinator.phase !== "terminal_failure" && !committedFailure) || coordinator.leaseOwner ||
+        (coordinator.resultId && !committedFailure) || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
           run.status === "cancelled" && !coordinator.leaseOwner
             ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."
             : "Waiting for the previous run to finish recovery. Your message will start automatically.");
@@ -218,6 +237,14 @@ export async function admitExplicitNativeContinuation(input: {
         if (run.processGroupId && !processStopped(-run.processGroupId)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
       }
     }
+    if (!remote && run.runtimeMode === "native" && run.errorCode === "native_session_cleanup_quarantined") {
+      // This is new user input, never permission to retry the interrupted turn.
+      if (retry) return blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.");
+      const { verifyStoppedNativeSessionForContinuation } = await import("./native-runtime/native-session-executor.js");
+      const stopped = await verifyStoppedNativeSessionForContinuation(db, run);
+      if (!stopped) return blocked("local_cleanup", "Waiting for the previous provider and its tools to stop. Your message is saved.");
+      stoppedSessions.push(stopped);
+    }
     sources.push(run);
   }
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
@@ -236,7 +263,16 @@ export async function admitExplicitNativeContinuation(input: {
     context: { previousRunId: previous.id, wakeCommentId: commentId },
     summary: null, exposeLowTrustRaw: false });
   if (input.dryRun) return { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}) };
-  const authorization = { actorId, commentId, ...(retry ? { failedRunId: input.failedRunId } : {}),
+  for (const stopped of stoppedSessions) {
+    if (!stopped.retire()) return blocked("local_cleanup", "The previous provider cleanup changed. Your message is saved.");
+    await appendHeartbeatRunEvent(db, {
+      companyId, runId: String(stopped.evidence.runId), agentId,
+      eventType: "native.stopped_conversation_verified", stream: "system", level: "info",
+      message: "The old runner and provider stopped. New user input will use a fresh session; prior action outcomes remain recorded.",
+      payload: stopped.evidence,
+    });
+  }
+  const authorization = { actorId, commentId, ...(response ? { interactionId: response.source.interactionId } : {}), ...(retry ? { failedRunId: input.failedRunId } : {}),
     ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId } : {}),
     ...(queuedRequest ? { queuedCommentRequestId: input.queuedCommentRequestId } : {}), runId: input.successorRunId,
     previousRunId: previous.id, recordedAt: new Date().toISOString() };

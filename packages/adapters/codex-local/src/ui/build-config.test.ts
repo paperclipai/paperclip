@@ -63,18 +63,18 @@ describe("buildCodexLocalConfig", () => {
     });
   });
 
-  it("persists the exact GPT-6 Astra model and supported controls", () => {
+  it.each([["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("persists the exact %s model and supported controls", (model, effort) => {
     const config = buildCodexLocalConfig(
       makeValues({
-        model: "gpt-6-astra",
-        thinkingEffort: "ultra",
+        model,
+        thinkingEffort: effort,
         fastMode: true,
       }),
     );
 
     expect(config).toMatchObject({
-      model: "gpt-6-astra",
-      modelReasoningEffort: "ultra",
+      model,
+      modelReasoningEffort: effort,
       fastMode: true,
     });
   });
@@ -164,7 +164,7 @@ describe("buildPaperclipRunnerConfig", () => {
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
       opencodePermissionMode: "allow",
       codexPermissionMode: "never",
-      acpxPermissionMode: "approve-reads",
+      acpxPermissionMode: "approve-all",
     });
   });
 

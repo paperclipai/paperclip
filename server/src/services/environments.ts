@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1443,10 +1443,10 @@ export function environmentService(db: Db) {
       };
       if (
         (input.replacesReusableLeaseId || input.reusesReusableLeaseId) &&
-        (!input.executionWorkspaceId || !input.providerLeaseId)
+        ((!input.executionWorkspaceId && (!input.issueId || typeof input.metadata?.agentId !== "string")) || !input.providerLeaseId)
       ) {
         throw new Error(
-          "A reusable lease handoff requires an execution workspace and provider lease id.",
+          "A reusable lease handoff requires a workspace or agent-bound task, and a provider lease id.",
         );
       }
       if (input.reusesReusableLeaseId && !input.heartbeatRunId) {
@@ -1523,10 +1523,13 @@ export function environmentService(db: Db) {
                       eq(environmentLeases.id, input.replacesReusableLeaseId),
                       eq(environmentLeases.companyId, input.companyId),
                       eq(environmentLeases.environmentId, input.environmentId),
-                      eq(
-                        environmentLeases.executionWorkspaceId,
-                        input.executionWorkspaceId!,
-                      ),
+                      input.executionWorkspaceId
+                        ? eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId)
+                        : and(
+                            isNull(environmentLeases.executionWorkspaceId),
+                            eq(environmentLeases.issueId, input.issueId!),
+                            sql`${environmentLeases.metadata}->>'agentId' = ${input.metadata!.agentId}`,
+                          ),
                       eq(environmentLeases.leasePolicy, "reuse_by_environment"),
                       eq(
                         environmentLeases.providerLeaseId,
@@ -1563,10 +1566,13 @@ export function environmentService(db: Db) {
                       eq(environmentLeases.id, input.reusesReusableLeaseId),
                       eq(environmentLeases.companyId, input.companyId),
                       eq(environmentLeases.environmentId, input.environmentId),
-                      eq(
-                        environmentLeases.executionWorkspaceId,
-                        input.executionWorkspaceId!,
-                      ),
+                      input.executionWorkspaceId
+                        ? eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId)
+                        : and(
+                            isNull(environmentLeases.executionWorkspaceId),
+                            eq(environmentLeases.issueId, input.issueId!),
+                            sql`${environmentLeases.metadata}->>'agentId' = ${input.metadata!.agentId}`,
+                          ),
                       eq(
                         environmentLeases.heartbeatRunId,
                         input.heartbeatRunId!,
@@ -1613,6 +1619,7 @@ export function environmentService(db: Db) {
       id: string,
       status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed" | "retained" | "pending_cleanup"> = "released",
       options?: {
+        expectedPendingCleanupAttemptId?: string;
         failureReason?: string;
         cleanupStatus?: EnvironmentLeaseCleanupStatus;
         remoteExecutionTermination?: Record<string, unknown>;
@@ -1634,7 +1641,10 @@ export function environmentService(db: Db) {
             ? sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ remoteExecutionTermination: options.remoteExecutionTermination })}::jsonb`
             : sql`${environmentLeases.metadata} - 'remoteExecutionTermination'`,
         })
-        .where(eq(environmentLeases.id, id))
+        .where(and(eq(environmentLeases.id, id), options?.expectedPendingCleanupAttemptId
+          ? and(eq(environmentLeases.status, "pending_cleanup"),
+              sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${options.expectedPendingCleanupAttemptId}`)
+          : undefined))
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toEnvironmentLease(row) : null;

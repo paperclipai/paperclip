@@ -37,6 +37,21 @@ const project = (
 ) => projectExecution(r, c, pending, undefined, now);
 
 describe("execution truth projection", () => {
+  it("keeps cleanup quarantine visible without a coordinator or recovery row", () => {
+    const stopped = run({ id: "stopped", status: "failed", errorCode: "native_session_cleanup_quarantined" });
+    expect(projectExecution(stopped, undefined, [], undefined, now)).toMatchObject({
+      phase: "recovery_needed", cause: "native_session_cleanup_quarantined", recoveryOwner: "board",
+      permittedActions: ["inspect_run", "inspect_recovery"],
+    });
+    expect(projectExecution(stopped, coordinator({ phase: "retryable_failure" }), [], undefined, now).phase).toBe("recovery_needed");
+    expect(projectExecution({ ...stopped, finishedAt: now }, coordinator({
+      phase: "terminal_failure", failureCode: "native_provider_terminal_failed",
+    }), [], undefined, now)).toMatchObject({ phase: "recovery_needed", recoveryOwner: "board" });
+    expect(projectExecution({ ...stopped, errorCode: "provider_frame_too_large" }, undefined, [], undefined, now).phase).toBe("failed");
+    expect(projectExecution(stopped, undefined, [], { status: "resolved", cause: "native_session_cleanup_quarantined", nextAction: "Verify prior execution",
+      evidence: { executionReconciliation: { providerStopped: true }, continuationRunId: "successor" } }, now))
+      .toMatchObject({ phase: "completed", successorRunId: "successor", cause: null });
+  });
   it("shows subscription contention as a resource wait without failed provider attempts", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy",
       scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeAiConnectionWait: 0 } }), undefined, [], undefined, now))

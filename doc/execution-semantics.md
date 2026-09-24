@@ -88,6 +88,45 @@ Execution work is paused because the next move belongs to a reviewer or approver
 
 An external review service can also be a valid review path when the issue keeps an agent assignee and has an active one-shot monitor that will wake that assignee to check the service later.
 
+For a native completion review addressed to an agent, the server saves the review
+card and a durable reviewer wake in the same transaction. The reviewer can act
+on the child task even when its own parent task waits for that child. The child
+keeps its worker assignee and the parent keeps its dependency. The review run
+can read the submitted work and accept or reject its assigned card. It cannot
+use that role to change ordinary task assignments or dependencies.
+
+Accepting the last required native completion review marks the child Done and
+makes its dependents eligible to continue. Rejection returns the requested
+changes to the worker. A review run that ends without a decision cannot mark
+the child Done. It retains the review and records a bounded recovery action.
+See [native status arbitration](architecture/native-status-arbitration.md#agent-review-handoff)
+for the authorization checks and completion-report rules.
+
+The parent receives recent child review decisions in its continuation evidence
+and through `get_task_context`. Each record names the child, decision, reviewer,
+and review run. The server reads these records from saved review state; it does
+not depend on the parent session remembering a separate review session. These
+records are evidence and do not grant permission to resolve another review.
+
+### Answered Slack conversations
+
+A successful Slack turn with a published final reply and no remaining execution
+or decision path settles to `chat_conversations.state = waiting` and issue
+`in_review`. This is a server-owned passive conversation state, displayed as
+**Idle**, not a request for review. It is excluded from execution counts, work
+queues, and generic review attention, while remaining accessible through
+Conversations, search, recent history, and unread activity.
+
+An admitted Slack or board message clears waiting and returns the issue to
+`todo` in the message transaction; normal wake admission and checkout resume
+execution. Settlement rechecks the
+latest run, message cursor, publication receipt, and outstanding work under the
+task lock. Failed delivery, a newer message, queued work, monitors, dependencies,
+and pending decisions prevent settlement. Reconciliation applies the same rule
+to existing answered threads without another model invocation. Slack identity,
+permissions, and the ability to execute work in the same thread are unchanged.
+Other providers keep their existing lifecycle.
+
 ### `done`
 
 The work is complete and terminal.
@@ -314,6 +353,12 @@ The valid action-path primitives are:
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery action that names the owner and action needed to restore liveness
 
+A bounded review-path recovery for a task from a supported external-chat
+provider retains the source run's admitted message IDs. It does not inherit checkout or authorization
+markers. Before dispatch, Paperclip verifies the recovery run's task ownership
+and current conversation, endpoint, and principal access for every message.
+Missing message references or revoked access still prevent execution.
+
 ### Durable external waits and heartbeat finalization
 
 An external wait counts as a live or waiting path only when the next move survives the current heartbeat and is represented in Paperclip's durable control-plane state. Valid external-wait shapes are:
@@ -355,6 +400,10 @@ Document-scoped activity may still route work when it is converted into an expli
 - intentional board routing that assigns or reassigns the issue, opens a first-class blocker, creates delegated follow-up work, or queues a typed wake
 
 Freeform document approval text is not auto-acceptance. Plan approval, implementation approval, or review acceptance must flow through the explicit interaction, approval, execution-policy, assignment, or blocker primitives that define who owns the next move.
+
+An interaction can be created by a run on another task in the same company, or by a run with no task. That run records the interaction's origin; its comments and results do not become context for the target task. Explicit resume and retry history takes precedence and must belong to the target task.
+
+New interactions exclude known comments from other tasks when recording their origins. At dispatch, older interactions may discard a copied origin only when both the producer's saved context and a comment on that producer's other task prove where it came from. Missing records, cross-company references, explicit wake comments, and unrelated origins still fail closed.
 
 ### Comment interrupts and ownership handoffs
 
@@ -410,6 +459,26 @@ The state `projectWorkspaceId` plus `executionWorkspaceId` without `projectId` i
 Workspace incoherence feeds into the same non-terminal liveness and stranded assigned-work model as a disappeared run. The recovery path should first fail or reject the incoherent wake, then either repair and requeue one bounded continuation for the same assignee or surface an explicit recovery action. It must not leave an agent-owned `in_progress` issue healthy solely because a wake record exists that would invoke the adapter in the wrong cwd, a non-git directory where git is required, an unrelated project workspace, or an unrecoverable missing worktree.
 
 For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
+
+### Workspace scan failures before provider startup
+
+Repository discovery distinguishes an ordinary folder from a failed Git read.
+A timeout, full scan queue, cancellation, output limit, or Git failure must keep
+its typed cause through workspace preparation and run persistence. It must not
+be reported as a missing repository or fall back to an unfiltered directory copy.
+
+When workspace preparation fails before provider work starts, scan timeouts and
+queue saturation use the existing durable failure budget: two automatic retries,
+30 seconds apart. The scheduled successor is persisted before execution is
+released. Restart and duplicate wake handling reuse that successor. Normal task,
+ownership, pause, dependency, approval, and budget gates still apply. Existing
+workspace content is retained, and incomplete temporary clones are not published.
+
+Cancelled scans, output-limit failures, and other Git failures do not authorize
+an automatic setup retry. Exhaustion or an unsafe retry opens the source-scoped
+recovery path with the specific scan cause and an operator action. Generic
+stranded-work recovery must not grant another budget for these errors. This
+does not automatically replay historical generic `setup_failed` runs.
 
 ### ACP startup handshake bound
 
@@ -1053,6 +1122,15 @@ controller lease in the same transaction that creates the native coordinator.
 The native executor rechecks cancellation and terminal status when claiming the
 coordinator, before starting or attaching a provider.
 
+Run-only Stop also covers the interval after the coordinator claim and before
+the provider session publishes its handle. Stop retains its pending audited
+intent and waits up to 30 seconds for that startup to settle. A published
+session receives cancellation before prompt submission; only real dispatch
+sets `dispatched: true`. A deadline leaves the intent pending and the late
+session remains fenced and is closed. Stop acknowledgement alone does not
+certify cleanup: the existing process and environment receipts still govern
+admission of the next message.
+
 A cancelled startup can continue from a newer authenticated user message after
 cleanup. The server requires either its explicit before-selection fence or an
 unclaimed native coordinator (zero attempts and controller generations, no
@@ -1172,6 +1250,21 @@ session. A staged provider package is reused only after the complete expected
 manifest and artifact hashes verify. A missing, changed, or incompatible package
 must be replaced and verified before launch.
 
+Warm attachment requires two consecutive authenticated readiness snapshots.
+Blocked readiness probes back off within the reconnect deadline so they do not
+fill the durable command journal while waiting. The fast ready path keeps its
+short second barrier. If readiness never arrives, attachment fails closed with
+the last observed blocker; a full journal is not a substitute for that diagnosis.
+Both native providers publish this readiness contract. ACPX reports its durable
+session identity, active turn, pending audit events, closed state, and unproven
+provider exit as blockers. Explicit readiness probes let the durable runner
+commit and acknowledge retained events under the old run authority; snapshotting
+alone never discards them. ACPX checkpoints its process during the subsequent
+attachment before resuming the same provider session under the new run.
+During an in-place handoff, the ACPX descriptor binds to the validated next run
+while event correlation stays on the old run until durable authority activation.
+A changed session identity or a descriptor that names any other run is rejected.
+
 Safe native replacement may clear a Blocked status only with a durable receipt
 that the same failed run projected that exact status version. Explicitly
 reasserting Blocked or changing its blockers advances the status version, even
@@ -1250,3 +1343,93 @@ awaits it. That background invocation observes rejection immediately, including
 when a remote sandbox has already disappeared. The owner's awaited close still
 receives the original failure; containment never fabricates a successful close
 or permission to reuse an unverified execution.
+
+### Assigned connections in native ACPX sessions
+
+Native ACPX sessions register the assigned Paperclip MCP gateway alongside the
+task tool bridge. Gateway calls retain the existing connection grants and action
+approvals. Missing assigned bindings and names that collide with the task bridge
+stop admission. Upstream credentials remain with the gateway; providers receive
+its scoped access binding. The qualified ACPX sidecar receives the gateway name,
+URL, and token together through the launch allowlist; unrelated environment
+secrets remain excluded. This does not restrict arbitrary network access to a
+public service outside the gateway.
+
+
+### Use real connection requests (2026-09-14)
+
+When a user asks to connect a known service, the agent searches for that service
+and uses `connection_request` if setup is needed. The agent must not ask the same
+permission again or copy Connect / Not now into a generic question. A generic
+question does not start setup. The real connection card keeps user identity,
+access grants, the decision, and continuation together. This guidance does not
+approve a connection or bypass its normal user decision.
+
+## Responses submitted during an active run
+
+A confirmation, checkbox confirmation, or question answer is new conversation
+input. Resolving the card records the decision immediately; it does not implicitly
+interrupt or steer an agent that is doing work. Its typed continuation wake waits
+behind the issue's active execution and appears in the message queue.
+
+The queue projects the original resolved interaction as an immutable response.
+It keeps the selected answers and accepted document revision; it does not create
+an editable comment that could silently change what was approved. Ordinary
+messages retain their existing edit, discard, and reorder behavior.
+
+- Normal run completion promotes the saved response once. The restart scan also
+  finds stranded interaction receipts after the issue execution lock is released.
+- **Steer** explicitly delivers the saved response to a compatible native turn.
+  The acknowledgement consumes the receipt, so a retry cannot create a second
+  delivery. It retains the existing run's execution identity.
+- **Interrupt** stops a legacy turn and starts a continuation with the typed
+  response. Native plan approvals that require a fresh session use Interrupt too;
+  steering cannot turn a planning session into an execution session. Existing
+  process-stop, environment-cleanup, ownership, and recovery gates still apply.
+- If the provider is blocked on the original native question request, answering
+  resolves that tool request directly. It must not wait behind the blocked turn.
+
+An agent may finish its review handoff after the user has already answered its
+card. A resolved card from that same source run, or its queued continuation, is a
+valid live path. A stale agent handback to a human cannot cancel the run and orphan
+a queued response. This does not make an old resolved card a review path for a
+later run, or prevent an explicit board reassignment.
+
+### Persistent sandbox cleanup
+
+A lost bridge cannot indefinitely prevent Daytona termination. Ordinary lease release
+and destruction wait briefly for bridge activity, then call the provider for the exact
+recorded sandbox. Drain timeout is not a stop receipt. Reusable sandboxes prefer
+stop; failed stop falls back to deletion. Stop/delete transport hangs are bounded
+and leave cleanup pending unless the provider confirms termination.
+
+The pending-cleanup sweep retains a durable attempt identity and a 15-minute
+in-flight deadline. It retries after restart, waits at least 30 seconds between
+failed attempts, and slows to 30 minutes after five failures. It reports that
+operator attention is needed at that threshold, while automatic cleanup continues.
+Provider outages never convert a live sandbox into an abandoned manual task.
+Explicit Retry can skip the cooldown after a failed cleanup, but cannot take over
+a live cleanup attempt. Active startup cancellation still stops the sandbox first.
+
+A live cleanup attempt renews its durable claim every 30 seconds. Another sweep in the same controller cannot overlap it, even if the deadline passes. Completion writes require the current attempt identity. After controller loss, cleanup can repeat destruction of the exact quarantined provider resource; providers must make that operation idempotent. A timeout or claim expiry does not prove termination.
+
+Renewal updates only the ownership deadline, never the retry cooldown. Cleanup
+does not await an outstanding renewal; a stalled database response cannot retain
+process-local cleanup ownership. Late responses still require the same active
+attempt, and completed attempts use only the persisted retry cooldown.
+
+
+### Follow-up completion instructions
+
+Generated native completion contracts interpret pending comments within the current
+task brief, assigned-skill instructions, and approval gates. Later human direction
+replaces conflicting scope; clarification alone does not approve execution. A
+wake from a server-verified human card response references that entry in
+`humanResponses`, whose answer is already present in the current request context.
+Agent/tool outcomes and generated summaries are not promoted to human direction.
+
+These are model instructions, not additional execution or permission gates.
+Contracts reference the existing brief and answers instead of copying them again.
+Resumed sessions keep the existing message-delta path; fresh sessions receive the
+full covered history. Stable wording and bounded references avoid adding another
+full brief on each comment, but provider cache hits must be measured separately.

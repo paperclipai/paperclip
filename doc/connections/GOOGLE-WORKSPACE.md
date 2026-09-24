@@ -158,3 +158,33 @@ Preview tools default to disabled. Read profiles expose only reviewed read
 operations. Write profiles add only the reviewed write operations for their app;
 destructive or unreviewed tools do not become available merely because Google
 adds them upstream.
+
+### Google Chat scope reduction (2026-09-22)
+
+`chat.read` requests only `chat.spaces.readonly` and `chat.messages.readonly`.
+`chat.write` adds `chat.messages.create`. The same sets apply to both managed
+and customer-owned OAuth methods. Neither requests `chat.memberships.readonly`
+nor `chat.users.readstate.readonly`.
+
+Conversation lookup, message history, ordinary message search, and the write
+profile's message sending remain supported. Membership listing and marking
+messages read/unread remain outside the tool allowlist. `search_messages`
+cannot filter by read state: the app hides `isUnread` from its agent and Test
+schemas and rejects any explicit `isUnread`/`is_unread` argument, including
+`false` or `null`, before dispatch. It never silently drops the filter. The
+guard also applies to cached catalogs and existing broader grants.
+
+References: Google's [Chat MCP setup](https://developers.google.com/workspace/chat/api/guides/configure-mcp-server)
+and [message-search parameters](https://developers.google.com/workspace/chat/api/reference/mcp/tools_list/search_messages).
+
+Roll out the app and Cloud broker scope registries together in staging and
+production: their signed requests and sealed credentials use exact scope sets.
+During a mixed-version rollout, Chat authorization/refresh can fail closed.
+Existing Google tokens are not retroactively narrowed or revoked by this code
+change. A refresh response still containing removed scopes, or omitting the
+scope set needed to verify the grant, is rejected by the broker; reconnect
+affected Chat grants for new consent. Do not revoke the
+shared Google client to migrate one profile, because that can break other
+Workspace connections. After deployment, verify fresh reduced-scope consent,
+ordinary Chat search/history and sending, then reconcile Google Console and
+the verification evidence with the deployed scope set.

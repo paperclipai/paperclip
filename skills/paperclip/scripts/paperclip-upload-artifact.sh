@@ -29,15 +29,15 @@ Options:
   --help, -h             Show this help
 
 Examples:
-  scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+  bash scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
     --title "Demo video render" \
     --summary "MP4 render for board review"
 
-  scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+  bash scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
     --title "Walkthrough video" \
     --content-type video/webm
 
-  scripts/paperclip-upload-artifact.sh out/result.png \
+  bash scripts/paperclip-upload-artifact.sh out/result.png \
     --title "Generated image" \
     --chat-comment "Here is the requested image."
 EOF
@@ -159,6 +159,7 @@ upload_file() {
   local response_file
   local status_code
   local curl_status=0
+  local indeterminate=0
 
   escaped_path="${path//\\/\\\\}"
   escaped_path="${escaped_path//\"/\\\"}"
@@ -180,8 +181,13 @@ upload_file() {
     printf 'Upload failed (%s): %s\n' "$status_code" "$url" >&2
     cat "$response_file" >&2
     printf '\n' >&2
+    # The bridge uses a structured 409 outcome after a possibly committed
+    # mutation. Keep the marker so the next invocation reconciles by listing.
+    if [[ "$status_code" == "409" ]] && jq -e '.outcome == "indeterminate"' "$response_file" >/dev/null 2>&1; then
+      indeterminate=1
+    fi
     rm -f "$response_file"
-    if [[ "$status_code" == "408" || "$status_code" -ge 500 ]]; then
+    if [[ "$status_code" == "408" || "$status_code" -ge 500 || "$indeterminate" == "1" ]]; then
       return 75
     fi
     return 1

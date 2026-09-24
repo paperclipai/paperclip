@@ -29,7 +29,7 @@ export const createTaskAction = {
   },
   "documentation": {
     "title": "Create task",
-    "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution.",
+    "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
     "note": null
   },
   "examples": {
@@ -77,7 +77,7 @@ export const createTaskAction = {
       "operationId": "create_task",
       "version": 1,
       "title": "Create task",
-      "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution.",
+      "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
       "exposure": "optional",
       "requiredClaims": [
         "delegation:tasks:create"
@@ -116,6 +116,10 @@ export const createTaskAction = {
             ],
             "description": "Optional agent assignee. Omit to assign the current agent.",
             "maxLength": 20000
+          },
+          "status": {
+            "enum": ["backlog", "todo"],
+            "description": "Initial status. Use backlog to save work without executing it. Defaults to todo (blocked when dependencies are unresolved)."
           },
           "priority": {
             "enum": [
@@ -269,6 +273,10 @@ export const createTaskAction = {
           },
           "assigneeActorId": {
             "type": "string"
+          },
+          "status": {
+            "enum": ["backlog", "todo"],
+            "description": "Initial status. Use backlog to save work without executing it. Defaults to todo (blocked when dependencies are unresolved)."
           },
           "priority": {
             "type": "string"

@@ -373,7 +373,7 @@ export function activityService(db: Db) {
         .where(
           or(
             and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)),
-            and(eq(activityLog.action, "project.created"), sql`${activityLog.details}->>'sourceIssueId' = ${issueId}`,
+            and(or(eq(activityLog.action, "project.created"), eq(activityLog.action, "company.skill_created")), sql`${activityLog.details}->>'sourceIssueId' = ${issueId}`,
               sql`${activityLog.companyId} = (select company_id from issues where id = ${issueId})`),
           ),
         )

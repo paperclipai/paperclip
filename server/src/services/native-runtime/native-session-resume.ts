@@ -219,6 +219,7 @@ export async function findNativeSessionResumeRun(
       processGroupId: heartbeatRuns.processGroupId,
       processStartedAt: heartbeatRuns.processStartedAt,
       runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
     })
     .from(heartbeatRuns)
     .where(

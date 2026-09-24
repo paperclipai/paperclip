@@ -8,7 +8,7 @@ import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests } from "@paperclipai/db";
+import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
@@ -282,36 +282,6 @@ describe("managed AI connections", () => {
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
   });
-  it("serializes OpenAI subscription refresh and releases the lease after execution", async () => {
-    // OpenAI writes its rotated refresh token back to a shared auth file, so
-    // two runs against the same grant must not overlap.
-    const userId = "openai-lease-user";
-    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
-    const token = JSON.stringify({ tokens: { access_token: "fixture-lease-access", refresh_token: "fixture-lease-refresh", id_token: "fixture-lease-id", account_id: "fixture-lease-account" } });
-    await service.save(companyId, userId, { provider: "openai", method: "subscription", ownership: "personal", name: "Lease subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, token);
-    const subscription = { ...input, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, responsibleUserId: userId, config: { model: "same-model" } };
-    const first = await prepareManagedAiRuntime(db, subscription);
-    const selected = await service.select({ ...subscription, userId });
-    const lockKey = `ai-runtime:${selected.grant.id}`;
-    const held = await db.execute(sql`
-      select activity.state, activity.xact_start
-      from pg_locks locks join pg_stat_activity activity on activity.pid = locks.pid
-      where locks.locktype = 'advisory' and locks.granted
-        and locks.classid = (hashtextextended(${lockKey}, 0) >> 32)::int::oid
-        and locks.objid = (hashtextextended(${lockKey}, 0) & 4294967295)::oid
-        and locks.objsubid = 1
-    `);
-    // A transaction-pooling proxy may move an idle, unpinned client to a
-    // different backend. The lock must hold a transaction for its lifetime.
-    expect(held).toHaveLength(1);
-    expect(held[0].state).toBe("idle in transaction");
-    expect(held[0].xact_start).not.toBeNull();
-    await expect(prepareManagedAiRuntime(db, subscription)).rejects.toThrow("in use");
-    await first.cleanup();
-    const next = await prepareManagedAiRuntime(db, subscription);
-    expect(next.identity).toBe(first.identity);
-    await next.cleanup();
-  });
   it("runs two Claude subscription executions for the same grant at the same time", async () => {
     // Claude writes no auth file back to the grant, so two runs share no
     // mutable state and must not wait for each other.
@@ -325,7 +295,7 @@ describe("managed AI connections", () => {
       await Promise.all([first.cleanup(), second.cleanup()]);
     }
   });
-  it("reproduces same-agent OpenAI subscription contention and resumes without reconnecting", async () => {
+  it("runs a same-agent OpenAI subscription child alongside a still-open parent", async () => {
     const userId = "subscription-contention-user";
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
     const credential = JSON.stringify({ tokens: { access_token: "fixture-access", refresh_token: "fixture-refresh", id_token: "fixture-id", account_id: "fixture-account" } });
@@ -341,29 +311,15 @@ describe("managed AI connections", () => {
     // A parent can create and assign a child before its own execution ends.
     // Both runs select the same personal subscription, even on the same agent.
     const parent = await prepareManagedAiRuntime(db, runInput);
-    try {
-      await expect(prepareManagedAiRuntime(db, runInput)).rejects.toMatchObject({
-        status: 422,
-        message: "This subscription is in use. Retry when its current execution finishes.",
-        details: { code: "ai_connection_busy" },
-      });
-      const selected = await service.select({ ...runInput, userId });
-      expect(selected.grant).toMatchObject({ id: account.grantId, status: "active" });
-      expect(await service.credential(selected)).toBe(credential);
-    } finally {
-      await parent.cleanup();
-    }
-    // Releasing the parent alone is sufficient: no reconnect, credential
-    // rotation, account switch, or agent configuration change is required.
     const child = await prepareManagedAiRuntime(db, runInput);
     try {
       expect(child.identity).toBe(parent.identity);
       expect(child.attribution.grantId).toBe(account.grantId);
     } finally {
-      await child.cleanup();
+      await Promise.all([parent.cleanup(), child.cleanup()]);
     }
   });
-  it("persists refreshed credentials only to their original grant and fences reconnects", async () => {
+  it("persists the freshest refreshed credential to its original grant across a same-account reconnect", async () => {
     const auth = (marker: string, hour: number) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
     const intent = { provider: "openai" as const, method: "subscription" as const, name: "Refresh test", ownership: "personal" as const, agentIds: [], allAgents: true, loginSessionId: "fixture" };
     const saved = await service.save(companyId, "alice", intent, auth("first", 10));
@@ -375,10 +331,125 @@ describe("managed AI connections", () => {
     expect(await service.credential(selected)).toBe(auth("refreshed", 11));
     const second = await prepareManagedAiRuntime(db, runInput);
     expect(second.identity).not.toBe(first.identity);
+    // A same-account reconnect writes an older last_refresh than the run
+    // that is still open.
     await service.save(companyId, "alice", { ...intent, connectionId: saved.connectionId }, auth("reconnect", 12));
-    await writeFile(path.join(String(second.config.env.CODEX_HOME), "auth.json"), auth("stale-process", 13));
+    await writeFile(path.join(String(second.config.env.CODEX_HOME), "auth.json"), auth("later-refresh", 13));
     await second.cleanup();
-    expect(await service.credential(await service.select({ ...runInput, userId: "alice" }))).toBe(auth("reconnect", 12));
+    // The newer refresh persists to the grant it started from.
+    expect(await service.credential(await service.select({ ...runInput, userId: "alice" }))).toBe(auth("later-refresh", 13));
+  });
+  it("resolves two concurrent OpenAI subscription write-backs by freshness, not by order", async () => {
+    const userId = "concurrent-freshness-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (marker: string, hour: number) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    await service.save(companyId, userId, { provider: "openai", method: "subscription", ownership: "personal", name: "Freshness fixture", loginSessionId: "fixture", allAgents: true, agentIds: [] }, auth("start", 10));
+    const runInput = { ...input, adapterType: "codex_local", responsibleUserId: userId, binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: { model: "same-model" } };
+    // Two runs use the same OpenAI subscription grant at the same time.
+    // Neither call below throws ai_connection_busy.
+    const older = await prepareManagedAiRuntime(db, runInput);
+    const newer = await prepareManagedAiRuntime(db, runInput);
+    await writeFile(path.join(String(older.config.env.CODEX_HOME), "auth.json"), auth("older", 11));
+    await writeFile(path.join(String(newer.config.env.CODEX_HOME), "auth.json"), auth("newer", 12));
+    // The run with the newer last_refresh writes back first. The run with
+    // the older last_refresh writes back last and must not overwrite it.
+    await newer.cleanup();
+    await older.cleanup();
+    const stored = await service.credential(await service.select({ ...runInput, userId }));
+    expect(stored).toBe(auth("newer", 12));
+  });
+  it("resolves two concurrent OpenAI subscription write-backs by freshness in reverse arrival order", async () => {
+    const userId = "concurrent-freshness-reverse-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (marker: string, hour: number) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    await service.save(companyId, userId, { provider: "openai", method: "subscription", ownership: "personal", name: "Reverse freshness fixture", loginSessionId: "fixture", allAgents: true, agentIds: [] }, auth("start", 10));
+    const runInput = { ...input, adapterType: "codex_local", responsibleUserId: userId, binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: { model: "same-model" } };
+    // Two runs use the same OpenAI subscription grant at the same time.
+    // Neither call below throws ai_connection_busy.
+    const older = await prepareManagedAiRuntime(db, runInput);
+    const newer = await prepareManagedAiRuntime(db, runInput);
+    await writeFile(path.join(String(older.config.env.CODEX_HOME), "auth.json"), auth("older", 11));
+    await writeFile(path.join(String(newer.config.env.CODEX_HOME), "auth.json"), auth("newer", 12));
+    // The run with the older last_refresh writes back first. The run with
+    // the newer last_refresh writes back last and must win.
+    await older.cleanup();
+    await newer.cleanup();
+    const stored = await service.credential(await service.select({ ...runInput, userId }));
+    expect(stored).toBe(auth("newer", 12));
+  });
+  it("resolves two concurrent xAI subscription write-backs by freshness, not by order", async () => {
+    const userId = "concurrent-freshness-xai-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const identityKey = "https://auth.x.ai::33333333-3333-3333-3333-333333333333";
+    const auth = (marker: string, expiresAtMs: number) => JSON.stringify({ [identityKey]: { key: `key-${marker}`, refresh_token: `refresh-${marker}`, expires_at: new Date(expiresAtMs).toISOString() } });
+    const now = Date.now();
+    await service.save(companyId, userId, { provider: "xai", method: "subscription", ownership: "personal", name: "Grok freshness fixture", loginSessionId: "fixture", allAgents: true, agentIds: [] }, auth("start", now));
+    const runInput = { ...input, adapterType: "grok_local", responsibleUserId: userId, binding: { provider: "xai", method: "subscription", mode: "responsible_user" } as const, config: { model: "same-model" } };
+    // Two runs use the same xAI subscription grant at the same time.
+    // Neither call below throws ai_connection_busy.
+    const older = await prepareManagedAiRuntime(db, runInput);
+    const newer = await prepareManagedAiRuntime(db, runInput);
+    await writeFile(path.join(String(older.config.env.GROK_HOME), "auth.json"), auth("older", now + 60 * 60 * 1000));
+    await writeFile(path.join(String(newer.config.env.GROK_HOME), "auth.json"), auth("newer", now + 2 * 60 * 60 * 1000));
+    // The run with the older expiry writes back first. The run with the
+    // newer expiry writes back last and must win.
+    await older.cleanup();
+    await newer.cleanup();
+    const stored = await service.credential(await service.select({ ...runInput, userId }));
+    expect(stored).toBe(auth("newer", now + 2 * 60 * 60 * 1000));
+  });
+  it("discards a credential write-back when the grant is revoked while the run is open", async () => {
+    const userId = "revoked-write-back-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (marker: string, hour: number) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    const saved = await service.save(companyId, userId, { provider: "openai", method: "subscription", ownership: "personal", name: "Revocation fixture", loginSessionId: "fixture", allAgents: true, agentIds: [] }, auth("start", 10));
+    const runInput = { ...input, adapterType: "codex_local", responsibleUserId: userId, binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: { model: "same-model" } };
+    const run = await prepareManagedAiRuntime(db, runInput);
+    const [grantBeforeCleanup] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
+    const ref = grantBeforeCleanup.credentialSecretRefs.find(r => r.configPath === "ai.credential")!;
+    const [secretBefore] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+    // A newer last_refresh would win the freshness merge if the grant stayed
+    // active. The revoked grant must discard the write-back before that merge
+    // decides anything.
+    await writeFile(path.join(String(run.config.env.CODEX_HOME), "auth.json"), auth("revoked-run", 11));
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, saved.grantId));
+    await run.cleanup();
+    const [secretAfter] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+    // service.select rejects a revoked grant, so it cannot read the stored
+    // credential here. Compare the stored secret version directly instead.
+    expect(secretAfter.latestVersion).toBe(secretBefore.latestVersion);
+  });
+  it("does not let a stale write-back overwrite an authorized secret rotation that commits while cleanup waits on the credential lock", async () => {
+    const userId = "credential-lock-race-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (marker: string, hour: number) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    const saved = await service.save(companyId, userId, { provider: "openai", method: "subscription", ownership: "personal", name: "Credential lock race fixture", loginSessionId: "fixture", allAgents: true, agentIds: [] }, auth("start", 10));
+    const runInput = { ...input, adapterType: "codex_local", responsibleUserId: userId, binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: { model: "same-model" } };
+    const run = await prepareManagedAiRuntime(db, runInput);
+    // The run's own refresh looks newer than the value it started with, but
+    // it must lose to a company-authorized rotation that commits while
+    // cleanup is still waiting on the credential secret's row lock.
+    await writeFile(path.join(String(run.config.env.CODEX_HOME), "auth.json"), auth("run-refresh", 11));
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
+    const ref = grant.credentialSecretRefs.find(r => r.configPath === "ai.credential")!;
+    let holdAcquired!: () => void;
+    const holdAcquiredPromise = new Promise<void>(resolve => { holdAcquired = resolve; });
+    let releaseHold!: () => void;
+    const holdReleased = new Promise<void>(resolve => { releaseHold = resolve; });
+    // An authorized rotation writes the new credential inside its own open
+    // transaction, so it still holds the secret row's lock when signaled.
+    const holder = db.transaction(async tx => {
+      await secretService(tx).rotate(ref.secretId, { value: auth("authorized-rotation", 12) }, { userId });
+      holdAcquired();
+      await holdReleased;
+    });
+    await holdAcquiredPromise;
+    const cleanupPromise = run.cleanup();
+    releaseHold();
+    await holder;
+    await cleanupPromise;
+    const stored = await service.credential(await service.select({ ...runInput, userId }));
+    expect(stored).toBe(auth("authorized-rotation", 12));
   });
   it("enforces the shared transport discriminator and existing harness compatibility", () => {
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "ai", transport: "mcp_remote" }).success).toBe(false);
@@ -595,6 +666,60 @@ describe("managed AI connections", () => {
     await db.insert(agents).values({ id: futureAgentId, companyId, name: "New shared agent", adapterType: "claude_local" });
     await db.insert(toolConnectionInstalls).values({ companyId, connectionId: account.connectionId, targetType: "agent", targetId: futureAgentId, createdByUserId: "alice" });
     expect((await service.select(selectionInput)).grant.id).toBe(account.grantId);
+  });
+
+  it("validates runner account adoption in the inherited sandbox and refuses an unavailable target", async () => {
+    const { agentRoutes } = await import("../routes/agents.js");
+    const { instanceSettingsService } = await import("../services/instance-settings.js");
+    const targetModule = await import("../services/environment-execution-target.js");
+    const runtimeModule = await import("../services/environment-runtime.js");
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const settings = instanceSettingsService(db);
+    const previous = await settings.get();
+    const [environment] = await db.insert(environments).values({ name: "Adoption sandbox", driver: "sandbox", config: { provider: "daytona" } }).returning();
+    await settings.update({ defaultEnvironmentId: environment.id });
+    const id = randomUUID();
+    await db.insert(agents).values({ id, companyId, name: "Runner adoption", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
+    const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: [id], allAgents: false }, "fixture-adoption-key");
+    await service.setDefault(companyId, "alice", account.grantId);
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false })) } } as const;
+    const resolveTarget = vi.spyOn(targetModule, "resolveEnvironmentExecutionTarget").mockResolvedValue(target);
+    const release = vi.fn(async () => undefined);
+    const acquire = vi.fn(async () => ({ lease: { id: randomUUID(), provider: "daytona", providerLeaseId: "test-sandbox", metadata: {} }, leaseContext: {} }));
+    const runtime = vi.spyOn(runtimeModule, "environmentRuntimeService").mockReturnValue({ acquireRunLease: acquire, realizeWorkspace: vi.fn(async () => ({ cwd: "/workspace" })), getDriver: () => ({ releaseRunLease: release }) } as any);
+    const probe = vi.spyOn(requireServerAdapter("paperclip_runner"), "testEnvironment").mockImplementation(async context => ({ adapterType: "paperclip_runner", status: context.executionTarget ? "pass" : "fail", testedAt: new Date().toISOString(), checks: [{ code: context.executionTarget ? "codex_hello_probe_passed" : "host_probe_failed", level: context.executionTarget ? "info" : "error", message: "fixture" }] }));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const selected = { provider: "openai", method: "api_key", mode: "responsible_user" } as const;
+    const providerRequest = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 200 }));
+    try {
+      // Target resolution can return only warning checks. Adoption still must
+      // fail closed, rather than quietly running the probe on the server host.
+      resolveTarget.mockResolvedValueOnce(null);
+      const unavailable = await request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { aiConnection: selected } });
+      expect(unavailable.status, JSON.stringify(unavailable.body)).toBe(422);
+      expect(probe).not.toHaveBeenCalled();
+      expect(providerRequest).not.toHaveBeenCalled();
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
+      const saved = await request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { aiConnection: selected } });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect(saved.body.defaultEnvironmentId).toBeNull();
+      expect(saved.body.runtimeConfig.aiConnection).toEqual(selected);
+      expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ companyId, environment: expect.objectContaining({ id: environment.id }) }));
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target, config: expect.objectContaining({ provider: "codex", model: "gpt-5.6-sol", managedAiConnection: expect.any(Object) }) }));
+      expect(providerRequest).toHaveBeenCalledWith("https://api.openai.com/v1/models", expect.objectContaining({
+        headers: { Authorization: "Bearer fixture-adoption-key" },
+        redirect: "error",
+      }));
+      expect(release).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(saved.body)).not.toContain("fixture-adoption-key");
+    } finally {
+      providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
+      await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
+    }
   });
 
   it("creates and hires agents with an authorized restricted shared connection", async () => {

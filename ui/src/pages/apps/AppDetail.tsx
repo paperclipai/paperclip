@@ -1,3 +1,6 @@
+import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE, isRemoteMcpConnectorId, isRemoteMcpConnectorMethod } from "@paperclipai/shared";
+import { RemoteMcpManagement } from "@/features/connections/remote-mcp/RemoteMcpManagement";
+import { remoteMcpProviders } from "@/features/connections/remote-mcp/providers";
 import { ManagedAiConnectionDetails } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
@@ -44,13 +47,14 @@ import {
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
-import { ServicesPanel } from "./app-detail/ServicesPanel";
-import { ConnectionProvenanceChip } from "./ComposioProvenanceChip";
+import { ConnectionProvenanceChip } from "./ConnectionProvenanceChip";
 import { IdentitiesSection } from "./app-detail/IdentitiesSection";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
+import { RailwayAccessPanel } from "./app-detail/RailwayAccessPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import {
   ReconnectCard,
+  DangerZone,
   connectionAddress,
   connectionTransportLabel,
 } from "./app-detail/AdvancedPanel";
@@ -241,7 +245,19 @@ export function AppDetail({ renderActions, onReconnect }: {
     [connection?.installs, installsQuery.data?.installs],
   );
   const access = useMemo(() => accessFrom(connection?.connectionPurpose === "ai" ? undefined : profile, install), [connection?.connectionPurpose, profile, install]);
+  const managesRemoteMcpAccess = isRemoteMcpConnectorMethod(connection?.config?.sourceTemplateKey, connection?.config?.connectionMethodKey);
   const agents = agentsQuery.data ?? [];
+  const disconnectRemote = useMutation({
+    mutationFn: () => toolsApi.archiveConnection(connectionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      navigate("/apps");
+    },
+    onError: (error) => pushToast({ title: "Couldn't disconnect", body: error instanceof Error ? error.message : "Please try again.", tone: "error" }),
+  });
   const [pending, setPending] = useState(false);
   const persist = useMutation({
     mutationFn: async (next: {
@@ -249,14 +265,16 @@ export function AppDetail({ renderActions, onReconnect }: {
       askFirst: Set<string>;
       access: AccessDraft;
       reviewed?: Set<string>;
-    }) => connection?.connectionPurpose === "ai"
+    }) => {
+      return connection?.connectionPurpose === "ai"
       ? toolsApi.putConnectionInstalls(connectionId, next.access.mode === "all" ? [{ targetType: "company", targetId: selectedCompanyId! }] : [...next.access.agentIds].map(targetId => ({ targetType: "agent" as const, targetId })))
       : toolsApi.finishApp(selectedCompanyId!, connectionId, {
         enabledCatalogEntryIds: [...next.enabled],
         askFirstCatalogEntryIds: [...next.askFirst].filter((id) => next.enabled.has(id)),
         ...(next.reviewed ? { reviewedCatalogEntryIds: [...next.reviewed] } : {}),
         access: next.access.mode === "all" ? "all_agents" : { agentIds: [...next.access.agentIds] },
-      }),
+      });
+    },
     onMutate: () => setPending(true),
     onSuccess: () => {
       void installsQuery.refetch();
@@ -388,6 +406,9 @@ export function AppDetail({ renderActions, onReconnect }: {
   const refreshTools = useMutation({
     mutationFn: () => toolsApi.refreshCatalog(connectionId),
     onSuccess: (result) => {
+      // Discovery extends the app profile for new actions as well as the catalog.
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.policies(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccessesForConnection(connectionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.catalog(connectionId) });
@@ -484,6 +505,23 @@ export function AppDetail({ renderActions, onReconnect }: {
     );
   }
 
+  if (isRetiredComposioConnection(connection)) {
+    return <div className="max-w-4xl space-y-6 pb-12">
+      <h1 className="text-xl font-semibold">{appName}</h1>
+      <section role="status" className="space-y-3 rounded-lg border border-border bg-muted p-4">
+        <h2 className="text-sm font-semibold">Connection retired</h2>
+        <p className="text-sm text-muted-foreground">{RETIRED_COMPOSIO_MESSAGE}</p>
+        <p className="text-sm text-muted-foreground">Remove each obsolete connection separately. Removing this one does not remove other connections.</p>
+        <Button variant="outline" onClick={() => navigate("/apps/connect?source=composio")}>Add Composio MCP connection</Button>
+      </section>
+      {grantsQuery.data?.capabilities.canConfigure === true && <DangerZone
+        appName={appName}
+        removing={disconnectRemote.isPending}
+        onRemove={() => disconnectRemote.mutate()}
+      />}
+    </div>;
+  }
+
   const aiGrantRevoked = connection.connectionPurpose === "ai"
     && grantRows.length > 0 && grantRows.every((grant) => grant.status === "revoked");
   const status: StatusInfo = aiGrantRevoked ? { label: "Revoked", tone: "attention" } : statusFor(connection);
@@ -539,7 +577,7 @@ export function AppDetail({ renderActions, onReconnect }: {
           galleryEntry={logoEntry}
           canReconnect={canReconnect}
           reconnectUnavailableMessage={reconnectUnavailableMessage}
-          onReconnect={onReconnect ? () => onReconnect(connection) : connection.connectionPurpose === "ai" ? () => navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`) : undefined}
+          onReconnect={onReconnect ? () => onReconnect(connection) : (connection.connectionPurpose === "ai" || isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey)) ? () => navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`) : undefined}
           onReconnected={() => {
             queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
@@ -548,9 +586,6 @@ export function AppDetail({ renderActions, onReconnect }: {
         />
       )}
 
-      {activeTab === "services" && (
-        <ServicesPanel connectionId={connectionId} appName={appName} />
-      )}
       {activeTab === "review" && (
         reviewFailed
           ? <ToolsLoadError onRetry={() => {
@@ -579,6 +614,7 @@ export function AppDetail({ renderActions, onReconnect }: {
           : permissionsLoading
           ? <ToolsLoading />
           : <div className="space-y-10">
+              {connection.config?.sourceTemplateKey === "railway" && <RailwayAccessPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.provider === "agentmail" && <EmailConnectionInboxes companyId={connection.companyId} connectionId={connection.id} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
               {connection.config?.provider === "agentmail" ? <EmailConnectionAccess companyId={connection.companyId} connectionId={connection.id} agents={agents} /> : <>
               <IdentitiesSection
@@ -612,6 +648,7 @@ export function AppDetail({ renderActions, onReconnect }: {
                 onReplaceAudience={(grant, memberUserIds) =>
                   replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
               />
+              {isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey) && <p className="text-sm text-muted-foreground">Paperclip controls access to the tools listed here. App and action permissions inside these tools are managed in {baseAppName}.</p>}
               <PermissionsPanel
                 actions={actionsContent}
                 connectionId={connectionId}
@@ -619,7 +656,7 @@ export function AppDetail({ renderActions, onReconnect }: {
                 appName={appName}
                 agents={agents}
                 access={access}
-                install={connection.connectionPurpose === "ai" ? installStateFrom([]) : install}
+                install={connection.connectionPurpose === "ai" || managesRemoteMcpAccess ? installStateFrom([]) : install}
                 readOnly={readOnly}
                 canChange={canChange}
                 quarantined={quarantined}
@@ -632,11 +669,18 @@ export function AppDetail({ renderActions, onReconnect }: {
                     ? "Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls."
                     : undefined
                 }
-                onSaveAccess={(next) => apply({ access: connection.connectionPurpose === "ai" ? next : accessIncludingInstalls(next, install) })}
+                onSaveAccess={(next) => apply({ access: connection.connectionPurpose === "ai" || managesRemoteMcpAccess ? next : accessIncludingInstalls(next, install) })}
                 onRefreshActions={() => refreshTools.mutate()}
                 onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
                 onReviewQuarantined={reviewQuarantined}
               />
+              {managesRemoteMcpAccess && isRemoteMcpConnectorId(connection.config?.sourceTemplateKey) && <RemoteMcpManagement
+                providerName={baseAppName} canReconnect={canReconnect} canDisconnect={grantsQuery.data?.capabilities.canConfigure === true}
+                busy={disconnectRemote.isPending}
+                onReconnect={() => navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`)}
+                onManage={() => window.open(remoteMcpProviders[connection.config?.sourceTemplateKey as keyof typeof remoteMcpProviders].dashboardUrl, "_blank", "noopener,noreferrer")}
+                onDisconnect={() => disconnectRemote.mutateAsync()}
+              />}
               </>}
             </div>
       )}

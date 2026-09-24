@@ -2,11 +2,71 @@
   {
     "allowedModes": [
       "standard",
+      "skill_test"
+    ],
+    "description": "Create a reusable single-file skill in the company library. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "markdown": {
+          "description": "Complete SKILL.md including name and description frontmatter and substantive instructions.",
+          "maxLength": 200000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "description": "Lowercase skill name, matching SKILL.md frontmatter.",
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Optional; must equal name.",
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "name",
+        "description",
+        "markdown"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_skill",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create skill",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
       "ask",
       "planning",
       "skill_test"
     ],
-    "description": "Fallback only: discover Paperclip API operations when the available dedicated tools cannot express the task. Prefer dedicated tools for common operations; do not search before using them.",
+    "description": "Fallback only: discover Paperclip API operations when the available dedicated tools cannot express the task. Prefer dedicated tools for common operations; do not search before using them. For a persistent hire, first list_agents to reuse a suitable teammate. Search agent-hires for the hiring schema and agent-configurations for compatible adapter/runtime settings, then use call_api with the returned operationId. Supply role-specific instructionsBundle.files as a filename-to-content record. Use the returned agent.id for delegation and obey any pending approval. Provider helper threads are temporary workers, not Paperclip hires. If a hire response is uncertain, reconcile with list_agents before retrying.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -1149,6 +1209,82 @@
   {
     "allowedModes": [
       "standard",
+      "skill_test"
+    ],
+    "description": "Create one native Paperclip Runner teammate for the current company and task. The new agent reports to you, inherits your native runtime, and receives no provider, adapter, environment, or credential configuration from the tool. Reuse an existing teammate when appropriate and follow any approval returned by the API.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "description": "Optional concise capability summary.",
+          "maxLength": 2000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instructions": {
+          "description": "Optional persona or task instructions.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Name for the new teammate.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "default": "general",
+          "enum": [
+            "ceo",
+            "cto",
+            "cmo",
+            "cfo",
+            "security",
+            "engineer",
+            "designer",
+            "pm",
+            "qa",
+            "devops",
+            "researcher",
+            "general"
+          ]
+        },
+        "title": {
+          "description": "Optional teammate title.",
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "operationId": "hire_agent",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "delegation:agents:create"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Hire a native agent",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
       "ask",
       "planning",
       "skill_test"
@@ -1464,6 +1600,118 @@
   },
   {
     "allowedModes": [
+      "standard"
+    ],
+    "description": "Reassign an existing task to another company agent. Read search_tasks first and supply its current assignee and statusVersion to prevent overwriting a concurrent change. Preserve the task, documents, dependencies, and blocked/backlog status. Active work is stopped before handoff. Use a stable idempotency key for retries. Cannot reassign this run’s own task, conversations, completed tasks, or pending reviews; use create_task for delegation from the current task.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeActorId": {
+          "description": "New company agent ID from list_agents.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "expectedAssigneeActorId": {
+          "description": "Current assigneeAgentId from search_tasks; null means unassigned.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedStatusVersion": {
+          "description": "Current statusVersion from search_tasks.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the task should move and context for the new owner.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "taskId": {
+          "description": "Existing task ID from search_tasks.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "taskId",
+        "assigneeActorId",
+        "expectedAssigneeActorId",
+        "expectedStatusVersion",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "operationId": "reassign_task",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "delegation:tasks:assign"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Reassign task",
+    "version": 1
+  },
+  {
+    "allowedModes": [
       "standard",
       "skill_test"
     ],
@@ -1669,7 +1917,48 @@
         },
         "icon": {
           "description": "Project icon.",
-          "maxLength": 20000,
+          "enum": [
+            "folder",
+            "rocket",
+            "code",
+            "terminal",
+            "database",
+            "globe",
+            "package",
+            "boxes",
+            "box",
+            "layers",
+            "briefcase",
+            "compass",
+            "target",
+            "flame",
+            "zap",
+            "star",
+            "bug",
+            "wrench",
+            "hammer",
+            "lightbulb",
+            "sparkles",
+            "shield",
+            "lock",
+            "search",
+            "cog",
+            "brain",
+            "cpu",
+            "git-branch",
+            "file-code",
+            "puzzle",
+            "gem",
+            "atom",
+            "heart",
+            "mail",
+            "message-square",
+            "crown",
+            "radar",
+            "telescope",
+            "hexagon",
+            null
+          ],
           "type": [
             "string",
             "null"
@@ -1760,7 +2049,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution.",
+    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -1798,7 +2087,7 @@
           "type": "string"
         },
         "initialPlan": {
-          "description": "Relevant markdown plan to persist on the new task before it starts.",
+          "description": "Remaining execution steps to persist as the task plan. Exclude completed planning, approval, and handoff steps; cite the source plan revision and approval. A copied plan is not a new approval gate.",
           "maxLength": 20000,
           "type": [
             "string",
@@ -1819,6 +2108,13 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "status": {
+          "description": "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved).",
+          "enum": [
+            "backlog",
+            "todo"
           ]
         },
         "title": {

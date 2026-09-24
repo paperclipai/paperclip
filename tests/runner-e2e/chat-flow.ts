@@ -6,7 +6,12 @@ import type {
 } from "../../packages/shared/src/types/issue.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
+import { isBlockedUnstartedWake } from "./non-execution-wake.js";
 import { chatMarker } from "./chat-cases.js";
+import { assertChatRememberedAfterRestart, assertChatStartupStopped, isChatStopReady, runChatHardeningFlow } from "./chat-hardening.js";
+import { enableChatThroughSettings, runChatInterruption, runChatSettingsLifecycle } from "./chat-stories.js";
+import { runActiveReassignment, runWorkerCrash, runAnswerQuality } from "./chat-qualification.js";
+import { matchesRunCount, minimumRunCount } from "./run-count.js";
 
 // Public API observations only: this driver never fabricates provider results or writes DB state.
 export interface ChatIssue {
@@ -36,7 +41,7 @@ export interface ChatRun {
   resultJson?: Record<string, unknown>;
   sessionIdBefore?: string | null;
   sessionIdAfter?: string | null;
-  startedAt?: string;
+  startedAt?: string | null;
 }
 type Comment = {
   id: string;
@@ -47,6 +52,25 @@ type Comment = {
 };
 type Plan = { body: string; latestRevisionId: string; updatedAt: string };
 type ChatOutputDocument = Plan & { id: string; issueId: string; key: string };
+
+export function assertChatBacklogCreation(input: {
+  tasks: ChatIssue[];
+  runs: ChatRun[];
+  ownerId: string;
+  plan: Plan;
+  marker: string;
+  activity: Array<{ action: string; details?: Record<string, unknown> }>;
+}) {
+  expect(input.tasks).toHaveLength(1);
+  expect(input.tasks[0]).toMatchObject({ status: "backlog", parentId: null, assigneeAgentId: input.ownerId });
+  expect(input.runs.filter(run => run.contextSnapshot?.issueId === input.tasks[0]!.id)).toHaveLength(0);
+  expect(input.plan.body).toContain(input.marker);
+  expect(input.plan.latestRevisionId).toBeTruthy();
+  const created = input.activity.filter(row => row.action === "issue.created");
+  expect(created).toHaveLength(1);
+  // Correcting todo after creation still permits an unauthorized start race.
+  expect(created[0]!.details).toMatchObject({ status: "backlog", source: "paperclip_runner_protocol" });
+}
 
 /** Clarification may request information imperatively rather than end in a question mark. */
 export function isChatClarificationReply(body: string): boolean {
@@ -212,7 +236,7 @@ export async function collectChatRunEvidence(
 ) {
   return {
     runId: run.id,
-    log: isResetRun(run)
+    log: isResetRun(run) || isBlockedUnstartedWake({ ...run })
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
     events: await api.get(`/api/heartbeat-runs/${run.id}/events?limit=1000`),
@@ -235,6 +259,12 @@ export function assertChatHandoff(
 }
 export async function sendChatMessage(page: Page, message: string) {
   const composer = page.getByTestId("task-chat-composer-input").last();
+  const takeover = page.getByTestId("task-chat-composer-takeover").last();
+  await expect(composer.or(takeover).first()).toBeVisible();
+  if (await takeover.isVisible()) {
+    // Close the card's composer view without answering, skipping, or approving it.
+    await takeover.getByRole("button", { name: /^Dismiss / }).click();
+  }
   await composer
     .locator('[contenteditable="true"], textarea')
     .first()
@@ -242,23 +272,45 @@ export async function sendChatMessage(page: Page, message: string) {
   await page.getByTestId("task-chat-composer-send").last().click();
 }
 
-export async function runChatFlow(input: {
+
+/** Independent durable oracle: prose alone cannot make a reassignment pass. */
+export function assertChatReassignment(input: {
+  readyId: string; queuedId: string; teammateId: string; tasks: ChatIssue[]; runs: ChatRun[];
+  audit: Array<{ action: string; details?: Record<string, unknown> }>; outputBody: string; marker: string;
+}) {
+  expect(input.tasks.map(task => task.id).sort()).toEqual([input.readyId, input.queuedId].sort());
+  expect(input.tasks.find(task => task.id === input.readyId)).toMatchObject({ status: "done", assigneeAgentId: input.teammateId });
+  expect(input.tasks.find(task => task.id === input.queuedId)).toMatchObject({ status: "backlog", assigneeAgentId: input.teammateId });
+  const successor = input.runs.filter(run => run.contextSnapshot?.issueId === input.readyId);
+  expect(successor).toHaveLength(1);
+  expect(successor[0]).toMatchObject({ agentId: input.teammateId, status: "succeeded", runtimeMode: "native" });
+  expect(input.runs.filter(run => run.contextSnapshot?.issueId === input.queuedId)).toHaveLength(0);
+  expect(input.audit.filter(row => row.action === "issue.reassigned" && row.details?.source === "paperclip_runner_protocol")).toHaveLength(1);
+  expect(input.outputBody).toContain(input.marker);
+}
+
+export interface ChatFlowInput {
   page: Page;
   api: RunnerApi;
   fixtures: LiveFixtureValues;
   execution: MatrixExecution;
   nonce: string;
+  workspacePath: string;
   restart: () => Promise<void>;
   observe: (issue: ChatIssue, runs: ChatRun[]) => void;
   capture: (id: string, label: string, file: string) => Promise<void>;
   evidence: (name: string, data: unknown) => Promise<void>;
-}) {
+}
+export async function runChatFlow(input: ChatFlowInput) {
   const { page, api, fixtures: f, execution, nonce } = input;
   const chatPath = `/api/companies/${f.company.id}/chats/${f.agent.id}`;
   const route = `/${f.company.issuePrefix}/chats/${f.agent.id}`;
   const marker = execution.task.buildVisibleMarker(nonce);
   const draftMarker = chatMarker("DRAFT", nonce);
   const caseId = execution.task.id;
+  const stopCase = ["stop-new-resume", "stop-startup-new-resume"].includes(caseId);
+  const interruptionCase = ["followup-while-running", "revise-while-running"].includes(caseId);
+  const expectedStops = new Map<string, string>();
   let issue: ChatIssue;
   let runs: ChatRun[] = [];
   const settings = await api.get<Record<string, unknown>>(
@@ -302,7 +354,7 @@ export async function runChatFlow(input: {
           activeRuns: runs
             .filter((run) => ["queued", "running"].includes(run.status))
             .map((run) => run.id),
-          failure: chatRunFailure(runs, caseId === "stop-new-resume"),
+          failure: chatRunFailure(runs.filter(run => expectedStops.get(run.id) !== run.status), stopCase),
         };
       },
       reject: (state) => state.failure ?? inconsistentIdle(state),
@@ -321,7 +373,8 @@ export async function runChatFlow(input: {
   };
   const noTasks = async () => expect(await tasks()).toHaveLength(0);
   try {
-    await api.patch("/api/instance/settings/experimental", {
+    if (caseId === "enable-disable-resume") await enableChatThroughSettings(input);
+    else await api.patch("/api/instance/settings/experimental", {
       enableAgentChat: true,
       enableClassicTaskInterface: false,
     });
@@ -333,8 +386,19 @@ export async function runChatFlow(input: {
     expect(await api.get(chatPath)).toBeNull();
     expect(await allRuns()).toHaveLength(0);
 
-    if (
-      ["continuity-restart", "new-session", "stop-new-resume"].includes(caseId)
+    if (execution.suite.id === "agent-chat-qualification") {
+      const context = { input, marker, issue: () => issue!, idle, allRuns, comments, expectedStops,
+        refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); input.observe(issue, await allRuns()); } };
+      if (caseId === "active-reassignment") await runActiveReassignment(context);
+      else if (caseId === "worker-crash-retry") await runWorkerCrash(context);
+      else await runAnswerQuality(context);
+    } else if (caseId === "enable-disable-resume") {
+      await runChatSettingsLifecycle({ input, marker, issue: () => issue!, idle, allRuns, comments });
+    } else if (interruptionCase) {
+      await runChatInterruption({ input, marker, issue: () => issue!, idle, allRuns, comments,
+        refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); input.observe(issue, await allRuns()); } });
+    } else if (
+      ["continuity-restart", "new-session", "stop-new-resume", "stop-startup-new-resume"].includes(caseId)
     ) {
       const secret = chatMarker("OLDCONTEXT", nonce);
       await turn(
@@ -357,17 +421,24 @@ export async function runChatFlow(input: {
         await input.restart();
         // Re-enter the canonical route after the server replaces its browser
         // transport; reloading the stale document can target a detached page.
-        await page.goto(route, { waitUntil: "domcontentloaded", timeout: 60_000 });
-        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+        // The restarted dev server can leave DOMContentLoaded pending after the
+        // app is interactive. Require the actual chat composer after navigation.
+        await page.goto(route, { waitUntil: "commit", timeout: 60_000 });
+        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 60_000 });
         await idle(2);
         expect(runs).toHaveLength(count);
         await turn(
-          `We are done discussing it. Reply with ${marker} only; no further work.`,
+          `What phrase did I ask you to remember earlier? Reply with that remembered phrase followed by ${marker}; no further work.`,
           3,
+        );
+        assertChatRememberedAfterRestart(
+          (await comments()).filter((comment) => comment.authorAgentId).at(-1)?.body ?? "",
+          secret,
+          marker,
         );
       } else {
         let cancelledId: string | undefined;
-        if (caseId === "stop-new-resume") {
+        if (stopCase) {
           await sendChatMessage(
             page,
             "Explain the history of gardening at length here, in 100 numbered paragraphs. This is discussion only; do not create work.",
@@ -383,9 +454,14 @@ export async function runChatFlow(input: {
                 const events = await api.get<Array<Record<string, unknown>>>(
                   `/api/heartbeat-runs/${active.id}/events?limit=1000`,
                 );
-                const log = await readRunningChatLog(api, active.id);
-                if (!(events.length || log?.length)) return false;
+                if (execution.profile.generation === "native") {
+                  if (!isChatStopReady(events, caseId === "stop-startup-new-resume" ? "startup" : "active")) return false;
+                } else if (!(events.length || (await readRunningChatLog(api, active.id))?.length)) return false;
                 cancelledId = active.id;
+                await input.evidence("chat-stop-boundary.json", {
+                  phase: caseId === "stop-startup-new-resume" ? "startup" : "active",
+                  runId: active.id, events,
+                });
                 return true;
               },
               { timeout: 120_000 },
@@ -397,6 +473,7 @@ export async function runChatFlow(input: {
               async () =>
                 (await api.get<ChatRun>(`/api/heartbeat-runs/${cancelledId}`))
                   .status,
+              { timeout: 30_000 },
             )
             .toBe("cancelled");
         }
@@ -451,6 +528,12 @@ export async function runChatFlow(input: {
           ).toEqual(
             oldComments.filter((c) => c.createdByRunId === cancelledId),
           );
+        if (caseId === "stop-startup-new-resume" && cancelledId) {
+          const stopped = await api.get<ChatRun>(`/api/heartbeat-runs/${cancelledId}`);
+          const events = await api.get<Array<{ eventType?: unknown; createdAt?: string }>>(`/api/heartbeat-runs/${cancelledId}/events?limit=1000`);
+          await input.evidence("chat-startup-stop-result.json", { stopped, events });
+          assertChatStartupStopped(stopped, events);
+        }
         await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
         await expect(
           page.getByText("New session", { exact: true }),
@@ -458,6 +541,65 @@ export async function runChatFlow(input: {
       }
       expect(issue!.id).toBe(initialId);
       await noTasks();
+    } else if (["hire-delegate-reuse", "blocked-status-review", "committed-send-retry"].includes(caseId)) {
+      await runChatHardeningFlow({ input, marker, issue: () => issue!, turn, idle, tasks, allRuns, comments });
+    } else if (caseId === "create-backlog") {
+      const project = await api.post<{ id: string }>(`/api/companies/${f.company.id}/projects`, {
+        name: `Later planning ${nonce}`, description: "Repository-free plans to save for later.",
+      });
+      await turn(`Create exactly one task titled Later checklist ${nonce} in the existing Later planning ${nonce} project. Assign it to yourself but keep it in backlog: do not start or execute it. Save a concise three-step initial plan that contains ${marker}. Reply with its identifier and status. Do not create a replacement task or change other tasks.`, 1);
+      const saved = (await tasks())[0]!;
+      expect(saved).toBeTruthy();
+      const plan = await api.get<Plan>(`/api/issues/${saved.id}/documents/plan`);
+      await turn(`What are the current owner and status of ${saved.identifier}? Just report its saved state. Do not execute it, change its status, or create another task.`, 2);
+      const observedTasks = await tasks();
+      // Issue activity also links the conversation run that created the task.
+      // Inspect actual run bindings to distinguish creation from execution.
+      const observedRuns = await allRuns();
+      const activity = await api.get<Array<{ action: string; details?: Record<string, unknown> }>>(`/api/issues/${saved.id}/activity`);
+      const persistedPlan = await api.get<Plan>(`/api/issues/${saved.id}/documents/plan`);
+      assertChatBacklogCreation({ tasks: observedTasks, runs: observedRuns, ownerId: f.agent.id, plan: persistedPlan, marker, activity });
+      expect(observedTasks[0]).toMatchObject({ id: saved.id, projectId: project.id });
+      expect(persistedPlan).toEqual(plan);
+      expect((await comments()).filter(c => c.authorAgentId).at(-1)?.body).toMatch(/backlog/i);
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+      await expect(page.getByRole("link", { name: saved.identifier! }).first()).toBeVisible();
+      await input.capture("chat-backlog", "Planned backlog task without execution", "chat-backlog.png");
+      await input.evidence("chat-backlog.json", { tasks: observedTasks, runs: observedRuns, activity, plan: persistedPlan });
+    } else if (caseId === "reassign-task") {
+      const config = execution.profile.buildAgent({
+        environmentId: f.environment.id, environmentFixtureId: execution.environment.id,
+        workspacePath: input.workspacePath, secretRefs: f.secretRefs, executionId: nonce,
+      });
+      const teammate = await api.post<{ id: string }>(`/api/companies/${f.company.id}/agents`, {
+        ...config, name: "Riley Reassignment", role: "engineer", reportsTo: f.agent.id,
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Complete the assigned work and save the requested Paperclip document." } },
+      });
+      const queued = await api.post<ChatIssue>(`/api/companies/${f.company.id}/issues`, {
+        title: `Later checklist ${nonce}`, description: `Preserve this deferred scope ${draftMarker}.`,
+        status: "backlog", assigneeAgentId: f.agent.id,
+      });
+      const ready = await api.post<ChatIssue>(`/api/companies/${f.company.id}/issues`, {
+        title: `Ready checklist ${nonce}`, status: "todo",
+        description: `Write a short launch checklist as a Paperclip document attached to this task, including ${marker}. Complete this task after saving it.`,
+      });
+      await turn(`Assign the existing Ready checklist ${nonce} task to Riley Reassignment so Riley completes it. Also move the existing Later checklist ${nonce} task from you to Riley, keeping it in backlog. Preserve both tasks and their descriptions. Explain the handoff briefly here. Do not create replacement tasks or start the backlog work.`, 2);
+      const observedTasks = await tasks();
+      const readyAfter = await api.get<ChatIssue>(`/api/issues/${ready.id}`);
+      const queuedAfter = await api.get<ChatIssue>(`/api/issues/${queued.id}`);
+      const output = await readChatOutputDocument(api, ready.id, marker);
+      const activity = await api.get<Array<{ action: string; details?: Record<string, unknown> }>>(`/api/issues/${ready.id}/activity`);
+      assertChatReassignment({ readyId: ready.id, queuedId: queued.id, teammateId: teammate.id, tasks: observedTasks, runs,
+        audit: activity, outputBody: output.body, marker });
+      expect(queuedAfter).toMatchObject({ assigneeAgentId: teammate.id, status: "backlog", description: `Preserve this deferred scope ${draftMarker}.` });
+      expect(readyAfter).toMatchObject({ assigneeAgentId: teammate.id, status: "done" });
+      expect(issue!).toMatchObject({ assigneeAgentId: f.agent.id, conversationState: "waiting" });
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+      await expect(page.getByRole("link", { name: readyAfter.identifier! }).first()).toBeVisible();
+      await input.capture("chat-reassignment", "Reassignment completed in Agent Chat", "chat-reassignment.png");
+      await input.evidence("chat-reassignment.json", { tasks: observedTasks, runs, activity, output, teammateId: teammate.id });
     } else {
       let existingProject: { id: string; name: string } | undefined;
       let acceptedPlan: Plan | undefined;
@@ -786,16 +928,14 @@ export async function runChatFlow(input: {
         projects,
       });
     }
-    await idle(execution.task.expectedRunCount);
-    expect(runs.filter((run) => !isResetRun(run))).toHaveLength(
-      execution.task.expectedRunCount,
-    );
+    await idle(minimumRunCount(execution.task));
+    expect(matchesRunCount(execution.task, runs.filter((run) => !isResetRun(run)).length)).toBe(true);
     for (const run of runs.filter((run) => !isResetRun(run))) {
       expect(run.runtimeMode).toBe(execution.profile.expectedRuntimeMode);
       expect(run.status).toBe(
-        caseId === "stop-new-resume" && run.status === "cancelled"
+        expectedStops.get(run.id) ?? (stopCase && run.status === "cancelled"
           ? "cancelled"
-          : "succeeded",
+          : "succeeded"),
       );
     }
     await input.evidence("api-state.json", {
