@@ -76,7 +76,7 @@ export async function authorizeSlackBoardPublication(
     : source.run?.responsibleUserId;
   if (!userId) return true;
   const [receipt] = await db
-    .select({ payload: chatActions.payload })
+    .select({ payload: chatActions.payload, status: chatActions.status })
     .from(chatActions)
     .where(and(
       eq(chatActions.companyId, endpoint.companyId),
@@ -92,6 +92,7 @@ export async function authorizeSlackBoardPublication(
     .orderBy(desc(chatActions.createdAt))
     .limit(1);
   if (!receipt) return true;
+  if (receipt.status === "cancelled") return false;
   if (source.comment.deletedAt) return false;
   const principal = await slackBoardAuthor(db, endpoint, userId);
   if (!principal || receipt.payload.principalId !== principal.id || !botToken) return false;

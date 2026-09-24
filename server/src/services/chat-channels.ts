@@ -27694,47 +27694,77 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
    * or no-longer-available files are omitted without losing the text turn.
    */
   async function processPendingSlackBoardMessages(limit = 25) {
-    const pending = await db.select({ action: chatActions }).from(chatActions).innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.companyId, chatActions.companyId))).where(and(eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received"), notInArray(chatEndpoints.status, ["paused", "attention"]))).orderBy(asc(chatActions.createdAt)).limit(limit);
-    for (const { action } of pending) {
-      const issueId = String(action.payload.issueId);
-      const userId = String(action.payload.userId);
-      const agentId = String(action.payload.agentId);
-      const commentId = String(action.payload.commentId);
-      const currentEndpoint = await endpointRecord(action.endpointId);
-      if (currentEndpoint && ["paused", "attention"].includes(currentEndpoint.endpoint.status)) continue;
-      const bindings = await slackBoardReplyBindings(db, { companyId: action.companyId, issueId, userId, agentId, commentIds: [commentId] });
-      const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, action.companyId), eq(issues.assigneeAgentId, agentId)));
-      if (!issue || !bindings.some(binding => binding.endpointId === action.endpointId && binding.conversationId === action.conversationId)) {
-        await db.update(chatActions).set({ status: "cancelled", updatedAt: new Date() }).where(eq(chatActions.id, action.id));
-        continue;
-      }
-      try {
-        await assertSlackBoardWorkAllowed(db, issue);
-        const [publication] = await db.select().from(chatPublications).where(and(eq(chatPublications.companyId, action.companyId), eq(chatPublications.endpointId, action.endpointId), eq(chatPublications.commentId, commentId))).limit(1);
-        const [conversation] = await db.select().from(chatConversations).where(and(eq(chatConversations.companyId, action.companyId), eq(chatConversations.id, action.conversationId!)));
-        const credentials = currentEndpoint ? await resolveCredentials(currentEndpoint.endpoint) : null;
-        if (!publication || !conversation || !currentEndpoint || !await authorizeSlackBoardPublication(db, currentEndpoint.endpoint, conversation, publication, credentials?.botToken ?? "", fetchImpl)) {
-          throw forbidden("The Slack message author no longer has access to this conversation");
+    const pending = await db.select({ id: chatActions.id }).from(chatActions)
+      .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.companyId, chatActions.companyId)))
+      .where(and(eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received"), notInArray(chatEndpoints.status, ["paused", "attention"])))
+      .orderBy(asc(chatActions.createdAt)).limit(limit);
+    for (const candidate of pending) {
+      // Hold an advisory lock across the durable state transition and external
+      // scheduler call. Other workers skip it; process death releases it.
+      await db.transaction(async (leaseTx) => {
+        const lock = await leaseTx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`slack-board-work:${candidate.id}`}, 0)) as locked`);
+        if (!(lock as unknown as Array<{ locked: boolean }>)[0]?.locked) return;
+        const [action] = await db.select().from(chatActions).where(and(eq(chatActions.id, candidate.id), eq(chatActions.status, "received")));
+        if (!action) return;
+        const issueId = String(action.payload.issueId);
+        const userId = String(action.payload.userId);
+        const agentId = String(action.payload.agentId);
+        const commentId = String(action.payload.commentId);
+        async function cancelWork(message: string) {
+          await db.transaction(async (tx) => {
+            await tx.update(chatActions).set({ status: "cancelled", result: { code: "slack_board_work_not_authorized", message }, updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+            await tx.update(chatPublications).set({ state: "cancelled", redactedError: message, nextAttemptAt: null, updatedAt: new Date() }).where(and(
+              eq(chatPublications.companyId, action.companyId), eq(chatPublications.endpointId, action.endpointId),
+              eq(chatPublications.conversationId, action.conversationId!), eq(chatPublications.commentId, commentId),
+              inArray(chatPublications.state, ["pending", "retry"]),
+            ));
+          });
         }
-        if (["done", "blocked"].includes(issue.status)) {
-          await issuesSvc.update(issue.id, { status: "todo", actorUserId: userId });
-          await logActivity(db, { companyId: issue.companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: issue.id, details: { status: "todo", source: "slack_board_message" } });
+        const currentEndpoint = await endpointRecord(action.endpointId);
+        if (currentEndpoint && ["paused", "attention"].includes(currentEndpoint.endpoint.status)) return;
+        const bindings = await slackBoardReplyBindings(db, { companyId: action.companyId, issueId, userId, agentId, commentIds: [commentId] });
+        if (!bindings.some(binding => binding.endpointId === action.endpointId && binding.conversationId === action.conversationId)) {
+          await cancelWork("The Slack message author no longer has access to this conversation");
+          return;
         }
-        await options.heartbeat.wakeup(agentId, {
-          source: "automation", triggerDetail: "system", reason: "issue_commented",
-          idempotencyKey: `slack-board-comment:${action.id}`, allowRunCoalescing: false,
-          requestedByActorType: "user", requestedByActorId: userId,
-          payload: { issueId, commentId, resumeIntent: true, followUpRequested: true },
-          contextSnapshot: { issueId, taskId: issueId, taskKey: issue.identifier ?? issueId, wakeCommentId: commentId, source: "issue.comment", resumeIntent: true, followUpRequested: true },
-        });
-        await db.update(chatActions).set({ status: "processed", updatedAt: new Date() }).where(eq(chatActions.id, action.id));
-      } catch (error) {
-        if (error instanceof HttpError && [400, 403, 404, 409].includes(error.status)) {
-          await db.update(chatActions).set({ status: "cancelled", result: { code: "slack_board_work_not_authorized", message: error.message }, updatedAt: new Date() }).where(eq(chatActions.id, action.id));
-          continue;
+        try {
+          const [publication] = await db.select().from(chatPublications).where(and(eq(chatPublications.companyId, action.companyId), eq(chatPublications.endpointId, action.endpointId), eq(chatPublications.commentId, commentId))).limit(1);
+          const [conversation] = await db.select().from(chatConversations).where(and(eq(chatConversations.companyId, action.companyId), eq(chatConversations.id, action.conversationId!)));
+          const credentials = currentEndpoint ? await resolveCredentials(currentEndpoint.endpoint) : null;
+          if (!publication || !conversation || !currentEndpoint || !await authorizeSlackBoardPublication(db, currentEndpoint.endpoint, conversation, publication, credentials?.botToken ?? "", fetchImpl)) {
+            throw forbidden("The Slack message author no longer has access to this conversation");
+          }
+          // Persist the resume and its marker together before waking. If a
+          // scheduler response is lost, retry cannot reopen work a second time.
+          const issue = await db.transaction(async (tx) => {
+            const [current] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, action.companyId), eq(issues.assigneeAgentId, agentId))).for("update");
+            if (!current) throw forbidden("The task is no longer assigned to the Slack agent");
+            await assertSlackBoardWorkAllowed(tx as unknown as Db, current);
+            if (action.result?.resumeApplied !== true) {
+              if (["done", "blocked"].includes(current.status)) {
+                await issueService(tx as unknown as Db).update(current.id, { status: "todo", actorUserId: userId });
+                await logActivity(tx as unknown as Db, { companyId: current.companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: current.id, details: { status: "todo", source: "slack_board_message" } });
+              }
+              await tx.update(chatActions).set({ result: { resumeApplied: true }, updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+            }
+            return current;
+          });
+          await options.heartbeat.wakeup(agentId, {
+            source: "automation", triggerDetail: "system", reason: "issue_commented",
+            idempotencyKey: `slack-board-comment:${action.id}`, allowRunCoalescing: false,
+            requestedByActorType: "user", requestedByActorId: userId,
+            payload: { issueId, commentId, resumeIntent: true, followUpRequested: true },
+            contextSnapshot: { issueId, taskId: issueId, taskKey: issue.identifier ?? issueId, wakeCommentId: commentId, source: "issue.comment", resumeIntent: true, followUpRequested: true },
+          });
+          await db.update(chatActions).set({ status: "processed", updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+        } catch (error) {
+          if (error instanceof HttpError && [400, 403, 404, 409].includes(error.status)) {
+            await cancelWork(error.message);
+            return;
+          }
+          logger.warn({ actionId: action.id, error: error instanceof Error ? error.message : "Wakeup failed" }, "Slack Board message wakeup will retry");
         }
-        logger.warn({ actionId: action.id, error: error instanceof Error ? error.message : "Wakeup failed" }, "Slack Board message wakeup will retry");
-      }
+      });
     }
   }
 
@@ -37906,6 +37936,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .from(chatPublications)
           .where(
             and(
+              // An explicit Board send promises both delivery and work. Keep
+              // its text/files pending until the durable wake has been accepted.
+              sql`not exists (select 1 from chat_actions a where a.company_id = ${chatPublications.companyId} and a.endpoint_id = ${chatPublications.endpointId} and a.conversation_id = ${chatPublications.conversationId} and a.kind = 'slack_board_message' and a.status = 'received' and a.payload->>'commentId' = ${chatPublications.commentId}::text)`,
               or(
                 and(
                   sql`not exists (select 1 from chat_endpoints e where e.id = ${chatPublications.endpointId} and e.publication_mode = 'explicit')`,

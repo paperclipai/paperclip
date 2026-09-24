@@ -3995,6 +3995,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.publishBoardMessage(endpoint.id, conversation.id, "Retry this work", randomUUID(), "owner-user");
     expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received")))).toHaveLength(1);
     await service.processPendingDeliveries();
+    await service.processPendingPublications();
     expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received")))).toHaveLength(0);
     expect(runtime.endpoints.get(endpoint.id)!.posts.filter(post => post.text.includes("Retry this work"))).toHaveLength(1);
   });
@@ -4046,7 +4047,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   it.each(["cancelled", "paused", "blocked", "closed-workspace"] as const)("does not bypass %s task guards from the Slack Board composer or its outbox", async (guard) => {
     const { issueTreeHolds, issueRelations, executionWorkspaces, projects } = await import("@paperclipai/db");
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup, runtime } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({ channelId: "CGUARD", id: "slack:CGUARD:8100.1", name: "guard" });
     await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread,
       message: makeMessage({ id: "8100.1", text: "@maya start here", mentioned: true }), trigger: "mention" });
@@ -4054,10 +4055,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const [conversation] = await service.listConversations(endpoint.id);
     const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "slack", providerAccountId: "T-PAPERCLIP", externalId: "UBOARD" }).returning();
     await db.insert(chatIdentityLinks).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, paperclipUserId: "owner-user", status: "linked", confirmedAt: new Date() });
+    runtime.endpoints.get(endpoint.id)!.posts.length = 0;
     wakeup.mockClear();
     wakeup.mockRejectedValueOnce(new Error("scheduler unavailable"));
     await service.publishBoardMessage(endpoint.id, conversation.id, "Queued work", randomUUID(), "owner-user");
     expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(runtime.endpoints.get(endpoint.id)!.posts).toEqual([]);
     if (guard === "cancelled") await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, conversation.issueId));
     if (guard === "paused") await db.insert(issueTreeHolds).values({ companyId: fixture.companyId, rootIssueId: conversation.issueId, mode: "pause", status: "active" });
     if (guard === "blocked") {
@@ -4075,7 +4078,51 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     wakeup.mockClear();
     await service.processPendingDeliveries();
     expect(wakeup).not.toHaveBeenCalled();
+    await service.processPendingPublications();
+    expect(runtime.endpoints.get(endpoint.id)!.posts).toEqual([]);
+    expect((await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpoint.id))).every(row => row.state === "cancelled")).toBe(true);
     expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message")))).toEqual([expect.objectContaining({ status: "cancelled" })]);
+  });
+
+  it.each(["concurrent", "lost-response"] as const)("applies the Slack Board resume once during %s dispatch", async (mode) => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup, runtime } = await configuredSlackEndpoint(fixture, { linkedBoardUser: true });
+    const channel = makeThread({ channelId: "CONCE", id: "slack:CONCE:8200.1", name: "once" });
+    await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread,
+      message: makeMessage({ id: "8200.1", text: "@maya start here", mentioned: true }), trigger: "mention" });
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+    const [conversation] = await service.listConversations(endpoint.id);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, conversation.issueId));
+    runtime.endpoints.get(endpoint.id)!.posts.length = 0;
+    wakeup.mockClear();
+    let release!: () => void;
+    let reached!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { reached = resolve; });
+    wakeup.mockImplementationOnce(async () => {
+      // Model a scheduler which accepts the request and finishes before its
+      // HTTP response reaches this outbox worker.
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, conversation.issueId));
+      reached();
+      if (mode === "lost-response") throw new Error("scheduler response lost");
+      await blocked;
+      return null;
+    });
+    const sending = service.publishBoardMessage(endpoint.id, conversation.id, "One resume", randomUUID(), "owner-user");
+    await entered;
+    try {
+      if (mode === "lost-response") await sending;
+      await service.processPendingDeliveries();
+      expect((await issueService(db).getById(conversation.issueId))!.status).toBe("done");
+      expect(wakeup).toHaveBeenCalledTimes(mode === "concurrent" ? 1 : 2);
+      const resumes = await db.select().from(activityLog).where(and(eq(activityLog.companyId, fixture.companyId), eq(activityLog.entityId, conversation.issueId), eq(sql<string>`${activityLog.details}->>'source'`, "slack_board_message")));
+      expect(resumes).toHaveLength(1);
+    } finally {
+      release();
+      await sending;
+    }
+    await service.processPendingPublications();
+    expect(runtime.endpoints.get(endpoint.id)!.posts.filter(post => post.text.includes("One resume"))).toHaveLength(1);
   });
 
   it("provides assigned Slack tools to routine tasks and can DM only their linked responsible user", async () => {
