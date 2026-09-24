@@ -50,7 +50,10 @@ import type {
   AdapterExecutionResult,
   AdapterRuntimeEvent,
 } from "../../adapters/index.js";
-import type { NativeFinalizationResult } from "@paperclipai/shared";
+import type {
+  IssueUnblockDescriptor,
+  NativeFinalizationResult,
+} from "@paperclipai/shared";
 import type {
   HarnessRuntimeRequestResolution,
   NativeExecutionInput,
@@ -8598,6 +8601,26 @@ async function executePaperclipNativeSessionWithinScope(
       const { exhausted } = recoveryProjection;
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
+      const recoveryNextAction =
+        sourceFailureCode === "native_provider_approval_required"
+          ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
+          : sourceFailureCode === "native_session_cleanup_quarantined"
+            ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
+            : sourceFailureCode === "native_provider_terminal_failed"
+              ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
+              : recoveryEvidence.recoveryMode === "ambiguous_state"
+                ? "Inspect the original provider failure and explicitly resolve the ambiguous session state; do not open a replacement provider session."
+                : integrityFailure
+                  ? "Inspect the persisted runner event collision and explicitly repair or replace the run; automatic retries are disabled."
+                  : sourceFailureCode === "native_provider_usage_limit"
+                    ? "Restore model provider usage capacity, then explicitly retry the task; automatic retries are stopped."
+                    : ownershipUnverified
+                      ? "Resolve the retained runner's authentication or executable compatibility before an explicit recovery; do not blindly restart, cancel, or replace its provider session."
+                      : exhausted
+                        ? "Inspect the provider trace and explicitly choose a replacement run or provider configuration; automatic provider work is stopped."
+                        : recoveryEvidence.recoveryMode === "bootstrap_retry"
+                          ? "Retry bootstrap on the same run without manufacturing a provider checkpoint."
+                          : "Resume the exact persisted native session on the same heartbeat run.";
       const message =
         error instanceof Error
           ? error.message.slice(0, 2_000)
@@ -8780,9 +8803,16 @@ async function executePaperclipNativeSessionWithinScope(
             failureTask.checkoutRunId === input.execution.binding.runId);
         let failureBlockStatusVersion: number | undefined;
         if (stillOwnsTask && recoveryProjection.issueStatus) {
+          const unblockDescriptor: IssueUnblockDescriptor = {
+            owner: "board",
+            action: recoveryNextAction,
+          };
           const projected = await issueService(tx as unknown as Db).update(
             input.execution.binding.issueId,
-            { status: recoveryProjection.issueStatus },
+            {
+              status: recoveryProjection.issueStatus,
+              unblockDescriptor,
+            },
             tx,
           );
           if (projected?.status === "blocked") failureBlockStatusVersion = projected.statusVersion;
@@ -8824,26 +8854,7 @@ async function executePaperclipNativeSessionWithinScope(
             providerSessionEstablished:
               recoveryEvidence.providerSessionEstablished,
           },
-          nextAction:
-            sourceFailureCode === "native_provider_approval_required"
-              ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
-              : sourceFailureCode === "native_session_cleanup_quarantined"
-              ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
-              : sourceFailureCode === "native_provider_terminal_failed"
-                ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
-                : recoveryEvidence.recoveryMode === "ambiguous_state"
-                  ? "Inspect the original provider failure and explicitly resolve the ambiguous session state; do not open a replacement provider session."
-                  : integrityFailure
-                    ? "Inspect the persisted runner event collision and explicitly repair or replace the run; automatic retries are disabled."
-                    : sourceFailureCode === "native_provider_usage_limit"
-                      ? "Restore model provider usage capacity, then explicitly retry the task; automatic retries are stopped."
-                      : ownershipUnverified
-                        ? "Resolve the retained runner's authentication or executable compatibility before an explicit recovery; do not blindly restart, cancel, or replace its provider session."
-                        : exhausted
-                          ? "Inspect the provider trace and explicitly choose a replacement run or provider configuration; automatic provider work is stopped."
-                          : recoveryEvidence.recoveryMode === "bootstrap_retry"
-                            ? "Retry bootstrap on the same run without manufacturing a provider checkpoint."
-                            : "Resume the exact persisted native session on the same heartbeat run.",
+          nextAction: recoveryNextAction,
           wakePolicy: nextAttemptAt
             ? {
                 kind: "resume_native_run",
