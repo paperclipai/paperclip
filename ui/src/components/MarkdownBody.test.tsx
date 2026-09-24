@@ -657,6 +657,16 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("mr-1 h-3 w-3");
   });
 
+  it("renders a full issue-status chip only when a surface opts in", () => {
+    const html = renderMarkdown("See PAP-1271 for context.", [
+      { identifier: "PAP-1271", status: "in_review" },
+    ], { issueReferenceDisplay: "chip" });
+
+    expect(html).toContain("paperclip-markdown-issue-ref");
+    expect(html).toContain("status-chip");
+    expect(html).toContain("In review");
+  });
+
   it("never gates explicit internal issue paths, even for unknown prefixes", () => {
     mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "PAP" }] });
 
