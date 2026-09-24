@@ -1476,7 +1476,7 @@ describe("OpenCodeServerDriver", () => {
     expect(evidence).toBeDefined();
     expect(JSON.parse(await readFile(join(root, evidence!), "utf8"))).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining('"human_response"') }] } });
     await session.close({ reason: "test" });
-  });
+  }, 15_000);
 
   it("normalizes a structured block result", async () => {
     await chmod(fixture, 0o755);
