@@ -6,6 +6,7 @@ import {
   activityLog,
   companies,
   companyMemberships,
+  environments,
   executionWorkspaces,
   instanceSettings,
   issues,
@@ -45,6 +46,7 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
       await db.delete(activityLog);
       await db.delete(issues);
       await db.delete(executionWorkspaces);
+      await db.delete(environments);
       await db.delete(projects);
       await db.delete(principalPermissionGrants);
       await db.delete(companyMemberships);
@@ -57,6 +59,24 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     isolatedWorkspaces: boolean;
     storeWorkspaceBinding?: boolean;
     storeIsolatedSettings?: boolean;
+    /**
+     * A settings blob written straight to the issue row, for the cases that
+     * assert a patch does not *destroy* stored settings. `storeIsolatedSettings`
+     * cannot serve those: it writes a blob the gate refuses to change, so the
+     * request never reaches the write being tested.
+     */
+    storeSettings?: Record<string, unknown>;
+    /** Leaves the row in the shape `bindRuntimeSharedWorkspace` writes. */
+    storeRuntimeBinding?: boolean;
+    /** Config on the bound workspace's own row, which the issue patch can reach. */
+    workspaceConfig?: Record<string, unknown>;
+    /**
+     * Seeds a real environment and returns its id. Without one, an
+     * environment-carrying patch is refused by `assertEnvironmentSelectionForCompany`
+     * before it ever reaches the write under test, and the assertion would pass
+     * for the wrong reason.
+     */
+    seedEnvironment?: boolean;
   }) {
     await instanceSettingsService(ctx.db).updateExperimental({
       enableIsolatedWorkspaces: options.isolatedWorkspaces,
@@ -67,6 +87,18 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     const otherProjectId = randomUUID();
     const workspaceId = randomUUID();
     const issueId = randomUUID();
+    const environmentId = randomUUID();
+
+    if (options.seedEnvironment) {
+      await ctx.db.insert(environments).values({
+        id: environmentId,
+        name: `Env ${environmentId}`,
+        // `assertEnvironmentSelectionForCompany` allows local/ssh/sandbox, and
+        // "local" carries a unique index that would collide across cases.
+        driver: "ssh",
+        status: "active",
+      });
+    }
 
     await ctx.db.insert(projects).values([
       { id: projectId, companyId, name: "Platform" },
@@ -79,6 +111,9 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
       mode: "shared_workspace",
       strategyType: "project_primary",
       name: "Platform workspace",
+      ...(options.workspaceConfig
+        ? { metadata: { config: options.workspaceConfig } }
+        : {}),
     });
     await ctx.db.insert(issues).values({
       id: issueId,
@@ -99,9 +134,21 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
           executionWorkspaceSettings: { mode: "isolated_workspace" as const },
         }
         : {}),
+      // The shape `bindRuntimeSharedWorkspace` leaves behind: the runtime writes
+      // these past the gate, so any task that has run once holds them.
+      ...(options.storeRuntimeBinding
+        ? {
+          executionWorkspaceId: workspaceId,
+          executionWorkspacePreference: "reuse_existing" as const,
+          executionWorkspaceSettings: { mode: "shared_workspace" as const },
+        }
+        : {}),
+      ...(options.storeSettings
+        ? { executionWorkspaceSettings: options.storeSettings }
+        : {}),
     });
 
-    return { ...company, projectId, otherProjectId, workspaceId, issueId };
+    return { ...company, projectId, otherProjectId, workspaceId, issueId, environmentId };
   }
 
   type Seeded = Awaited<ReturnType<typeof seed>>;
@@ -121,6 +168,81 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
       executionWorkspaceSettings: row?.executionWorkspaceSettings ?? null,
     };
   }
+
+  /** Reads the bound workspace's own config, which an issue patch can reach. */
+  async function storedWorkspaceConfig(seeded: Seeded) {
+    const [row] = await ctx.db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.workspaceId));
+    const metadata = (row?.metadata ?? null) as Record<string, unknown> | null;
+    return (metadata?.config ?? null) as Record<string, unknown> | null;
+  }
+
+  /**
+   * Persisting a gate-baseline settings value must not become a way to erase
+   * configuration the gate never governed.
+   *
+   * `{ environmentId }` is issue environment selection — a different feature
+   * behind a different flag. `parseIssueExecutionWorkspaceSettings` drops
+   * `environmentId` when called the way `update()` calls it, so the blob
+   * normalizes to nothing and reads as a baseline value. If that is written, the
+   * column is overwritten with `{}` and whatever it held — `networkEgress` here,
+   * which is honoured with the gate off — is gone. The blob carries no gated
+   * content, so the gate has no business either refusing it or rewriting the
+   * column over it.
+   */
+  it("does not let an environment-only settings payload erase stored settings", async () => {
+    const seeded = await seed({
+      isolatedWorkspaces: false,
+      seedEnvironment: true,
+      storeSettings: { networkEgress: { allowFqdns: ["registry.npmjs.org"], allowCidrs: [] } },
+    });
+
+    const res = await patch(seeded, {
+      executionWorkspaceSettings: { environmentId: seeded.environmentId },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await storedWorkspaceFields(seeded)).executionWorkspaceSettings).toMatchObject({
+      networkEgress: { allowFqdns: ["registry.npmjs.org"] },
+    });
+  });
+
+  /**
+   * The same rule, one layer further out. On a row the runtime bound
+   * (`executionWorkspaceId` + `reuse_existing`), a settings write is propagated
+   * to the bound workspace's own config row. The patch builder emits an explicit
+   * `null` for every config key it knows, so propagating a *baseline* settings
+   * value erases the workspace's `provisionCommand`, `teardownCommand`,
+   * `environmentId` and `workspaceRuntime` — configuration that belongs to the
+   * workspace and that the caller never mentioned.
+   *
+   * Any task that has run once holds this row shape, so this is the common case,
+   * not a corner. `cleanupCommand` is deliberately asserted too: the builder
+   * omits it, so it survives, and its survival is what distinguishes "the sync
+   * fired and erased the rest" from "the workspace was never touched".
+   */
+  it("does not let a cleared settings payload erase the bound workspace's config", async () => {
+    const seeded = await seed({
+      isolatedWorkspaces: false,
+      storeRuntimeBinding: true,
+      workspaceConfig: {
+        provisionCommand: "make setup",
+        teardownCommand: "make teardown",
+        cleanupCommand: "make clean",
+      },
+    });
+
+    const res = await patch(seeded, { executionWorkspaceSettings: null });
+
+    expect(res.status).toBe(200);
+    expect(await storedWorkspaceConfig(seeded)).toMatchObject({
+      provisionCommand: "make setup",
+      teardownCommand: "make teardown",
+      cleanupCommand: "make clean",
+    });
+  });
 
   it("refuses a workspace id it cannot persist, and the row is unchanged", async () => {
     const seeded = await seed({ isolatedWorkspaces: false });
@@ -332,12 +454,17 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
    * the change had been accepted.
    *
    * Refusing it instead would be no better: the project picker posts exactly
-   * this body on every project change. Because a baseline value only ever
-   * *removes* configuration, the gate has no reason to withhold it — so it is
-   * written, and the re-read proves it. This is the case the response receipt
-   * used to lie about in both directions.
+   * this body on every project change. So the preference — a scalar that only
+   * ever *removes* configuration — is written, and the re-read proves it.
+   *
+   * `executionWorkspaceSettings` is the deliberate exception, asserted here so
+   * the limit is pinned rather than only described. Writing a baseline settings
+   * blob overwrites the column and can erase the bound workspace's own
+   * provisioning config, which two tests above prove; the conservative drop is
+   * chosen over a write that destroys configuration the caller never named. The
+   * field that actually unsticks a task, `executionWorkspaceId`, does persist.
    */
-  it("persists a downgrade to shared_workspace on a row holding isolated values", async () => {
+  it("persists a preference downgrade but still drops the settings blob", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeIsolatedSettings: true });
 
     const res = await patch(seeded, {
@@ -348,7 +475,7 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     expect(res.status).toBe(200);
     expect(await storedWorkspaceFields(seeded)).toMatchObject({
       executionWorkspacePreference: "shared_workspace",
-      executionWorkspaceSettings: { mode: "shared_workspace" },
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
   });
 
