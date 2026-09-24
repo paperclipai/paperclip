@@ -40,6 +40,7 @@ import {
   inArray,
   isNotNull,
   like,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -1047,18 +1048,25 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     try {
       await Promise.all([...fixtureServices].map((service) => service.shutdown()));
     } finally {
-      if (fixtureCompanies.size > 0) {
-        await db.update(chatEndpoints).set({ status: "paused" })
-          .where(and(inArray(chatEndpoints.companyId, [...fixtureCompanies]), eq(chatEndpoints.status, "active")));
-        // The milestone scanner also considers paused endpoints while their
-        // conversations are active. Retire those bindings after assertions.
-        await db.update(chatConversations).set({ state: "completed" })
-          .where(and(inArray(chatConversations.companyId, [...fixtureCompanies]), inArray(chatConversations.state, ["active", "waiting"])));
-      }
+      await retireFixtureState([...fixtureCompanies]);
       fixtureServices.clear();
       fixtureCompanies.clear();
     }
   });
+
+  async function retireFixtureState(companyIds: string[]) {
+    if (companyIds.length === 0) return;
+    // Verifying endpoints can also own receipts. Once a receipt is 60s old,
+    // another test's global sweep can reclaim it. Retire every live endpoint,
+    // then release synthetic lease owners after their services have stopped.
+    await db.update(chatEndpoints).set({ status: "paused" })
+      .where(and(inArray(chatEndpoints.companyId, companyIds), notInArray(chatEndpoints.status, ["archived", "revoked"])));
+    await db.delete(chatEndpointLeases)
+      .where(inArray(chatEndpointLeases.companyId, companyIds));
+    // The milestone scanner includes paused endpoints with active bindings.
+    await db.update(chatConversations).set({ state: "completed" })
+      .where(and(inArray(chatConversations.companyId, companyIds), inArray(chatConversations.state, ["active", "waiting"])));
+  }
 
   async function seedCompany() {
     const companyId = randomUUID();
@@ -1722,6 +1730,64 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       receipt,
     };
   }
+
+  it("retires a stale verifying receipt before another fixture runs recovery", async () => {
+    const fixture = await seedCompany();
+    const context = await configuredSlackEndpoint(fixture);
+    const thread = makeThread({ channelId: "C-FIXTURE-RETIREMENT", id: "slack:C-FIXTURE-RETIREMENT:7001.1" });
+    await deliverMessage({
+      callbacks: context.callbacks,
+      endpointId: context.endpoint.id,
+      thread: thread.thread,
+      message: makeMessage({ id: "7001.1", text: "@maya check fixture recovery", mentioned: true }),
+      trigger: "mention",
+    });
+    await context.service.shutdown();
+    const [receipt] = await db.select().from(chatActions).where(and(
+      eq(chatActions.endpointId, context.endpoint.id),
+      eq(chatActions.kind, "receipt_reaction"),
+    ));
+    expect(receipt).toBeDefined();
+    await db.update(chatActions).set({ status: "processing", updatedAt: new Date(Date.now() - 61_000) })
+      .where(eq(chatActions.id, receipt!.id));
+    await db.insert(chatEndpointLeases).values({
+      companyId: fixture.companyId,
+      endpointId: context.endpoint.id,
+      leaseKey: "credentials",
+      token: "retired-fixture-owner",
+      expiresAt: new Date(Date.now() + 90_000),
+    });
+
+    const other = await seedCompany();
+    const next = createService();
+    const otherEndpoint = await next.service.create(other.companyId, {
+      provider: "slack", assignedAgentId: other.assignedAgentId,
+    }, "owner-user");
+    const [otherLease] = await db.insert(chatEndpointLeases).values({
+      companyId: other.companyId,
+      endpointId: otherEndpoint.id,
+      leaseKey: "credentials",
+      token: "other-fixture-owner",
+      expiresAt: new Date(Date.now() + 90_000),
+    }).returning();
+    let recovery: Promise<number> | undefined;
+    try {
+      await retireFixtureState([fixture.companyId]);
+      recovery = next.service.processPendingDeliveries();
+      await expect.poll(async () => db.select({ status: chatActions.status }).from(chatActions)
+        .where(eq(chatActions.id, receipt!.id)), { timeout: 5_000 })
+        .toEqual([{ status: "cancelled" }]);
+      await recovery;
+      expect(next.runtime.endpoints.size).toBe(0);
+      expect(await db.select().from(chatEndpointLeases).where(eq(chatEndpointLeases.id, otherLease!.id)))
+        .toEqual([otherLease]);
+    } finally {
+      // Release synthetic owners even when a regression blocks recovery.
+      await db.delete(chatEndpointLeases).where(inArray(chatEndpointLeases.companyId, [fixture.companyId, other.companyId]));
+      await recovery;
+      await next.service.shutdown();
+    }
+  });
 
   async function configuredTeamsEndpoint(
     fixture: Awaited<ReturnType<typeof seedCompany>>,
