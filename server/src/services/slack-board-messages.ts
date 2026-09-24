@@ -15,6 +15,8 @@ import {
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { slackBoardAuthor } from "./slack-board-authority.js";
+import { forbidden } from "../errors.js";
 
 type Executor = Pick<Db, "select" | "insert">;
 
@@ -95,6 +97,10 @@ export async function mirrorSlackBoardComment(
     .trim()
     .slice(0, 160);
   for (const { conversation, endpoint } of bindings) {
+    const principal = await slackBoardAuthor(db, endpoint, comment.authorUserId);
+    if (!principal) {
+      throw forbidden("Link your Slack account to this connection before sending a message to its Slack thread");
+    }
     const [receipt] = await db
       .insert(chatActions)
       .values({
@@ -108,6 +114,7 @@ export async function mirrorSlackBoardComment(
           issueId: comment.issueId,
           commentId: comment.id,
           userId: comment.authorUserId,
+          principalId: principal.id,
           agentId: endpoint.assignedAgentId,
         },
       })
@@ -204,11 +211,13 @@ export async function slackBoardReplyBindings(
   },
 ) {
   if (!input.commentIds.length || !input.userId) return [];
-  return db
+  const bindings = await db
     .select({
       companyId: chatActions.companyId,
       endpointId: chatActions.endpointId,
       conversationId: chatConversations.id,
+      endpoint: chatEndpoints,
+      principalId: sql<string>`${chatActions.payload}->>'principalId'`,
     })
     .from(chatActions)
     .innerJoin(
@@ -259,4 +268,10 @@ export async function slackBoardReplyBindings(
         inArray(chatConversations.state, ["active", "waiting", "completed"]),
       ),
     );
+  const authorized = [];
+  for (const { endpoint, principalId, ...binding } of bindings) {
+    const principal = await slackBoardAuthor(db, endpoint, input.userId);
+    if (principal && principal.id === principalId) authorized.push(binding);
+  }
+  return authorized;
 }

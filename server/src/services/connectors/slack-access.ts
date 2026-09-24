@@ -11,7 +11,7 @@ import {
 
 type Api = ReturnType<typeof slackClient>;
 export async function authorizeSlackChannel(
-  authority: SlackTaskAuthority,
+  authority: Pick<SlackTaskAuthority, "endpoint" | "slackUserId">,
   api: Api,
   channelId: string,
 ) {

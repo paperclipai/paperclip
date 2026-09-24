@@ -1,4 +1,6 @@
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
+import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
+import { assertSlackBoardWorkAllowed } from "./slack-board-resume.js";
 import { slackExplicitPublicationDuplicate } from "./connectors/slack-publication.js";
 import { rememberVerifiedSlackSearchEvent, slackSearchActionToken } from "./connectors/slack-search-context.js";
 import { slackAuthorizationRevision } from "./connectors/slack-revision.js";
@@ -27707,7 +27709,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         continue;
       }
       try {
-        if (["done", "cancelled"].includes(issue.status)) {
+        await assertSlackBoardWorkAllowed(db, issue);
+        const [publication] = await db.select().from(chatPublications).where(and(eq(chatPublications.companyId, action.companyId), eq(chatPublications.endpointId, action.endpointId), eq(chatPublications.commentId, commentId))).limit(1);
+        const [conversation] = await db.select().from(chatConversations).where(and(eq(chatConversations.companyId, action.companyId), eq(chatConversations.id, action.conversationId!)));
+        const credentials = currentEndpoint ? await resolveCredentials(currentEndpoint.endpoint) : null;
+        if (!publication || !conversation || !currentEndpoint || !await authorizeSlackBoardPublication(db, currentEndpoint.endpoint, conversation, publication, credentials?.botToken ?? "", fetchImpl)) {
+          throw forbidden("The Slack message author no longer has access to this conversation");
+        }
+        if (["done", "blocked"].includes(issue.status)) {
           await issuesSvc.update(issue.id, { status: "todo", actorUserId: userId });
           await logActivity(db, { companyId: issue.companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: issue.id, details: { status: "todo", source: "slack_board_message" } });
         }
@@ -27720,6 +27729,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         });
         await db.update(chatActions).set({ status: "processed", updatedAt: new Date() }).where(eq(chatActions.id, action.id));
       } catch (error) {
+        if (error instanceof HttpError && [400, 403, 404, 409].includes(error.status)) {
+          await db.update(chatActions).set({ status: "cancelled", result: { code: "slack_board_work_not_authorized", message: error.message }, updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+          continue;
+        }
         logger.warn({ actionId: action.id, error: error instanceof Error ? error.message : "Wakeup failed" }, "Slack Board message wakeup will retry");
       }
     }
@@ -30645,6 +30658,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         return { rejection: rejectionDetails(invalidIds) };
       }
       if (emailBoundary?.endpoint.provider === "slack") {
+        const [issue] = await tx.select().from(issues).where(and(eq(issues.id, conversation.issueId), eq(issues.companyId, conversation.companyId)));
+        if (!issue) throw notFound("Task not found");
+        await assertSlackBoardWorkAllowed(tx as unknown as Db, issue);
         await mirrorSlackBoardComment(tx, comment, { publicationKey: idempotencyKey, wakeAgent: true, endpointId, conversationId, attachmentIds });
         const [created] = await tx.select().from(chatPublications).where(and(eq(chatPublications.companyId, conversation.companyId), eq(chatPublications.idempotencyKey, idempotencyKey)));
         if (!created) throw conflict("This Slack task is no longer assigned to the connected agent");
@@ -33889,6 +33905,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         return null;
       }
       let authorizationActionId: string | null = null;
+      if (endpoint.provider === "slack") {
+        const credentials = await resolveCredentials(endpoint);
+        if (!await authorizeSlackBoardPublication(tx, endpoint, conversation, input.publication, credentials.botToken ?? "", fetchImpl)) return null;
+      }
       if (
         input.publication.idempotencyKey.startsWith("wake:") &&
         !(await authorizeInboundWakePublication(tx, input.publication))

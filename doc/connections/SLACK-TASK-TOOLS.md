@@ -92,6 +92,19 @@ An identical automatic final response is suppressed after an explicit send, or
 held while that send's delivery remains unresolved. Distinct summaries, progress,
 questions and blockers continue through existing routing.
 
+## Continuing a Slack task from Paperclip
+
+Human replies entered on a Slack-linked task are attributed to their Paperclip
+author in the original Slack thread. The author must have an active linked Slack
+account for this connection. Delivery rechecks workspace and channel access;
+revoked or changed identities cannot deliver queued messages or agent replies.
+Selected agent responses return to the same thread without echoing internal notes.
+
+The explicit channel composer also requests agent work through a durable outbox.
+It respects task pause holds, unresolved blockers, and closed isolated workspaces.
+Restore cancelled tasks or reopen closed workspaces in the ordinary Paperclip task
+flow first. The outbox checks these guards again before dispatching queued work.
+
 ## Optional personal search authorization
 
 Connection managers may configure the Slack application's Client ID and Client
