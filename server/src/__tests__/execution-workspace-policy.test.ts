@@ -540,13 +540,13 @@ describe("operator default isolated execution workspaces", () => {
     projectPolicy: Parameters<
       typeof applyDefaultIsolatedExecutionWorkspacePolicy
     >[0]["projectPolicy"],
-    hasProject = true,
+    hasProjectWorkspace = true,
     defaultIsolatedWorkspacesEnabled = true,
   ) =>
     applyDefaultIsolatedExecutionWorkspacePolicy({
       projectPolicy,
       defaultIsolatedWorkspacesEnabled,
-      hasProject,
+      hasProjectWorkspace,
     });
 
   it("substitutes an isolated policy for a project that stores none", () => {
@@ -564,6 +564,18 @@ describe("operator default isolated execution workspaces", () => {
     // Isolation needs a repository to cut a worktree from. A project-less task
     // (agent chat, for example) must not be pulled into worktree mode.
     expect(withDefault(null, false)).toBeNull();
+  });
+
+  it("keeps a project without a configured workspace on its existing behavior", () => {
+    const projectPolicy = withDefault(null, false);
+    expect(projectPolicy).toBeNull();
+    expect(resolveExecutionWorkspaceMode({
+      projectPolicy,
+      issueSettings: null,
+      legacyUseProjectWorkspace: null,
+    })).toBe("shared_workspace");
+    expect(withDefault({ enabled: true, defaultMode: "isolated_workspace" }, false))
+      .toEqual({ enabled: true, defaultMode: "isolated_workspace" });
   });
 
   it("never overrides a policy the project already stores", () => {

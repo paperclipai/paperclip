@@ -1,5 +1,11 @@
 # Paid runner full-stack E2E
 
+For family selection, ownership, provenance, history, and failure taxonomy,
+see the [Paperclip evaluation guide](../../doc/evals.md). This README is the
+authoritative runbook for Product E2E runner cells; the separate Runner Evals
+protocol guide lives at
+`packages/paperclip-runner/docs/runner-protocol-live-evals.md`.
+
 This is the billable browser acceptance campaign system for Paperclip runner
 profiles. It is deliberately separate from `tests/e2e`: every independently
 scheduled execution gets
@@ -11,8 +17,13 @@ The vocabulary is: a **campaign** is one workflow invocation against one SHA; a
 environments × cases; an **execution/cell** is one parallel job; and an
 **attempt** is one isolated harness run, including an infrastructure retry.
 
-The browser creates and assigns the task. The harness does not call a private
-runner hook or write fixtures directly to the database.
+The browser creates and assigns the task; fixtures use public APIs. The
+`accept-while-running` case additionally holds the committed card’s creation
+response in the test server until browser acceptance, to exercise real overlap.
+
+The launcher always sets `PAPERCLIP_ANNOUNCEMENTS_ENABLED=false` for its isolated
+instances so announcement panels do not obscure screenshot evidence. No shell
+or workflow configuration is needed, including for Daytona cells.
 
 ## Credentials
 
@@ -72,7 +83,7 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains five suites. `core-compatibility` (**Core Runner
+The catalog contains nine suites, including the explicit-only suites. `core-compatibility` (**Core Runner
 Compatibility**) is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
@@ -120,18 +131,98 @@ runner instance, PID, and process-start identity. Each turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
 sandbox rather than waiting for Daytona's idle timeout.
 
-`agent-chat` (**Persistent Agent Chat**) adds six workflows on `legacy-codex`,
-`legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **24 local cells**.
+`agent-chat` (**Persistent Agent Chat**) has eight workflows on `legacy-codex`,
+`legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **28 local cells**.
 They cover continuity across server restart, fresh context after `/new`,
 Stop/reset/resume, draft/revise/approve/plan handoff, clarification with existing
 project reuse, and a new project with two repository URLs. Each cell opens the
 production chat surface and resolves the backing issue through the chat API.
 The source conversation must settle to `in_review` / `waiting`; handed-off
 execution tasks must finish with their initial Plan and output documents.
-Reset runs are retained separately from the 68 expected provider turns in this
+Reset runs are retained separately from the 76 expected run attempts in this
 suite. Cancelled turns and execution-task runs remain included in billing and
 cleanup. The production chat directive is injected normally; fixtures do not
 replace it with completion instructions. Daytona is excluded.
+
+The native chat profiles use production provider permission defaults, rather than
+full-auto overrides, for plan handoff, task creation, and reassignment.
+The native Codex and Claude profiles also cover reassignment of existing ready
+and backlog tasks. The oracle verifies stable task IDs, preserved descriptions,
+assignment audit evidence, exactly one successful successor run and its output
+document, no backlog execution, and a usable source conversation after reload.
+
+`agent-chat-hardening` is an explicit-only native Codex/Claude suite with
+**18 cells: 12 local and six warm Daytona**. It adds startup Stop/reset,
+hire/delegate/reuse, grounded blocker reporting with source-document review,
+and committed-send retry. It also runs active Stop/reset and restart continuity.
+Daytona selects active Stop/reset, restart continuity, and committed-send retry.
+The 56 expected run attempts include cancelled attempts; synthetic resets are
+recorded separately. The suite uses production permission defaults and prompts.
+Only hiring and cross-task status/review enable the opt-in native API tools.
+Hiring uses a personal managed AI connection and verifies the hired worker's
+actual execution account. This is not an onboarding-default qualification.
+The hiring checklist and review request a `Reference: ...` line. This gives the
+fixture marker a neutral label instead of leaving the agent to choose credential
+syntax such as `Tracking token: ...`. Exact marker, authorship, worker reuse,
+and saved-output checks remain required. This case tests coordination, not
+credential-redaction policy.
+
+Stop during startup and Stop during an active response are separate boundaries.
+The native active-response case requires a recorded provider turn start; generic
+lifecycle/performance events are insufficient. The startup case must stop after
+a process launch request but before a provider turn starts. Missing the boundary
+fails the case instead of silently testing another phase.
+
+Restart continuity requires the agent to recall a phrase after the server
+restarts. The final prompt does not reveal that phrase. A generic successful
+reply after restart cannot pass this check.
+The browser leaves the old development client before the server stops, then
+opens the canonical chat route and waits for the composer. This avoids racing
+Vite's automatic reconnect navigation against the test's explicit navigation.
+
+The blocker query requests a JSON status snapshot. It must name the current
+recorded blocker and report zero active runs independently of the task's blocked
+status. Mentioning the right blocker only as resolved history cannot pass.
+
+The committed-send case drops the browser's acknowledgement after the server
+saves its comment. It waits for the agent to save one backlog task, restarts
+Paperclip, and replays the exact public request with the original client request ID. It
+requires the original comment, task, plan, and single consuming run. This proves
+HTTP request idempotency across restart, not replay safety for an ambiguous
+provider tool response. Existing native tool-receipt tests cover that boundary.
+
+`agent-chat-stories` adds six explicit-only local cells across native Codex and
+Claude. `enable-disable-resume` uses the Experimental settings UI to enable
+Agent Chat, starts a conversation, disables new messages, verifies the public
+write endpoint rejects a send without creating work, and re-enables the same
+conversation with its remembered context. The company, credential, and native
+agent are fixture-provisioned. This qualifies the experimental-settings path,
+not native first-run onboarding: the current production wizard offers legacy
+adapters, and native API tools remain an independent opt-in.
+
+`followup-while-running` and `revise-while-running` send a second browser message
+while the provider runs a bounded command waiting for a fixture brief file.
+The command publishes its own readiness file; the harness verifies the original
+run is still active after the follow-up is saved, then supplies the brief.
+The final reply must contain the previously undisclosed brief reference and the
+new request's marker. The revision case also checks the saved plan uses Friday
+instead of the original Monday. The oracle permits either steering the active
+run or one queued successor, but rejects missing/duplicate comments, failed or
+unfinished runs, stale plan contents, and unintended tasks/projects. This does
+not qualify active-task reassignment or worker-crash recovery.
+The maximum run count remains the cost estimate; the shared harness honors the
+one-run minimum only for these two interruption cases. Exactly one reply may
+consume the follow-up marker, and it must be attributed to the final provider run.
+
+```sh
+pnpm test:e2e:runner -- --list --suite agent-chat-hardening
+pnpm test:e2e:runner -- --id agent-chat-hardening.runner-codex.local.stop-startup-new-resume
+```
+
+Each hardening oracle has positive and plausible-negative calibration tests.
+The review grader parses the worker's saved JSON and compares both source values
+and the consistency verdict. Hiring requires one identity, correct reporting
+line, managed credentials, and real task execution; chat claims cannot pass it.
 
 ```bash
 # Run these after deterministic checks, with the required provider keys set.
@@ -157,8 +248,11 @@ Both suites save and restore experimental settings. Browser E2E always starts a
 throwaway instance; never point the authenticated suite at the running demo.
 Missing provider credentials fail paid preflight and are not passing coverage.
 
-The complete catalog is 92 cells (69 local and 23 Daytona) and 188 expected
-paid agent turns. Follow-up steps remain ordered within their cell; all other
+The default `--all` selection is 171 cells (148 local and 23 Daytona) and 371
+expected paid agent turns. The explicit-only everyday suite adds 38 catalog cells
+and chat hardening adds 18; chat stories adds six. All three are excluded from
+`--all`. The full catalog has 239 cells.
+Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
 developing fixtures.
 
@@ -230,6 +324,48 @@ pullable, includes the provider pack, and advertises `dial_ws_loopback`,
 `dial_wss`, and `listen_ws`. The GHCR package must be configured as public;
 the image job deliberately fails its anonymous-pull check otherwise. Existing
 content tags are never rebuilt or overwritten by the workflow.
+
+### Match the local controller package to the Daytona image
+
+Native ACPX (including Claude) and OpenCode Daytona cells also require
+`PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` on the controller. The package and
+the image must come from the same verified build. Equal provider version numbers
+are insufficient: verification compares the complete manifest, source revision,
+Node executable, lockfile, and built bridge hashes. An independently rebuilt
+package can fail that comparison and trigger a large upload before any model
+work begins.
+
+Prefer the hosted workflow: it builds the image and controller package together,
+and uses the image's recorded source revision when reusing an image. For a local
+run, use the immutable image from the campaign for the code under test and copy
+its exact package. Do not copy credentials or change manifest fields to force a
+match. Docker must be running; the temporary container below is never started.
+
+```sh
+(
+  set -eu
+  : "${PAPERCLIP_E2E_DAYTONA_IMAGE:?Set the verified immutable image digest}"
+  case "$PAPERCLIP_E2E_DAYTONA_IMAGE" in
+    *@sha256:*) ;;
+    *) echo "Use an immutable image digest" >&2; exit 1 ;;
+  esac
+  docker pull --platform linux/amd64 "$PAPERCLIP_E2E_DAYTONA_IMAGE"
+  pack_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-e2e-provider-pack.XXXXXX")"
+  container_id="$(docker create --platform linux/amd64 --network none \
+    --entrypoint /bin/true "$PAPERCLIP_E2E_DAYTONA_IMAGE")"
+  trap 'docker rm "$container_id" >/dev/null' EXIT
+  docker cp "$container_id:/opt/paperclip-runner/provider-pack/." "$pack_dir/"
+  test -f "$pack_dir/provider-pack.json"
+  printf 'Set PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH to: %s\n' "$pack_dir"
+)
+```
+
+Export the printed path in the shell that launches the eval. Runtime verification
+still checks all package artifacts. The run log must show
+`using manifest-matched provider pack from the sandbox image`; after reuse it can
+instead show `reusing manifest-matched provider pack from the workspace`. A setup failure before provider
+execution does not measure Claude recovery. Keep cold-upload coverage separate
+from the recovery test, and retain mismatched or failed attempts as evidence.
 
 ## Evidence and cleanup
 
@@ -324,6 +460,27 @@ may not yet include that suite's interactive cards. Its published `summary.md`
 and `normalized-results.json` still contain every selected cell. Use those files,
 the GitHub job summary, or `html/index.html` in the merged Playwright artifact
 to inspect branch-only results; an absent dashboard card is not passing coverage.
+
+Case details show the overall failure reason separately from behavioral matcher
+results. For first-task cases, **Read full conversation** starts collapsed and displays retained
+comments, question and approval cards, card answers, and document revisions in
+time order, using Paperclip chat styling: user bubbles on the right, agent replies
+on the left, and separate cards for questions and documents. This presentation
+is defined in the shared dashboard renderer for every campaign and regeneration,
+not in a particular published report. GitHub publication uses the trusted
+default-branch renderer, so renderer changes take effect there after merge.
+The shared static card renderer covers `ask_user_questions` (legacy and canonical
+question sets), `request_confirmation`, `request_checkbox_confirmation`,
+`request_item_verdicts`, `suggest_tasks`, and `connection_intent`. Confirmation
+variants include tool actions, credential bindings, and connection authorization.
+Cards display saved prompts, choices, recorded selections, outcomes, and reasons;
+all action controls are disabled. Multi-question forms expand every question for
+review. Unsupported kinds retain their raw payload instead of invented controls.
+
+Repeated checkpoints are deduplicated. Source links open the original
+checkpoint; evidence links expose the complete result and raw run/tool-event JSON.
+The transcript reflects captured checkpoints; messages from other tasks and
+unrecorded intermediate document edits may be absent. It is not a live task.
 
 ### Iterate on a published dashboard without rerunning paid tests
 
@@ -422,8 +579,8 @@ Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
 `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
 proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
-integer from 1–100 on AWS (default 100); use at least 92 to run the current
-complete catalog in one wave. The fallback runner retains its 1–57 limit and
+integer from 1–100 on AWS (default 100). The 171-cell default selection takes more than
+one wave at that limit; use suite selectors for smaller campaigns. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
 are retained for 30 days.
@@ -509,3 +666,352 @@ requires a new attachment after the request. The hired-agent execution/account
 checks and independent downloaded-code checks remain mandatory.
 
 Revision delivery checks exclude preserved originals by their content hash, even when the agent republishes an original after the revised ZIP. The browser downloads the exact selected attachment ID; its bytes still pass through the independent artifact checker.
+
+## First-task onboarding
+
+`first-task` is a suite in the main Runner E2E catalog. A full
+`pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
+includes its 52 executions alongside the other suites in one shared dashboard,
+campaign result bundle, and history entry. Suite/profile selectors narrow that
+same harness; they do not invoke a separate onboarding reporting program.
+
+`first-task` uses the production onboarding wizard, creates the first agent,
+keeps its default persona/model/permissions/skill assignments, and answers the
+seeded opening question in the browser. The suite does not install the generic
+Runner QA persona or replace the hidden `/first-task` invocation. Profile IDs
+select the Codex or Claude adapter family; **the production onboarding model
+default is retained**, even when it differs from that profile's normal harness
+model. Configured and provider-observed model identities are reported separately.
+
+There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
+`runner-acpx-claude`, local only (52 cells). Native profiles complete the same
+production wizard using their legacy provider, then change only the agent's
+runtime configuration via the public API before its first task. The wizard does
+not currently offer native Runner. Persona, managed instructions, skills, seeded
+question, and task invocation are preserved. Explicit model choices are retained;
+an unset model resolves through the production runtime-switch defaults. The
+production switch removes the legacy Paperclip operational skill because Runner
+supplies its control-plane contract through its protocol; other assigned skills,
+including `/first-task`, are retained. Native runtime permissions come from the
+existing qualified profile. Evidence labels
+this setup `post-onboarding-runtime-switch`; it does not claim a native wizard
+path exists. Legacy setup is labeled `production-wizard`.
+
+| First response / control | Complete journey |
+| --- | --- |
+| `interview-first-response` | `interview-plan-accept` |
+| `clear-task-first-response` | `task-card-accept` |
+| | `accept-while-running` |
+| `ambiguous-task-first-response` | `task-reply-accept` |
+| `plain-message-first-response` | `clarify-propose-accept` |
+| `plan-first-response` | `revise-accept` |
+| `ordinary-task-control` | `reject-no-execution` |
+
+The ordinary control creates a separate, normally assigned task for the same
+onboarded agent without invoking `/first-task`. Fixed garden-club facts and a
+per-attempt marker drive all conversations. Clarification supplies facts only;
+acceptance is a separate explicit user reply or browser-approved confirmation.
+The harness waits for a new user comment to persist before recording a reply
+checkpoint; the composer clearing is only optimistic UI state.
+The interview journey requests a saved plan. Execution journeys require exactly
+one correctly parented/assigned subtask and its completed output document.
+Rejection and revision must not execute the rejected/superseded scope. Closing
+an unexecuted task after rejection is allowed. A completed onboarding parent
+without the approved child is graded as a behavior failure, not retried as an
+infrastructure timeout.
+
+`question-choice-options` fails any recorded single-select or multi-select
+question with fewer than two distinct, nonempty options, including one-option
+"I'll describe it" forms. It checks every captured card presentation, including
+later and superseded cards, and reports the question ID, prompt, option count,
+and checkpoint. Canonical `answerMode: "text"` questions are valid without
+options. A text field or implicit Other fallback does not add a choice to a
+canonical select question.
+
+The first-task suite does not scan private instance homes or workspaces for
+credential persistence or use that check to override behavioral results.
+Credential persistence is evaluated elsewhere. Evidence redaction and public
+artifact checks still apply.
+
+Behavioral checks inspect persisted comments, interactions, tasks, documents,
+agent counts, creation timestamps, and terminal runs. Planning and clarification
+are allowed before acceptance. Premature durable work fails immediately. The
+suite checks persisted Paperclip effects; it does not claim to prove the absence
+of arbitrary external side effects from a provider process.
+
+```bash
+pnpm test:e2e:runner:unit
+pnpm test:e2e:runner:typecheck
+# Two paid smoke cases, after keys are available:
+pnpm test:e2e:runner -- --suite first-task --profile legacy-codex --case clear-task-first-response
+pnpm test:e2e:runner -- --suite first-task --profile legacy-claude --case clear-task-first-response
+# Expand after reviewing the smoke evidence:
+pnpm test:e2e:runner -- --suite first-task
+```
+
+Default concurrency is one. Each case has a fifteen-minute attempt budget;
+individual response/outcome waits stop after five minutes. More than twelve
+company runs fails the case. All company runs (including delegated/child-agent
+work and failures) are retained for cleanup and billing. The existing failure
+classification separates transport/credential failures from behavior failures.
+First-response cases stop when the first provider turn settles.
+
+`snapshots/first-task.json` contains full managed instruction/skill snapshots and
+SHA-256 source hashes (plus separate display hashes when redaction applies), the actual hidden invocation and seeded greeting/question,
+source SHA/ref and dirty state, runtime settings, observed models, checkpoints,
+and check results. `first-task-run-evidence.json` retains run logs/events. The
+normal screenshots, sanitized evidence packaging, dashboard and publication
+commands apply. Dashboard task/document links target retained evidence because
+isolated instances are removed after each attempt.
+
+### Optional quality post-processing
+
+Quality is informational. It cannot turn a behavioral failure into a pass.
+The five anchored 1–5 dimensions are question relevance, use of facts, proposal
+usefulness, clarity, and low friction. Every score must cite a recorded
+checkpoint. The judge reads only recorded conversation/state, has no tools,
+and never participates as a simulated user.
+
+Run judging on each **upload-directory `result.json` before normalization and
+publication**, with `OPENAI_API_KEY` in the shell:
+
+```bash
+pnpm test:e2e:runner:judge-first-task -- --result tests/runner-e2e/results/CAMPAIGN/EXECUTION/attempt-1/result.json --max-dollars 0.50
+```
+
+Use the actual upload path printed by the launcher. The judge uses the pinned
+`gpt-4.1-2025-04-14` snapshot, temperature zero, and at most 1,800 output tokens.
+The configuration, rubric, hash, evidence hash, usage, price estimate, and full
+reservation are recorded. Rates are pinned at $2/M input and $8/M output tokens
+([model documentation](https://developers.openai.com/api/docs/models/gpt-4.1)).
+A conservative UTF-8-byte token bound checks the per-call spending cap before
+sending. Oversized evidence is rejected, never truncated. An exclusive adjacent
+`result.json.judge.json` ledger prevents concurrent/repeated spending; failed or
+interrupted requests retain their reservation and are not retried. Unknown
+usage is not reported as free. Judge spend is shown separately and included in
+total estimated spend when known; provider/child usage stays in the run ledger.
+
+Regenerate normalized reports with the existing report command, pointing
+`PAPERCLIP_RUNNER_E2E_REPORT_ROOT` at that campaign,
+`PAPERCLIP_RUNNER_E2E_REPORT_OUT` at a fresh output directory, and
+`PAPERCLIP_RUNNER_E2E_EXPECTED_IDS` at the JSON array of selected execution IDs.
+Then use the existing dashboard/history publication workflow. Merely running
+`test:e2e:runner:dashboard` reads the already normalized bundle; it never calls
+a judge or refreshes results from outside that bundle. Published campaign
+bundles remain immutable; judge them before publishing.
+
+### Comparing skill revisions
+
+Use separate campaigns for each skill revision and three repetitions per
+case/provider (144 executions per revision), keeping source environment,
+provider/default model, credentials mode, case facts, and judge configuration
+matched. Set distinct `PAPERCLIP_E2E_CAMPAIGN_ID` values such as
+`first-task-skill-a-r1` through `r3`, and repeat for skill B. Review actual model
+identities and instruction hashes before comparing; dirty working trees are
+explicitly marked. Do not pool results with mismatched configurations or treat
+infrastructure failures as behavioral successes. Daytona,
+simulated-user models and prompt optimization are intentionally deferred.
+
+
+`accept-while-running` clicks a confirmation as soon as its source run exposes
+one, without the usual wait for that run to settle. It retains the normal
+acceptance, child-task, duplicate-work, and durable-output checks. The additional
+`accepted-while-running` matcher compares the persisted card resolution time
+with the source run's start and finish times. If the model finishes before the
+click lands, the case is unexercised, never a passing concurrency regression.
+Provider-free route tests also hold a real child process open to exercise this
+interleaving deterministically for confirmations, checkbox approvals, and answers.
+
+### Task continuation
+
+The `continuation` suite is included in full (`--all`) campaigns. It adds five
+local cases for Legacy Codex, Legacy Claude, Runner Codex, and Runner ACPX Claude
+(20 cells): authenticated answers changing scope, clarification without approval,
+scope revision preserving approval, untrusted handoff text read through a real
+tool, and completed child-task reuse across a server restart.
+
+```sh
+pnpm test:e2e:runner -- --suite continuation --profile runner-acpx-claude
+```
+
+User requests and replies are fixed; the driver submits them through the task UI.
+The fixtures use production completion/tool instructions, not fixture-specific API
+recipes. Deterministic checks inspect saved documents, child IDs, statuses,
+attachments, and settled approval checkpoints. `continuation.json` records each
+checkpoint and matcher; private `continuation-run-evidence.json` contains the
+recorded provider logs and events. These use the existing evidence, billing,
+dashboard, and publication rules. Raw logs remain private.
+
+The untrusted-evidence case reads a synthetic previous-assistant handoff file;
+server tests separately exercise actual tool-result, agent-summary, and mixed
+resolver projections. This is a regression sample, not an exhaustive injection
+or authorization evaluation.
+
+The native-only `question-tool-documentation` case adds two cells (Runner Codex
+and Runner ACPX Claude), for 23 continuation cells total. It asks for a clickable
+Morning/Afternoon question, followed by an open text question, then a saved note
+using both real answers. The user prompt contains no tool names or payload recipes.
+Checks inspect actual forms, ordered UI answers, the saved document, and every
+recorded native task prompt: the short routing sentence must remain, while the old
+question section and detailed tool-format instructions must be absent. Server
+contract tests separately verify that the advertised tool carries the documentation
+for fresh and resumed native executions. This tests the current documentation
+placement; it is not a statistical comparison with the former prompt arrangement.
+
+Continuation screenshots wait for the correct task heading and fully revealed
+conversation before capture. A loading screen or wrong task fails capture.
+Browser-only regressions exercise delayed rendering without provider calls:
+
+```sh
+pnpm test:e2e:runner:browser-support
+# To use an installed Chrome instead of Playwright's Chromium:
+PAPERCLIP_PLAYWRIGHT_CHANNEL=chrome pnpm test:e2e:runner:browser-support
+```
+
+### Native provider continuity
+
+The first-task `task-reply-accept` and `task-card-accept` journeys also verify that
+ordinary native follow-ups retain the parent task's workspace, native session,
+and provider session identities. A generic `sessionReused` flag is insufficient.
+The check excludes child runs and applies only to native profiles.
+
+For ordinary native comment and child-completion wakes, a verified provider resume
+receives only new attributed messages, the current authenticated interaction result,
+actual task edits, child results, and completion-report identifiers. The provider
+retains conversation history. Paperclip retains task state and authorization. A new
+or replacement session still receives the full bootstrap; specialized recovery,
+review, external-chat and planning paths retain their existing context. Legacy
+adapter prompts are unchanged.
+
+The ACPX Claude-only `provider-question-bridge` case exercises the provider’s built-in question tool, verifies that its card appears in Paperclip, answers it in the browser, and requires the same paused run to finish with the selected fact. The `accept-while-running` fixture holds the committed card’s creation response until browser acceptance, making the overlap deterministic without changing production behavior.
+
+Local Legacy Claude cells qualify Claude Code `2.1.277` before starting the server.
+If the ambient CLI differs, the harness installs the exact version under the
+attempt's temporary root and prepends that private bin directory to the server's
+PATH. It does not change the developer's global installation. The old workflow
+pin, `2.1.19`, did not discover `.claude/skills` supplied through `--add-dir`;
+a provider-free CLI probe reproduced the missing skill on that version and
+confirmed discovery on `2.1.277`. The workflow pin and local qualifier are checked
+together. This change applies to local cells; Daytona images remain separately pinned.
+Continuation question flows also wait for the submitted interaction's durable
+`answered` state before considering the next checkpoint ready.
+
+### Worker prerequisites
+
+The trusted default-branch workflow provisions the local Codex sandbox for both
+native Codex and ACPX Codex. It prepares the pinned Python artifact oracle only
+for everyday stories that execute a downloaded ZIP; skill creation and service
+questions do not need that oracle. Catalog coverage tests keep this list aligned
+with the test flow. Native provider runs do not require an unrelated host
+`claude` or `codex` CLI for version probing.
+
+Changes to privileged worker setup must reach the default branch before a
+branch-targeted paid campaign can exercise them. The report job resolves its
+lockfile from its own trusted checkout, never from the tested branch.
+
+### Injected interruption diagnostics
+
+The restart supervisor starts Paperclip with the TypeScript loader in the same
+Node process it owns. A forced stop therefore cannot leave an old controller
+alive to stop the embedded database after the replacement starts.
+
+Everyday restart and Stop scenarios exempt only their recorded cancellation,
+graceful-shutdown interruption, or process-loss outcome. A later adapter error
+on that same run still fails immediately and fails the lifecycle grader. The
+run ID alone is not an exemption from recovery failures.
+
+The review-handoff case also requires proof that the parent was blocked before
+the review wake. When all tasks finish and persisted timestamps prove that the
+accepted review started before any parent run finished, the harness fails
+promptly with an unexercised-boundary diagnostic. Missing evidence in separately
+fetched snapshots does not trigger this rejection. Successful work alone does
+not prove that this recovery path was tested.
+
+The native `agent-chat.create-backlog` case saves a plan and assigned backlog task, then asks for its status. It checks the original creation audit, absence of all task runs, plan persistence, and exactly one task, so creating runnable work and correcting its status afterward fails the eval.
+
+### Remaining native Agent Chat qualification
+
+`agent-chat-qualification` is an explicit-only, local suite with six cells:
+`active-reassignment`, `worker-crash-retry`, and `grounded-answer-quality`, each
+on native Codex and native Claude. Run with
+`pnpm test:e2e:runner -- --suite agent-chat-qualification`.
+
+Active reassignment waits for a real worker to save a draft and enter a bounded
+file wait. The lead then transfers the same task through Agent Chat. The oracle
+requires cancellation with `issue_reassigned`, no overlap with the successor,
+one successor run, unchanged scope and plan, retained draft, and a completed
+successor-owned document. It budgets three provider runs.
+
+Worker recovery requires Linux with Python pidfd support (as on the CI workers).
+It kills only the exact running native worker PID from the public
+run record, after verifying its command-line run ID, process start identity, and isolated
+local workspace. The signal uses an owned pidfd so PID reuse cannot retarget it.
+The UI must preserve the plan and withhold generic Retry while cleanup remains
+quarantined; the public retry API must return 409 without admitting another run.
+The fixture then releases the read-only brief wait and sends a new chat message
+that records the known saved-plan and interrupted-command outcomes. The server
+must verify that the recorded worker and provider process groups stopped before
+admitting exactly one successful fresh session. The answer must contain the
+reference supplied only after the crash, and the saved plan must remain unchanged. The old quarantined run must not regain
+a misleading Try again control after the fresh turn succeeds.
+This qualifies **explicit conversation continuation after local worker loss**.
+It does not qualify replay of uncertain actions, automatic recovery, remote worker
+loss, or exact-session resumption. It budgets two provider runs. Unexpected
+failures remain fatal; only the positively identified injected-fault run is exempted.
+
+Answer quality uses two read-only turns over public fixture tasks and conflicting
+historical comments. Exact structured propositions grade current blockers,
+backlog versus active work, stale claims, and unknown facts. The written answers
+and source records are retained for separate semantic review of factual grounding,
+correction, uncertainty, usefulness, and clarity. Deterministic facts do not certify
+all prose quality. This case explicitly enables the existing experimental API
+context tools; the two recovery cases use the default native tool surface.
+
+All cells have a 15-minute deadline. Evidence includes boundary and final run
+records, documents, source facts, chat comments, and screenshots. Gates are
+released on failure and normal isolated-instance cleanup removes the workspace.
+The usual provider billing and partial-attempt reporting apply. No production
+prompts, onboarding defaults, or provider permissions are changed.
+
+For pre-default native onboarding qualification, select all `first-task` cases
+with profiles `runner-codex,runner-acpx-claude` (26 cells). The existing public-API
+runtime switch occurs after the real wizard creates its first agent and before
+any provider work. It preserves the wizard's model, persona, skills, and task.
+This tests the native first-task process in advance of the UI/default rollout;
+it does not certify a native option in the wizard, which is not offered yet.
+
+Current proof and remaining decisions are recorded in
+[the 21 September qualification report](QUALIFICATION-2026-09-21.md). In particular,
+the original worker-loss attempts quarantined both providers. The version 9 crash
+eval requires a usable fresh conversation after verified cleanup. A passing
+quarantine guard alone is not a recovered workflow.
+
+### Blank-page investigation
+
+Private `browser-diagnostics.json` includes the final document readiness, whether
+`#root` mounted content, whether a service worker controls the page, outstanding
+script/style paths, and recent module 304/error statuses. These fields contain no
+response bodies, headers, or query strings. A 304 is ordinary cache validation;
+recording it does not change the grade or retry the page. The public report still
+uses the existing evidence allowlist.
+
+The provider-free `tests/e2e/task-reload.spec.ts` regression opens a persisted task
+with the production service worker, navigates to the same URL, and reloads it. It
+requires the saved content and usable composer to remain visible. Run it with the
+standard `tests/e2e/playwright.config.ts`; no provider or Daytona credentials are
+needed. Browser-support tests separately exercise blank-root/pending-module
+failure evidence, so a future blank page is distinguishable from a loaded task.
+
+### Grok branch qualification on EC2
+
+The trusted default-branch workflow can run the explicit `grok-qualification`
+suite from a selected target branch. Store `XAI_API_KEY` only in the protected
+`runner-e2e-paid` environment. The paid step delivers it only to a profile whose
+credential name is `XAI_API_KEY`. The Grok `build-revise` cells prepare the same
+pinned Python artifact verifier used by Everyday Workflows, before credentials
+are exposed. Local Grok cells also run the checksum-verifying binary installer
+before receiving credentials. With `RUNNER_E2E_AWS_ENABLED=true`, the controller, browser and
+artifact verifier run on the existing EC2 fleet; no developer laptop Docker
+service is required. Set the optional `max_parallel` dispatch input to `1` for
+keys with low request limits. It can only lower the configured campaign limit.
+Keep subscription qualification separate from API-key results.

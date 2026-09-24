@@ -168,7 +168,9 @@ task.run
 │   │   └── runner.turn.submit
 │   └── agent.turn
 │       ├── provider.turn.queue
-│       └── provider.time_to_first_agent_event
+│       ├── provider.time_to_first_agent_event
+│       ├── tool.request.input_stream
+│       └── tool.execute
 └── task.settle
     ├── native.result.finalize
     └── session.checkpoint.persist
@@ -188,6 +190,28 @@ session records `runner.session.resume`. `agent.turn` begins at
 `turn.submitted` and ends at the provider terminal event. `task.settle` begins
 at that terminal event and remains open through finalization and checkpoint
 persistence, so settlement work does not appear to outlive its parent.
+
+`provider.time_to_first_agent_event` ends at the first meaningful provider
+activity: a nonempty assistant/reasoning delta, a tool announcement with an
+execution identity, or an existing assistant/reasoning/tool item start or
+completion. Usage updates and empty deltas do not count. This is a first
+activity metric, not time to a finished answer.
+
+`tool.request.input_stream` measures the observed request-input window: from
+an ACP tool announcement to its last input update before the provider reports
+the tool complete. It can include provider buffering and transport. It is not
+a claim about the exact end of model generation or the start of API execution.
+The span is omitted when no subsequent input update is observed.
+
+For native control-plane tools, `tool.execute` measures authorization and
+execution inside the server authority, including time spent in HTTP requests.
+Provider tool IDs and MCP request IDs are separate namespaces; the trace does
+not guess a pairing by tool name or arrival order. Both spans belong to the
+current run's `agent.turn`, including when a warm provider session is reused.
+Their `operation` attribute is a known semantic tool name or `other`. Only a
+boolean input-update marker crosses the provider-event boundary; no arguments,
+argument hashes, or raw call IDs are exported by these spans. Concurrent tools
+have separate durations; overlapping spans must not be summed as wall time.
 
 The active native scope is also published through the existing asynchronous
 runtime-parent seam. Provider execution, plugin, websocket/duplex, daemon, and
@@ -317,6 +341,22 @@ event. These pages run signed out:
 session response arrives is not captured. The gate opens only after the
 session query resolves.
 
+### Environment attribution
+
+Set `SENTRY_ENVIRONMENT` to the deployment environment, such as `staging`
+or `production`. The server SDK reads this value from its process environment.
+The authenticated session sends the same value in `sentryEnvironment`, and
+`SentryGate` passes it to the browser SDK. This is runtime configuration, so the
+same built image can report correctly in different environments. It does not
+infer an environment from the page URL or include a tenant identifier.
+
+When the variable is absent or empty, the session sends `null` and the browser
+keeps the SDK's default environment. The field is optional in the session
+schema so a newer browser can still read a response from an older server.
+A session refetch that changes the environment closes and restarts monitoring;
+signing out still closes it. The browser release continues to identify the
+loaded bundle, even if the server has since deployed another version.
+
 ### Privacy settings
 
 The feature uses built-in Sentry options only.
@@ -357,10 +397,38 @@ context the other kept default integrations add: the host name, the
 runtime version, and the dependency list. See "Default capture set"
 below.
 
+### Run failure context
+
+Terminal run failures also carry the run and task IDs, adapter, error code,
+run status, and redacted error message. Their fingerprint is the error code
+and adapter. These fields are passed directly to that event's capture call.
+They do not change the ambient Sentry scope, whose isolation is unavailable
+without an OpenTelemetry context manager. Later, unrelated exceptions must
+not inherit a previous run's identity or fingerprint.
+
 ### Browser data
 
 The browser sends no page URL, no referrer, no user agent, and no
 breadcrumb.
+
+Application and route error-boundary reports also include:
+
+- `react_error_boundary`: `app` or `route`.
+- `react.componentStack`: up to 40 React component names. Frame locations,
+  URLs, arguments, and unrecognized lines are omitted. Parsing examines at
+  most 16 KiB of input. Production builds preserve function names so this
+  trace remains useful after minification; this adds some bundle size.
+- `browser_state`: document readiness, visibility, and a boolean indicating
+  the `translated-ltr` or `translated-rtl` root class used by browser translation.
+  The marker is evidence of DOM translation, not proof of the error's cause;
+  its absence does not exclude other translators or DOM-changing extensions.
+
+These fields are captured at the failure, before asynchronous reporting, and
+attached only to that event. They include no component props, DOM text, HTML,
+element identifiers, arbitrary CSS classes, route, or query string. Failed
+diagnostic reads do not prevent the original exception from being reported.
+The monitoring gate and sign-out behavior still apply. This context does not
+suppress errors, change DOM operations, or disable browser translation.
 
 ### Fail-open behavior
 
@@ -375,7 +443,23 @@ sends, so an operator can read what the feature does before turning it on.
 Each Sentry integration name below is verified against the default
 integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 
-**Server attribute this feature sets**
+**Release attribution**
+
+The server sets `release` to the full source commit from its build metadata.
+An explicit `SENTRY_RELEASE` overrides that default. If neither is available,
+the server leaves the release unset.
+
+The browser also sets `release`, using the full `PAPERCLIP_BUILD_COMMIT`
+supplied when its bundle is built, or the checkout commit for source and npm
+builds. The server reads its packaged build stamp when no deployment marker
+is present. Docker passes the same commit to both
+application builds. A cached browser bundle keeps its own release after a
+server deployment, so its errors are attributed to the code actually loaded.
+Browser builds without a valid full commit leave the release unset. The
+browser does not read a release from the current server, page URL, or session.
+These fields contain build identifiers; they add no tenant or user identity.
+
+**Server identity**
 
 - `server_name` — every server event carries the host name of the process.
   The `@sentry/node` client already sets this value by default when the
@@ -447,6 +531,18 @@ integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 
 - A Zod validation error, which answers 400.
 - Each `HttpError` below status 500, such as 401, 403, 404, 409, and 422.
+- A remote app's recognized OAuth sign-in challenge. Connecting an app or
+  refreshing its catalog returns 422 with `oauth_challenge` and the existing
+  setup/reconnect links. Other upstream failures still return 502 and are
+  reported, including an unexplained upstream HTTP 400.
+- Expired OAuth credentials without a refresh token, or a rejected refresh token
+  that requires reauthorization. Discovery and health checks return 422 with
+  `oauth_refresh_missing` or `oauth_reauthorization_required` and the existing
+  reconnect instructions. Unexpected refresh failures remain reportable.
+- Slack's explicit response that its app has not enabled MCP access. Discovery
+  and health checks return 422 with `slack_mcp_access_disabled` and setup
+  instructions. This requires Slack's exact MCP endpoint and known error;
+  other HTTP 400 responses remain reportable.
 - A performance trace and a profile, because `tracesSampleRate` is 0.
 
 ### Operator responsibilities

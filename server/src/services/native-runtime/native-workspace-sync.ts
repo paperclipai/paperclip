@@ -758,6 +758,13 @@ export async function prepareNativeWorkspaceSync(input: {
   }
   const target = input.target;
   const providerLeaseId = providerLeaseIdFor({ target, lease: input.lease });
+  // Reattachment may never seed a replacement sandbox over a still-live run.
+  if (input.restartRecovery?.kind === "reattach_remote_runner" &&
+      (input.restartRecovery.runId !== input.runId ||
+       input.restartRecovery.remote.providerLeaseId !== providerLeaseId ||
+       input.restartRecovery.remote.remoteCwd !== target.remoteCwd)) {
+    throw new Error("native_remote_recovery_lease_mismatch");
+  }
   const run = await input.db
     .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)

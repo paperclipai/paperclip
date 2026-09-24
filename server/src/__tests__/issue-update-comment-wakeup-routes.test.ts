@@ -285,9 +285,49 @@ describe("issue update comment wakeups", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("includes the new comment in assignment wakes from issue updates", async () => {
-    const existing = makeIssue();
+  it.each(["done", "cancelled"])(
+    "keeps %s assignment-only updates from waking completed work",
+    async (status) => {
+      // A parent may restore the assignee after releasing a completed child.
+      // That is recordkeeping, not a request to execute the child again.
+      const existing = makeIssue({ status, assigneeAgentId: null, assigneeUserId: null });
+      const updated = makeIssue({ status, assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockResolvedValue(updated);
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${existing.id}`)
+        .send({ assigneeAgentId: ASSIGNEE_AGENT_ID });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ status, assigneeAgentId: ASSIGNEE_AGENT_ID });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])("still wakes explicitly reopened work (reassigned: %s)", async (reassigned) => {
+    const existing = makeIssue({ status: "done", assigneeAgentId: PREVIOUS_AGENT_ID, assigneeUserId: null });
+    const agentId = reassigned ? ASSIGNEE_AGENT_ID : PREVIOUS_AGENT_ID;
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: agentId, assigneeUserId: null }));
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "todo", ...(reassigned ? { assigneeAgentId: agentId } : {}) });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      reason: reassigned ? "issue_assigned" : "issue_status_changed",
+      payload: expect.objectContaining({ issueId: existing.id }),
+    }));
+  });
+
+  it.each([null, "active"] as const)("includes the new comment and shared session key in assignment wakes (external: %s)", async (externalConversationState) => {
+    const existing = makeIssue({ externalConversationState });
     const updated = makeIssue({
+      externalConversationState,
       assigneeAgentId: ASSIGNEE_AGENT_ID,
       assigneeUserId: null,
     });
@@ -331,6 +371,7 @@ describe("issue update comment wakeups", () => {
           taskId: existing.id,
           commentId: "comment-1",
           wakeCommentId: "comment-1",
+          ...(externalConversationState ? { taskKey: existing.identifier } : {}),
           source: "issue.update",
         }),
       }),
@@ -557,8 +598,9 @@ describe("issue update comment wakeups", () => {
     );
   });
 
-  it("wakes the assignee on top-level board issue comments", async () => {
+  it.each([null, "active"] as const)("wakes the assignee on top-level board comments with external conversation %s", async (externalConversationState) => {
     const existing = makeIssue({
+      externalConversationState,
       assigneeAgentId: ASSIGNEE_AGENT_ID,
       assigneeUserId: null,
       status: "in_progress",
@@ -579,8 +621,9 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(201);
+    if (externalConversationState) expect(mockRunnerGoalService.projection).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).toHaveBeenCalledWith(existing.id, "please handle this top-level thread comment", expect.anything(),
-      expect.objectContaining({ clientRequestId: "66666666-6666-4666-8666-666666666666" }), expect.anything());
+      expect.objectContaining({ clientRequestId: "66666666-6666-4666-8666-666666666666", mirrorToSlack: true }), expect.anything());
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
@@ -597,11 +640,26 @@ describe("issue update comment wakeups", () => {
           taskId: existing.id,
           commentId: "comment-3",
           wakeCommentId: "comment-3",
+          ...(externalConversationState ? { taskKey: existing.identifier } : {}),
           wakeReason: "issue_commented",
           source: "issue.comment",
         }),
       }),
     );
+  });
+
+  it("retains the Slack session key when reopening strips the read-only conversation projection", async () => {
+    const existing = makeIssue({ externalConversationState: "active", status: "done", assigneeAgentId: ASSIGNEE_AGENT_ID });
+    const updated = makeIssue({ status: "todo", assigneeAgentId: ASSIGNEE_AGENT_ID });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-reopen-slack", issueId: existing.id, companyId: existing.companyId, body: "Continue from Paperclip" });
+    const res = await request(await createApp()).post(`/api/issues/${existing.id}/comments`).send({ body: "Continue from Paperclip", reopen: true });
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ source: "issue.comment.reopen", taskKey: existing.identifier, wakeCommentId: "comment-reopen-slack" }),
+    }));
   });
 
   it("does not wake the assignee for its own run-authenticated top-level comment", async () => {

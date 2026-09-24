@@ -860,6 +860,39 @@ Some actions require board approval. You cannot bypass these gates.
 
 ### Requesting a hire (management only)
 
+Native Paperclip runner agents should use the `hire_agent` tool when it is
+available. Supply the new teammate's identity and responsibilities. Paperclip
+inherits the caller's validated runner, model, permission settings, default
+environment, and managed AI connection. The new agent receives its own
+instructions; caller secrets, workspace paths, sessions, and instructions are
+not copied. Existing hiring permissions and company approval policy still apply.
+
+The equivalent native API request is:
+
+```
+POST /api/companies/{companyId}/agent-hires
+{
+  "name": "Marketing Analyst",
+  "role": "researcher",
+  "reportsTo": "{manager-agent-id}",
+  "capabilities": "Market research, competitor analysis",
+  "adapterType": "paperclip_runner",
+  "inheritRuntimeFrom": "caller",
+  "instructionsBundle": {
+    "entryFile": "AGENTS.md",
+    "files": {
+      "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager.\n"
+    }
+  }
+}
+```
+
+`inheritRuntimeFrom` is available only to a native runner agent in the same
+company. Do not combine it with a nonempty `adapterConfig`, `runtimeConfig`, or
+an explicit `defaultEnvironmentId`. Paperclip selects and validates those fields.
+For other adapters or a deliberately different runner configuration, use an
+explicit configuration, for example:
+
 ```
 POST /api/companies/{companyId}/agent-hires
 {
@@ -903,7 +936,45 @@ POST /api/companies/{companyId}/approvals
 
 Ask only when missing input materially blocks the request. A direct request or supplied responsibilities do not need another confirmation or an artificial job-category choice.
 
-Use `ask_user_questions` for a short question card. Each question requires `id`, `prompt`, `selectionMode`, and at least one option with `id` and `label`. Do not send `question`/`type: "text"` or an empty options array. Set `resolverPolicy: "human_only"` when the answer must come from the user.
+Choose the input control from the answer you need: use a **text field** for a name, description, constraint, or other open answer; use choices only for an actual decision with at least two meaningful alternatives. Do not turn an open question into invented categories.
+
+**Text answer (copy this complete payload)**
+
+For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. The REST API still requires matching `payload.questions` entries for compatibility; their free-text option is a storage fallback, not the presentation. Keep question IDs and prompts identical in both fields. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
+  "title": "Hire responsibility",
+  "resolverPolicy": "human_only",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "questions": [{
+      "id": "responsibility",
+      "prompt": "What should the new agent be responsible for?",
+      "selectionMode": "single",
+      "required": true,
+      "options": [{ "id": "describe", "label": "I'll describe it", "freeText": true }]
+    }],
+    "questionSet": {
+      "schema": "paperclip.question_set.v1",
+      "questions": [{
+        "id": "responsibility",
+        "prompt": "What should the new agent be responsible for?",
+        "required": true,
+        "answerMode": "text"
+      }]
+    }
+  }
+}
+```
+
+**Multiple choice**
+
+Use `ask_user_questions` for a short question card. Each `payload.questions` entry requires `id`, `prompt`, `selectionMode`, and options with `id` and `label`. Choice questions must offer at least two distinct, meaningful choices; use the canonical text presentation above for open-ended questions. Do not send `question`/`type: "text"` or an empty options array in a `payload.questions` entry. Set `resolverPolicy: "human_only"` when the answer must come from the user.
 
 ```json
 POST /api/issues/{issueId}/interactions
@@ -925,29 +996,6 @@ POST /api/issues/{issueId}/interactions
         { "id": "research", "label": "Research", "description": "Find and summarize information." },
         { "id": "writing", "label": "Writing", "description": "Draft and edit content." }
       ]
-    }]
-  }
-}
-```
-
-For an open-ended answer, supply a free-text option (one option is sufficient):
-
-```json
-POST /api/issues/{issueId}/interactions
-{
-  "kind": "ask_user_questions",
-  "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
-  "title": "Hire responsibility",
-  "resolverPolicy": "human_only",
-  "continuationPolicy": "wake_assignee",
-  "payload": {
-    "version": 1,
-    "questions": [{
-      "id": "responsibility",
-      "prompt": "What should the new agent be responsible for?",
-      "selectionMode": "single",
-      "required": true,
-      "options": [{ "id": "describe", "label": "I'll describe it", "freeText": true }]
     }]
   }
 }

@@ -63,7 +63,7 @@ export {
   chatSdkState,
 } from "./chat_channels.js";
 export { issueRelations } from "./issue_relations.js";
-export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
+export { routines, routineRevisions, routineTriggers, routineWebhookTestReceipts, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
 export {
   cases,
@@ -204,6 +204,7 @@ export { toolActionDeliveries } from "./tool_action_deliveries.js";
 export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";
 export { chatDiscordCommandOwners } from "./chat_discord_command_owners.js";
 export { chatTelegramDraftIds } from "./chat_telegram_draft_ids.js";
+export { chatGitHubConfigurations, chatGitHubRegistrations, chatGitHubReviews } from "./chat_github.js";
 
 export { aiConnectionDefaults } from "./ai_connection_defaults.js";
 export { aiProviderDefaults } from "./ai_provider_defaults.js";

@@ -17,9 +17,10 @@ const pushToastMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 const experimentalMock = vi.hoisted(() => vi.fn());
+const chatSetupMock = vi.hoisted(() => vi.fn());
 const chatListMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: experimentalMock } }));
-vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: { list: chatListMock } }));
+vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: { list: chatListMock, setup: chatSetupMock } }));
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -28,8 +29,7 @@ vi.mock("@/api/tools", () => ({
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     archiveConnection: (
       connectionId: string,
-      options?: { confirmComposioChildren?: boolean },
-    ) => archiveConnectionMock(connectionId, options),
+    ) => archiveConnectionMock(connectionId),
   },
 }));
 
@@ -136,6 +136,7 @@ describe("Connectors landing page", () => {
   beforeEach(() => {
     experimentalMock.mockResolvedValue({ enableChatConnectors: true });
     chatListMock.mockResolvedValue([]);
+    chatSetupMock.mockReset().mockResolvedValue({ status: "archived" });
     listGalleryMock.mockResolvedValue({
       apps: [
         galleryEntry({
@@ -190,6 +191,53 @@ describe("Connectors landing page", () => {
     return client;
   }
 
+  it("shows retirement guidance before paused state for an obsolete Composio account", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "old-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "old-app", enabled: false, healthStatus: "error", transport: "rest_api", config: { sourceTemplateKey: "composio", connectionMethodKey: "api-key" } })] });
+    await renderBrowse();
+    expect(container.textContent).toContain("Retired");
+    expect(container.textContent).toContain("Add a new Composio MCP connection");
+    expect(container.textContent).not.toContain("Paused");
+  });
+
+  it("hides cached memory connectors until enabled and preserves saved MCP connections", async () => {
+    const providers = ["mem0", "zep", "supermemory", "cognee", "honcho"];
+    listGalleryMock.mockResolvedValue({ apps: [...providers, "notion"].map(getAppStoreDefinition) });
+    const client = await renderBrowse();
+    for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
+    expect(container.querySelector('[data-app-slug="notion"]')).not.toBeNull();
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableMemoryConnectors: true }); });
+    await flushReact();
+    for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
+    await act(() => {
+      client.setQueryData(queryKeys.tools.connections("company-1"), { connections: [connection({ id: "saved", applicationId: "saved-app", config: { sourceTemplateKey: "mem0", connectionMethodKey: "mcp" }, transport: "mcp_remote" })] });
+      client.setQueryData(queryKeys.tools.applications("company-1"), { applications: [application({ id: "saved-app", name: "Mem0", metadata: { sourceTemplateKey: "mem0" } })] });
+      client.setQueryData(queryKeys.instance.experimentalSettings, { enableMemoryConnectors: false });
+    });
+    await flushReact();
+    expect(container.textContent).toContain("Mem0");
+    for (const slug of ["zep", "supermemory", "cognee", "honcho"]) expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
+  });
+
+  it("hides cached MCP aggregators until enabled and preserves saved MCP connections", async () => {
+    const providers = ["zapier", "arcade", "composio", "executor"];
+    listGalleryMock.mockResolvedValue({ apps: [...providers, "notion"].map(getAppStoreDefinition) });
+    const client = await renderBrowse();
+    for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
+    expect(container.querySelector('[data-app-slug="notion"]')).not.toBeNull();
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableMcpAggregators: true }); });
+    await flushReact();
+    for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
+    await act(() => {
+      client.setQueryData(queryKeys.tools.connections("company-1"), { connections: [connection({ id: "saved", applicationId: "saved-app", config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp" }, transport: "mcp_remote" })] });
+      client.setQueryData(queryKeys.tools.applications("company-1"), { applications: [application({ id: "saved-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
+      client.setQueryData(queryKeys.instance.experimentalSettings, { enableMcpAggregators: false });
+    });
+    await flushReact();
+    expect(container.textContent).toContain("Composio");
+    for (const slug of ["zapier", "arcade", "executor"]) expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
+  });
+
   it("defaults to tools-only GitHub and hides chat-only catalog and existing chat accounts", async () => {
     experimentalMock.mockResolvedValue({});
     listGalleryMock.mockResolvedValue({ apps: ["github", "discord", "telegram", "microsoft-teams"].map(getAppStoreDefinition) });
@@ -204,7 +252,7 @@ describe("Connectors landing page", () => {
     }
     expect(container.textContent).not.toContain("Private bot");
     expect(container.textContent).not.toContain("Chat with agents");
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub"]')!.click());
+    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
   });
 
@@ -214,14 +262,14 @@ describe("Connectors landing page", () => {
     const client = await renderBrowse();
     expect(chatListMock).toHaveBeenCalledWith("company-1");
     expect(container.querySelector('[data-app-slug="telegram"]')).not.toBeNull();
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Add connection GitHub"]')!.click());
+    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add connection GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&toolHref=%2Fapps%2Fconnect%3Fsource%3Dgithub");
     await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false }); });
     await flushReact();
     expect(container.querySelector('[data-app-slug="telegram"]')).toBeNull();
     expect(container.textContent).not.toContain("Chat agent");
     expect(container.querySelector('a[href*="/apps/chat/"]')).toBeNull();
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub"]')!.click());
+    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
   });
 
@@ -432,15 +480,74 @@ describe("Connectors landing page", () => {
     });
     await flushReact();
 
-    expect(archiveConnectionMock).toHaveBeenCalledWith("conn-notion", {
-      confirmComposioChildren: false,
-    });
+    expect(archiveConnectionMock).toHaveBeenCalledWith("conn-notion");
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Connection removed",
         tone: "success",
       }),
     );
+  });
+
+  it.each(["slack", "discord", "telegram", "github", "microsoft-teams", "agentmail", "imessage-photon"])(
+    "puts Manage and removal in the %s chat menu while keeping draft setup visible",
+    async (provider) => {
+      chatListMock.mockResolvedValue([
+        { id: "chat-active", provider, status: "active", assignedAgentName: "Active agent" },
+        { id: "chat-draft", provider, status: "draft", assignedAgentName: "Draft agent" },
+        { id: "chat-archived", provider, status: "archived", assignedAgentName: "Removed agent" },
+      ]);
+      await renderBrowse();
+      expect(container.textContent).not.toContain("Removed agent");
+      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Manage")).toBe(false);
+      const finish = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Finish setup");
+      await act(() => finish!.click());
+      expect(navigateMock).toHaveBeenLastCalledWith(`/apps/chat/connect?provider=${provider}&purpose=chat&resume=chat-draft`);
+      expect(container.querySelector('button[aria-label^="Manage Draft agent"]')).toBeTruthy();
+      await act(() => void container.querySelector('button[aria-label^="Manage Active agent"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+      await flushReact();
+      const manage = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) => item.textContent?.trim() === "Manage");
+      await act(() => manage!.click());
+      expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/chat-active/settings");
+    },
+  );
+
+  it.each(["active", "draft"])("confirms chat removal for %s connections and refreshes the list", async (status) => {
+    chatListMock.mockResolvedValue([{ id: "chat-1", provider: "slack", status, assignedAgentName: "CEO" }]);
+    const client = await renderBrowse();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    await act(() => void container.querySelector('button[aria-label="Manage CEO Slack connection"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    await flushReact();
+    const remove = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) => item.textContent?.trim() === "Remove connection");
+    await act(() => remove!.click());
+    await flushReact();
+    expect(chatSetupMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Existing Paperclip tasks and conversation history remain available.");
+    chatListMock.mockResolvedValue([]);
+    await act(() => Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Remove connection")!.click());
+    await flushReact();
+    expect(chatSetupMock).toHaveBeenCalledWith("chat-1", { action: "remove" });
+    expect(archiveConnectionMock).not.toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.chatEndpoints.list("company-1") });
+    expect(container.textContent).not.toContain("CEO");
+  });
+
+  it("keeps chat removal open for retry when the server rejects removal", async () => {
+    chatListMock.mockResolvedValue([{ id: "chat-1", provider: "slack", status: "draft", assignedAgentName: "CEO" }]);
+    chatSetupMock.mockRejectedValueOnce(new Error("Connection is busy. Try again."));
+    await renderBrowse();
+    await act(() => void container.querySelector('button[aria-label="Manage CEO Slack connection"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    await flushReact();
+    await act(() => Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) => item.textContent?.trim() === "Remove connection")!.click());
+    await flushReact();
+    await act(() => Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Remove connection")!.click());
+    await flushReact();
+    expect(document.querySelector('[role="alertdialog"]')).toBeTruthy();
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ tone: "error", body: "Connection is busy. Try again." }));
+    await act(() => Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Cancel")!.click());
+    await flushReact();
+    expect(chatSetupMock).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
   });
 
   it("keeps an interrupted account visible and resumes setup from its account row", async () => {

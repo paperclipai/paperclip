@@ -48,6 +48,7 @@ function captureRunFailureCallsFrom(fromIndex: number) {
 
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
+import { deliverExecutionStatuses } from "../execution-status-delivery.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
 
@@ -416,7 +417,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     },
   );
 
-  it("emits zero events when a reconciliation replay commits the same failed terminal result again", async () => {
+  it.each(["in_progress", "cancelled"])("does not redeliver a committed failure during reconciliation of a %s task", async (issueStatus) => {
     const fixture = await seedNativeRun();
     await driveToCompleteResult(fixture, {
       ...CONTROL_PLANE_CONFORMANCE_TERMINAL,
@@ -441,29 +442,70 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(run?.status).toBe("failed");
     // The first write is a genuine transition into "failed": it reports
     // exactly one Sentry event.
+    await vi.waitFor(() => {
+      expect(captureRunFailureCallsFrom(captureCallsBeforeFirstFinalize)).toHaveLength(1);
+    }, { timeout: 5_000 });
     const firstFinalizeCaptures = captureRunFailureCallsFrom(captureCallsBeforeFirstFinalize);
-    expect(firstFinalizeCaptures).toHaveLength(1);
     expect(firstFinalizeCaptures[0]?.[0]).toMatchObject({
       runId: fixture.runId,
       runStatus: "failed",
     });
 
+    await db.update(issues).set({ status: issueStatus }).where(eq(issues.id, fixture.issueId));
+    const publish = vi.fn();
+    await deliverExecutionStatuses(db, { publish });
+    expect(publish.mock.calls.filter(([event]) => event.payload.runId === fixture.runId)).toHaveLength(1);
+    const [beforeReplay] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(beforeReplay.executionStatusDeliveryId).toBeNull();
+    publish.mockClear();
+
     const callsBefore = mockTelemetryClient.track.mock.calls.length;
     const captureCallsBeforeReplay = mockCaptureRunFailure.mock.calls.length;
-    // The coordinator is already "committed" with a "failed" terminal
-    // result, and the run row is already "failed". Like "succeeded",
-    // "failed" sits inside projectCommittedRun's WHERE clause, so its write
-    // matches the row. The write changes nothing (failed -> failed), so it
-    // must not emit a second event for the same committed result, and it
-    // must not report a second Sentry event either.
-    await finalizeNativeRun({
-      db,
-      runId: fixture.runId,
-      workspaceFinalizeStatus: "succeeded",
-      projectRunStatus: true,
+    // Simulate several periodic sweeps, including overlapping reconciliation.
+    for (let sweep = 0; sweep < 3; sweep += 1) {
+      await Promise.all([0, 1].map(() => finalizeNativeRun({
+        db,
+        runId: fixture.runId,
+        workspaceFinalizeStatus: "succeeded",
+        projectRunStatus: true,
+      })));
+      await deliverExecutionStatuses(db, { publish });
+    }
+    expect(publish.mock.calls.filter(([event]) => event.payload.runId === fixture.runId)).toHaveLength(0);
+    const [afterReplay] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(afterReplay).toMatchObject({
+      executionStatusDeliveryId: null,
+      updatedAt: beforeReplay.updatedAt,
+      nativePhaseUpdatedAt: beforeReplay.nativePhaseUpdatedAt,
+      finishedAt: beforeReplay.finishedAt,
     });
     expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
     expect(captureRunFailureCallsFrom(captureCallsBeforeReplay)).toHaveLength(0);
+  });
+
+  it("repairs an incomplete committed failure once and preserves its pending delivery on replay", async () => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture, {
+      ...CONTROL_PLANE_CONFORMANCE_TERMINAL,
+      turnTerminalState: "failed",
+      runTerminalState: "failed",
+    });
+    const finalize = () => finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await finalize();
+    await db.update(heartbeatRuns).set({
+      finishedAt: null,
+      nativePhase: "arbitrating",
+      executionStatusDeliveryId: null,
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await finalize();
+    const [repaired] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(repaired.status).toBe("failed");
+    expect(repaired.nativePhase).toBe("committed");
+    expect(repaired.finishedAt).toBeInstanceOf(Date);
+    expect(repaired.executionStatusDeliveryId).toBeTypeOf("string");
+    await finalize();
+    const [replayed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(replayed).toEqual(repaired);
   });
 
   it("emits zero events when a retryable-failure write's conditional status spread is omitted", async () => {

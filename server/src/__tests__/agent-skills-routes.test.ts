@@ -1225,21 +1225,26 @@ describe.sequential("agent skill routes", () => {
     // The generic default persona must NOT be what was seeded over the entry file.
     const seededCalls = mockAgentInstructionsService.materializeManagedBundle.mock.calls;
     const entrySeed = seededCalls.at(-1)?.[1] as Record<string, string> | undefined;
-    expect(entrySeed?.["AGENTS.md"]).toContain("# Hiring and delegation");
+    expect(entrySeed?.["AGENTS.md"]).toContain("chief of staff");
+    // The normal onboarding flow has beta skill version selection disabled.
+    expect(mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync.desiredSkills)
+      .toContain("paperclipai/paperclip/first-task");
   });
 
-  it.each([
+  it.each(["codex_local", "claude_local"].flatMap((adapterType) => [
     ["agents", "paperclipai/paperclip/paperclip-create-agent"],
     ["agent-hires", "paperclipai/paperclip/paperclip-create-agent"],
     ["agents", "paperclip"],
     ["agent-hires", "paperclip"],
-  ])("gives a general onboarding chief core skills and preserves %s version pins for %s", async (route, skill) => {
+    ["agents", "paperclipai/paperclip/first-task"],
+    ["agent-hires", "paperclipai/paperclip/first-task"],
+  ].map(([route, skill]) => ({ adapterType, route, skill }))))("gives $adapterType onboarding agents core and first-task skills via $route, preserving $skill pins", async ({ adapterType, route, skill }) => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: true });
     const versionId = "22222222-2222-4222-8222-222222222222";
     const res = await request(await createApp(createDb(route === "agent-hires")))
       .post(`/api/companies/company-1/${route}`)
       .send({
-        name: "Chiff", role: "general", adapterType: "codex_local",
+        name: "Chiff", role: "general", adapterType,
         onboardingFirstAgent: true,
         desiredSkills: [{ key: skill, versionId }],
       });
@@ -1247,10 +1252,10 @@ describe.sequential("agent skill routes", () => {
     const input = mockAgentService.create.mock.calls[0][1];
     expect(input.role).toBe("general");
     const canonicalKey = skill === "paperclip" ? "paperclipai/paperclip/paperclip" : skill;
-    const expected = ["paperclip", "paperclip-board", "paperclip-converting-plans-to-tasks", "paperclip-create-agent", "para-memory-files"]
+    const expected = ["paperclip", "paperclip-board", "paperclip-converting-plans-to-tasks", "paperclip-create-agent", "para-memory-files", "first-task"]
       .map((name) => ({ key: `paperclipai/paperclip/${name}`, versionId: `paperclipai/paperclip/${name}` === canonicalKey ? versionId : null }));
     expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toEqual(expect.arrayContaining(expected));
-    expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toHaveLength(5);
+    expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toHaveLength(6);
   });
 
   it.each(["agents", "agent-hires"])("leaves ordinary general agents' defaults unchanged via %s", async (route) => {
@@ -1259,6 +1264,16 @@ describe.sequential("agent skill routes", () => {
       .send({ name: "Biff", role: "general", adapterType: "codex_local" });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync).toBeUndefined();
+  });
+
+  it.each(["agents", "agent-hires"])("does not assign first-task to ordinary CEOs via %s", async (route) => {
+    const res = await request(await createApp())
+      .post(`/api/companies/company-1/${route}`)
+      .send({ name: "CEO", role: "ceo", adapterType: "codex_local" });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const desiredSkills = mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync.desiredSkills;
+    expect(desiredSkills).toContain("paperclipai/paperclip/paperclip");
+    expect(desiredSkills).not.toContain("paperclipai/paperclip/first-task");
   });
 
   it("does not trust an agent-supplied onboarding marker to select chief-of-staff defaults", async () => {

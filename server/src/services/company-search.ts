@@ -1,3 +1,4 @@
+import { externalConversationStateSql } from "./slack-conversation-state.js";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1108,6 +1109,15 @@ export function companySearchService(db: Db) {
         : null;
 
       const paged = results.slice(offset, offset + limit).map(stripInternalSortFields);
+      const issueIds = paged.flatMap((result) => result.issue ? [result.issue.id] : []);
+      if (issueIds.length > 0) {
+        const states = await db.select({ id: issues.id, state: externalConversationStateSql() }).from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+        const byId = new Map(states.map((row) => [row.id, row.state]));
+        for (const result of paged) {
+          if (result.issue) result.issue.externalConversationState = byId.get(result.issue.id) ?? null;
+        }
+      }
       return {
         query: query.q,
         normalizedQuery,

@@ -290,8 +290,8 @@ try {
   const payload = {
     pins: {
       nodeMinimum: minimumNodeVersion.join("."),
-      codex: "0.153.4",
-      opencode: "1.18.29",
+      codex: "0.156.0",
+      opencode: "1.18.32",
       acpx: "0.13.1",
       claudeAcp: "0.73.0",
       codexAcp: "1.6.2",

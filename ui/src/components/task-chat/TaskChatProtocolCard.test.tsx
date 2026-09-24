@@ -181,7 +181,10 @@ describe("TaskChatProtocolCard", () => {
     expect(container.textContent).toContain("Open gallery");
   });
 
-  it.each(["image/png", "video/webm"])("opens %s artifacts in the task gallery", (contentType) => {
+  it.each([
+    ["image/png", "compact"], ["video/webm", "compact"],
+    ["image/png", "gallery"], ["video/webm", "gallery"],
+  ] as const)("opens %s artifacts from the %s presentation in the task gallery", (contentType, variant) => {
     const openGallery = vi.fn(() => true);
     const contentPath = "/api/attachments/media/content";
     flushSync(() => root.render(
@@ -189,7 +192,7 @@ describe("TaskChatProtocolCard", () => {
         <RichWorkProductCard
           workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath } })}
           href={contentPath}
-          variant="compact"
+          variant={variant}
         />
       </IssueGalleryContext.Provider>,
     ));
@@ -640,11 +643,13 @@ describe("TaskChatProtocolCard", () => {
       (button) => button.textContent?.includes("Production"),
     );
     await act(async () => production?.click());
-    // Single selection advances; multi-selection waits for Next.
+    // Selecting answers the question; every page waits for Next.
     const nextButton = () =>
       Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
         (button) => button.textContent?.trim() === "Next",
       );
+    expect(container.textContent).toContain("1 of 3");
+    await act(async () => nextButton()?.click());
     expect(container.textContent).toContain("2 of 3");
     expect(onDecision).not.toHaveBeenCalled();
     expect(container.textContent).toContain(

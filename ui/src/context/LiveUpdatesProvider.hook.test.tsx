@@ -170,16 +170,63 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     vi.unstubAllGlobals();
   });
 
-  async function receiveStatus(payload: Record<string, unknown>) {
+  async function receiveStatus(payload: Record<string, unknown>, createdAt = "2026-09-09T18:00:00.000Z") {
     await reactAct(async () => {
       root!.render(<QueryClientProvider client={queryClient}><LiveUpdatesProvider><span>Visible task</span></LiveUpdatesProvider></QueryClientProvider>);
     });
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     expect(sockets[0]?.onmessage).toBeTypeOf("function");
     await reactAct(async () => sockets[0]!.onmessage!(new MessageEvent("message", {
-      data: JSON.stringify({ id: 1, companyId: "company-1", type: "heartbeat.run.status", createdAt: "2026-09-09T18:00:00.000Z", payload }),
+      data: JSON.stringify({ id: Date.now(), companyId: "company-1", type: "heartbeat.run.status", createdAt, payload }),
     })));
   }
+
+  it("announces a run outcome once across minute-apart redeliveries but still refreshes caches", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const payload = { runId: "unrelated-run", agentId: "other-agent", status: "failed", finishedAt: "2026-09-09T18:00:00.000Z" };
+    clock.mockReturnValue(Date.parse(payload.finishedAt));
+    await receiveStatus({ ...payload, deliveryId: "first" });
+    expect(pushToast).toHaveBeenCalledTimes(1);
+    queryClient.setQueryData(queryKeys.runDetail(payload.runId), { id: payload.runId, status: "running" });
+    for (let minute = 1; minute <= 3; minute += 1) {
+      const now = Date.parse(payload.finishedAt) + minute * 60_000;
+      clock.mockReturnValue(now);
+      await receiveStatus({ ...payload, deliveryId: `retry-${minute}` }, new Date(now).toISOString());
+    }
+    expect(pushToast).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(queryKeys.runDetail(payload.runId))).toMatchObject({ status: "failed" });
+    await receiveStatus({ ...payload, runId: "new-failure" });
+    expect(pushToast).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes an old terminal run without announcing its first delivery as a new failure", async () => {
+    queryClient.setQueryData(queryKeys.runDetail("old-run"), { id: "old-run", status: "running" });
+    await receiveStatus({
+      runId: "old-run", agentId: "other-agent", status: "failed",
+      finishedAt: "2026-09-07T18:00:00.000Z", deliveryId: "new-delivery-of-old-failure",
+    });
+    expect(pushToast).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(queryKeys.runDetail("old-run"))).toMatchObject({ status: "failed" });
+  });
+
+  it("does not announce an outcome again after hiding and reopening the window", async () => {
+    const payload = { runId: "unrelated-run", agentId: "other-agent", status: "failed" };
+    await receiveStatus(payload);
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await reactAct(async () => {
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    await reactAct(async () => sockets[1]!.onmessage!(new MessageEvent("message", {
+      data: JSON.stringify({ id: 2, companyId: "company-1", type: "heartbeat.run.status", createdAt: "2026-09-09T18:01:00.000Z", payload }),
+    })));
+    expect(pushToast).toHaveBeenCalledTimes(1);
+  });
 
   it("disconnects while hidden and reconciles active queries once on return", async () => {
     await receiveStatus({ runId: "child-run", agentId: "child-agent", status: "running" });

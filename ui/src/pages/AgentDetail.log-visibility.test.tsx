@@ -6,8 +6,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { LogViewer } from "./AgentDetail";
 import { LogViewer as ProductionLogViewer } from "./AgentDetail.production";
 
-const { log, empty } = vi.hoisted(() => ({ log: vi.fn(), empty: [] }));
-vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { log } }));
+const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async () => []), empty: [] }));
+vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { log, events } }));
 vi.mock("@tanstack/react-query", async (original) => ({
   ...await original<typeof import("@tanstack/react-query")>(),
   useQuery: () => ({ data: empty }),
@@ -21,7 +21,7 @@ vi.mock("../components/transcript/RunTranscriptView", () => ({
   RunTranscriptView: ({ entries }: { entries: Array<{ chunk: string }> }) => <div>{entries.map(line => line.chunk).join(" ")}</div>,
 }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-afterEach(() => { vi.restoreAllMocks(); log.mockReset(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); log.mockReset(); events.mockClear(); });
 
 it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only the next offset on visibility recovery (%#)", async (Viewer) => {
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -60,4 +60,35 @@ it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only
     await act(async () => root.unmount());
     container.remove();
   }
+});
+
+it.each([LogViewer, ProductionLogViewer])("polls logs when WebSocket construction fails and recovers on retry (%#)", async (Viewer) => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  vi.stubGlobal("WebSocket", undefined);
+  log.mockResolvedValue({ content: "", nextOffset: 0 });
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running", logRef: "log" } as HeartbeatRun;
+  const root = createRoot(document.createElement("div"));
+  const sockets: Array<{ onopen: (() => void) | null; close: () => void }> = [];
+  try {
+    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
+    const initialReads = log.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(log.mock.calls.length).toBeGreaterThan(initialReads);
+    expect(events).toHaveBeenCalled();
+    vi.stubGlobal("WebSocket", class {
+      onopen = null;
+      close = vi.fn();
+      constructor() { sockets.push(this); }
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(sockets).toHaveLength(1);
+    await act(async () => sockets[0].onopen?.());
+    const readsWhenConnected = log.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+    expect(log).toHaveBeenCalledTimes(readsWhenConnected);
+  } finally {
+    await act(async () => root.unmount());
+  }
+  expect(sockets[0].close).toHaveBeenCalled();
 });

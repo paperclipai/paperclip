@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  isPrivateChatWebhookHttpRequest,
+  isPrivateWebhookHttpRequest,
   isSecretSensitiveHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "../middleware/http-log-policy.js";
 
-describe("isPrivateChatWebhookHttpRequest", () => {
+describe("isPrivateWebhookHttpRequest", () => {
   it("protects the native webhook namespace, including rejected methods and query data", () => {
     for (const provider of [
       "slack",
@@ -17,15 +17,18 @@ describe("isPrivateChatWebhookHttpRequest", () => {
       for (const method of ["POST", "GET", "PUT", "DELETE"]) {
         for (const suffix of ["", "/", "?ignored=private"]) {
           const path = `/api/chat-webhooks/endpoint-1/${provider}${suffix}`;
-          expect(isPrivateChatWebhookHttpRequest(method, path)).toBe(true);
+          expect(isPrivateWebhookHttpRequest(method, path)).toBe(true);
           expect(isSecretSensitiveHttpRequest(method, path)).toBe(true);
         }
       }
     }
     expect(
-      isPrivateChatWebhookHttpRequest("POST", "/API/CHAT-WEBHOOKS/id/SLACK"),
+      isPrivateWebhookHttpRequest("POST", "/API/CHAT-WEBHOOKS/id/SLACK"),
     ).toBe(true);
     for (const path of [
+      "/api/routine-triggers/public",
+      "/api/routine-triggers/public/private-id/fire",
+      "https://host.invalid/api/routine-triggers/public/../private-id",
       "/api/chat-webhooks",
       "/api/chat-webhooks/id",
       "/api/chat-webhooks/id/slack/history",
@@ -35,22 +38,24 @@ describe("isPrivateChatWebhookHttpRequest", () => {
       "http://host.invalid/api/chat-webhooks/../private-component",
       "HTTPS://user:private@host.invalid/API/CHAT-WEBHOOKS/id/SLACK/",
     ])
-      expect(isPrivateChatWebhookHttpRequest("POST", path)).toBe(true);
+      expect(isPrivateWebhookHttpRequest("POST", path)).toBe(true);
   });
 
   it("does not change adjacent non-webhook routes", () => {
     for (const path of [
+      "/api/routine-triggers/id/rotate-secret",
+      "/api/routine-triggers/public-extra/id/fire",
       "/api/chat-webhooks-extra/id/slack",
       "https://host.invalid/api/chat-webhooks-extra/id/slack",
       "/api/other/chat-webhooks/id/slack",
       "/api/chat-endpoints/id/test",
       "/chat-webhooks/id/slack",
     ])
-      expect(isPrivateChatWebhookHttpRequest("POST", path)).toBe(false);
+      expect(isPrivateWebhookHttpRequest("POST", path)).toBe(false);
     expect(
-      isPrivateChatWebhookHttpRequest(undefined, "/api/chat-webhooks/id/slack"),
+      isPrivateWebhookHttpRequest(undefined, "/api/chat-webhooks/id/slack"),
     ).toBe(false);
-    expect(isPrivateChatWebhookHttpRequest("POST", undefined)).toBe(false);
+    expect(isPrivateWebhookHttpRequest("POST", undefined)).toBe(false);
   });
 });
 

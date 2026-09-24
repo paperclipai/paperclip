@@ -38,6 +38,9 @@ export function nativeToolContractFingerprintForTarget(
             "always_advertised_run_issue_agent_binding_gated_current_task_description.v2",
           semanticCompletion: "finish_accessible_deliverable_evidence.v4",
           connectorTools: "assigned_resources_and_pinned_skill_bundle.v1",
+          ...(executionTargetKind === "remote"
+            ? { assignedMcpTools: "codex_server_gateway_prp_relay.v1" }
+            : {}),
         },
         tools: [
           { name: "register_deliverable", version: 2 },
@@ -219,6 +222,7 @@ export async function findNativeSessionResumeRun(
       processGroupId: heartbeatRuns.processGroupId,
       processStartedAt: heartbeatRuns.processStartedAt,
       runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
     })
     .from(heartbeatRuns)
     .where(

@@ -192,6 +192,44 @@ export const runnerApiReference: Record<string, { section: string; description?:
       {
         "body": {
           "kind": "ask_user_questions",
+          "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
+          "title": "Hire responsibility",
+          "resolverPolicy": "human_only",
+          "continuationPolicy": "wake_assignee",
+          "payload": {
+            "version": 1,
+            "questions": [
+              {
+                "id": "responsibility",
+                "prompt": "What should the new agent be responsible for?",
+                "selectionMode": "single",
+                "required": true,
+                "options": [
+                  {
+                    "id": "describe",
+                    "label": "I'll describe it",
+                    "freeText": true
+                  }
+                ]
+              }
+            ],
+            "questionSet": {
+              "schema": "paperclip.question_set.v1",
+              "questions": [
+                {
+                  "id": "responsibility",
+                  "prompt": "What should the new agent be responsible for?",
+                  "required": true,
+                  "answerMode": "text"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "body": {
+          "kind": "ask_user_questions",
           "idempotencyKey": "questions:{issueId}:responsibility:v1",
           "title": "Hire responsibility",
           "resolverPolicy": "human_only",
@@ -215,33 +253,6 @@ export const runnerApiReference: Record<string, { section: string; description?:
                     "id": "writing",
                     "label": "Writing",
                     "description": "Draft and edit content."
-                  }
-                ]
-              }
-            ]
-          }
-        }
-      },
-      {
-        "body": {
-          "kind": "ask_user_questions",
-          "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
-          "title": "Hire responsibility",
-          "resolverPolicy": "human_only",
-          "continuationPolicy": "wake_assignee",
-          "payload": {
-            "version": 1,
-            "questions": [
-              {
-                "id": "responsibility",
-                "prompt": "What should the new agent be responsible for?",
-                "selectionMode": "single",
-                "required": true,
-                "options": [
-                  {
-                    "id": "describe",
-                    "label": "I'll describe it",
-                    "freeText": true
                   }
                 ]
               }
@@ -660,6 +671,22 @@ export const runnerApiReference: Record<string, { section: string; description?:
     "section": "Approvals, Costs, Activity, Dashboard",
     "description": "Create hire request/agent draft",
     "examples": [
+      {
+        "body": {
+          "name": "Marketing Analyst",
+          "role": "researcher",
+          "reportsTo": "{manager-agent-id}",
+          "capabilities": "Market research, competitor analysis",
+          "adapterType": "paperclip_runner",
+          "inheritRuntimeFrom": "caller",
+          "instructionsBundle": {
+            "entryFile": "AGENTS.md",
+            "files": {
+              "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager.\n"
+            }
+          }
+        }
+      },
       {
         "body": {
           "name": "Marketing Analyst",

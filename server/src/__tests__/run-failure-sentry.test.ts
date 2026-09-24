@@ -7,7 +7,7 @@ import type { RunFailureEvent } from "../sentry.js";
  * installed in this test environment, so each test mocks a fake copy of the
  * package the same way `sentry.test.ts` does, then imports a fresh copy of
  * `../sentry.js` with a backend DSN set. That opens the gate and lets the
- * fake package's `withScope`/`captureException` spies record the real call
+ * fake package's `captureException` spy records the real call
  * shape.
  */
 
@@ -30,16 +30,16 @@ function baseEvent(overrides: Partial<RunFailureEvent> = {}): RunFailureEvent {
   };
 }
 
-/** Mirrors `sentry.test.ts`'s `mockSentryPackage`, plus a `withScope` spy. */
+interface CaptureContext {
+  tags: Record<string, string>;
+  contexts: Record<string, Record<string, unknown>>;
+  fingerprint: string[];
+}
+
+/** Mirrors `sentry.test.ts`'s `mockSentryPackage`. */
 function mockSentryPackage() {
-  const scope = {
-    setTag: vi.fn(),
-    setContext: vi.fn(),
-    setFingerprint: vi.fn(),
-  };
   const init = vi.fn();
-  const captureException = vi.fn(() => "event-id");
-  const withScope = vi.fn((callback: (s: typeof scope) => void) => callback(scope));
+  const captureException = vi.fn((_error: unknown, _context?: CaptureContext) => "event-id");
   const close = vi.fn(async () => true);
   const httpIntegration = vi.fn((options: unknown) => ({ name: "Http", ...(options as object) }));
   const onUnhandledRejectionIntegration = vi.fn((options: unknown) => ({
@@ -50,7 +50,6 @@ function mockSentryPackage() {
   vi.doMock("@sentry/node", () => ({
     init,
     captureException,
-    withScope,
     close,
     httpIntegration,
     onUnhandledRejectionIntegration,
@@ -59,7 +58,7 @@ function mockSentryPackage() {
     checkExactPeerVersions: () => ({ ok: true }),
   }));
 
-  return { scope, init, captureException, withScope, close };
+  return { init, captureException, close };
 }
 
 async function importFreshSentryWithGateOpen() {
@@ -91,15 +90,15 @@ afterEach(() => {
 
 describe("captureRunFailure", () => {
   it("sets the fingerprint [errorCode, agentAdapter] in that order", async () => {
-    const { sentryModule, scope } = await importFreshSentryWithGateOpen();
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
 
     sentryModule.captureRunFailure(baseEvent({ errorCode: "timeout", agentAdapter: "codex" }));
 
-    expect(scope.setFingerprint).toHaveBeenCalledWith(["timeout", "codex"]);
+    expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["timeout", "codex"]);
   });
 
   it("keeps the error message out of the fingerprint for two runs with the same code and adapter but different messages", async () => {
-    const { sentryModule, scope } = await importFreshSentryWithGateOpen();
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
 
     sentryModule.captureRunFailure(
       baseEvent({ errorMessage: "message one", errorCode: "timeout", agentAdapter: "codex" }),
@@ -108,25 +107,25 @@ describe("captureRunFailure", () => {
       baseEvent({ errorMessage: "message two", errorCode: "timeout", agentAdapter: "codex" }),
     );
 
-    expect(scope.setFingerprint).toHaveBeenNthCalledWith(1, ["timeout", "codex"]);
-    expect(scope.setFingerprint).toHaveBeenNthCalledWith(2, ["timeout", "codex"]);
+    expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["timeout", "codex"]);
+    expect(captureException.mock.calls[1]![1]?.fingerprint).toEqual(["timeout", "codex"]);
   });
 
   it("sets the fingerprint element \"unknown\" when the error code is absent", async () => {
-    const { sentryModule, scope } = await importFreshSentryWithGateOpen();
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
 
     sentryModule.captureRunFailure(baseEvent({ errorCode: null }));
 
-    expect(scope.setFingerprint).toHaveBeenCalledWith(["unknown", "claude-code"]);
+    expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["unknown", "claude-code"]);
   });
 
   it("sets the five diagnostic values on the run_failure context", async () => {
-    const { sentryModule, scope } = await importFreshSentryWithGateOpen();
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
     const event = baseEvent();
 
     sentryModule.captureRunFailure(event);
 
-    expect(scope.setContext).toHaveBeenCalledWith("run_failure", {
+    expect(captureException.mock.calls[0]![1]?.contexts.run_failure).toEqual({
       taskId: event.taskId,
       runId: event.runId,
       errorMessage: event.errorMessage,
@@ -136,25 +135,27 @@ describe("captureRunFailure", () => {
   });
 
   it("does not set an instance key on the run_failure context", async () => {
-    const { sentryModule, scope } = await importFreshSentryWithGateOpen();
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
 
     sentryModule.captureRunFailure(baseEvent());
 
-    const [, context] = scope.setContext.mock.calls[0]!;
+    const context = captureException.mock.calls[0]![1]?.contexts.run_failure;
     expect(context).not.toHaveProperty("instance");
   });
 
   it("sets run_id, task_id, error_code, agent_adapter, and run_status as tags", async () => {
-    const { sentryModule, scope } = await importFreshSentryWithGateOpen();
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
     const event = baseEvent();
 
     sentryModule.captureRunFailure(event);
 
-    expect(scope.setTag).toHaveBeenCalledWith("run_id", event.runId);
-    expect(scope.setTag).toHaveBeenCalledWith("task_id", event.taskId);
-    expect(scope.setTag).toHaveBeenCalledWith("error_code", event.errorCode);
-    expect(scope.setTag).toHaveBeenCalledWith("agent_adapter", event.agentAdapter);
-    expect(scope.setTag).toHaveBeenCalledWith("run_status", event.runStatus);
+    expect(captureException.mock.calls[0]![1]?.tags).toEqual({
+      run_id: event.runId,
+      task_id: event.taskId,
+      error_code: event.errorCode,
+      agent_adapter: event.agentAdapter,
+      run_status: event.runStatus,
+    });
   });
 
   it("captures the redacted error message as the exception message", async () => {
@@ -178,8 +179,8 @@ describe("captureRunFailure", () => {
   });
 
   it("does not throw when the client throws", async () => {
-    const { sentryModule, withScope } = await importFreshSentryWithGateOpen();
-    withScope.mockImplementation(() => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    captureException.mockImplementation(() => {
       throw new Error("sentry client is down");
     });
 

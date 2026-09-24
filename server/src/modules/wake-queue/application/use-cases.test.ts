@@ -825,6 +825,26 @@ describe("admitWakeBehindIssueExecution", () => {
     },
   );
 
+  it.each(["incoming", "queued", "deferred"])("does not coalesce a %s interaction with comments", async (location) => {
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader({
+      isSameExecutionAgent: vi.fn(async () => location !== "deferred"),
+      findExistingDeferredWake: vi.fn(async () => location === "deferred" ? {
+        id: "existing", payload: { interactionId: "approval" },
+        deferredContext: {}, coalescedCount: 0,
+      } : null),
+    });
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: createFakeAdmissionHelpers() });
+    await admit(SCOPE, admissionInput({
+      contextSnapshot: location === "incoming" ? { interactionId: "approval" } : {},
+      activeExecutionRun: { ...ACTIVE_EXECUTION_RUN, status: "queued",
+        contextSnapshot: location === "queued" ? { interactionId: "approval" } : {} },
+    }));
+    expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+    expect(writer.mergeIntoExistingDeferredWake).not.toHaveBeenCalled();
+    expect(writer.insertNewDeferredWake).toHaveBeenCalledOnce();
+  });
+
   it("partitions durable admission by the exact actor before considering a deferred merge", async () => {
     const durableReceipt = {
       id: "other-actor-receipt",

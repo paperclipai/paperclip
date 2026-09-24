@@ -1,6 +1,12 @@
+import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
+import { runContinuationFlow } from "./continuation-flow.js";
 import { runEverydayFlow } from "./everyday-flow.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
+
+import { runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
 import { runChatFlow } from "./chat-flow.js";
+import { restartChatServer } from "./chat-restart.js";
+import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -12,7 +18,7 @@ import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
 import { setupConnectionReview } from "./connection-reviews.js";
 import { setupLiveFixtures, type LiveFixtureValues } from "./live-fixtures.js";
-import { evaluateMatcher, type MatcherResult } from "./matchers.js";
+import { evaluateMatcher, persistedFinalRunMessage, type MatcherResult } from "./matchers.js";
 import {
   acceptedPlanSessionResetFailures,
   hasTerminalMalformedPlanConfirmation,
@@ -23,6 +29,7 @@ import {
   providerSessionContinuityFailures,
 } from "./run-observations.js";
 import { resolveRunnerE2ESource } from "./source.js";
+import { isValidNativePrpEnvelope } from "./native-event-envelope.js";
 import {
   isPublicRunnerScreenshotRoute,
   PUBLIC_RUNNER_SCREENSHOT_MARKER,
@@ -389,12 +396,10 @@ function nativeRunEventIntegrityFailures(
     }
     const envelope = record(event.payload?.prpEvent);
     if (Object.keys(envelope).length === 0) continue;
-    if (
-      envelope.schema !== "paperclip.prp.event.v1" ||
-      envelope.schemaVersion !== 1 ||
-      event.protocolSchemaVersion !== 1
-    ) {
-      failures.push(`run ${run.id} exposed a malformed PRP v1 envelope`);
+    if (!isValidNativePrpEnvelope(envelope, event.protocolSchemaVersion)) {
+      failures.push(
+        `run ${run.id} exposed a malformed PRP envelope (schema=${String(envelope.schema)}, version=${String(envelope.schemaVersion)})`,
+      );
     }
     if (envelope.runId !== run.id) {
       failures.push(
@@ -525,15 +530,18 @@ for (const execution of executions) {
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = ["agent_chat", "everyday_workflow"].includes(execution.task.flow);
+    const companyRunFlow = ["continuation", "agent_chat", "everyday_workflow", "first_task"].includes(execution.task.flow);
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
+    const pageLifecycleDiagnostics: Array<Record<string, unknown>> = [];
+    const browserBootstrap = observeBrowserBootstrap(page);
     let fixtures: LiveFixtureValues | undefined;
     let reviewProvider: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
     let issue: IssueRecord | undefined;
     let selectedRuns: RunRecord[] = [];
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
+    let firstTaskEvidence: RunnerE2EResult["firstTask"];
     let turnTimings: NonNullable<RunnerE2EResult["turnTimings"]> | undefined;
     const turnSubmissionTimesMs: number[] = [];
     const screenshots: NonNullable<RunnerE2EResult["screenshots"]> = [];
@@ -633,7 +641,7 @@ for (const execution of executions) {
 
     const captureFailureApiState = async () => {
       if (!fixtures) return;
-      if (execution.task.flow === "agent_chat" && !issue) {
+      if (companyRunFlow && !issue) {
         const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
         selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
         // Settings are already restored on failure, so chat resolution may be
@@ -718,6 +726,22 @@ for (const execution of executions) {
         });
       }
     });
+    page.on("pageerror", (error) => {
+      pageLifecycleDiagnostics.push({
+        type: "pageerror",
+        message: error.message,
+        stack: error.stack ?? null,
+        url: page.url(),
+      });
+    });
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame())
+        pageLifecycleDiagnostics.push({
+          type: "navigation",
+          url: frame.url(),
+          at: new Date().toISOString(),
+        });
+    });
     page.on("requestfailed", (requestEvent) => {
       networkDiagnostics.push({
         method: requestEvent.method(),
@@ -751,7 +775,9 @@ for (const execution of executions) {
       });
       expect(experimental.enableNativeRunner).toBe(true);
 
-      fixtures = await setupLiveFixtures({
+      fixtures = execution.task.flow === "first_task"
+        ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, observe: value => { fixtures = value; } })
+        : await setupLiveFixtures({
         api,
         execution,
         executionNonce: nonce,
@@ -784,7 +810,19 @@ for (const execution of executions) {
         secrets,
       );
 
-      if (execution.task.flow === "everyday_workflow") {
+      if (execution.task.flow === "continuation") {
+        const continuation = await runContinuationFlow({
+          page, api, fixtures, execution, nonce, secrets, workspacePath, deadlineAt: startedAtMs + deadlineMs - 60_000,
+          restart: () => restartIsolatedPaperclipServer({ api, requestId: `continuation-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          observe: (currentIssue, currentRuns, checks) => {
+            issue = currentIssue; selectedRuns = currentRuns;
+            matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const, path: `continuation.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+          },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = continuation.issue as IssueRecord; selectedRuns = continuation.runs as RunRecord[];
+      } else if (execution.task.flow === "everyday_workflow") {
         const story = await runEverydayFlow({
           page, api, fixtures, execution, nonce, workspacePath, privateDir,
           deadlineAt: startedAtMs + deadlineMs,
@@ -797,14 +835,32 @@ for (const execution of executions) {
         matcherResults = story.evidence.checks.map(check => ({ matcher: { kind: "json_path" as const, path: check.id, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "agent_chat") {
         const chat = await runChatFlow({
-          page, api, fixtures, execution, nonce,
-          restart: () => restartIsolatedPaperclipServer({ api, requestId: `chat-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          page, api, fixtures, execution, nonce, workspacePath,
+          restart: () => restartChatServer(page, () => restartIsolatedPaperclipServer({ api, requestId: `chat-${nonce}`, deadlineAt: startedAtMs + deadlineMs })),
           observe: (chatIssue, chatRuns) => { issue = chatIssue; selectedRuns = chatRuns; },
           capture: captureScreenshot,
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         });
         issue = chat.issue; selectedRuns = chat.runs;
         matcherResults = [{ matcher: { kind: "issue_status", expected: "in_review" }, passed: true, detail: "Chat workflow and durable handoff/session assertions passed" }];
+      } else if (execution.task.flow === "first_task") {
+        const firstTask = await runFirstTaskFlow({
+          page, api, fixtures, execution, nonce, secrets,
+          observe: (currentIssue, runs, evidence) => {
+            issue = currentIssue; selectedRuns = runs; firstTaskEvidence = evidence;
+            matcherResults = evidence.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `firstTask.checks.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+          },
+          createOrdinary: async (taskTitle, taskPrompt) => {
+            await createTaskThroughUi({ page, issuePrefix: fixtures!.company.issuePrefix!, agentName: fixtures!.agent.name, title: taskTitle, prompt: taskPrompt, workMode: "standard" });
+            const created = await pollUntil({ label: "ordinary UI-created task", deadlineAt: startedAtMs + deadlineMs,
+              load: async () => (await api.get<IssueRecord[]>(`/api/companies/${fixtures!.company.id}/issues?limit=100`)).find(row => row.title === taskTitle), accept: row => Boolean(row) });
+            if (!created) throw new Error("Missing ordinary task");
+            return created;
+          },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = firstTask.issue as IssueRecord; selectedRuns = firstTask.runs as RunRecord[];
       } else {
       const issuePrefix = fixtures.company.issuePrefix;
       if (!issuePrefix)
@@ -1245,9 +1301,12 @@ for (const execution of executions) {
           })
           .last()
           .check();
-        // Required single-select questions submit as soon as the radio is
-        // checked; waiting for the multi-answer submit control would race the
-        // successful continuation and misreport it as a UI failure.
+        // The one-question form is on its last page, so selecting the radio
+        // records the answer and the existing form button submits it.
+        await page
+          .getByRole("button", { name: "Submit answers", exact: true })
+          .last()
+          .click();
         questionLifecycleEvidence = {
           interaction: questionInteraction,
           answer: expectedAnswer.optionLabel,
@@ -1493,7 +1552,7 @@ for (const execution of executions) {
         load: loadTaskState,
         accept: ({ currentIssue, taskRuns }) =>
           currentIssue.status === execution.task.expectedTerminalState.issue &&
-          taskRuns.length >= execution.task.expectedRunCount &&
+          taskRuns.length >= minimumRunCount(execution.task) &&
           taskRuns.every((run) => TERMINAL_RUN_STATUSES.has(run.status)),
         reject: ({ taskRuns }) => definitiveRunFailure(taskRuns),
       });
@@ -1510,7 +1569,7 @@ for (const execution of executions) {
           deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
           load: loadTaskState,
           accept: ({ taskRuns, comments }) => {
-            if (taskRuns.length !== execution.task.expectedRunCount) {
+            if (!matchesRunCount(execution.task, taskRuns.length)) {
               return false;
             }
             const finalRun = sortRunsChronologically(taskRuns).at(-1);
@@ -1532,7 +1591,7 @@ for (const execution of executions) {
         expect(pending.actionRequests).toHaveLength(0);
         await writeSanitizedJson(snapshotsDir, "connection-review.json", { source: "local MCP fixture", connectionId: reviewProvider.connectionId, providerCalls: reviewProvider.invocationCount(), decision: execution.task.toolReviewDecision, issueId: issue.id }, secrets);
       }
-      if (selectedRuns.length !== execution.task.expectedRunCount) {
+      if (!matchesRunCount(execution.task, selectedRuns.length)) {
         const runLogs = await Promise.all(
           selectedRuns.map(async (candidate) => ({
             runId: candidate.id,
@@ -1553,7 +1612,7 @@ for (const execution of executions) {
           secrets,
         );
         throw new Error(
-          `Expected exactly ${execution.task.expectedRunCount} task heartbeat run(s); observed ${selectedRuns.length}`,
+          `Expected ${minimumRunCount(execution.task)}..${execution.task.expectedRunCount} task heartbeat run(s); observed ${selectedRuns.length}`,
         );
       }
       // The company run-list endpoint intentionally returns only a compact,
@@ -1669,10 +1728,7 @@ for (const execution of executions) {
       const message = agentComments
         .map((comment) => comment.body ?? "")
         .join("\n");
-      const finalRunMessage = agentComments
-        .filter((comment) => comment.createdByRunId === finalRun.id)
-        .map((comment) => comment.body ?? "")
-        .join("\n");
+      const finalRunMessage = persistedFinalRunMessage(agentComments, finalRun);
       const pendingInteractions = terminal.interactions.filter(
         (interaction) => interaction.status === "pending",
       );
@@ -2295,19 +2351,27 @@ for (const execution of executions) {
       const visibleAgentReplies = page
         .getByTestId("task-chat-thread")
         .getByTestId("task-chat-agent-bubble");
-      const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const terminalAgentReplies = visibleAgentReplies.filter({
-        hasText: new RegExp(`^\\s*${escapedMarker}\\s*$`),
-      });
-      await expect(terminalAgentReplies).toHaveCount(1, { timeout: 30_000 });
-      await expect(terminalAgentReplies.first()).toBeVisible();
-      // A string-valued toHaveText assertion compares the complete rendered
-      // text while normalizing ordinary DOM whitespace. This keeps Markdown
-      // layout differences harmless without allowing prefixed, suffixed, or
-      // substituted provider prose to masquerade as the requested response.
-      await expect(terminalAgentReplies.first()).toHaveText(marker, {
-        useInnerText: true,
-      });
+      if (execution.task.flow === "warm_three_turn") {
+        // Prove the persisted user-facing response is visible, independently
+        // of the byte-for-byte workspace checks and lease continuity checks.
+        expect(finalRunMessage.trim()).not.toBe("");
+        await expect(visibleAgentReplies.filter({ hasText: finalRunMessage }).last())
+          .toBeVisible({ timeout: 30_000 });
+      } else {
+        const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const terminalAgentReplies = visibleAgentReplies.filter({
+          hasText: new RegExp(`^\\s*${escapedMarker}\\s*$`),
+        });
+        await expect(terminalAgentReplies).toHaveCount(1, { timeout: 30_000 });
+        await expect(terminalAgentReplies.first()).toBeVisible();
+        // A string-valued toHaveText assertion compares the complete rendered
+        // text while normalizing ordinary DOM whitespace. This keeps Markdown
+        // layout differences harmless without allowing prefixed, suffixed, or
+        // substituted provider prose to masquerade as the requested response.
+        await expect(terminalAgentReplies.first()).toHaveText(marker, {
+          useInnerText: true,
+        });
+      }
       await expect(
         page.getByTestId("issue-detail-header").getByRole("button", {
           name: "Change status (current: Done)",
@@ -2342,6 +2406,9 @@ for (const execution of executions) {
       }
     } catch (error) {
       primaryError = error;
+      if (execution.task.flow === "first_task" && !firstTaskEvidence && classifyFailure(error) === "candidate_failure") {
+        failureClassOverride = "permanent_infrastructure";
+      }
       try {
         await captureFailureApiState();
       } catch (captureError) {
@@ -2383,6 +2450,8 @@ for (const execution of executions) {
           {
             console: consoleDiagnostics,
             network: networkDiagnostics,
+            lifecycle: pageLifecycleDiagnostics,
+            bootstrap: await browserBootstrap.snapshot(),
           },
           secrets,
         );
@@ -2393,6 +2462,7 @@ for (const execution of executions) {
         );
         failureClassOverride = "secret_leak";
       }
+      browserBootstrap.dispose();
       if (fixtures) {
         await captureRuntimeLeases().catch((error) => {
           networkDiagnostics.push({
@@ -2405,7 +2475,7 @@ for (const execution of executions) {
           if (companyRunFlow) {
             const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
             selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
-            await writeSanitizedJson(snapshotsDir, "chat-final-run-ledger.json", selectedRuns, secrets);
+            await writeSanitizedJson(snapshotsDir, execution.task.flow === "first_task" ? "first-task-final-run-ledger.json" : "chat-final-run-ledger.json", selectedRuns, secrets);
           }
           await fixtures.teardown();
           cleanup = "passed";
@@ -2463,7 +2533,7 @@ for (const execution of executions) {
         executionId: execution.id,
         suiteId: execution.suite.id,
         suiteDefinitionHash: execution.suiteDefinitionHash,
-        source: resolveRunnerE2ESource(),
+        source: resolveRunnerE2ESource(firstTaskEvidence?.source ? { ...firstTaskEvidence.source, workflowRunUrl: null } : undefined),
         ...(execution.profile.ranking
           ? { rankingSnapshot: execution.profile.ranking }
           : {}),
@@ -2483,7 +2553,8 @@ for (const execution of executions) {
         environmentId: execution.environment.id,
         caseId: execution.task.id,
         provider: execution.profile.provider,
-        model: execution.profile.model,
+        model: firstTaskEvidence ? firstTaskEvidence.observedModels[0] ?? firstTaskEvidence.configuredModel ?? "provider-default (unreported)" : execution.profile.model,
+        ...(firstTaskEvidence ? { firstTask: firstTaskEvidence } : {}),
         runtimeMode: execution.profile.expectedRuntimeMode,
         issueId: issue?.id,
         issueIdentifier: issue?.identifier ?? null,

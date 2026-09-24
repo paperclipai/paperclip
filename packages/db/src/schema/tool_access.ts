@@ -195,6 +195,7 @@ export const connectionGrants = pgTable(
           expiresAt?: string;
         };
       };
+      slackSearch?: { endpointId: string; workspaceId: string; slackUserId: string; clientRevision: string };
       github?: {
         userId: string;
         login: string;

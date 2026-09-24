@@ -1,3 +1,6 @@
+import { useLocation } from "@/lib/router";
+import { ChatDetailSidebar } from "./chat/ChatDetailSidebar";
+import { ChatSetupSidebar } from "./chat/ChatSetupNavigation";
 import { ChevronLeft, AppWindow, Store, ShieldQuestion } from "lucide-react";
 import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
@@ -25,6 +28,7 @@ import { SidebarNavItem } from "./SidebarNavItem.production";
  * (PAP-10922).
  */
 export function AppsSidebar() {
+  const { pathname } = useLocation();
   const { selectedCompany } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
 
@@ -33,6 +37,10 @@ export function AppsSidebar() {
   const developerTabs = DEVELOPER_TABS.filter(
     (tab) => !isExperimentalToolTab(tab.key) || smokeLabEnabled,
   );
+
+  if (pathname.endsWith("/apps/chat/connect")) return <ChatSetupSidebar />;
+  const chatDetail = pathname.match(/\/apps\/chat\/([^/]+)(?:\/(?:settings|access|reviews|conversations|activity))?\/?$/);
+  if (chatDetail) return <ChatDetailSidebar endpointId={chatDetail[1]} NavItem={SidebarNavItem} />;
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">

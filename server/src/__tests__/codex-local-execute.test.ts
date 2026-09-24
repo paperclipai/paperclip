@@ -538,7 +538,7 @@ describe("codex execute", () => {
     }
   });
 
-  it("injects structured Paperclip wake payloads into env and prompt", async () => {
+  it.each([false, true])("delivers oversized wake context through stdin (sandbox=%s)", async (sandbox) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -546,6 +546,8 @@ describe("codex execute", () => {
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeCodexCommand(commandPath);
 
+    const description = "begin " + "full wake context ".repeat(16_384) + " end";
+    expect(Buffer.byteLength(description)).toBeGreaterThan(128 * 1024);
     const previousHome = process.env.HOME;
     process.env.HOME = root;
     await seedSharedCodexAuth(root);
@@ -572,6 +574,7 @@ describe("codex execute", () => {
           cwd: workspace,
           env: {
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_WAKE_PAYLOAD_JSON: description,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
@@ -585,7 +588,8 @@ describe("codex execute", () => {
             issue: {
               id: "issue-1",
               identifier: "PAP-874",
-              title: "chat-speed issues",
+              title: "Wake context test",
+              description,
               status: "in_progress",
               priority: "medium",
             },
@@ -618,6 +622,16 @@ describe("codex execute", () => {
             fallbackFetchNeeded: false,
           },
         },
+        executionTarget: sandbox ? {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "test",
+          environmentId: "env-1",
+          leaseId: "lease-1",
+          remoteCwd: workspace,
+          timeoutMs: 30_000,
+          runner: createLocalSandboxRunner(),
+        } : undefined,
         authToken: "run-jwt-token",
         onLog: async () => {},
       });
@@ -626,15 +640,12 @@ describe("codex execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
-      expect(capture.paperclipWakePayloadJson).not.toBeNull();
-      expect(JSON.parse(capture.paperclipWakePayloadJson ?? "{}")).toMatchObject({
-        reason: "issue_commented",
-        latestCommentId: "comment-2",
-        commentIds: ["comment-1", "comment-2"],
-      });
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+      expect(capture.paperclipWakePayloadJson).toBeNull();
+      expect(capture.prompt).toContain(description);
+      expect(capture.prompt).toContain("- reason: issue_commented");
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
-      expect(capture.prompt).toContain("Treat this wake payload as the highest-priority change for the current heartbeat.");
+      expect(capture.prompt).toContain("Use this wake to continue the task, applying new user direction and preserving its approval gates.");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain(
         "acknowledge the latest comment and explain how it changes your next action.",
@@ -1216,19 +1227,8 @@ process.exit(1);
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
-      expect(capture.paperclipWakePayloadJson).not.toBeNull();
-      expect(JSON.parse(capture.paperclipWakePayloadJson ?? "{}")).toMatchObject({
-        reason: "issue_assigned",
-        issue: {
-          identifier: "PAP-1201",
-          title: "Fix gallery opening for inline images",
-          status: "in_progress",
-          priority: "medium",
-        },
-        checkedOutByHarness: true,
-        commentIds: [],
-      });
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+      expect(capture.paperclipWakePayloadJson).toBeNull();
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain("- issue: PAP-1201 Fix gallery opening for inline images");

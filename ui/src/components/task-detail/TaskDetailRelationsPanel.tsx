@@ -13,10 +13,10 @@ export interface TaskDetailRelationItem {
   id: string;
   identifier?: string | null;
   title: string;
-  status?: IssueStatus | null;
+  status?: string | null;
 }
 
-function RelationNavigationList({
+export function RelationNavigationList({
   items,
   emptyMessage,
   ariaLabel,

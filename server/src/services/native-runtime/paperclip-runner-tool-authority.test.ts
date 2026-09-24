@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import * as cloudIdentity from "../cloud-runtime-identity.js";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -90,7 +91,14 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(25);
+    expect(authority.definitions()).toHaveLength(27);
+    const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
+    expect(questions.description).toContain("ask only the next unanswered question");
+    expect(questions.description).toContain("Never infer answers");
+    expect(questions.description).toContain("Do not fabricate answer links");
+    expect(JSON.stringify(questions.inputSchema)).toContain("at least two distinct meaningful options");
+    expect(JSON.stringify(questions.inputSchema)).toContain("answerMode:'text'");
+
     expect(authority.definitions().map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
         "connections_search",
@@ -106,6 +114,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         "read_document",
         "list_document_revisions",
         "write_document",
+        "create_skill",
         "list_agents",
         "get_agent",
         "list_approvals",
@@ -150,6 +159,63 @@ describe("PaperclipRunnerToolAuthority", () => {
     ).rejects.toThrow("paperclip_runner_tool_not_advertised");
   });
 
+  it("returns public task URLs from the current claimed origin in context and search results", async () => {
+    const origin = vi.spyOn(cloudIdentity, "runtimeCanonicalOrigin").mockReturnValue("https://board.example");
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    try {
+      expect(await authority.execute({ tool: "get_task_context", callId: "public-task-url", arguments: {} }))
+        .toMatchObject({ activeTask: { id: issueId, url: `https://board.example/issues/${issueId}` } });
+      expect(await authority.execute({ tool: "search_tasks", callId: "search-public-task-url", arguments: { query: "Exercise real runner tools" } }))
+        .toMatchObject({ tasks: expect.arrayContaining([expect.objectContaining({ id: issueId, url: `https://board.example/issues/${issueId}` })]) });
+      origin.mockReturnValue("https://renamed.example");
+      expect(await authority.execute({ tool: "get_task_context", callId: "renamed-task-url", arguments: {} }))
+        .toMatchObject({ activeTask: { url: `https://renamed.example/issues/${issueId}` } });
+      origin.mockReturnValue("https://localhost");
+      expect(await authority.execute({ tool: "get_task_context", callId: "unsafe-task-url", arguments: {} }))
+        .toMatchObject({ activeTask: { url: null } });
+    } finally {
+      origin.mockRestore();
+    }
+  });
+
+  it("exposes existing child tasks on continuation without crossing company boundaries", async () => {
+    const completedChildId = randomUUID();
+    const activeChildId = randomUUID();
+    const unrelatedId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const foreignChildId = randomUUID();
+    const hiddenChildIds = Array.from({ length: 101 }, () => randomUUID());
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other company", issuePrefix: "OTHER" });
+    await db.insert(issues).values([
+      { id: completedChildId, companyId, parentId: issueId, title: "Existing completed draft", status: "done", assigneeAgentId: agentId },
+      { id: activeChildId, companyId, parentId: issueId, title: "Existing active review", status: "in_progress", assigneeAgentId: agentId },
+      { id: unrelatedId, companyId, title: "Unrelated task", status: "todo" },
+      // Even inconsistent imported data cannot expose another company's task.
+      { id: foreignChildId, companyId: otherCompanyId, parentId: issueId, title: "Foreign child", status: "todo" },
+      // Hidden rows must neither enter context nor consume the visible child limit.
+      ...hiddenChildIds.map((id) => ({ id, companyId, parentId: issueId, title: "Hidden child",
+        hiddenAt: new Date(), createdAt: new Date(Date.now() + 1000) })),
+    ]);
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const context = await authority.execute({ tool: "get_task_context", callId: "context-existing-children", arguments: {} });
+      expect(context).toMatchObject({
+        childTasks: expect.arrayContaining([
+          expect.objectContaining({ id: completedChildId, status: "done", parentId: issueId }),
+          expect.objectContaining({ id: activeChildId, status: "in_progress", assigneeAgentId: agentId }),
+        ]),
+        childTasksTruncated: false,
+        delegationGuidance: expect.stringContaining("Reuse existing child tasks"),
+      });
+      expect(JSON.stringify(context)).not.toContain(foreignChildId);
+      expect(JSON.stringify(context)).not.toContain(unrelatedId);
+      for (const id of hiddenChildIds) expect(JSON.stringify(context)).not.toContain(id);
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, [completedChildId, activeChildId, unrelatedId, foreignChildId, ...hiddenChildIds]));
+      await db.delete(companies).where(eq(companies.id, otherCompanyId));
+    }
+  });
+
   it("preserves direct-chat file tools across the guarded API rollout", () => {
     const previousEnabled = process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
     const previousCompanies =
@@ -182,6 +248,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       );
       expect(disabledNames).not.toContain("search_api");
       expect(disabledNames).not.toContain("call_api");
+      expect(disabledNames).not.toContain("hire_agent");
 
       process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
       process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = companyId;
@@ -193,8 +260,14 @@ describe("PaperclipRunnerToolAuthority", () => {
           ...requiredChatFileTools,
           "search_api",
           "call_api",
+          "hire_agent",
         ]),
       );
+      const hire = createAuthority().definitions().find((tool) => tool.name === "hire_agent")!;
+      const hireSchema = hire.inputSchema as { properties: Record<string, unknown> };
+      expect(hireSchema.properties).toEqual(expect.objectContaining({ name: expect.any(Object), role: expect.any(Object) }));
+      expect(hireSchema.properties).not.toHaveProperty("adapterConfig");
+      expect(hireSchema.properties).not.toHaveProperty("env");
     } finally {
       if (previousEnabled === undefined) {
         delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
@@ -206,6 +279,71 @@ describe("PaperclipRunnerToolAuthority", () => {
       } else {
         process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = previousCompanies;
       }
+    }
+  });
+
+  it("dispatches hire_agent with fixed caller context and replays its API receipt", async () => {
+    const previousEnabled = process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+    const previousCompanies = process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
+    const previousSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "hire-agent-test-secret";
+    process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
+    process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = companyId;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: randomUUID(), status: "active" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, {
+        companyId,
+        agentId,
+        issueId,
+        runId,
+        apiUrl: "http://runner-test.invalid",
+      });
+      const call = {
+        tool: "hire_agent",
+        callId: "hire-agent-receipt",
+        arguments: {
+          name: "QA teammate",
+          role: "qa",
+          title: "Quality lead",
+          capabilities: "Test native workflows",
+          instructions: "Use the assigned workspace and report findings.",
+        },
+      } as const;
+      const first = await authority.execute(call);
+      expect(first).toMatchObject({ ok: true, status: 201, apiOperationId: "POST /api/companies/{companyId}/agent-hires" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(String(url)).toBe(`http://runner-test.invalid/api/companies/${companyId}/agent-hires`);
+      const body = JSON.parse(String(request.body));
+      expect(body).toMatchObject({
+        name: "QA teammate",
+        role: "qa",
+        title: "Quality lead",
+        capabilities: "Test native workflows",
+        adapterType: "paperclip_runner",
+        inheritRuntimeFrom: "caller",
+        reportsTo: agentId,
+        sourceIssueId: issueId,
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Use the assigned workspace and report findings." } },
+      });
+      expect(body).not.toHaveProperty("adapterConfig");
+      expect(body).not.toHaveProperty("runtimeConfig");
+      expect(body).not.toHaveProperty("env");
+      await expect(authority.execute(call)).resolves.toEqual(first);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchMock.mockRestore();
+      if (previousEnabled === undefined) delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+      else process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = previousEnabled;
+      if (previousCompanies === undefined) delete process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
+      else process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = previousCompanies;
+      if (previousSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousSecret;
     }
   });
 
@@ -249,13 +387,13 @@ describe("PaperclipRunnerToolAuthority", () => {
         "current Paperclip task bound to this run",
       );
       expect(advertised.description).toContain(
-        "interactionKind 'questions' with payload.questions",
+        "payload.questions for choices",
       );
       expect(advertised.description).toContain(
-        "supported provider question controls or a safe fallback",
+        "Paperclip renders it and authenticates the response",
       );
       expect(advertised.description).toContain(
-        "Normal task permissions and review gates still apply",
+        "Preserve existing review gates",
       );
       expect(advertised.description).not.toContain("mock");
       expect(advertised.description).not.toContain("questionSpec");
@@ -268,7 +406,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     },
   );
 
-  it("executes the advertised payload.questions shape once on the bound reviewed task", async () => {
+  it.each(["choice", "text"] as const)("executes the advertised %s question once on the bound reviewed task", async (answerMode) => {
     const binding = {
       companyId: randomUUID(),
       agentId: randomUUID(),
@@ -278,7 +416,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.insert(companies).values({
       id: binding.companyId,
       name: "Question invocation",
-      issuePrefix: "RQA",
+      issuePrefix: answerMode === "choice" ? "RQA" : "RQT",
     });
     await db.insert(agents).values({
       id: binding.agentId,
@@ -328,6 +466,33 @@ describe("PaperclipRunnerToolAuthority", () => {
         ],
       },
     ];
+    const payloadDescription = (advertised.inputSchema as {
+      properties: { payload: { description: string } };
+    }).properties.payload.description;
+    expect(payloadDescription).toContain("at least two distinct meaningful options");
+    expect(payloadDescription).toContain("questionSet");
+    expect(payloadDescription).not.toContain("use exactly");
+    const payload = answerMode === "choice"
+      ? { version: 1, questions }
+      : {
+          version: 1,
+          questions: [{
+            id: "goal",
+            prompt: "What should we accomplish?",
+            selectionMode: "single",
+            required: true,
+            options: [{ id: "describe", label: "Your answer", freeText: true }],
+          }],
+          questionSet: {
+            schema: "paperclip.question_set.v1",
+            questions: [{
+              id: "goal",
+              prompt: "What should we accomplish?",
+              answerMode: "text",
+              required: true,
+            }],
+          },
+        };
     const call = {
       tool: "request_human_input",
       callId: "advertised-question",
@@ -337,7 +502,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         title: "Choose one color",
         prompt: "Choose one color",
         continuationPolicy: "wake_assignee",
-        payload: { version: 1, questions },
+        payload,
       },
     };
     const first = await authority.execute(call);
@@ -350,7 +515,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         kind: "ask_user_questions",
         status: "pending",
         continuationPolicy: "wake_assignee",
-        payload: { version: 1, questions },
+        payload,
       },
     });
     await expect(
@@ -431,6 +596,34 @@ describe("PaperclipRunnerToolAuthority", () => {
     ).resolves.toMatchObject({ approval: { id: approvalId }, tasks: [] });
   });
 
+  it("relays assigned MCP calls only while the native run still owns its task", async () => {
+    const tool = { name: "app_mem0_recall", description: "Recall memory", inputSchema: { type: "object" } };
+    const execute = vi.fn().mockResolvedValue({ content: "synthetic memory" });
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId, runId,
+      assignedMcpTools: { definitions: () => [tool], has: (name) => name === tool.name, execute },
+    });
+    expect(authority.definitions()).toContainEqual(tool);
+    const call = { tool: tool.name, callId: "assigned-mcp", arguments: { query: "compass" } };
+    await expect(authority.execute(call)).resolves.toEqual({ content: "synthetic memory" });
+    expect(execute).toHaveBeenCalledWith(call, "standard");
+    await db.update(issues).set({ workMode: "ask" }).where(eq(issues.id, issueId));
+    try {
+      await authority.execute(call);
+      expect(execute).toHaveBeenLastCalledWith(call, "ask");
+    } finally {
+      await db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, issueId));
+    }
+    execute.mockClear();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(authority.execute(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
   it("does not advertise delegation tools during pre-acceptance planning", () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,
@@ -474,7 +667,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     const progressActivity = await db
       .select()
       .from(activityLog)
-      .where(eq(activityLog.entityId, issueId));
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.comment_added")));
     expect(progressActivity).toHaveLength(1);
     expect(progressActivity[0]).toMatchObject({
       action: "issue.comment_added",

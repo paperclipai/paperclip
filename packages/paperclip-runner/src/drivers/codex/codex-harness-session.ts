@@ -137,6 +137,8 @@ export class CodexHarnessSession
 
   async startTurn(input: {
     message: NativeUserMessage;
+    /** Set by orchestration only after successful provider-session recovery. */
+    continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
   }): Promise<{
     turnId: string;
@@ -160,10 +162,15 @@ export class CodexHarnessSession
       );
     }
     const dispositionOnlyRecovery = this.dispositionOnlyRecoveryAvailable;
+    // A native continuation already carries just new events and the current
+    // completion IDs. Do not wrap it in the prior task objective/constraints
+    // or re-invoke a skill whose instructions are already in this session.
+    const continuationTurn = input.continuation === true;
+    const turnSkills = continuationTurn ? [] : this.skillInputs;
     const taskText =
       this.conversationMode === "direct"
         ? input.message.text
-        : dispositionOnlyRecovery
+        : dispositionOnlyRecovery || continuationTurn
           ? input.message.text
           : JSON.stringify({
               task: this.taskEnvelope,
@@ -192,6 +199,7 @@ export class CodexHarnessSession
     this.emit("turn.submitted", {
       envelopeSchema: this.taskEnvelope.schema,
       text: input.message.text,
+      ...(turnSkills.length ? { skillInputs: turnSkills } : {}),
       requestedCollaborationMode:
         input.requestedCollaborationMode ?? effectiveCollaborationMode,
       effectiveCollaborationMode,
@@ -215,7 +223,15 @@ export class CodexHarnessSession
         ...(this.opened.collaborationMode === null
           ? {}
           : { collaborationMode: this.opened.collaborationMode }),
-        input: [userInput({ role: "user", text: taskText })],
+        input: [
+          userInput({
+            role: "user",
+            text: turnSkills.length
+              ? `${turnSkills.map((skill) => `$${skill.name}`).join(" ")}\n\n${taskText}`
+              : taskText,
+          }),
+          ...turnSkills,
+        ],
         ...(this.conversationMode === "direct"
           ? {}
           : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),

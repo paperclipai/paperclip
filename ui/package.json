@@ -74,6 +74,7 @@
     "yjs": "13.6.32"
   },
   "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
     "@sentry/browser": "10.71.0",
     "@storybook/addon-a11y": "10.5.10",
     "@storybook/addon-docs": "10.5.10",

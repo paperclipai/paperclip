@@ -67,6 +67,102 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
 }
 
 describe("runner E2E campaign history", () => {
+  it("does not let empty legacy provenance hide a later measured source", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-legacy-source-"));
+    temporaryDirectories.push(root);
+    const source = {
+      sha: "measured-source-sha", ref: "refs/heads/measured-source",
+      workflowRunUrl: "https://example.test/actions/runs/1",
+    };
+    const results = [
+      { ...result(runnerMatrix[0]!, "passed"), schema: "paperclip.runner-e2e.result/v1" },
+      { ...result(runnerMatrix[1]!, "passed"), source },
+    ];
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify({
+      campaignId: "legacy-source", generatedAt: results[0]!.finishedAt,
+      expected: results.map((entry) => entry.executionId), results,
+    }));
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "renderer-sha");
+    vi.stubEnv("GITHUB_EVENT_NAME", "push");
+    await regenerateRunnerDashboard({ bundle: root });
+    const regenerated = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(regenerated.source).toEqual({ ...source, eventName: null });
+    expect(regenerated.results[0].source).toEqual({ sha: null, ref: null, workflowRunUrl: null });
+    expect(regenerated.passed).toBe(2);
+  });
+
+  it.each(["workflow_dispatch", null, undefined])("preserves retained source during regeneration (event %s)", async (eventName) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-retained-source-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0]!;
+    const source = {
+      sha: "measured-source-sha", ref: "refs/heads/measured-source",
+      workflowRunUrl: "https://example.test/actions/runs/1",
+    };
+    const retainedResult = { ...result(execution, "passed"), source };
+    const campaign = buildRunnerCampaign({
+      campaignId: "retained-source", generatedAt: retainedResult.finishedAt,
+      expected: [execution.id], results: [retainedResult],
+    });
+    const published = { ...campaign, source: eventName === undefined ? undefined : { ...source, eventName } };
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(published));
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "renderer-sha");
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_REF", "refs/heads/renderer");
+    vi.stubEnv("GITHUB_EVENT_NAME", "push");
+    await regenerateRunnerDashboard({ bundle: root });
+    const regenerated = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(regenerated.source).toEqual({ ...source, eventName: eventName ?? null });
+    expect(regenerated.results).toEqual(campaign.results.map((entry) => ({ ...entry, evidenceValid: true, evidenceErrors: [] })));
+    expect(regenerated.generatedAt).toBe(campaign.generatedAt);
+  });
+
+  it("retains incomplete journeys in campaign, suite and history without marking them green", () => {
+    const execution = runnerMatrix.find(e => e.suite.id === "first-task")!;
+    const incomplete: RunnerE2EResult = {
+      ...result(execution, "failed"), failureClass: "candidate_failure",
+      firstTask: {
+        caseId: execution.task.id, nonce: "fixture", onboardingIssueId: "issue", agentId: "agent",
+        initialTaskIds: ["issue"], instructions: [], configuredModel: null, observedModels: [], checkpoints: [],
+        checks: [{ id: "acceptance-recorded", passed: false, detail: "Acceptance", evidence: [], notReached: "Recording stopped" }],
+      },
+    };
+    const campaign = buildRunnerCampaign({ campaignId: "incomplete", generatedAt: incomplete.finishedAt, expected: [execution.id], results: [incomplete] });
+    expect(campaign).toMatchObject({ passed: 0, failed: 0, incomplete: 1 });
+    expect(campaign.suites[0]).toMatchObject({ passed: 0, failed: 0, incomplete: 1 });
+    const record = campaignHistoryRecord(campaign, "https://example.test");
+    expect(record.executions[0].status).toBe("incomplete");
+    const history = mergeRunnerHistory(null, { ...record, complete: true, suites: record.suites.map(s => ({ ...s, complete: true })) });
+    expect(history.latestGreenCampaignId).toBeNull();
+    expect(history.latestGreenBySuite["first-task"]).toBeUndefined();
+    expect(renderRunnerHistoryIndex(history)).toContain("1 incomplete");
+    expect(renderRunnerE2EDashboard({ title: "History", generatedAt: incomplete.finishedAt, expected: [], catalog: [], entries: [], history })).toContain('data-history-status="incomplete"');
+  });
+
+  it("shows unknown campaign costs without plotting zero dollars", () => {
+    const execution = runnerMatrix[0];
+    const campaign = buildRunnerCampaign({ campaignId: "unknown-cost", generatedAt: "2026-09-15T00:00:00Z", expected: [execution.id], results: [result(execution, "passed")] });
+    campaign.billing.observedAndEstimatedCostUsd = null;
+    const record = { ...campaignHistoryRecord(campaign, "https://example.test"), complete: true };
+    const history = mergeRunnerHistory(null, record);
+    expect(renderRunnerHistoryIndex(history)).toContain("Unknown");
+    const dashboard = renderRunnerE2EDashboard({ title: "History", generatedAt: campaign.generatedAt, expected: [], catalog: [], entries: [], history });
+    expect(dashboard).toContain("Unknown measurements are not plotted");
+    expect(dashboard).not.toContain("NaN");
+  });
+
+  it("does not turn a clean-evidence behavior failure into a pass when regenerating", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-failed-evidence-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0];
+    const failedResult = { ...result(execution, "failed"), failureClass: "candidate_failure" as const, error: "Behavior check failed", evidenceValid: true, evidenceErrors: [] };
+    const campaign = buildRunnerCampaign({ campaignId: "failed", generatedAt: failedResult.finishedAt, expected: [execution.id], results: [failedResult] });
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify({ ...campaign, results: [failedResult] }));
+    await regenerateRunnerDashboard({ bundle: root });
+    const page = await readFile(path.join(root, "index.html"), "utf8");
+    expect(page).toContain('class="case case-failed"');
+    expect(page).not.toContain('class="case case-passed"');
+  });
+
   it("records the resolved paid target instead of the trusted workflow checkout", () => {
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "target-sha");
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_REF", "refs/heads/target");
@@ -202,10 +298,10 @@ describe("runner E2E campaign history", () => {
       "campaigns/complete-red/public-images/campaign-summary.png",
     );
     expect(index).toContain(
-      "declared screenshots, and sanitized structured evidence",
+      "declared screenshots, and normalized results",
     );
     expect(index).toContain(
-      "Declared screenshots and inert structured evidence",
+      "Declared screenshots and normalized results",
     );
     expect(index).not.toContain("data-gallery-dialog");
     expect(index).not.toContain("Configuration matrix");
@@ -213,6 +309,32 @@ describe("runner E2E campaign history", () => {
 });
 
 describe("historical publication security", () => {
+  it.each([
+    "snapshots/api-state.json", "server.log", "playwright.log", "result.json",
+    "renamed-diagnostic.md", "nested/provider.txt", "malformed.json",
+  ])("withholds raw diagnostic %s even after credential redaction", async (file) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-private-evidence-"));
+    temporaryDirectories.push(root);
+    const relative = `evidence/fixture.local.case/attempt-1/${file}`;
+    const absolute = path.join(root, relative);
+    const text = file === "malformed.json" ? "{malformed PRIVATE_REASONING" : JSON.stringify({
+      apiKey: "[REDACTED]",
+      runEvents: [{ payload: { prpEvent: { payload: {
+        kind: "reasoning", text: "PRIVATE_REASONING", sessionId: "PRIVATE_SESSION",
+      } } } }],
+      runLogs: [{ log: { content: JSON.stringify({ reasoning: "PRIVATE_REASONING" }) } }],
+    });
+    await mkdir(path.dirname(absolute), { recursive: true });
+    await writeFile(absolute, text);
+    expect(isHistoricalBundlePathAllowed(relative)).toBe(false);
+    // A text file cannot be admitted by pretending it is a declared screenshot.
+    expect(isHistoricalBundlePathAllowed(relative, false, new Set([relative]))).toBe(false);
+    await expect(createBundleManifest(root, "private-diagnostics")).rejects.toThrow("non-allowlisted");
+    await prunePrivateHistoryEvidence(root);
+    await expect(readFile(absolute)).rejects.toThrow();
+    expect((await createBundleManifest(root, "private-diagnostics")).files).toEqual([]);
+  });
+
   it("allows public capture only on an issue task route", () => {
     const target = {
       issuePrefix: "PAP",
@@ -332,10 +454,10 @@ describe("historical publication security", () => {
     );
     expect(dashboard).toContain("View gallery · 1");
     expect(dashboard).toContain(
-      "Declared PNG screenshots and sanitized structured evidence are retained with every published campaign",
+      "Declared PNG screenshots and normalized results are retained with every published campaign",
     );
     expect(dashboard).toContain(
-      "Declared screenshots and sanitized structured evidence published",
+      "Declared screenshots and normalized results published",
     );
     await expect(
       readFile(path.join(evidenceDirectory, "final-state.png")),
@@ -357,13 +479,13 @@ describe("historical publication security", () => {
     ).rejects.toThrow();
     await expect(
       readFile(path.join(evidenceDirectory, "result.json"), "utf8"),
-    ).resolves.toBe("{}\n");
+    ).rejects.toThrow();
     await expect(
       readFile(
         path.join(evidenceDirectory, "snapshots", "api-state.json"),
         "utf8",
       ),
-    ).resolves.toBe("{}\n");
+    ).rejects.toThrow();
     expect(
       JSON.parse(
         await readFile(path.join(output, "normalized-results.json"), "utf8"),
@@ -437,7 +559,7 @@ describe("historical publication security", () => {
     }
     await expect(
       readFile(path.join(evidenceDirectory, "server.log"), "utf8"),
-    ).resolves.toBe("sanitized\n");
+    ).rejects.toThrow();
     const summaryHtml = renderPublicCampaignSummary(campaign);
     expect(summaryHtml).toContain(execution.suite.label);
     expect(summaryHtml).not.toContain("PROVIDER_TEXT_MUST_NOT_RENDER");
@@ -700,12 +822,12 @@ describe("historical publication security", () => {
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/result.json",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/snapshots/api-state.json",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(isHistoricalBundlePathAllowed("paperclip-home/database")).toBe(
       false,
     );

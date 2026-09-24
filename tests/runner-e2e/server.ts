@@ -1,3 +1,5 @@
+import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
+import { qualifyLegacyClaudeCli } from "./legacy-claude-cli.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -21,8 +23,7 @@ const paperclipHome = required("PAPERCLIP_HOME");
 const configPath = required("PAPERCLIP_CONFIG");
 const port = required("PAPERCLIP_RUNNER_E2E_PORT");
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-const tsxCli = path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs");
-const paperclipCli = path.join(repositoryRoot, "cli/src/index.ts");
+const paperclipCli = path.join(repositoryRoot, "tests/runner-e2e/server-entry.ts");
 const {
   controlDirectory,
   restartRequestPath,
@@ -110,7 +111,7 @@ function startServer() {
   }
   const candidate = spawn(
     process.execPath,
-    [tsxCli, paperclipCli, "onboard", "--yes", "--run"],
+    runnerE2ETypeScriptProcessArgs(repositoryRoot, paperclipCli, ["onboard", "--yes", "--run"]),
     {
       cwd: repositoryRoot,
       env: definedServerEnvironment,
@@ -348,6 +349,10 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 }
 
 async function supervise() {
+  const executionIds: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
+  if (executionIds.some(id => id.includes(".legacy-claude.local."))) {
+    definedServerEnvironment.PATH = await qualifyLegacyClaudeCli(temporaryRoot, definedServerEnvironment);
+  }
   const databaseReservation = await prepareRunnerE2EServerConfig({
     temporaryRoot,
     configPath,

@@ -1,4 +1,5 @@
 import express from "express";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { PgDialect } from "drizzle-orm/pg-core";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,14 +29,19 @@ const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(),
 }));
 
+const mockHeartbeatFactory = vi.hoisted(() => vi.fn());
+
 vi.mock("../services/index.js", () => ({
-  heartbeatService: () => mockHeartbeatService,
+  heartbeatService: mockHeartbeatFactory,
   issueService: () => mockIssueService,
   issueTreeControlService: () => mockTreeControlService,
   logActivity: mockLogActivity,
 }));
 
-async function createApp(actor: Record<string, unknown>) {
+async function createApp(
+  actor: Record<string, unknown>,
+  pluginWorkerManager?: PluginWorkerManager,
+) {
   const [{ errorHandler }, { issueTreeControlRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/issue-tree-control.js"),
@@ -52,7 +58,7 @@ async function createApp(actor: Record<string, unknown>) {
     where: (predicate: unknown) => { mockReplayWhere(predicate); return mockReplayBlocks(); },
     limit: mockReplayBlocks,
   };
-  app.use("/api", issueTreeControlRoutes({ select: () => query } as any));
+  app.use("/api", issueTreeControlRoutes({ select: () => query } as any, { pluginWorkerManager }));
   app.use(errorHandler);
   return app;
 }
@@ -60,6 +66,7 @@ async function createApp(actor: Record<string, unknown>) {
 describe("issue tree control routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockHeartbeatFactory.mockReturnValue(mockHeartbeatService);
     mockReplayBlocks.mockResolvedValue([]);
     mockExecutionBlocker.mockResolvedValue(null);
     mockTreeControlService.getHold.mockResolvedValue(null);
@@ -184,6 +191,39 @@ describe("issue tree control routes", () => {
       );
     },
   );
+
+  it("resumes sandbox-backed work through the shared plugin worker manager", async () => {
+    const rootId = "11111111-1111-4111-8111-111111111111";
+    const holdId = "33333333-3333-4333-8333-333333333333";
+    const pluginWorkerManager = { isRunning: () => true } as unknown as PluginWorkerManager;
+    mockHeartbeatFactory.mockImplementation((_db, options) => ({
+      ...mockHeartbeatService,
+      wakeup: async (...args: unknown[]) => {
+        // Lease acquisition needs the process's manager, even when its worker
+        // is already running. A service without it cannot dispatch this run.
+        expect(options?.pluginWorkerManager).toBe(pluginWorkerManager);
+        return mockHeartbeatService.wakeup(...args);
+      },
+    }));
+    mockIssueService.getById.mockResolvedValue({
+      id: rootId, companyId: "company-2", status: "todo", assigneeAgentId: "agent-parent",
+    });
+    mockTreeControlService.releaseHold.mockResolvedValue({
+      id: holdId, mode: "pause", status: "released", members: [{ issueId: rootId }],
+    });
+    const app = await createApp({
+      type: "board", userId: "user-1", companyIds: ["company-2"], source: "session",
+    }, pluginWorkerManager);
+    const response = await request(app)
+      .post(`/api/issues/${rootId}/tree-holds/${holdId}/release`)
+      .send({ metadata: { wakeAgents: true } });
+    expect(response.status).toBe(200);
+    expect(response.body.wakeFailures).toBeUndefined();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith("agent-parent", expect.objectContaining({
+      reason: "issue_tree_resumed",
+      contextSnapshot: expect.objectContaining({ issueId: rootId, source: "issue.tree_resume" }),
+    }));
+  });
 
   it("reports wake failures without undoing release or skipping other assignees", async () => {
     const rootId = "11111111-1111-4111-8111-111111111111";

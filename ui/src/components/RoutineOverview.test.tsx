@@ -166,6 +166,12 @@ describe("RoutineOverview", () => {
     });
   });
 
+  it("describes webhook-only routines as externally triggered", () => {
+    expect(summarizeRoutineSchedule([{ ...routine.triggers[0]!, kind: "webhook", enabled: true }])).toEqual({
+      label: "1 active webhook", detail: "Runs on incoming requests", nextRunAt: null,
+    });
+  });
+
   it("adapts compact run tasks to the canonical task presentation", () => {
     const issue = routineRunIssue(run.linkedIssue!, run, "company-1", "project-1");
     expect(issue).toMatchObject({
@@ -195,9 +201,9 @@ describe("RoutineOverview", () => {
     expect(container.textContent).not.toContain("PRIVATE_TOKEN");
     expect(container.textContent).not.toContain("secret-1");
     expect(issueRowRender).toHaveBeenCalledWith(expect.objectContaining({ presentation: "task" }));
-    expect(container.querySelector('a[href="/activity/runs?entityType=routine&entityId=routine-1"]'))
+    expect(container.querySelector('a[href="/routines/routine-1/runs"]'))
       .not.toBeNull();
-    expect(container.querySelector('a[href="/activity?entityType=routine&entityId=routine-1"]'))
+    expect(container.querySelector('a[href="/routines/routine-1/activity"]'))
       .not.toBeNull();
   });
 });

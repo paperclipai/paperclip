@@ -667,6 +667,10 @@ class HarnessNativeSession implements NativeSession {
 
   async startTurn(input: Parameters<HarnessSession["startTurn"]>[0]) {
     this.#assertProtocolIntegrity();
+    // Stop can arrive after session publication but before the first turn.
+    // The provider has no active turn to interrupt yet. Do not launch work
+    // whose events cancellation would suppress and leave the owner waiting.
+    if (this.#explicitlyCancelled) throw new Error("native_session_cancelled");
     try {
       const started = await this.#session.startTurn(input);
       this.#assertProtocolIntegrity();

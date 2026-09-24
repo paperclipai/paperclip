@@ -76,7 +76,7 @@ describe("buildPaperclipTaskMarkdown", () => {
     });
 
     expect(markdown).toContain(
-      "Address every comment in order. You may answer them together, but do not silently omit any comment.",
+      "Address every comment without repeating completed work.",
     );
     expect(markdown).toContain("Pending wake comments (oldest to newest):");
     expect(markdown).not.toContain("Latest wake comment:");
@@ -419,8 +419,10 @@ describe("buildPaperclipTaskMarkdown", () => {
       },
     });
 
-    expect(commentWake).toContain("The latest wake comment is the immediate request for this run.");
-    expect(commentWake).toContain("Do not repeat an earlier requested output from the issue description");
+    expect(commentWake).toContain("Apply the latest wake comment to the current task.");
+    expect(commentWake).toContain("Later direction replaces conflicting scope");
+    expect(commentWake).toContain("preserve other requirements and approval gates");
+    expect(commentWake).not.toContain("unless the latest comment asks you to");
     expect(commentWake).toContain("Reply with the new answer instead.");
   });
 

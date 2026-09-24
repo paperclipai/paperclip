@@ -22,7 +22,7 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
 
   override componentDidCatch(error: unknown, info: ErrorInfo): void {
     console.error("Page render failed", { error, componentStack: info.componentStack });
-    captureBrowserException(error);
+    captureBrowserException(error, { boundary: "route", componentStack: info.componentStack });
   }
 
   override componentDidUpdate(prevProps: RouteErrorBoundaryInnerProps): void {

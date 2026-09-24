@@ -257,8 +257,6 @@ jobs:
     needs: [gate]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 10
-    outputs:
-      lockfile_regenerated: ${{ steps.regen_lockfile.outputs.regenerated }}
 
     steps:
       - name: Checkout repository
@@ -330,7 +328,7 @@ jobs:
         run: node --test ./scripts/__tests__/e2e-shard.test.mjs
 
       - name: Test release verify workflow wiring
-        run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/cloud-source-verification.test.mjs
+        run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs
 
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
@@ -344,32 +342,14 @@ jobs:
           PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
             node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
 
-      - name: Validate dependency resolution and regenerate stale lockfile
-        id: regen_lockfile
-        run: |
-          cp pnpm-lock.yaml "$RUNNER_TEMP/pnpm-lock.before.yaml"
-          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
-          if cmp -s "$RUNNER_TEMP/pnpm-lock.before.yaml" pnpm-lock.yaml; then
-            echo "regenerated=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "regenerated=1" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Manifest-only and stacked PRs keep pnpm-lock.yaml at the default branch.
-      # Upload a regenerated copy whenever the checked-out merge tree needs one.
-      # Every downstream job then consumes the same hash without recomputing.
-      - name: Upload regenerated lockfile for downstream jobs
-        if: steps.regen_lockfile.outputs.regenerated == '1'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: pr-lockfile
-          path: pnpm-lock.yaml
-          retention-days: 1
-          if-no-files-found: error
+      # Each lane resolves a stale lockfile inline; this early check still
+      # fails fast when the merge tree cannot resolve at all.
+      - name: Validate dependency resolution
+        run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
 
   typecheck_release_registry:
     name: Typecheck + Release Registry
-    needs: [gate, policy]
+    needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
@@ -410,15 +390,68 @@ jobs:
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
 
-      - name: Restore regenerated PR lockfile (if policy uploaded one)
-        if: needs.policy.outputs.lockfile_regenerated == '1'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: pr-lockfile
-          path: .
-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      # typecheck:build-gaps builds @paperclipai/server, whose build script
+      # rebuilds the Runner release binary; without the shared Rust cache that
+      # is a ~3m40s cold compile of all third-party crates (run 35036001734,
+      # 2026-09-15). Same restore-only contract as Verify Paperclip Runner.
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -uo pipefail
+
+          # release-verify.yml runs on a single post-merge fleet image; the
+          # gate here can route to ubuntu-latest or the public PR fleet, so
+          # this tolerates an image without rustup instead of failing every
+          # pull request. Without the pin the cache key simply will not match.
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Runner Rust cache::rustup is unavailable; building with the image default toolchain'
+            exit 0
+          fi
+
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+          # rust-cache hashes every installed toolchain into the cache key, not
+          # only the active one. Each runner image also ships its own stable
+          # Rust, and those disagree across images: 1.98.0 on the RunsOn fleets
+          # against 1.98.1 on ubuntu-latest. Two runners that agreed on the pin
+          # therefore still computed different keys, and every GitHub-hosted
+          # pull request missed this cache while the fleet hit it. Remove every
+          # toolchain except the pin, so the key depends on the pinned compiler
+          # and the lockfile alone rather than on what the image happens to
+          # carry. Keep this block identical in both workflows: the reader and
+          # the writer must agree or the key matches nothing.
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Runner Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+
+      - name: Restore Runner Rust dependencies (read only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: release-runner-v1
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
 
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
@@ -428,7 +461,7 @@ jobs:
 
   general_tests:
     name: General tests (${{ matrix.group_label }})
-    needs: [gate, policy]
+    needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
@@ -438,31 +471,75 @@ jobs:
         include:
           # The server suite is pinned to maxWorkers=1 (server/vitest.config.ts),
           # so it can only be parallelized across runners. Shard it to keep this
-          # lane off the PR critical path. Five shards because the suite has
-          # grown to ~946s of serial vitest wall time (run 30930345729,
-          # 2026-08-04): at four shards the worst shard ran 311s and was the
-          # slowest check in the whole PR run; five brings each shard to ~196s
-          # of suite time (~240s job), level with the other ~250-300s lanes.
-          - group: general-server
-            group_label: server (1/5)
+          # lane off the PR critical path. The suite has grown to ~3184s of
+          # serial vitest wall time (mean of runs 35036001734 and 35024948947,
+          # 2026-09-15): at five plain general-server shards with stale
+          # recorded durations the worst shard ran 806s of tests while the
+          # best ran 417s. This now uses the same shape as release-verify.yml:
+          # the ~429s chat integration suite splits by collected test location
+          # across three dedicated runners (~143s each), and the remaining
+          # ~2755s levels across twelve duration-balanced shards at ~230s
+          # each, in line with the other ~200-290s lanes.
+          - group: general-server-without-chat
+            group_label: server (1/12)
             shard_index: 0
-            shard_count: 5
-          - group: general-server
-            group_label: server (2/5)
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (2/12)
             shard_index: 1
-            shard_count: 5
-          - group: general-server
-            group_label: server (3/5)
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (3/12)
             shard_index: 2
-            shard_count: 5
-          - group: general-server
-            group_label: server (4/5)
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (4/12)
             shard_index: 3
-            shard_count: 5
-          - group: general-server
-            group_label: server (5/5)
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (5/12)
             shard_index: 4
-            shard_count: 5
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (6/12)
+            shard_index: 5
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (7/12)
+            shard_index: 6
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (8/12)
+            shard_index: 7
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (9/12)
+            shard_index: 8
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (10/12)
+            shard_index: 9
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (11/12)
+            shard_index: 10
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (12/12)
+            shard_index: 11
+            shard_count: 12
+          - group: general-chat
+            group_label: chat (1/3)
+            shard_index: 0
+            shard_count: 3
+          - group: general-chat
+            group_label: chat (2/3)
+            shard_index: 1
+            shard_count: 3
+          - group: general-chat
+            group_label: chat (3/3)
+            shard_index: 2
+            shard_count: 3
           # workspaces-a was the slowest check in the fully-green PR run
           # 31371439296 (2026-08-10) at 319s, with the ui project's single
           # vitest invocation accounting for ~224s and the paperclipai CLI
@@ -516,15 +593,18 @@ jobs:
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
 
-      - name: Restore regenerated PR lockfile (if policy uploaded one)
-        if: needs.policy.outputs.lockfile_regenerated == '1'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: pr-lockfile
-          path: .
-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
 
       - name: Run grouped general test suites
         run: |
@@ -606,11 +686,34 @@ jobs:
           esac
 
   verify_paperclip_runner:
-    name: Verify Paperclip Runner
-    needs: [gate, policy]
+    name: Verify Paperclip Runner (${{ matrix.lane_label }})
+    needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # check:all spent ~380s of its ~600s cache-warm step inside the
+          # runner package's vitest suite (run 35036001734, 2026-09-15); the
+          # Rust tests took ~160s and every remaining check ~60s combined,
+          # which made this single job the PR critical path once the test
+          # lanes were rebalanced. Split the vitest suite across two runners
+          # with Vitest's native --shard, the ~160s Rust tests into their own
+          # lane, and the remaining static checks into a fourth. The four
+          # lanes union to exactly check:all: check:static covers
+          # check:eval-kernel, check:protocol-without-vitest, and
+          # check:api-authority; check:runner covers the Rust half; and the
+          # two vitest shards cover the package vitest file list.
+          - lane_label: static checks
+            command: check:static
+          - lane_label: rust
+            command: check:runner
+          - lane_label: vitest 1/2
+            command: test:typescript:vitest --shard=1/2
+          - lane_label: vitest 2/2
+            command: test:typescript:vitest --shard=2/2
 
     steps:
       - name: Checkout repository
@@ -648,15 +751,18 @@ jobs:
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
 
-      - name: Restore regenerated PR lockfile (if policy uploaded one)
-        if: needs.policy.outputs.lockfile_regenerated == '1'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: pr-lockfile
-          path: .
-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
 
       # Same restore-only contract as the pnpm store above, for the Rust
       # dependency tree: master's post-merge verification is the sole writer
@@ -683,6 +789,23 @@ jobs:
           toolchain="$(rustup show active-toolchain | awk '{print $1}')"
           echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
 
+          # rust-cache hashes every installed toolchain into the cache key, not
+          # only the active one. Each runner image also ships its own stable
+          # Rust, and those disagree across images: 1.98.0 on the RunsOn fleets
+          # against 1.98.1 on ubuntu-latest. Two runners that agreed on the pin
+          # therefore still computed different keys, and every GitHub-hosted
+          # pull request missed this cache while the fleet hit it. Remove every
+          # toolchain except the pin, so the key depends on the pinned compiler
+          # and the lockfile alone rather than on what the image happens to
+          # carry. Keep this block identical in both workflows: the reader and
+          # the writer must agree or the key matches nothing.
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Runner Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+
       - name: Restore Runner Rust dependencies (read only)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -695,11 +818,15 @@ jobs:
           save-if: false
 
       - name: Verify Paperclip Runner
-        run: pnpm --filter @paperclipai/paperclip-runner check:all
+        # pnpm appends trailing args to the end of the script's shell chain,
+        # so the vitest lanes' --shard lands on `vitest run`. Do not add a
+        # `--` separator: pnpm forwards it literally and vitest would then
+        # read the shard flag as a test filter.
+        run: pnpm --filter @paperclipai/paperclip-runner ${{ matrix.command }}
 
   build:
     name: Build
-    needs: [gate, policy]
+    needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
@@ -740,15 +867,68 @@ jobs:
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
 
-      - name: Restore regenerated PR lockfile (if policy uploaded one)
-        if: needs.policy.outputs.lockfile_regenerated == '1'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: pr-lockfile
-          path: .
-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      # pnpm build reaches the Runner package's build:binary step; without the
+      # shared Rust cache that is a ~3m40s cold compile of all third-party
+      # crates (run 35036001734, 2026-09-15). Same restore-only contract as
+      # Verify Paperclip Runner.
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -uo pipefail
+
+          # release-verify.yml runs on a single post-merge fleet image; the
+          # gate here can route to ubuntu-latest or the public PR fleet, so
+          # this tolerates an image without rustup instead of failing every
+          # pull request. Without the pin the cache key simply will not match.
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Runner Rust cache::rustup is unavailable; building with the image default toolchain'
+            exit 0
+          fi
+
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+          # rust-cache hashes every installed toolchain into the cache key, not
+          # only the active one. Each runner image also ships its own stable
+          # Rust, and those disagree across images: 1.98.0 on the RunsOn fleets
+          # against 1.98.1 on ubuntu-latest. Two runners that agreed on the pin
+          # therefore still computed different keys, and every GitHub-hosted
+          # pull request missed this cache while the fleet hit it. Remove every
+          # toolchain except the pin, so the key depends on the pinned compiler
+          # and the lockfile alone rather than on what the image happens to
+          # carry. Keep this block identical in both workflows: the reader and
+          # the writer must agree or the key matches nothing.
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Runner Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+
+      - name: Restore Runner Rust dependencies (read only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: release-runner-v1
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
 
       - name: Build Runner Evalbook viewer
         run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
@@ -758,7 +938,7 @@ jobs:
 
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
-    needs: [gate, policy]
+    needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
@@ -766,27 +946,41 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # A successful PR run on 2026-08-17 (32012408876) spent 291s in
-          # serialized shard 1/5 while its siblings ran 170-201s: round-robin
-          # clustered the heavy suites on one runner. Shards are now balanced
-          # by recorded duration (scripts/serialized-shard-durations.json),
-          # which levels the measured 968s suite total to about 194s per
-          # runner before setup overhead.
+          # Shards are balanced by recorded duration
+          # (scripts/serialized-shard-durations.json, refreshed 2026-09-12);
+          # round-robin used to cluster the heavy suites on one runner (291s
+          # vs 170-201s in run 32012408876, 2026-08-17). The suite total has
+          # since grown to ~1926s recorded: five shards ran ~390s of tests
+          # each while the rebalanced general/e2e lanes run ~210-260s, so
+          # nine shards level this lane to ~214s and keep it off the
+          # critical path.
           - shard_index: 0
-            shard_count: 5
-            shard_label: 1/5
+            shard_count: 9
+            shard_label: 1/9
           - shard_index: 1
-            shard_count: 5
-            shard_label: 2/5
+            shard_count: 9
+            shard_label: 2/9
           - shard_index: 2
-            shard_count: 5
-            shard_label: 3/5
+            shard_count: 9
+            shard_label: 3/9
           - shard_index: 3
-            shard_count: 5
-            shard_label: 4/5
+            shard_count: 9
+            shard_label: 4/9
           - shard_index: 4
-            shard_count: 5
-            shard_label: 5/5
+            shard_count: 9
+            shard_label: 5/9
+          - shard_index: 5
+            shard_count: 9
+            shard_label: 6/9
+          - shard_index: 6
+            shard_count: 9
+            shard_label: 7/9
+          - shard_index: 7
+            shard_count: 9
+            shard_label: 8/9
+          - shard_index: 8
+            shard_count: 9
+            shard_label: 9/9
 
     steps:
       - name: Checkout repository
@@ -824,22 +1018,25 @@ jobs:
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
 
-      - name: Restore regenerated PR lockfile (if policy uploaded one)
-        if: needs.policy.outputs.lockfile_regenerated == '1'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: pr-lockfile
-          path: .
-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
 
       - name: Run serialized server test shard
         run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
 
   canary_dry_run:
     name: Canary Dry Run
-    needs: [gate, policy]
+    needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
@@ -880,43 +1077,91 @@ jobs:
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
 
-      - name: Restore regenerated PR lockfile (if policy uploaded one)
-        if: needs.policy.outputs.lockfile_regenerated == '1'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: pr-lockfile
-          path: .
-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      # release.sh's Step 2/7 workspace build reaches the Runner package's
+      # build:binary step; without the shared Rust cache that is a ~3m40s cold
+      # compile of all third-party crates (run 35036001734, 2026-09-15). Same
+      # restore-only contract as Verify Paperclip Runner.
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -uo pipefail
+
+          # release-verify.yml runs on a single post-merge fleet image; the
+          # gate here can route to ubuntu-latest or the public PR fleet, so
+          # this tolerates an image without rustup instead of failing every
+          # pull request. Without the pin the cache key simply will not match.
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Runner Rust cache::rustup is unavailable; building with the image default toolchain'
+            exit 0
+          fi
+
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+          # rust-cache hashes every installed toolchain into the cache key, not
+          # only the active one. Each runner image also ships its own stable
+          # Rust, and those disagree across images: 1.98.0 on the RunsOn fleets
+          # against 1.98.1 on ubuntu-latest. Two runners that agreed on the pin
+          # therefore still computed different keys, and every GitHub-hosted
+          # pull request missed this cache while the fleet hit it. Remove every
+          # toolchain except the pin, so the key depends on the pinned compiler
+          # and the lockfile alone rather than on what the image happens to
+          # carry. Keep this block identical in both workflows: the reader and
+          # the writer must agree or the key matches nothing.
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Runner Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+
+      - name: Restore Runner Rust dependencies (read only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: release-runner-v1
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
 
       # `release.sh` always executes its Step 2/7 workspace build, even when
       # `--skip-verify` bypasses the initial verification gate. release.sh
-      # also requires a clean working tree, so any in-place lockfile churn
-      # from `pnpm install --frozen-lockfile` must be reverted first — unless
-      # the policy job uploaded a regenerated lockfile (manifest-changing
-      # PRs), in which case we stage the artifact-restored copy into an
-      # ephemeral local commit so release.sh sees a clean tree and its
-      # workspace build sees a lockfile that matches the manifest.
+      # also requires a clean working tree, and the install step may have
+      # resolved a stale lockfile in place (manifest-changing or stacked
+      # PRs), so stage any changed lockfile into an ephemeral local commit:
+      # release.sh then sees a clean tree and its workspace build sees a
+      # lockfile that matches the manifests.
       - name: Release canary dry run via release.sh internal build
-        env:
-          USED_ARTIFACT_LOCKFILE: ${{ needs.policy.outputs.lockfile_regenerated || '0' }}
         run: |
           git checkout -B master HEAD
-          if [ "$USED_ARTIFACT_LOCKFILE" = "1" ]; then
-            git add pnpm-lock.yaml
-            if ! git diff --cached --quiet; then
-              git -c user.email=ci@paperclip.local -c user.name=CI \
-                commit --no-verify -m "ci(canary): stage regenerated lockfile"
-            fi
-          else
+          if git diff --quiet pnpm-lock.yaml; then
             git checkout -- pnpm-lock.yaml
+          else
+            git add pnpm-lock.yaml
+            git -c user.email=ci@paperclip.local -c user.name=CI \
+              commit --no-verify -m "ci(canary): stage regenerated lockfile"
           fi
           ./scripts/release.sh canary --skip-verify --dry-run
 
   e2e_shards:
     name: e2e shard (${{ matrix.shard_label }})
-    needs: [gate, policy]
+    needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 30
@@ -928,18 +1173,37 @@ jobs:
           # because every spec shares one throwaway server and some toggle
           # instance-level flags, so it can only be parallelized across runners.
           # Each shard boots its own server, which keeps that isolation intact.
-          # Three shards let the ~3min smoke-lab spec ride alone while the rest
-          # of the catalog splits evenly, pulling this lane off the PR critical
-          # path (it was the slowest check at ~8min20s with two shards).
+          # The catalog has grown to ~1694s of serial spec time (mean of runs
+          # 35036001734 and 35024948947, 2026-09-15): with three shards and
+          # stale durations the worst shard ran 745s of specs while the best
+          # ran 277s. The former floors — chat-adapters-ui at ~442s and
+          # agent-chat at ~310s — are each split into two specs, so eight
+          # shards with refreshed durations level to ~212s each; the heaviest
+          # remaining single spec is chat-adapters-ui-messaging at ~242s.
           - shard_index: 0
-            shard_count: 3
-            shard_label: 1/3
+            shard_count: 8
+            shard_label: 1/8
           - shard_index: 1
-            shard_count: 3
-            shard_label: 2/3
+            shard_count: 8
+            shard_label: 2/8
           - shard_index: 2
-            shard_count: 3
-            shard_label: 3/3
+            shard_count: 8
+            shard_label: 3/8
+          - shard_index: 3
+            shard_count: 8
+            shard_label: 4/8
+          - shard_index: 4
+            shard_count: 8
+            shard_label: 5/8
+          - shard_index: 5
+            shard_count: 8
+            shard_label: 6/8
+          - shard_index: 6
+            shard_count: 8
+            shard_label: 7/8
+          - shard_index: 7
+            shard_count: 8
+            shard_label: 8/8
 
     steps:
       - name: Checkout repository
@@ -977,15 +1241,18 @@ jobs:
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
 
-      - name: Restore regenerated PR lockfile (if policy uploaded one)
-        if: needs.policy.outputs.lockfile_regenerated == '1'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: pr-lockfile
-          path: .
-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
 
       - name: Verify runner Chrome
         # GitHub's Ubuntu runner image already ships Google Chrome, so use that

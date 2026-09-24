@@ -28,7 +28,7 @@ const HANDLE: AcpRuntimeHandle = {
 };
 
 describe("Codex ACPX runtime adapter", () => {
-  it("stops a turn with an actionable error when approval has no handler", async () => {
+  it.each(["approve-reads", "approve-paperclip"] as const)("%s stops unassigned operations when approval has no handler", async (permissionMode) => {
     const runtime = fakeRuntime();
     let runtimeOptions: AcpRuntimeOptions | undefined;
     let signal: AbortSignal | undefined;
@@ -47,12 +47,14 @@ describe("Codex ACPX runtime adapter", () => {
       } as ReturnType<AcpRuntime["startTurn"]>;
     });
     const options = openOptions(fakeCommand());
-    options.permissionMode = "approve-reads";
+    options.permissionMode = permissionMode;
     const port = await openCodexAcpxRuntime(options, {
       createRegistry: () => registry(),
       createStore: () => store(),
       createRuntime: (created) => { runtimeOptions = created; return runtime; },
     });
+    expect(runtimeOptions!.permissionMode).toBe("approve-reads");
+    expect(runtimeOptions!.permissionPolicy).toMatchObject({ defaultAction: "escalate" });
     const turn = port.startTurn({ text: "Attempt a write.", requestId: "permission-test" });
     try {
       await runtimeOptions!.onPermissionRequest!({
@@ -1635,6 +1637,7 @@ describe("Codex ACPX runtime adapter", () => {
     ["codex", "gpt-5.6-sol", "deny-all", { outcome: "reject_once" }],
     ["claude", "claude-sonnet-5", "approve-all", { outcome: "allow_once" }],
     ["claude", "claude-sonnet-5", "approve-reads", { outcome: "reject_once" }],
+    ["claude", "claude-sonnet-5", "approve-paperclip", { outcome: "reject_once" }],
     ["claude", "claude-sonnet-5", "deny-all", { outcome: "reject_once" }],
   ] as const)(
     "applies the %s/%s ACPX profile's %s mode without an implicit prompt bridge",

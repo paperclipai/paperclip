@@ -13,6 +13,7 @@ import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -38,6 +39,29 @@ export function continuationOriginCommentIds(context: unknown): string[] {
   ];
 }
 
+/** Keep service/tool results and generated summaries out of human authority. */
+export function projectHumanInteractionResponse(row: {
+  id: string; kind: string; status: string; result: unknown;
+  resolvedByUserId: string | null; resolvedByAgentId: string | null;
+  resolvedByRunId: string | null; resolvedAt: Date | null;
+}): NonNullable<ExecutionContinuationEnvelope["humanResponses"]>[number] | null {
+  if (!row.resolvedByUserId || row.resolvedByAgentId || row.resolvedByRunId || !row.resolvedAt) return null;
+  const result = object(row.result);
+  let response: Record<string, unknown>;
+  if (row.kind === "ask_user_questions" && row.status === "answered" && Array.isArray(result.answers)) {
+    response = { answers: result.answers.map(value => {
+      const answer = object(value);
+      return { questionId: answer.questionId, optionIds: answer.optionIds, otherText: answer.otherText };
+    }) };
+  } else if (["request_confirmation", "request_checkbox_confirmation"].includes(row.kind)
+    && ["accepted", "rejected"].includes(row.status) && result.outcome === row.status) {
+    response = { outcome: result.outcome, reason: result.reason,
+      ...(Array.isArray(result.selectedOptionIds) ? { selectedOptionIds: result.selectedOptionIds } : {}) };
+  } else return null;
+  return { id: row.id, kind: row.kind, status: row.status, resolvedByUserId: row.resolvedByUserId,
+    resolvedAt: row.resolvedAt.toISOString(), result: response };
+}
+
 /** Also retain user direction delivered after the source run's initial wake. */
 export async function currentContinuationOrigins(
   db: Db,
@@ -45,6 +69,18 @@ export async function currentContinuationOrigins(
   issueId: string,
   context: unknown,
 ): Promise<string[]> {
+  const candidates = continuationOriginCommentIds(context);
+  // A run may create an interaction on another task. Its own comments do not
+  // become authority on that task. Keep unknown references for dispatch to
+  // reject, rather than silently claiming complete context.
+  const foreignComments = candidates.length
+    ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
+        eq(issueComments.companyId, companyId),
+        sql`${issueComments.issueId} != ${issueId}`,
+        inArray(sql<string>`${issueComments.id}::text`, candidates),
+      ))
+    : [];
+  const foreignIds = new Set(foreignComments.map(row => row.id));
   const [latest] = await db
     .select({ id: issueComments.id })
     .from(issueComments)
@@ -62,7 +98,7 @@ export async function currentContinuationOrigins(
     .limit(1);
   return [
     ...new Set([
-      ...continuationOriginCommentIds(context),
+      ...candidates.filter(id => !foreignIds.has(id)),
       ...(latest ? [latest.id] : []),
     ]),
   ];
@@ -120,33 +156,48 @@ export async function buildExecutionContinuation(input: {
   );
   const explicitContinuation = object(input.context.explicitUserContinuation);
   const explicitUserSource = string(explicitContinuation.previousRunId);
-  const sourceRunId =
+  const resumeSourceRunId =
     explicitUserSource ??
-    triggerInteraction?.sourceRunId ??
     string(input.context.retryOfRunId) ??
     string(input.context.previousRunId) ??
     string(input.context.interruptedRunId);
-  const sourceRun = sourceRunId
-    ? (
-        await db
-          .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.companyId, companyId),
-              eq(heartbeatRuns.id, sourceRunId),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            ),
-          )
-      )[0]
-    : null;
-  if (sourceRunId && !sourceRun)
+  const producerRunId = triggerInteraction?.sourceRunId ?? null;
+  const sourceRunId = resumeSourceRunId ?? producerRunId;
+  const loadRun = async (id: string) => (await db
+    .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, id)))
+  )[0];
+  const candidate = sourceRunId ? await loadRun(sourceRunId) : null;
+  // An interaction producer is provenance. Explicit resume history must still
+  // belong to this task, and only task-scoped content can enter the envelope.
+  const sourceRun = object(candidate?.context).issueId === issueId ? candidate : null;
+  if ((sourceRunId && !candidate) || (resumeSourceRunId && !sourceRun))
     throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
+  const producer = producerRunId === sourceRunId ? candidate
+    : producerRunId ? await loadRun(producerRunId) : null;
+  if (producerRunId && !producer) throw new Error("continuation_source_context_missing");
+  const producerIssueId = string(object(producer?.context).issueId);
+  const producerOrigins = new Set(continuationOriginCommentIds(producer?.context));
+  const recordedOrigins = triggerInteraction?.originCommentIds ?? [];
+  const inheritedOrigins = recordedOrigins.filter(id => producerOrigins.has(id));
+  // Older interactions copied the producer's origins without task scope.
+  // Ignore only references proven to be comments on that producer's other
+  // task. Missing rows, unrelated references, and explicit wake origins keep
+  // the existing fail-closed check below.
+  const inheritedForeignComments = producerIssueId && producerIssueId !== issueId && inheritedOrigins.length
+    ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
+        eq(issueComments.companyId, companyId),
+        sql`${issueComments.issueId}::text = ${producerIssueId}`,
+        inArray(sql<string>`${issueComments.id}::text`, inheritedOrigins),
+      ))
+    : [];
+  const inheritedForeignIds = new Set(inheritedForeignComments.map(row => row.id));
   const originCommentIds = [
     ...new Set([
       ...continuationOriginCommentIds(input.context),
       ...continuationOriginCommentIds(sourceRun?.context),
-      ...(triggerInteraction?.originCommentIds ?? []),
+      ...recordedOrigins.filter(id => !inheritedForeignIds.has(id)),
       ...(triggerInteraction?.sourceCommentId
         ? [triggerInteraction.sourceCommentId]
         : []),
@@ -334,14 +385,18 @@ export async function buildExecutionContinuation(input: {
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
     messages,
-    interactionOutcomes: interactions
+    humanResponses: interactions.flatMap(row => {
+      const response = projectHumanInteractionResponse(row);
+      return response ? [response] : [];
+    }),
+    interactionOutcomes: [...interactions
       .filter((row) => row.status !== "pending")
       .map((row) => ({
         id: row.id,
         kind: row.kind,
         status: row.status,
         result: row.result,
-      })),
+      })), ...await childReviewOutcomes(db, companyId, issueId)],
     // Low-trust evidence only: renderPaperclipWakePrompt removes completedWork
     // from requestContext and encodes it in the fenced, non-authoritative
     // continuation-evidence section. It cannot supply objective or authority.

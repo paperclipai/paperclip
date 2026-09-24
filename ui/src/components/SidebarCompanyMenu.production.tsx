@@ -45,6 +45,8 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
+import { PluginOrganizationSwitcher } from "./PluginOrganizationSwitcher";
+
 interface SidebarCompanyMenuProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -212,7 +214,15 @@ function SortableCompanyItem({
   );
 }
 
-export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
+export function SidebarCompanyMenu(props: SidebarCompanyMenuProps = {}) {
+  return (
+    <PluginOrganizationSwitcher {...props}>
+      <BuiltinCompanyMenu {...props} />
+    </PluginOrganizationSwitcher>
+  );
+}
+
+function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =

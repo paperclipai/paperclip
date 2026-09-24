@@ -35,16 +35,16 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   selectPaperclipTaskMarkdown,
+  selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
   resolveLegacyPaperclipDesiredSkillNames,
-  stringifyPaperclipWakePayload,
   refreshPaperclipWorkspaceEnvForExecution,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
-import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
+import { grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -58,7 +58,7 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
+function hasNonEmptyEnvValue(env: Record<string, string | undefined>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
 }
@@ -285,7 +285,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const linkedIssueIds = Array.isArray(context.issueIds)
       ? context.issueIds.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
       : [];
-    const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
     const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
     if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
     if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
@@ -294,7 +293,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
     if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
     if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-    if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
     refreshPaperclipWorkspaceEnvForExecution({
       env,
       envConfig,
@@ -314,13 +312,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Held before the remote block below, so the remote lane can stage this
     // same host home into the sandbox without re-resolving it.
     const hostGrokHome = config.managedAiConnection ? asString(env.GROK_HOME, "") : resolveManagedGrokHomeDir(process.env, agent.companyId);
-    // Subscription mode (no XAI_API_KEY): point the run at the company-scoped
-    // Grok home a completed device login wrote. Leaves the API-key path below
-    // (`resolveBillingType`) unchanged when the key exists.
-    const isGrokSubscriptionMode =
-      !hasNonEmptyEnvValue(env, "XAI_API_KEY") && (Boolean(config.managedAiConnection) || !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY"));
+    // Subscription mode (no XAI_API_KEY): pin GROK_HOME to the company-scoped
+    // home a completed device login wrote. Do not pin an empty local home —
+    // that shadows the host `~/.grok` login and fails with "Not signed in"
+    // (#13568). Remote/sandbox runs and managed AI connections still pin so
+    // they cannot fall through to the host credential. The API-key path below
+    // (`resolveBillingType`) stays unchanged when the key exists.
+    // Explicit empty overrides clear inherited API keys in the child process.
+    // Use the same precedence here when selecting its credential home.
+    const isGrokSubscriptionMode = !hasNonEmptyEnvValue(
+      config.managedAiConnection ? env : { ...process.env, ...env },
+      "XAI_API_KEY",
+    );
     if (isGrokSubscriptionMode) {
-      env.GROK_HOME = hostGrokHome;
+      const pinManagedHome =
+        executionTargetIsRemote ||
+        Boolean(config.managedAiConnection) ||
+        (hostGrokHome.length > 0 && await grokHomeHasUsableAuth(hostGrokHome));
+      if (pinManagedHome) {
+        env.GROK_HOME = hostGrokHome;
+      }
     }
 
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
@@ -479,7 +490,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       context,
     };
     const taskContextNote = context.conversationMode === true
-      ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) })
+      ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId), includeCommunicationGuidance: false })
       : "";
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
       conversationMode: context.conversationMode === true,
@@ -493,7 +504,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
-    const prompt = joinPromptSections([
+    const basePrompt = joinPromptSections([
       wakePrompt,
       taskContextNote,
       sessionHandoffNote,
@@ -502,7 +513,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       renderedPrompt,
     ]);
     const promptMetrics = {
-      promptChars: prompt.length,
+      promptChars: basePrompt.length,
       wakePromptChars: wakePrompt.length,
       taskContextChars: taskContextNote.length,
       sessionHandoffChars: sessionHandoffNote.length,
@@ -510,7 +521,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
-    const buildArgs = (resumeSessionId: string | null) => {
+    const buildArgs = (resumeSessionId: string | null, prompt: string) => {
       const args = ["--cwd", effectiveExecutionCwd, "--output-format", "streaming-json"];
       if (resumeSessionId) args.push("--resume", resumeSessionId);
       if (model && model !== DEFAULT_GROK_LOCAL_MODEL) args.push("--model", model);
@@ -531,7 +542,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
-      const args = buildArgs(resumeSessionId);
+      const prompt = joinPromptSections([
+        selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
+        basePrompt,
+      ]);
+      const args = buildArgs(resumeSessionId, prompt);
       if (onMeta) {
         await onMeta({
           adapterType: "grok_local",
@@ -543,7 +558,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           )),
           env: loggedEnv,
           prompt,
-          promptMetrics,
+          promptMetrics: { ...promptMetrics, promptChars: prompt.length },
           context,
         });
       }

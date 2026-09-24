@@ -9,6 +9,7 @@ import {
   CONNECTABLE_APP_DEFINITIONS,
   appSupportsCatalogSetup,
   getAvailableConnectionMethod,
+  getAppDefinitionForUrl,
   getRecommendedConnectionMethod,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
@@ -180,9 +181,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     riskTier: "S3",
     scopes: [
       googleScope("chat.spaces.readonly"),
-      googleScope("chat.memberships.readonly"),
       googleScope("chat.messages.readonly"),
-      googleScope("chat.users.readstate.readonly"),
     ],
     writeTools: [],
   },
@@ -194,9 +193,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     riskTier: "S4",
     scopes: [
       googleScope("chat.spaces.readonly"),
-      googleScope("chat.memberships.readonly"),
       googleScope("chat.messages.readonly"),
-      googleScope("chat.users.readstate.readonly"),
       googleScope("chat.messages.create"),
     ],
     writeTools: ["send_message"],
@@ -277,7 +274,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(43);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(48);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -430,12 +427,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 46 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 51 researched MCP providers", () => {
+    // Ledger-wide date reflects the last full re-verification (2026-08-26);
+    // later provider additions carry their own research evidence, but
+    // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(46);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(51);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 46);
+    ).toHaveProperty("size", 51);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -444,6 +444,21 @@ describe("AppDefinition catalog", () => {
       expect(["S1", "S2", "S3", "S4"]).toContain(entry.riskTier);
     }
   });
+  it("offers Fireflies browser sign-in and a vaulted bearer key on the same official MCP endpoint", () => {
+    const app = APP_STORE_DEFINITIONS.find((entry) => entry.slug === "fireflies")!;
+    expect(getAppDefinitionForUrl("https://api.fireflies.ai/mcp")?.slug).toBe("fireflies");
+    expect(app.methods.map((method) => method.key)).toEqual(["mcp-oauth", "mcp-api-key"]);
+    expect(app.methods[0]).toMatchObject({
+      transport: "mcp_remote", auth: "oauth", ownershipModes: ["dcr"],
+      defaults: { serverUrl: "https://api.fireflies.ai/mcp", scopesHint: ["email", "profile"] },
+    });
+    expect(app.methods[1]).toMatchObject({
+      auth: "api_key", defaults: { serverUrl: "https://api.fireflies.ai/mcp" },
+      credentialFields: [{ key: "authorization", secret: true, type: "password", required: true }],
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+  });
+
   it("uses the reviewed current endpoints and configuration modes", () => {
     const method = (slug: string, key?: string) =>
       APP_DEFINITIONS.find((app) => app.slug === slug)?.methods.find(
@@ -565,6 +580,25 @@ describe("AppDefinition catalog", () => {
       defaults: {},
     });
     expect(method("zapier")?.credentialFields).toBeUndefined();
+    expect(
+      APP_DEFINITIONS.find((app) => app.slug === "youcom")?.methods.map(
+        (candidate) => candidate.key,
+      ),
+    ).toEqual(["mcp-oauth", "mcp-api-key", "mcp-free"]);
+    expect(method("youcom")?.defaults?.serverUrl).toBe("https://api.you.com/mcp");
+    expect(method("youcom", "mcp-api-key")).toMatchObject({
+      auth: "api_key",
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+    });
+    expect(method("youcom", "mcp-free")).toMatchObject({
+      auth: "none",
+      defaults: { serverUrl: "https://api.you.com/mcp?profile=free" },
+    });
+    expect(method("youcom", "mcp-free")?.credentialFields).toBeUndefined();
   });
   it("uses discovery-first Notion MCP OAuth metadata", () => {
     const notion = APP_DEFINITIONS.find((app) => app.slug === "notion");
@@ -669,7 +703,6 @@ describe("AppDefinition catalog", () => {
       "brex",
       "candid",
       "coda",
-      "composio",
       "context7",
       "egnyte",
       "embat",
@@ -686,7 +719,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(46);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(56);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -972,5 +1005,17 @@ describe("AppDefinition catalog", () => {
           if (field.required && field.type !== "checkbox")
             expect(field.placeholder).toBeTruthy();
       }
+  });
+});
+
+
+describe("Railway provider", () => {
+  it("matches only the hosted endpoint and exposes one vault-backed OAuth method", () => {
+    const app = APP_STORE_DEFINITIONS.find((entry) => entry.slug === "railway")!;
+    expect(getAppDefinitionForUrl("https://mcp.railway.com")?.slug).toBe("railway");
+    for (const url of ["https://mcp.railway.com/path", "https://mcp.railway.com.evil.test", "http://mcp.railway.com"]) expect(getAppDefinitionForUrl(url)?.slug).not.toBe("railway");
+    expect(app.methods).toHaveLength(1);
+    expect(app.methods[0]).toMatchObject({ key: "mcp-oauth", auth: "oauth", transport: "mcp_remote", ownershipModes: ["dcr", "customer"], riskTier: "S4", defaults: { serverUrl: "https://mcp.railway.com", scopesHint: ["openid", "offline_access", "workspace:member"], oauthAuthorizationParams: { prompt: "consent" } } });
+    expect(JSON.stringify(app.methods)).toContain("Live Railway qualification is pending");
   });
 });

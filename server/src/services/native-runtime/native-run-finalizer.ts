@@ -1,4 +1,6 @@
+import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -568,14 +570,15 @@ async function projectCommittedRun(input: {
   if (!["succeeded", "failed", "cancelled"].includes(String(terminalState))) {
     throw new Error("native_finalization_invalid");
   }
+  const projectedStatus = projectNativeTerminalRunStatus(
+    terminalState as "succeeded" | "failed" | "cancelled",
+  );
   const now = new Date();
   const [updatedRun] = await input.db
     .update(heartbeatRuns)
     .set({
       executionStatusDeliveryId: randomUUID(),
-      status: projectNativeTerminalRunStatus(
-        terminalState as "succeeded" | "failed" | "cancelled",
-      ),
+      status: projectedStatus,
       finishedAt: input.run.finishedAt ?? now,
       nativePhase: "committed",
       nativePhaseUpdatedAt: now,
@@ -618,17 +621,24 @@ async function projectCommittedRun(input: {
             ),
           ),
         ),
+        // Reconciliation revisits committed results periodically. Only repair
+        // a changed projection; rewriting an unchanged failed run would mint a
+        // fresh status delivery (and failure toast) on every sweep. Check the
+        // current row so concurrent replays cannot both queue the same repair.
+        or(
+          sql`${heartbeatRuns.status} is distinct from ${projectedStatus}`,
+          isNull(heartbeatRuns.finishedAt),
+          sql`${heartbeatRuns.nativePhase} is distinct from 'committed'`,
+          ...(terminalState === "succeeded"
+            ? [isNotNull(heartbeatRuns.error), isNotNull(heartbeatRuns.errorCode)]
+            : []),
+        ),
         nativeRunnerOwnershipNotHeldCondition(),
       ),
     )
     .returning();
-  // The WHERE clause above allows "failed" as a source status, so a run that
-  // failed before its coordinator committed can still pick up the committed
-  // terminal state. A later reconciliation replay can enter this same path
-  // and match that clause again even when the committed state is still
-  // "failed" — the write changes nothing. Emit only when the status
-  // genuinely changed, so a reconciliation replay never emits twice for one
-  // committed terminal result.
+  // Metadata repairs can preserve the terminal status. Only a genuine status
+  // transition should emit another terminal event.
   if (updatedRun && updatedRun.status !== input.run.status) {
     await emitAgentTaskRun(input.db, updatedRun);
     void reportRunFailure(input.db, updatedRun);
@@ -1030,6 +1040,11 @@ export async function finalizeNativeRun(input: {
         issueId: coordinator.issueId,
         runId: run.id,
       });
+    if (input.projectRunStatus) {
+      await settleSlackConversation(input.db, run.companyId, coordinator.issueId).catch((err) => {
+        logger.warn({ err, runId: run.id }, "Slack conversation settlement deferred to reconciliation");
+      });
+    }
     return coordinator;
   }
   const [resultRow, contractRow] = await Promise.all([
@@ -1169,7 +1184,15 @@ export async function finalizeNativeRun(input: {
         runId: run.id,
       }),
     ]);
+    const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+    const nativeReview = reviewContext ? await getNativeReviewAssignment(input.db, {
+      companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId,
+      contextSnapshot: reviewContext, allowResolvedByRunId: run.id,
+    }) : null;
     const proposedDecision = resolveNativeFinalizerStatus({
+      ...(reviewContext ? { nativeReviewOutcome: nativeReview
+        ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
+        : "stale" as const } : {}),
       assessment,
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
@@ -1346,6 +1369,11 @@ export async function finalizeNativeRun(input: {
           issueId: coordinator.issueId,
           runId: run.id,
         });
+      if (input.projectRunStatus && finalizationPhase === "committed") {
+        await settleSlackConversation(input.db, run.companyId, coordinator.issueId).catch((err) => {
+          logger.warn({ err, runId: run.id }, "Slack conversation settlement deferred to reconciliation");
+        });
+      }
       return {
         ...coordinator,
         phase: finalizationPhase,

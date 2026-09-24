@@ -24,7 +24,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_RUNNER_CA_BUNDLE_PATH` | (unset) | Optional PEM CA bundle for direct runner WSS. Platform roots remain enabled. There is no insecure TLS bypass. |
 | `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` | (host build) | Host-local path to a `paperclip-runnerd` artifact built for the remote target OS and architecture. Required when Paperclip and the remote sandbox do not share a compatible platform; build metadata and the required transport mode are verified before launch. |
 | `PAPERCLIP_RUNNER_REMOTE_CODEX_PATH` | (unset) | Optional host-local path to a Codex executable built for the remote target OS and architecture. For remote Codex-backed runners, Paperclip stages and verifies this executable beside `paperclip-runnerd`. |
-| `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC` | (unset) | Optional pinned npm package spec (for example, `@openai/codex@0.153.4`) installed inside each fresh remote lease when its Codex harness is not baked into the sandbox image. Mutually exclusive with `PAPERCLIP_RUNNER_REMOTE_CODEX_PATH`; Paperclip verifies the installed executable before starting `runnerd`. |
+| `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC` | (unset) | Optional pinned npm package spec (for example, `@openai/codex@0.156.0`) installed inside each fresh remote lease when its Codex harness is not baked into the sandbox image. Mutually exclusive with `PAPERCLIP_RUNNER_REMOTE_CODEX_PATH`; Paperclip verifies the installed executable before starting `runnerd`. |
 | `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` | (unset) | Host-local path to the immutable provider pack built by `pnpm --filter @paperclipai/paperclip-runner build:provider-pack`. The pack includes its target-built Node 24.11 runtime, locked production dependencies, OpenCode proxy/executable, and ACPX sidecar. Remote OpenCode and ACPX fail closed without it. A preinstalled pack is accepted only when its complete digested manifest matches this build-owned pack; otherwise Paperclip stages this pack into the sandbox. |
 | `PAPERCLIP_HIDDEN_SETTINGS` | (unset) | Comma-separated settings surfaces to hide from the UI and floor at the API, for operators hosting Paperclip for others (managed cloud, internal shared server). See [Hiding settings surfaces](#hiding-settings-surfaces). |
 | `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
@@ -46,6 +46,13 @@ at the actual board. If the board is private, set
 only `POST /api/chat-webhooks/*` from that host. Provider signatures still gate
 ingress; this variable does not expose routes or grant provider access.
 Never forward the private `local_trusted` board through a public tunnel.
+
+In Paperclip Cloud, chat callback URLs and account-linking URLs follow the
+instance's signed canonical origin after a warm instance is claimed, without
+requiring a restart. An explicit `PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL` still takes
+precedence for provider callbacks only; board links follow the claimed origin.
+Existing provider-side callback settings must be updated if they were created
+with an old URL.
 
 Task links in external messages require an externally safe HTTPS board URL.
 Local/private board URLs are omitted with instructions to open the task in
@@ -106,6 +113,16 @@ Daytona snapshot for future leases.
   vaults) and `company.secrets.proposals` (Proposals) — the tab disappears
   while the rest of the page stays up. UI-visibility only; the secret
   provider-config and proposal APIs stay live for agents and integrations.
+
+- `workspaces.isolation` hides project execution-workspace policy, task and
+  routine workspace selectors, pipeline workspace overrides, isolated re-issue
+  actions, and the execution-workspace Configuration tab (including direct
+  links). Workspace navigation, files, status, and runtime access stay available.
+  This key only controls UI visibility: it does not disable isolation, change
+  saved policies, or block APIs used by agents. New tasks and routine runs omit
+  hidden draft overrides so the server applies the existing defaults. Tasks
+  launched from a workspace or parent task keep that explicit context. Hide the two
+  experimental isolation toggles separately when the operator manages them.
 
 Unknown keys are logged and ignored, so one list can be rolled across a fleet
 of mixed app versions, and retired keys (like `instance.heartbeats`, whose

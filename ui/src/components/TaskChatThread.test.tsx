@@ -20,10 +20,12 @@ import type { HeartbeatRunEvent } from "@paperclipai/shared";
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   isInitialHydrating: false,
+  hydratedRunIds: undefined as Set<string> | undefined,
 }));
 const nativeTranscriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   errorsByRun: new Map(),
+  hydratedRunIds: undefined as Set<string> | undefined,
 }));
 const transcriptHookRuns = vi.hoisted(() => ({
   legacy: [] as unknown[][],
@@ -47,6 +49,7 @@ vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
     return {
       transcriptByRun: new Map(transcriptState.transcriptByRun),
       isInitialHydrating: transcriptState.isInitialHydrating,
+      hydratedRunIds: transcriptState.hydratedRunIds,
     };
   },
 }));
@@ -56,6 +59,7 @@ vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
     return {
       transcriptByRun: new Map(nativeTranscriptState.transcriptByRun),
       errorsByRun: new Map(nativeTranscriptState.errorsByRun),
+      hydratedRunIds: nativeTranscriptState.hydratedRunIds,
     };
   },
 }));
@@ -106,8 +110,10 @@ beforeEach(() => {
   localStorage.clear();
   transcriptState.transcriptByRun.clear();
   transcriptState.isInitialHydrating = false;
+  transcriptState.hydratedRunIds = undefined;
   nativeTranscriptState.transcriptByRun.clear();
   nativeTranscriptState.errorsByRun.clear();
+  nativeTranscriptState.hydratedRunIds = undefined;
   transcriptHookRuns.legacy.length = 0;
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
@@ -164,6 +170,80 @@ it("coordinates first reveal while keeping the composer and visible history moun
     container.querySelector('[data-testid="task-chat-history-loading"]'),
   ).toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
+});
+
+describe.each(["legacy", "native"] as const)("%s task history readiness", (runtimeMode) => {
+  const retryRun = {
+    runId: "scheduled-run",
+    runtimeMode,
+    status: "scheduled_retry",
+    agentId: "agent-1",
+    adapterType: runtimeMode === "native" ? "paperclip_runner" : "codex_local",
+    createdAt: "2026-08-25T18:00:00.000Z",
+    startedAt: null,
+  };
+
+  beforeEach(() => {
+    transcriptState.hydratedRunIds = new Set();
+    nativeTranscriptState.hydratedRunIds = new Set();
+  });
+
+  it("reveals comments while a scheduled retry has no transcript to hydrate", () => {
+    render(
+      <TaskChatThread
+        issueId="issue-1"
+        comments={createLongThreadComments()}
+        onAdd={async () => {}}
+        linkedRuns={[retryRun]}
+      />,
+    );
+
+    expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="task-chat-history-loading"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-thread-anchor="comment-1"]')?.closest("[inert]"),
+    ).toBeNull();
+    expect(container.textContent).toContain("Thread message 1");
+  });
+
+  it.each(["running", "succeeded"])(
+    "waits for a %s run to hydrate even when a scheduled retry is present",
+    async (status) => {
+      const props = {
+        issueId: "issue-1",
+        comments: createLongThreadComments(),
+        onAdd: async () => {},
+        linkedRuns: [
+          retryRun,
+          {
+            ...retryRun,
+            runId: "started-run",
+            status,
+            startedAt: "2026-08-25T18:00:00.000Z",
+          },
+        ],
+      };
+      render(<TaskChatThread {...props} />);
+      expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="task-chat-history-loading"]'),
+      ).not.toBeNull();
+
+      transcriptState.hydratedRunIds = new Set(["started-run"]);
+      nativeTranscriptState.hydratedRunIds = new Set(["started-run"]);
+      render(<TaskChatThread {...props} />);
+      await act(async () => {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+
+      expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="task-chat-history-loading"]'),
+      ).toBeNull();
+    },
+  );
 });
 
 it("keeps an acknowledged optimistic bubble mounted with its canonical comment target", () => {
@@ -1088,6 +1168,20 @@ describe("TaskChatThread runtime transcript selection", () => {
     flushSync(() => retryButtons.at(-1)!.click());
     await Promise.resolve();
     expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("failed-bootstrap");
+  });
+
+  it.each([false, true])("never offers the old quarantined run as Try again after continuation: %s", continued => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress"
+      onRetryFailedRun={vi.fn()} linkedRuns={[{
+        runId: "quarantined", runtimeMode: "native", status: "failed", errorCode: "native_session_cleanup_quarantined",
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
+        ...(continued ? { execution: { phase: "completed" as const, label: "Continued in another run", cause: "native_session_cleanup_quarantined",
+          lastConfirmedActivityAt: null, retryAt: null, attempt: 2, maxAttempts: 3, recoveryOwner: null, nextAction: null,
+          permittedActions: ["inspect_run" as const], predecessorRunId: null, successorRunId: "fresh-run" } } : {}),
+      }]} />);
+    expect(container.textContent).toContain("Run failed");
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
   });
 
   it("explains a native provider usage limit without exposing its error code", async () => {
@@ -2095,10 +2189,74 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
-  it.each(["active execution", "pending decision", "recovery hold"] as const)(
-    "does not promise legacy Retry during %s and restores it when the gate clears",
-    (gate) => {
+  it.each(["failed", "timed_out"] as const)(
+    "retries the latest legacy %s attempt even when it has a transcript and final comment",
+    async (status) => {
       const onRetryFailedRun = vi.fn();
+      transcriptState.transcriptByRun.set("latest-attempt", [{
+        kind: "assistant",
+        ts: "2026-08-25T18:01:01.000Z",
+        text: "Starting the requested revision.",
+      }]);
+      const run = {
+        runtimeMode: "legacy" as const,
+        adapterType: "claude_local",
+        agentId: "agent-1",
+        agentName: "Direct agent",
+        startedAt: null,
+      };
+      render(
+        <TaskChatThread
+          comments={[{
+            id: "failure-comment",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: "agent-1",
+            authorUserId: null,
+            authorType: "agent",
+            presentation: null,
+            metadata: null,
+            body: "The startup handshake timed out.",
+            runId: "latest-attempt",
+            createdAt: new Date("2026-08-25T18:01:02.000Z"),
+            updatedAt: new Date("2026-08-25T18:01:02.000Z"),
+          }]}
+          onAdd={async () => {}}
+          issueStatus="todo"
+          onRetryFailedRun={onRetryFailedRun}
+          linkedRuns={[
+            { ...run, runId: "original-failure", status: "failed",
+              createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z",
+              finishedAt: "2026-08-25T18:00:02.000Z" },
+            { ...run, runId: "latest-attempt", status, errorCode: "acpx_handshake_timeout",
+              createdAt: "2026-08-25T18:01:00.000Z", startedAt: "2026-08-25T18:01:00.000Z",
+              finishedAt: "2026-08-25T18:01:02.000Z",
+              resultJson: { presentationDecision: { commentId: "failure-comment" } } },
+            { ...run, runId: "cancelled-automatic-retry", status: "cancelled",
+              errorCode: "execution_reconciliation_required",
+              createdAt: "2026-08-25T18:02:00.000Z", finishedAt: "2026-08-25T18:02:02.000Z" },
+          ]}
+        />,
+      );
+
+      expect(container.textContent).toContain("The startup handshake timed out.");
+      const buttons = container.querySelectorAll<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+      expect(buttons).toHaveLength(1);
+      flushSync(() => buttons[0]!.click());
+      await Promise.resolve();
+      expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("latest-attempt");
+    },
+  );
+
+  it.each(["active execution", "pending decision", "recovery hold"].flatMap(
+    (gate) => [false, true].map((hasTranscript) => ({ gate, hasTranscript })),
+  ))(
+    "does not promise legacy Retry during $gate (transcript: $hasTranscript) and restores it when the gate clears",
+    ({ gate, hasTranscript }) => {
+      const onRetryFailedRun = vi.fn();
+      if (hasTranscript) transcriptState.transcriptByRun.set("legacy-failed", [{
+        kind: "assistant", ts: "2026-08-25T18:00:01.000Z", text: "Starting the task.",
+      }]);
       const failedRun = {
         runId: "legacy-failed",
         runtimeMode: "legacy" as const,
@@ -3390,6 +3548,18 @@ describe("TaskChatThread live transcript", () => {
     expect(tail2!.textContent).toContain("Waiting for transcript...");
   });
 
+  it("does not send a workspace bootstrap failure to connection settings", () => {
+    const run = { id: "workspace-prep", status: "running" as const, invocationSource: "issue", triggerDetail: null,
+      startedAt: "2026-09-15T10:00:00Z", finishedAt: null, createdAt: "2026-09-15T10:00:00Z",
+      agentId: "agent-1", agentName: "Worker", adapterType: "process" };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} />);
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" linkedRuns={[
+      { ...run, runId: run.id, status: "failed", errorCode: "workspace_git_scan_timeout", finishedAt: "2026-09-15T10:00:10Z" },
+    ]} />);
+    expect(container.textContent).toContain("Workspace setup failed before the agent started.");
+    expect(container.textContent).not.toContain("Review the task’s connection");
+  });
+
   it("renders in-flight output through TaskChatLiveTail, dropping the debug plumbing (PAP-463 C1)", () => {
     // Interleave the exact noise the old RunTranscriptView tail surfaced (init
     // row, stdout/stderr/system dumps) with real content. Only the streamed
@@ -3459,9 +3629,9 @@ describe("TaskChatThread live transcript", () => {
       "Streaming through the shared renderer",
     );
     const phaseSummary = tail!.querySelector<HTMLButtonElement>(
-      '[data-testid="task-chat-phase-summary"]',
+      '[data-testid="task-chat-activity-phase-toggle"]',
     );
-    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("true");
+    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("false");
     expect(tail!.textContent).toContain("src/app.ts");
     // None of the debug plumbing reaches the thread.
     for (const noise of [
@@ -3474,7 +3644,7 @@ describe("TaskChatThread live transcript", () => {
     }
   });
 
-  it("resolves a visible canonical input even while run adapter metadata is stale", async () => {
+  it.each([false, true])("resolves canonical input with stale adapter metadata (saved card: %s)", async (hasSavedCard) => {
     transcriptState.transcriptByRun.set("run-input", [
       {
         kind: "runtime_request",
@@ -3495,7 +3665,7 @@ describe("TaskChatThread live transcript", () => {
               prompt: "What should the server do?",
               required: true,
               answerMode: "single_select",
-              options: [{ id: "api", label: "Starter API" }],
+              options: [{ id: "api", label: "Starter API" }, { id: "worker", label: "Background worker" }],
             },
           ],
         },
@@ -3505,8 +3675,19 @@ describe("TaskChatThread live transcript", () => {
       .spyOn(heartbeatsApi, "resolveRuntimeRequest")
       .mockResolvedValue({} as never);
 
+    const onSubmitInteractionAnswers = vi.fn().mockResolvedValue(undefined);
+    const saved = {
+      ...questionInteraction("saved-question", "What should the server do?", "2026-08-23T20:00:00.000Z"),
+      sourceRunId: "run-input", continuationPolicy: "none",
+      payload: { version: 1, runtimeRequestId: "question-1",
+        questionSet: transcriptState.transcriptByRun.get("run-input")[0].questionSet,
+        questions: [{ id: "goal", prompt: "What should the server do?", required: true, selectionMode: "single",
+          options: [{ id: "api", label: "Starter API" }, { id: "worker", label: "Background worker" }] }] },
+    } as IssueThreadInteraction;
     render(
       <TaskChatThread
+        interactions={hasSavedCard ? [saved] : []}
+        onSubmitInteractionAnswers={onSubmitInteractionAnswers}
         comments={[]}
         onAdd={async () => {}}
         issueStatus="in_progress"
@@ -3537,7 +3718,10 @@ describe("TaskChatThread live transcript", () => {
     );
     await act(async () => submit?.click());
 
-    expect(resolveRuntimeRequest).toHaveBeenCalledWith({
+    if (hasSavedCard) {
+      expect(resolveRuntimeRequest).not.toHaveBeenCalled();
+      expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(saved, [{ questionId: "goal", optionIds: ["api"] }]);
+    } else expect(resolveRuntimeRequest).toHaveBeenCalledWith({
       runId: "run-input",
       requestId: "question-1",
       turnId: "turn-1",

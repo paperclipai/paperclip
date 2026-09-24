@@ -1094,6 +1094,9 @@ export const providerEventSchema = {
             "null"
           ]
         },
+        "inputUpdated": {
+          "type": "boolean"
+        },
         "status": {
           "enum": [
             "running",

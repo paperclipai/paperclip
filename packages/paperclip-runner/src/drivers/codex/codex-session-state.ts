@@ -100,6 +100,7 @@ export class CodexSessionState {
   readonly goalAvailability: CodexGoalAvailability;
   readonly goalReasonCode: string | null;
   readonly goalReason: string | null;
+  readonly skillInputs: NonNullable<CodexAppServerDriverOptions["skillInputs"]>;
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
   readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -172,6 +173,7 @@ export class CodexSessionState {
     goalAvailability: CodexGoalAvailability;
     goalReasonCode: string | null;
     goalReason: string | null;
+    skillInputs?: CodexAppServerDriverOptions["skillInputs"];
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     completionFeedback?: CodexAppServerDriverOptions["completionFeedback"];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -195,6 +197,7 @@ export class CodexSessionState {
     this.goalAvailability = input.goalAvailability;
     this.goalReasonCode = input.goalReasonCode;
     this.goalReason = input.goalReason;
+    this.skillInputs = structuredClone(input.skillInputs ?? []);
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
     this.completionFeedback = input.completionFeedback;

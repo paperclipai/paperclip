@@ -4,6 +4,14 @@ import http2 from "node:http2";
 import os from "node:os";
 import path from "node:path";
 import type { Duplex } from "node:stream";
+import {
+  decodeSandboxBridgeBody,
+  encodeSandboxBridgeBody,
+  sandboxBridgeBodyCodecSource,
+  sandboxBridgeEnvelopeLimit,
+  type SandboxCallbackBridgeBody,
+} from "./sandbox-callback-bridge-body.js";
+import type { BridgeBodyReservation } from "./http2-bridge-server.js";
 
 import {
   runWithoutActiveStep,
@@ -162,6 +170,11 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "PATCH", path: /^\/api\/issues\/[^/]+$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/approvals$/ },
 
+  // Files: the queue encodes binary bodies; HTTP/2 carries the same bytes directly.
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/attachments$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/issues\/[^/]+\/attachments$/ },
+  { method: "GET", path: /^\/api\/attachments\/[^/]+\/content$/ },
+
   // Work products: publish branch/commit/artifact metadata for completed work.
   { method: "GET", path: /^\/api\/issues\/[^/]+\/work-products$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/work-products$/ },
@@ -209,15 +222,8 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "DELETE", path: /^\/api\/routine-triggers\/[^/]+$/ },
 ] as const;
 
-// The HTTP/2 bridge carries the request body as raw bytes, so it can admit
-// the two binary attachment routes. The queue transport keeps
-// `DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST`, because its envelope
-// carries a string body only.
-export const HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCallbackBridgeRouteRule[] = [
-  ...DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
-  { method: "POST", path: /^\/api\/companies\/[^/]+\/issues\/[^/]+\/attachments$/ },
-  { method: "GET", path: /^\/api\/attachments\/[^/]+\/content$/ },
-] as const;
+// Keep the public alias for callers selecting the HTTP/2 transport.
+export const HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST = DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST;
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "accept",
@@ -227,21 +233,16 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "x-paperclip-github-capability",
 ] as const;
 
-export interface SandboxCallbackBridgeRequest {
+export interface SandboxCallbackBridgeRequest extends SandboxCallbackBridgeBody {
   id: string;
   method: string;
   path: string;
   query: string;
   headers: Record<string, string>;
-  /**
-   * UTF-8 body contents. The bridge rejects non-JSON request bodies; binary
-   * payloads are intentionally out of scope for this queue protocol.
-   */
-  body: string;
   createdAt: string;
 }
 
-export interface SandboxCallbackBridgeResponse {
+export interface SandboxCallbackBridgeResponse extends SandboxCallbackBridgeBody {
   id: string;
   status: number;
   headers: Record<string, string>;
@@ -273,7 +274,8 @@ export interface SandboxCallbackBridgeQueueClient {
   // external implementation stays compatible without a change.
   makeDirs?(remotePaths: string[]): Promise<void>;
   listJsonFiles(remotePath: string): Promise<string[]>;
-  readTextFile(remotePath: string): Promise<string>;
+  fileSize?(remotePath: string): Promise<number>;
+  readTextFile(remotePath: string, maxBytes?: number): Promise<string>;
   writeTextFile(remotePath: string, body: string): Promise<void>;
   writeResponseFile?(
     responsePath: string,
@@ -522,7 +524,24 @@ export function createFileSystemSandboxCallbackBridgeQueueClient(): SandboxCallb
         .map((entry) => entry.name)
         .sort((left, right) => left.localeCompare(right));
     },
-    readTextFile: async (remotePath) => await fs.readFile(remotePath, "utf8"),
+    fileSize: async (remotePath) => (await fs.stat(remotePath)).size,
+    readTextFile: async (remotePath, maxBytes) => {
+      if (maxBytes === undefined) return fs.readFile(remotePath, "utf8");
+      const file = await fs.open(remotePath, "r");
+      try {
+        const stat = await file.stat();
+        if (stat.size > maxBytes) throw new Error("Bridge envelope exceeded the configured size limit.");
+        const bytes = Buffer.alloc(Math.min(stat.size, maxBytes) + 1);
+        let length = 0;
+        while (length < bytes.length) {
+          const read = await file.read(bytes, length, bytes.length - length, length);
+          if (!read.bytesRead) break;
+          length += read.bytesRead;
+        }
+        if (length > stat.size) throw new Error("Bridge envelope changed while reading.");
+        return bytes.subarray(0, length).toString("utf8");
+      } finally { await file.close(); }
+    },
     writeTextFile: async (remotePath, body) => {
       await fs.mkdir(path.posix.dirname(remotePath), { recursive: true });
       // Write to a temporary path that does NOT end in `.json`, then rename it
@@ -661,9 +680,18 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
         .filter((line) => line.length > 0)
         .sort((left, right) => left.localeCompare(right));
     },
-    readTextFile: async (remotePath) => {
-      const result = await runChecked(`read ${remotePath}`, `base64 < ${shellQuote(remotePath)}`);
-      return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8");
+    fileSize: async (remotePath) => {
+      const result = await runChecked(`size ${remotePath}`, `wc -c < ${shellQuote(remotePath)}`);
+      return Number(result.stdout.trim());
+    },
+    readTextFile: async (remotePath, maxBytes) => {
+      const command = maxBytes === undefined
+        ? `base64 < ${shellQuote(remotePath)}`
+        : `head -c ${Math.trunc(maxBytes) + 1} ${shellQuote(remotePath)} | base64`;
+      const result = await runChecked(`read ${remotePath}`, command);
+      const bytes = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+      if (maxBytes !== undefined && bytes.length > maxBytes) throw new Error("Bridge envelope exceeded the configured size limit.");
+      return bytes.toString("utf8");
     },
     writeTextFile: async (remotePath, body) => {
       const remoteDir = path.posix.dirname(remotePath);
@@ -792,12 +820,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // not strand with no response. A handler that ignores the signal keeps its
   // earlier behavior.
   handleRequest: (
-    request: SandboxCallbackBridgeRequest,
-    options?: { signal: AbortSignal },
+    request: Omit<SandboxCallbackBridgeRequest, "body" | "bodyEncoding"> & { body: string | Buffer },
+    options?: { signal: AbortSignal; reservation: BridgeBodyReservation },
   ) => Promise<{
     status: number;
     headers?: Record<string, string>;
-    body?: string;
+    body?: string | Buffer;
   }>;
   maxBodyBytes?: number | null;
   // Return the current-run parent-context token. The worker reads it per request
@@ -821,6 +849,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
     DEFAULT_BRIDGE_ABORTED_HANDLER_GRACE_MS,
   );
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
+  const maxEnvelopeBytes = sandboxBridgeEnvelopeLimit(maxBodyBytes);
+  // Load lazily to avoid the HTTP/2 module's constants depending on this module
+  // during initialization. Both transports share the host process memory ceiling.
+  const { createBridgeBodyReservation } = await import("./http2-bridge-server.js");
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
   const queueDirectories = [
     directories.rootDir,
@@ -924,6 +956,8 @@ export async function startSandboxCallbackBridgeWorker(input: {
       finalized: false,
     };
     inFlightRequestGuards.set(fileName, guard);
+    const reservation = createBridgeBodyReservation();
+    const envelopeReadReservation = createBridgeBodyReservation();
     // Claim the request for the handler. Return `false` when the recovery path
     // already claimed it; the caller must then not run the mutation and must not
     // write a response, because the recovery path writes a 503 and the caller
@@ -993,9 +1027,33 @@ export async function startSandboxCallbackBridgeWorker(input: {
       await writeAbortedHandlerBackstop(fileName, guard, lastWriteError);
     };
     try {
+      // Bound the read and its encoded/parsed copies before allocating. Built-in
+      // clients stat first so a high configured file limit does not reserve that
+      // whole limit for a tiny request. Older clients use the conservative cap.
+      const envelopeBytes = input.client.fileSize
+        ? await input.client.fileSize(requestPath).catch(() => maxEnvelopeBytes)
+        : maxEnvelopeBytes;
+      if (envelopeBytes > maxEnvelopeBytes) {
+        await finalize({
+          id: fileName.replace(/\.json$/i, ""), status: 413,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ error: "Bridge request envelope exceeded the configured size limit." }),
+          completedAt: new Date().toISOString(),
+        });
+        return;
+      }
+      const readLimit = Number.isSafeInteger(envelopeBytes) && envelopeBytes >= 0
+        ? Math.min(envelopeBytes, maxEnvelopeBytes) : maxEnvelopeBytes;
+      if (!envelopeReadReservation.reserve(6 * readLimit)) {
+        await finalize({ id: fileName.replace(/\.json$/i, ""), status: 503,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ error: "Bridge host body capacity is busy. Retry later." }),
+          completedAt: new Date().toISOString() });
+        return;
+      }
       let raw: string;
       try {
-        raw = await input.client.readTextFile(requestPath);
+        raw = await input.client.readTextFile(requestPath, readLimit);
       } catch (error) {
         // The gateway deletes a request file when its caller stops waiting
         // (client-side timeout cleanup). A read that fails because the file is
@@ -1011,7 +1069,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
       }
       let request: SandboxCallbackBridgeRequest;
       try {
+        if (Buffer.byteLength(raw) > maxEnvelopeBytes) throw new Error("Bridge envelope too large");
         request = JSON.parse(raw) as SandboxCallbackBridgeRequest;
+        decodeSandboxBridgeBody(request, maxBodyBytes);
       } catch {
         const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
         await finalize({
@@ -1024,6 +1084,16 @@ export async function startSandboxCallbackBridgeWorker(input: {
         return;
       }
 
+      // Keep only the actual request allocation reserved while forwarding;
+      // an abandoned small request must not retain a maximum-sized reservation.
+      envelopeReadReservation.release();
+      if (!reservation.reserve(4 * Buffer.byteLength(raw) + 2 * Buffer.byteLength(request.body))) {
+        await finalize({ id: request.id, status: 503,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ error: "Bridge host body capacity is busy. Retry later." }),
+          completedAt: new Date().toISOString() });
+        return;
+      }
       const denialReason = await authorizeRequest(request);
       if (denialReason) {
         await finalize({
@@ -1048,17 +1118,24 @@ export async function startSandboxCallbackBridgeWorker(input: {
       // Build the response, then finalize once. The handler already holds the
       // claim, so `finalize` writes the real response.
       let response: SandboxCallbackBridgeResponse;
+      let handlerReturned = false;
       try {
-        const result = await input.handleRequest(request, { signal: guard.controller.signal });
-        const responseBody = result.body ?? "";
-        if (Buffer.byteLength(responseBody, "utf8") > maxBodyBytes) {
-          throw new Error(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
+        const { bodyEncoding, ...forwardRequest } = request;
+        const result = await input.handleRequest({ ...forwardRequest,
+          body: bodyEncoding === "base64" ? decodeSandboxBridgeBody(request, maxBodyBytes) : request.body,
+        }, { signal: guard.controller.signal, reservation });
+        handlerReturned = true;
+        const responseBytes = Buffer.byteLength(result.body ?? "");
+        if (responseBytes > maxBodyBytes) throw new Error("Bridge response body exceeded the configured size limit.");
+        if (!reservation.reserve(4 * sandboxBridgeEnvelopeLimit(responseBytes))) {
+          throw new Error("Bridge host response body capacity is busy.");
         }
+        const responseBody = encodeSandboxBridgeBody(result.body ?? "", maxBodyBytes);
         response = {
           id: request.id,
           status: result.status,
           headers: result.headers ?? {},
-          body: responseBody,
+          ...responseBody,
           completedAt: new Date().toISOString(),
         };
       } catch (error) {
@@ -1075,7 +1152,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
         // the outcome indeterminate. The caller must not retry a 504 from the
         // bridge, unlike the retry-safe 503 that the recovery path writes only
         // before the host operation starts.
-        if (guard.controller.signal.aborted) {
+        if (guard.controller.signal.aborted || (handlerReturned && !["GET", "HEAD", "OPTIONS", "TRACE"].includes(request.method))) {
           response = {
             id: request.id,
             status: 504,
@@ -1104,6 +1181,8 @@ export async function startSandboxCallbackBridgeWorker(input: {
       }
       await finalize(response);
     } finally {
+      envelopeReadReservation.release();
+      reservation.release();
       // Drop the guard only when it still points to this attempt. A retry can
       // register a new attempt under the same file name; that new guard must
       // stay in the map. Keep the guard when a backstop is still pending: a
@@ -2201,8 +2280,9 @@ ${DUPLEX_GATEWAY_CODEC_SOURCE}
 // use it: readBodyBytes reserves against it, and each mode's request
 // handler releases what it reserved once the body is no longer needed.
 ${BRIDGE_PROCESS_BODY_LEDGER_SOURCE}
+${sandboxBridgeBodyCodecSource()}
 
-// The multiplier matches HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS (4) in
+// HTTP/2's multiplier matches HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS (4) in
 // http2-bridge-server.ts, doubled because readBodyBytes reserves a body's
 // bytes twice: once for the retained chunk array, once for the concatenated
 // copy, since both are live buffers at once. This gives the gateway process
@@ -2210,8 +2290,11 @@ ${BRIDGE_PROCESS_BODY_LEDGER_SOURCE}
 // concurrent requests cannot grow this process's memory without limit, even
 // though every individual body already passes the maxBodyBytes check below.
 // This ceiling is independent of, and separate from, the ceiling the host
-// enforces on its own side of the bridge connection.
-const maxProcessBodyBytes = maxBodyBytes * 8;
+// enforces on its own side of the bridge connection. Queue mode also counts
+// JSON/base64 envelopes; its aggregate ceiling never exceeds 1 GiB.
+const maxProcessBodyBytes = bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}"
+  ? Math.min(1024 * 1024 * 1024, 4 * (4 * sandboxBridgeEnvelopeLimit(maxBodyBytes) + 4 * maxBodyBytes))
+  : maxBodyBytes * 8;
 const processBodyLedger = createBridgeProcessBodyLedger(maxProcessBodyBytes);
 
 // A denied process-ledger reservation answers 503: the sandbox client should
@@ -2280,11 +2363,6 @@ async function readBodyBytes(req) {
   }
 }
 
-async function readBody(req) {
-  const { body, release } = await readBodyBytes(req);
-  return { body: body.toString("utf8"), release };
-}
-
 function tokensMatch(received) {
   const expected = Buffer.from(bridgeToken, "utf8");
   const actual = Buffer.from(typeof received === "string" ? received : "", "utf8");
@@ -2327,14 +2405,32 @@ async function runFileGateway() {
     }
   }
 
-  async function waitForResponse(requestId) {
+  async function waitForResponse(requestId, reserveResponse) {
     const responsePath = path.posix.join(responsesDir, \`\${requestId}.json\`);
     const deadline = Date.now() + responseTimeoutMs;
     while (Date.now() < deadline) {
-      const body = await fs.readFile(responsePath, "utf8").catch(() => null);
-      if (body != null) {
-        await fs.rm(responsePath, { force: true }).catch(() => undefined);
-        return JSON.parse(body);
+      const handle = await fs.open(responsePath, "r").catch(error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (handle) {
+        try {
+          const stat = await handle.stat();
+          if (stat.size > sandboxBridgeEnvelopeLimit(maxBodyBytes)) throw new Error("Bridge response envelope exceeded the configured size limit.");
+          reserveResponse(6 * stat.size + 1);
+          const bytes = Buffer.alloc(stat.size + 1);
+          let length = 0;
+          while (length < bytes.length) {
+            const read = await handle.read(bytes, length, bytes.length - length, length);
+            if (!read.bytesRead) break;
+            length += read.bytesRead;
+          }
+          if (length !== stat.size) throw new Error("Bridge response envelope changed while reading.");
+          return JSON.parse(bytes.subarray(0, length).toString("utf8"));
+        } finally {
+          await handle.close();
+          await fs.rm(responsePath, { force: true }).catch(() => undefined);
+        }
       }
       await sleep(pollIntervalMs);
     }
@@ -2342,12 +2438,14 @@ async function runFileGateway() {
   }
 
   const server = createServer(async (req, res) => {
-    // readBody reserves the body's bytes against the process ledger and
+    // readBodyBytes reserves the body's bytes against the process ledger and
     // hands back a release function; this holds it so the finally below
     // releases those bytes exactly once no matter how this handler ends —
     // its normal completion, a thrown error, a client abort, or a deadline
     // timeout all reach the same finally.
     let releaseBodyReservation = null;
+    let envelopeReservation = 0;
+    let dispatched = false;
     try {
       const auth = req.headers.authorization || "";
       const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
@@ -2368,30 +2466,42 @@ async function runFileGateway() {
 
       const url = new URL(req.url || "/", "http://127.0.0.1");
       const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "";
-      if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType)) {
+      const multipartAttachment = req.method === "POST"
+        && /^\\/api\\/companies\\/[^/]+\\/issues\\/[^/]+\\/attachments$/.test(url.pathname)
+        && /^multipart\\/form-data(?:;|$)/i.test(contentType);
+      if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType) && !multipartAttachment) {
         writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
         return;
       }
       const requestId = randomUUID();
-      const { body: requestBody, release } = await readBody(req);
+      // Reserve encoded envelopes and response decoding separately from the
+      // incoming byte buffers. Capacity rejection precedes dispatch, hence 503.
+      const { body: requestBody, release } = await readBodyBytes(req);
       releaseBodyReservation = release;
+      const reserveBytes = 4 * sandboxBridgeEnvelopeLimit(requestBody.length);
+      if (!processBodyLedger.reserve(reserveBytes)) throw new BridgeProcessCapacityError();
+      envelopeReservation = reserveBytes;
       const payload = {
         id: requestId,
         method: req.method || "GET",
         path: url.pathname,
         query: url.search,
         headers: normalizeHeaders(req.headers),
-        body: requestBody,
+        ...encodeSandboxBridgeBody(multipartAttachment ? requestBody : requestBody.toString("utf8"), maxBodyBytes),
         createdAt: new Date().toISOString(),
       };
       const requestPath = path.posix.join(requestsDir, \`\${requestId}.json\`);
       const tempPath = \`\${requestPath}.tmp\`;
       await fs.writeFile(tempPath, \`\${JSON.stringify(payload)}\\n\`, "utf8");
+      dispatched = true;
       await fs.rename(tempPath, requestPath);
 
       let response;
       try {
-        response = await waitForResponse(requestId);
+        response = await waitForResponse(requestId, bytes => {
+          if (!processBodyLedger.reserve(bytes)) throw new BridgeProcessCapacityError();
+          envelopeReservation += bytes;
+        });
       } catch (error) {
         // The host never delivered a response inside the deadline. Remove this
         // request's file so it cannot pile up toward the queue-depth cap. The
@@ -2420,15 +2530,20 @@ async function runFileGateway() {
         if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
         res.setHeader(key, value);
       }
-      res.end(typeof response.body === "string" ? response.body : "");
+      res.end(decodeSandboxBridgeBody(response, maxBodyBytes));
     } catch (error) {
-      // A denied process-ledger reservation is retryable: the caller should
-      // try again once other in-flight bodies release their bytes. Every
-      // other body-read or handling fault stays a generic 502.
-      const status = error instanceof BridgeProcessCapacityError ? 503 : 502;
-      writeJsonResponse(res, status, { error: error instanceof Error ? error.message : String(error) });
+      // Capacity rejection before dispatch is retryable. After a mutation was
+      // dispatched, a missing or corrupt receipt cannot prove that it failed.
+      const uncertainWrite = dispatched && !["GET", "HEAD", "OPTIONS", "TRACE"].includes(req.method || "GET");
+      const status = uncertainWrite ? 409 : error instanceof BridgeProcessCapacityError ? 503 : 502;
+      if (uncertainWrite) res.setHeader("x-paperclip-bridge-outcome", "indeterminate");
+      writeJsonResponse(res, status, {
+        error: error instanceof Error ? error.message : String(error),
+        ...(uncertainWrite ? { outcome: "indeterminate", retryable: false } : {}),
+      });
     } finally {
       releaseBodyReservation?.();
+      processBodyLedger.release(envelopeReservation);
     }
   });
 

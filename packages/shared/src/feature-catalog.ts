@@ -116,6 +116,21 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableMemoryConnectors: {
+    title: "Memory connectors",
+    description: "Show experimental Mem0, Zep, Supermemory, Cognee, and Honcho setup. Existing connections keep running when hidden.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableMcpAggregators: {
+    title: "MCP aggregators",
+    description:
+      "Show experimental Zapier, Arcade, Composio Connect, and Executor setup. Existing MCP connections keep running when hidden.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enablePipelines: {
     title: "Pipelines",
     description: "Enable pipeline definitions and pipeline-driven case production surfaces.",

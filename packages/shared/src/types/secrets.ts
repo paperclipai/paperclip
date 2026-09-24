@@ -1,3 +1,4 @@
+import type { AgentAppearance } from "../agent-appearance.js";
 import type {
   SecretAccessOutcome,
   SecretBindingTargetType,
@@ -364,6 +365,8 @@ export type SecretProposalStatus =
 
 /** Minimal agent reference surfaced on a proposal (proposer / binding target). */
 export interface SecretProposalAgentRef {
+  appearance?: AgentAppearance | null;
+  avatarUrl?: string;
   id: string;
   name: string;
   /** lucide icon slug, if the agent has one. */

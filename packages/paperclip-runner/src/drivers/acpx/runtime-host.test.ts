@@ -20,7 +20,10 @@ import type {
   VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
-import { prepareAcpxRuntimeSandbox } from "./runtime-sandbox.js";
+import {
+  prepareAcpxRuntimeSandbox,
+  type AcpxRuntimeSandbox,
+} from "./runtime-sandbox.js";
 import {
   AcpxRuntimeHost,
   type AcpxRuntimeHostDependencies,
@@ -30,6 +33,15 @@ import {
 } from "./runtime-host.js";
 
 const temporaryDirectories: string[] = [];
+// A published skill snapshot is sealed read-only by `protectStagedTree`
+// (runtime-context-materializer.ts:125, :133). Only
+// `releaseMaterializedNativeRuntimeSkills` restores write permission before
+// removal. `hostFixture` records every sandbox's skills home here as soon as
+// the sandbox exists, before the materialize step that seals it and before
+// any later step in the same open() call can fail or stall past this file's
+// per-test timeout. `afterEach` releases every recorded home first, so a
+// forced-open directory removal never has to unlink inside a sealed tree.
+const materializedSkillsHomes: string[] = [];
 const admissionControllers: AbortController[] = [];
 const pendingAdmissionOpenings = new Set<Promise<void>>();
 const pendingAdmissionCleanups = new Set<Promise<void>>();
@@ -167,6 +179,14 @@ afterEach(async () => {
   }
   await Promise.all([...pendingAdmissionOpenings]);
   await Promise.all([...pendingAdmissionCleanups]);
+  // Release every sealed skills tree before the plain `rm` below. `rm` does
+  // not restore write permission, so a tree still sealed at this point would
+  // otherwise fail with EACCES and hide the real test failure.
+  await Promise.all(
+    materializedSkillsHomes
+      .splice(0)
+      .map((skillsHome) => releaseMaterializedNativeRuntimeSkills(skillsHome)),
+  );
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -209,7 +229,11 @@ describe("ACPX runtime host", () => {
     } finally { await host.close({ reason: "gateway test complete" }); }
   });
 
-  it("automatically permits only admitted Paperclip reads in the Claude SDK", async () => {
+  it.each([
+    ["approve-reads", ["mcp__paperclip__get_task_context"]],
+    ["approve-paperclip", ["mcp__paperclip__create_task", "mcp__paperclip__get_task_context", "mcp__paperclip__reassign_task", "mcp__paperclip__write_document"]],
+    ["deny-all", undefined],
+  ] as const)("binds exact assigned Claude tools to %s before provider launch", async (permissionMode, allow) => {
     const fixture = await hostFixture();
     const dependencies = fixture.dependencies({
       openRuntime: async (options) => {
@@ -217,9 +241,7 @@ describe("ACPX runtime host", () => {
           join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "settings.json"),
           "utf8",
         ));
-        expect(settings.permissions).toEqual({
-          allow: ["mcp__paperclip__get_task_context"],
-        });
+        expect(settings.permissions).toEqual(allow ? { allow } : undefined);
         expect(options.mcpServers).toMatchObject([
           { name: "paperclip", runnerOwned: true },
         ]);
@@ -232,9 +254,9 @@ describe("ACPX runtime host", () => {
       ...fixture.options,
       agent: "claude",
       model: "claude-sonnet-5",
-      permissionMode: "approve-reads",
+      permissionMode,
       semanticTools: {
-        tools: ["get_task_context", "write_document", "unknown_read"].map((name) => ({
+        tools: ["get_task_context", "write_document", "create_task", "reassign_task", "unknown_read"].map((name) => ({
           name,
           inputSchema: { type: "object" },
           // Supplied hints cannot grant write or unknown operations read access.
@@ -276,17 +298,27 @@ describe("ACPX runtime host", () => {
       aggregateDigest: canonicalNativeRuntimeContextDigest(snapshot),
     };
     let skillsHome = "";
+    const providerStartTurn = vi.fn(() => runtimeTurn());
     let assigned = true;
+    let expectedReference = "ASSIGNED_SKILL_MARKER";
+    // Prepare the real sandbox once. Each reopen still exercises the host's
+    // real skill refresh, including changed references and removed assignments,
+    // without repeating unrelated durable directory and file writes. Sandbox
+    // preparation itself also has dedicated runtime-sandbox coverage.
     const dependencies = fixture.dependencies({
+      reuseSandbox: true,
       openRuntime: async (options) => {
         skillsHome = join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "skills");
         expect(await readdir(skillsHome)).toEqual(assigned ? ["assigned"] : []);
         if (assigned) {
           const reference = join(skillsHome, "assigned", "references", "answer.txt");
-          expect(await readFile(reference, "utf8")).toBe("ASSIGNED_SKILL_MARKER");
+          expect(await readFile(reference, "utf8")).toBe(expectedReference);
+          expect(await readFile(join(skillsHome, "assigned", "SKILL.md"), "utf8"))
+            .toBe(await readFile(join(skillRoot, "SKILL.md"), "utf8"));
           expect((await stat(reference)).mode & 0o222).toBe(0);
         }
         return runtimePort({
+          startTurn: providerStartTurn,
           getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }),
         });
       },
@@ -304,8 +336,41 @@ describe("ACPX runtime host", () => {
           { ...options, runtimeContext: context },
           dependencies,
         );
+        let message = JSON.stringify({
+          schema: "paperclip.native-model-envelope.v2",
+          task: { description: "Use /assigned", prompt: "A new direct user request" },
+          interactionResponses: index ? [{ response: { status: "accepted" } }] : [],
+        });
+        if (index === 1) {
+          // The provider command is internal overhead, not part of the caller's
+          // 1 MiB allowance. Keep the exact envelope even at that boundary.
+          message += " ".repeat(1024 * 1024 - Buffer.byteLength(message));
+          expect(() => host.startTurn({ text: `${message} `, requestId: "oversized" }))
+            .toThrow("turn text exceeds its bounded size");
+        }
+        host.startTurn({ text: message, requestId: `skill-turn-${index}` });
+        expect(providerStartTurn).toHaveBeenLastCalledWith({
+          text: `/assigned ${message}`, requestId: `skill-turn-${index}`,
+        });
         await host.close({ reason: "reopen test" });
+        // A changed source must replace the prior materialized revision on resume.
+        expectedReference = "UPDATED_ASSIGNED_SKILL_MARKER";
+        await writeFile(join(skillRoot, "references", "answer.txt"), expectedReference);
+        await writeFile(join(skillRoot, "SKILL.md"), "---\nname: assigned\ndescription: Updated instructions.\n---\nRead references/answer.txt before responding.");
       }
+      // The same agent's next ordinary task must not inherit the command.
+      const ordinary = await AcpxRuntimeHost.open(
+        { ...options, runtimeContext: context }, dependencies,
+      );
+      const ordinaryMessage = JSON.stringify({
+        schema: "paperclip.native-model-envelope.v2",
+        task: { description: "An ordinary task", prompt: "Mention /assigned in a note" },
+      });
+      ordinary.startTurn({ text: ordinaryMessage, requestId: "ordinary-task" });
+      expect(providerStartTurn).toHaveBeenLastCalledWith({
+        text: ordinaryMessage, requestId: "ordinary-task",
+      });
+      await ordinary.close({ reason: "ordinary task verified" });
       // No stale assignment survives a later launch without runtime context.
       assigned = false;
       const host = await AcpxRuntimeHost.open(options, dependencies);
@@ -1352,6 +1417,16 @@ describe("ACPX runtime host", () => {
             agentRuntimePackageJsonPath: null,
             openCommand,
           }),
+          // This test builds its own dependency object instead of
+          // `fixture.dependencies()`, so it must record the skills home
+          // itself. Command admission starts after the sandbox exists and
+          // Claude's skills are already materialized and sealed, and abort
+          // can land right there — before this test's own cleanup runs.
+          prepareSandbox: async (sandboxInput) => {
+            const sandbox = await prepareAcpxRuntimeSandbox(sandboxInput);
+            materializedSkillsHomes.push(join(sandbox.agentHomeDirectory, "skills"));
+            return sandbox;
+          },
           openRuntime,
           retainAdmissionCleanup: trackAdmissionCleanup,
           reportRetainedCleanupFailure: vi.fn(),
@@ -1665,8 +1740,15 @@ async function hostFixture() {
       input: Pick<AcpxRuntimeHostDependencies, "openRuntime"> &
         Partial<
           Pick<AcpxRuntimeHostDependencies, "reportRetainedCleanupFailure">
-        >,
+        > & {
+          // Opt-in only. When true, `prepareSandbox` runs the real
+          // preparation once, then returns that same sandbox for every
+          // later open in the test. Every other test omits this flag, so
+          // the file still proves that a reopen re-prepares the sandbox.
+          reuseSandbox?: boolean;
+        },
     ): AcpxRuntimeHostDependencies {
+      let reusedSandbox: AcpxRuntimeSandbox | null = null;
       return {
         verifyInstallation: async (profile) =>
           ({
@@ -1676,6 +1758,19 @@ async function hostFixture() {
             openCommand: async () => command,
           }) satisfies VerifiedAcpxInstallation,
         openRuntime: input.openRuntime,
+        // Record the skills home the instant the sandbox exists, ahead of
+        // the materialize call that seals it. A test that overrides
+        // `prepareSandbox` for a non-Claude agent replaces this wrapper, but
+        // those agents never materialize skills, so nothing is lost.
+        prepareSandbox: async (sandboxInput) => {
+          if (input.reuseSandbox && reusedSandbox) return reusedSandbox;
+          const sandbox = await prepareAcpxRuntimeSandbox(sandboxInput);
+          if (sandboxInput.agent === "claude") {
+            materializedSkillsHomes.push(join(sandbox.agentHomeDirectory, "skills"));
+          }
+          if (input.reuseSandbox) reusedSandbox = sandbox;
+          return sandbox;
+        },
         retainAdmissionCleanup: trackAdmissionCleanup,
         reportRetainedCleanupFailure:
           input.reportRetainedCleanupFailure ?? vi.fn(),

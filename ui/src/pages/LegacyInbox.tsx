@@ -2682,7 +2682,7 @@ export function Inbox() {
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -2752,7 +2752,7 @@ export function Inbox() {
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                         )
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
@@ -2772,6 +2772,8 @@ export function Inbox() {
                               defaultProjectWorkspaceIdByProjectId,
                             })}
                             assigneeName={agentName(issue.assigneeAgentId)}
+                            assigneeAgent={agents?.find((agent) => agent.id === issue.assigneeAgentId)}
+                            creatorAgent={agents?.find((agent) => agent.id === issue.createdByAgentId)}
                             assigneeUserName={
                               formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, companyUserLabelMap)
                               ?? assigneeUserProfile?.label

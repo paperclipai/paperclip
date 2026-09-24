@@ -261,6 +261,19 @@ describe("ActiveAgentsPanel", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows an answered Slack task as idle without changing the run outcome", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentRunCard companyId="company-1"
+        run={{ ...createIssueRun(0, "issue-1"), status: "succeeded" }}
+        issue={{ title: "Slack conversation", identifier: "PAP-559", status: "in_review", externalConversationState: "waiting" }} />);
+    });
+    expect(container.querySelector('[aria-label="Agent 0 — Succeeded. View run"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Task idle"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Task in review"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
   it("keeps a failed task lookup navigable and shows a clear error", async () => {
     const root = createRoot(container);
     await act(async () => {

@@ -445,7 +445,7 @@ describe("ACPX installation integrity", () => {
       },
       {
         name: "@anthropic-ai/claude-agent-sdk",
-        version: "0.3.263",
+        version: "0.3.280",
         directory: join(dependencyRoot, "claude-agent-sdk"),
       },
       {

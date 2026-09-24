@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
 
 import type {
@@ -255,6 +256,7 @@ export class AcpxRuntimeHost {
   readonly #credential: AcpxProviderLifetimeLease | null;
   readonly #command: VerifiedAcpxCommandLease;
   readonly #toolBridge: RunnerToolBridge | null;
+  readonly #claudeSkillNames: readonly string[];
   #activeTurn: AcpxRuntimeTurn | null = null;
   #closingStarted = false;
   #closePromise: Promise<void> | null = null;
@@ -268,6 +270,7 @@ export class AcpxRuntimeHost {
     credential: AcpxProviderLifetimeLease | null;
     command: VerifiedAcpxCommandLease;
     toolBridge: RunnerToolBridge | null;
+    claudeSkillNames: readonly string[];
   }) {
     this.#runtime = input.runtime;
     this.#binding = input.binding;
@@ -276,6 +279,7 @@ export class AcpxRuntimeHost {
     this.#credential = input.credential;
     this.#command = input.command;
     this.#toolBridge = input.toolBridge;
+    this.#claudeSkillNames = [...input.claudeSkillNames];
   }
 
   static async open(
@@ -546,6 +550,9 @@ export class AcpxRuntimeHost {
         credential,
         command,
         toolBridge,
+        claudeSkillNames: options.agent === "claude"
+          ? (options.runtimeContext?.skills.map((skill) => skill.runtimeName) ?? [])
+          : [],
       });
     } catch (error) {
       const cleanup = cleanupRuntimeResources(
@@ -642,7 +649,12 @@ export class AcpxRuntimeHost {
       throw new Error("ACPX runtime host already has an active turn");
     }
     const requestId = boundedRequestId(input.requestId);
-    const text = boundedTurnText(input.text);
+    // Bound caller input before adding the provider's assigned-skill command.
+    // The command is internal framing; it must not consume the envelope's
+    // allowance or cause an otherwise valid envelope to be truncated/rejected.
+    const text = claudeNativeSkillPrompt(
+      boundedTurnText(input.text), this.#claudeSkillNames,
+    );
     const turn = this.#runtime.startTurn({
       text,
       requestId,

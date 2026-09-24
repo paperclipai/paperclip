@@ -9,6 +9,17 @@ const stopped = {
   },
 };
 
+it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated"])("does not invent unknown provider actions after exhausted %s bootstrap retries", (errorCode) => {
+  const run = { runtimeMode: "legacy", status: "failed", errorCode, scheduledRetryAttempt: 2,
+    resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+  expect(legacyExecutionNeedsReconciliation(run)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: {} })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: {
+    executionRecovery: { kind: "bootstrap", providerWorkStarted: true },
+  } })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, errorCode: "setup_failed" })).toBe(true);
+});
+
 it("permits subscription waits only with explicit evidence that provider work never started", () => {
   const waiting = {
     runtimeMode: "legacy", status: "cancelled", errorCode: "ai_connection_busy", scheduledRetryAttempt: 12,

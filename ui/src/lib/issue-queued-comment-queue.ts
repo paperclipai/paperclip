@@ -41,10 +41,17 @@ export function normalizeIssueQueuedCommentQueue(
         typeof entry?.position === "number" && Number.isFinite(entry.position)
           ? entry.position
           : sourcePosition;
+      const response = record(entry?.source);
       return [
         {
           comment: comment as unknown as IssueComment,
           position,
+          ...(response?.kind === "interaction" && typeof response.interactionId === "string"
+            && typeof response.interactionKind === "string" ? { source: {
+              kind: "interaction" as const, interactionId: response.interactionId,
+              interactionKind: response.interactionKind,
+              requiresFreshSession: response.requiresFreshSession === true,
+            } } : {}),
           canEdit: entry?.canEdit === true,
           canDiscard: entry?.canDiscard === true,
         },

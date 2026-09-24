@@ -10,6 +10,7 @@ import { aiConnectionsApi } from "@/api/ai-connections";
 import { queryKeys } from "@/lib/queryKeys";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
 import { AppsConnect } from "./AppsConnect";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const experimentalMock = vi.hoisted(() => vi.fn());
@@ -21,6 +22,7 @@ vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: {
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const getConnectionMock = vi.hoisted(() => vi.fn());
+const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
@@ -58,7 +60,6 @@ const GOOGLE_CALENDAR = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "
 const GOOGLE_DRIVE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
 const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
 const PAGERDUTY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "pagerduty")!;
-const COMPOSIO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "composio")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -66,6 +67,7 @@ vi.mock("@/api/tools", () => ({
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     getConnection: (id: string) => getConnectionMock(id),
+    getConnectionInstalls: (id: string) => getConnectionInstallsMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
     startOAuth: (connectionId: string, input?: unknown) => startOAuthMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
@@ -148,6 +150,24 @@ function radioContaining(text: string): HTMLButtonElement | undefined {
   return Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
     (button) => button.textContent?.includes(text),
   );
+}
+
+/** The wizard stepper's progress dots, one per step. */
+function stepDots(): HTMLElement[] {
+  return Array.from(
+    document.body.querySelectorAll<HTMLElement>('[data-testid="wizard-step-dot"]'),
+  );
+}
+
+function stepDotCount(): number {
+  return stepDots().length;
+}
+
+/** The step names printed under the dots, e.g. "Access   ·   Sign in". */
+function stepLabelsOnScreen(): string[] {
+  const labelLine =
+    document.body.querySelector('[data-testid="wizard-step-labels"]')?.textContent ?? "";
+  return labelLine.split("·").map((label) => label.trim()).filter(Boolean);
 }
 
 /**
@@ -237,6 +257,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
+    getConnectionInstallsMock.mockResolvedValue({ installs: [{ targetType: "company", targetId: "company-1" }] });
     startOAuthMock.mockResolvedValue({
       connectionId: "conn-notion",
       provider: "notion",
@@ -292,7 +313,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={client}>
-          {content ?? <AppsConnect byoOnly={byoOnly} />}
+          <TooltipProvider>{content ?? <AppsConnect byoOnly={byoOnly} />}</TooltipProvider>
         </QueryClientProvider>,
       );
     });
@@ -300,6 +321,183 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     return root;
   }
+
+  it.each(["zapier", "arcade", "composio", "executor"])("inline aggregator %s collects the endpoint and completes only for the requester", async (provider) => {
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    const onComplete = vi.fn();
+    const popup = vi.spyOn(window, "open").mockReturnValue(null);
+    const connection = { id: "conn-inline", status: "draft", credentialPolicy: "per_user", authKind: "api_key" };
+    connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [{ id: "tool-1", status: "active" }] });
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug={provider} requestedAgentId="agent-1" interactionId="intent-inline" onComplete={onComplete} />);
+    expect(container.textContent).toContain("This task grants access only to Ada");
+    expect(radioContaining("Any agent")).toBeUndefined();
+    await passAccessStep();
+    expect(container.textContent).toContain("MCP server URL");
+    expect(container.textContent).not.toContain("Add your key");
+    const url = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    expect(url.value).toBe(provider === "composio" ? "https://connect.composio.dev/mcp" : "");
+    expect(buttonByText("Connect")?.disabled).toBe(provider !== "composio");
+    await act(async () => setInputValue(url, "not a url"));
+    await act(async () => buttonByText("Connect")!.click());
+    expect(container.textContent).toContain("Enter a valid MCP URL");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => {
+      setInputValue(url, "https://provider.example/mcp");
+      const auth = container.querySelector<HTMLSelectElement>("select")!;
+      auth.value = "bearer";
+      auth.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const token = container.querySelector<HTMLInputElement>('input[id$="-token"]')!;
+    await act(async () => setInputValue(token, "fixture-token"));
+    await act(async () => buttonByText("Try again")!.click());
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalledWith({ connectionId: connection.id }));
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: provider, link: "https://provider.example/mcp", grantKind: "user", authMode: "bearer", credentialValues: { "credentials.authorization": "fixture-token" } }));
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", connection.id, { enabledCatalogEntryIds: ["tool-1"], askFirstCatalogEntryIds: [], access: { agentIds: ["agent-1"] }, preserveExistingAccess: true });
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(popup).not.toHaveBeenCalled();
+  });
+
+  it.each(["arcade", "composio", "executor"])("inline aggregator %s binds OAuth to the task and retries the same draft", async (provider) => {
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    const onComplete = vi.fn();
+    const onPhaseChange = vi.fn();
+    const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const connection = { id: "conn-inline-oauth", status: "draft", credentialPolicy: "per_user", authKind: "oauth" };
+    connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [], auth: { kind: "oauth" } });
+    const root = await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug={provider} requestedAgentId="agent-1" interactionId="intent-inline" onComplete={onComplete} onPhaseChange={onPhaseChange} />);
+    await passAccessStep();
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://provider.example/mcp"));
+    await act(async () => buttonByText("Connect")!.click());
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(connection.id, { asCurrentUser: true, interactionId: "intent-inline" }));
+    expect(popup.location.assign).toHaveBeenCalled();
+    popup.closed = true;
+    expect(container.textContent).toContain("Paperclip is waiting for confirmation");
+    expect(container.querySelector('a[target="_blank"]')?.getAttribute("href")).toBe("https://mcp.notion.com/authorize?state=resumed");
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+    const message = (origin: string, interactionId: string, outcome: string) => window.dispatchEvent(new MessageEvent("message", { origin, data: { type: "paperclip.connection-intent.oauth", interactionId, outcome } }));
+    await act(async () => { message("https://untrusted.example", "intent-inline", "connected"); message(window.location.origin, "other-intent", "connected"); });
+    expect(onComplete).not.toHaveBeenCalled();
+    await act(async () => message(window.location.origin, "intent-inline", "failed"));
+    expect(container.textContent).toContain("Authorization did not complete");
+    await act(async () => buttonByText("Try again")!.click());
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledTimes(2));
+    expect(connectAppMock).toHaveBeenLastCalledWith("company-1", expect.objectContaining({ resumeConnectionId: connection.id }));
+    await act(async () => message(window.location.origin, "intent-inline", "connected"));
+    expect(onComplete).toHaveBeenCalledWith({ resolvedByCallback: true });
+    await act(async () => root.unmount());
+    mountedRoot = null;
+    expect(popup.close).toHaveBeenCalled();
+  });
+
+  it("inline aggregator saves and resumes a draft without storing credentials in browser storage", async () => {
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    const onCancel = vi.fn();
+    const connection = { id: "conn-inline-draft", status: "draft", credentialPolicy: "per_user", authKind: "none", config: { url: "https://provider.example/mcp", sourceTemplateKey: "zapier", connectionMethodKey: "generated-url" } };
+    connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [] });
+    getConnectionMock.mockResolvedValue(connection);
+    const content = <ConnectionSetupFlow host="dialog" serviceSlug="zapier" requestedAgentId="agent-1" interactionId="intent-inline" onCancel={onCancel} />;
+    const root = await render(undefined, false, content);
+    await passAccessStep();
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://provider.example/mcp?token=fixture-secret"));
+    await act(async () => buttonByText("Save & exit")!.click());
+    await vi.waitFor(() => expect(onCancel).toHaveBeenCalled());
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ saveDraft: true }));
+    expect(sessionStorage.getItem("paperclip:mcp-intent-draft:company-1:intent-inline")).toBe(connection.id);
+    expect(JSON.stringify(sessionStorage)).not.toContain("fixture-secret");
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    mountedRoot = null;
+    await render(undefined, false, content);
+    await vi.waitFor(() => expect(container.textContent).toContain("MCP server URL"));
+    expect(getConnectionMock).toHaveBeenCalledWith(connection.id);
+    expect(container.textContent).toContain("Step 2 of 2");
+  });
+
+  it("inline aggregator reuses an eligible account without changing its access", async () => {
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    const onUseExisting = vi.fn().mockResolvedValue(undefined);
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="composio" requestedAgentId="agent-1" interactionId="intent-inline" existingConnections={[{ id: "existing", applicationId: "app", name: "Existing Composio", status: "active", enabled: true }]} onUseExisting={onUseExisting} />);
+    await act(async () => buttonContaining("Existing Composio")!.click());
+    expect(onUseExisting).toHaveBeenCalledWith("existing");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["mem0", "zep", "supermemory", "cognee", "honcho"])("blocks direct %s setup while memory connectors are off", async (provider) => {
+    mockSearch.value = `source=${provider}`;
+    await render();
+    expect(container.textContent).toContain("Enable memory connectors");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("allows an existing memory connection to reconnect while setup is hidden", async () => {
+    mockSearch.value = "source=mem0&reconnect=existing-memory";
+    getConnectionMock.mockResolvedValue({ id: "existing-memory", status: "active", config: { sourceTemplateKey: "mem0" } });
+    await render();
+    expect(getConnectionMock).toHaveBeenCalledWith("existing-memory");
+    expect(container.textContent).not.toContain("Enable memory connectors");
+  });
+
+  it.each(["zapier", "arcade", "composio", "executor"])("blocks direct %s setup while MCP aggregators are off", async (provider) => {
+    mockSearch.value = `source=${provider}`;
+    await render();
+    expect(container.textContent).toContain("Enable MCP aggregators");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["arcade", "composio", "executor"])("explains a failed %s OAuth return and retries the same saved draft", async (provider) => {
+    const draft = { id: "conn-oauth-draft", companyId: "company-1", status: "draft", authKind: "oauth", credentialPolicy: "shared", config: { sourceTemplateKey: provider, connectionMethodKey: "mcp", url: "https://example.com/mcp" } };
+    mockSearch.value = `source=${provider}&resume=${draft.id}&oauth=failed&code=oauth_callback_failed&error_description=untrusted-provider-message`;
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    getConnectionMock.mockResolvedValue(draft);
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
+    await render();
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("Authorization did not complete"));
+    expect(container.textContent).not.toContain("untrusted-provider-message");
+    expect(buttonByText("Try again")).toBeTruthy();
+    await act(async () => buttonByText("Try again")!.click());
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(draft.id, { asCurrentUser: false }));
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: draft.id }));
+    expect(navigateTopLevelMock).toHaveBeenCalled();
+  });
+
+  it("explains a declined Composio OAuth return without discarding the draft", async () => {
+    mockSearch.value = "source=composio&resume=conn-oauth-draft&oauth=denied&code=oauth_authorization_denied";
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    getConnectionMock.mockResolvedValue({ id: "conn-oauth-draft", status: "draft", authKind: "oauth", config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp", url: "https://connect.composio.dev/mcp" } });
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Connection cancelled. Your setup details are preserved"));
+    expect(buttonByText("Try again")).toBeTruthy();
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["shared", "Any human in the organization", false],
+    ["per_user", "Just me", true],
+  ])("retains the %s identity when returning to Access after an OAuth return", async (credentialPolicy, identityLabel, asCurrentUser) => {
+    const draft = { id: "conn-oauth-draft", status: "draft", authKind: "oauth", credentialPolicy, config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp", url: "https://connect.composio.dev/mcp" } };
+    mockSearch.value = `source=composio&resume=${draft.id}&oauth=denied`;
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
+    getConnectionMock.mockResolvedValue(draft);
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
+    await render();
+    await vi.waitFor(() => expect(buttonByText("Back")).toBeTruthy());
+    await act(async () => buttonByText("Back")!.click());
+    expect(container.textContent).toContain(identityLabel);
+    expect(container.querySelector('[role="radiogroup"][aria-label="Which humans can use this credential?"]')).toBeNull();
+    await act(async () => buttonByText("Continue")!.click());
+    await act(async () => buttonByText("Try again")!.click());
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(draft.id, { asCurrentUser }));
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: draft.id, grantKind: asCurrentUser ? "user" : "organization" }));
+  });
 
   it("shows only MCP URL setup on the BYO page", async () => {
     await render(undefined, true);
@@ -327,6 +525,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       config: source === "config-url" ? { url: endpoint } : {},
       transportConfig: source === "transport-url" ? { url: endpoint } : source === "transport-serverUrl" ? { serverUrl: endpoint } : {},
     }] });
+    getConnectionMock.mockImplementation(async () => (await listConnectionsMock()).connections[0]);
     await render(undefined, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
     const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
     expect(input?.value).toBe(endpoint);
@@ -346,6 +545,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
     listConnectionsMock.mockResolvedValue({ connections: [{ ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault", config: { url: "https://archive.example.test/mcp" } }] });
+    getConnectionMock.mockImplementation(async () => (await listConnectionsMock()).connections[0]);
     await render(client, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
     const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
     expect(input?.value).toBe("https://archive.example.test/mcp");
@@ -388,7 +588,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Which humans can use this credential?");
     expect(container.textContent).toContain("Which agents can use this connection?");
     expect(radioContaining("Just me")).toBeTruthy();
-    expect(radioContaining("Any human in the company")?.getAttribute("aria-checked")).toBe("true");
+    expect(radioContaining("Any human in the organization")?.getAttribute("aria-checked")).toBe("true");
     expect(radioContaining("Just agents I pick")).toBeTruthy();
     expect(radioContaining("Any agent")?.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).not.toContain("Does it need a key?");
@@ -609,7 +809,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
    * methods must still let the operator deliberately choose a personal identity.
    */
   it("defaults flexible methods to company identity and keeps personal credentials submittable", async () => {
-    listGalleryMock.mockResolvedValue({ apps: [COMPOSIO, POSTHOG] });
+    mockSearch.value = "source=posthog&method=mcp-api-key";
+    listGalleryMock.mockResolvedValue({ apps: [{ ...POSTHOG, methods: POSTHOG.methods.filter((method) => method.key === "mcp-api-key") }] });
 
     const identityChoices = () => {
       const radios = Array.from(
@@ -617,14 +818,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       );
       return {
         justMe: radios.find((r) => r.textContent?.includes("Just me")),
-        wholeOrg: radios.find((r) => r.textContent?.includes("Any human in the company")),
+        wholeOrg: radios.find((r) => r.textContent?.includes("Any human in the organization")),
       };
     };
 
     // --- API-key-only method: shared by default, personal still offered ------
     let root = await render();
     await act(async () => {
-      buttonContaining("Composio")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonContaining("PostHog")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -654,7 +855,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
-    await act(async () => setInputValue(keyField!, "composio-personal-token"));
+    await act(async () => setInputValue(keyField!, "posthog-personal-token"));
     await flushReact();
     await act(async () => {
       buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -665,7 +866,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     // a personal grant. A disabled "Just me" would make this unreachable.
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
-      galleryKey: "composio",
+      galleryKey: "posthog",
       grantKind: "user",
     });
 
@@ -675,6 +876,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockParams.appKey = "posthog";
+    mockSearch.value = "";
     root = await render();
 
     const posthog = identityChoices();
@@ -1209,7 +1411,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => {
       mountedRoot?.render(
         <QueryClientProvider client={coldLoadClient}>
-          <AppsConnect />
+          <TooltipProvider><AppsConnect /></TooltipProvider>
         </QueryClientProvider>,
       );
     });
@@ -1327,7 +1529,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("final project-registration email");
     expect(container.textContent).not.toContain("Apply or verify Developer Preview enrollment");
     expect(radioContaining("Just me")).toBeTruthy();
-    expect(radioContaining("Any human in the company")?.getAttribute("aria-checked")).toBe("true");
+    expect(radioContaining("Any human in the organization")?.getAttribute("aria-checked")).toBe("true");
     await passAccessStep();
 
     expect(radioContaining("Read & create")?.getAttribute("aria-checked")).toBe("true");
@@ -1418,7 +1620,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(anyAgent?.getAttribute("aria-label")).toContain(
       "Your company policy limits this choice to connection managers.",
     );
-    const organization = radioContaining("Any human in the company");
+    const organization = radioContaining("Any human in the organization");
     expect(organization?.disabled).toBe(true);
     expect(organization?.getAttribute("title")).toBe(
       "Only connection managers can share this credential.",
@@ -1507,7 +1709,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledWith("company-1", {
       galleryKey: "posthog",
       connectionMethodKey: "mcp-api-key",
-      name: "PostHog for the company",
+      name: "PostHog for the organization",
       credentialSource: "paperclip_vault",
       credentialValues: { "credentials.authorization": "phx_test-key" },
       configValues: {
@@ -1561,7 +1763,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledWith("company-1", {
       galleryKey: "posthog",
       connectionMethodKey: "mcp-api-key",
-      name: "PostHog for the company",
+      name: "PostHog for the organization",
       credentialSource: "vercel_connect",
       vercelConnect: { connector: "posthog/paperclip" },
       configValues: { readOnly: false, mode: "tools" },
@@ -1801,7 +2003,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Which humans can use this credential?");
     expect(container.textContent).not.toContain("Choose access before sign-in");
     const identityRadios = Array.from(document.body.querySelectorAll('[role="radio"]'));
-    expect(identityRadios.find((radio) => radio.textContent?.includes("Any human in the company"))?.getAttribute("aria-checked"))
+    expect(identityRadios.find((radio) => radio.textContent?.includes("Any human in the organization"))?.getAttribute("aria-checked"))
       .toBe("true");
 
     await passAccessStep();
@@ -1811,7 +2013,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledWith("company-1", {
       galleryKey: "notion",
       connectionMethodKey: "mcp-oauth",
-      name: "Notion for the company",
+      name: "Notion for the organization",
       credentialSource: "paperclip_vault",
       credentialValues: {},
       configValues: undefined,
@@ -1835,6 +2037,25 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Preparing secure sign-in");
     expect(container.textContent).toContain("Preparing…");
     expect(connectAppMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the same steps when Notion sign-in takes over the wizard", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    connectAppMock.mockReturnValueOnce(new Promise(() => {}));
+
+    await render();
+
+    const stepsOnAccess = stepLabelsOnScreen();
+    expect(stepsOnAccess).toEqual(["Access", "Sign in"]);
+
+    await passAccessStep();
+    await submitCuratedOAuthSetup();
+
+    expect(container.textContent).toContain("Preparing secure sign-in");
+    // Connecting must not grow the stepper a step the flow never lands on.
+    expect(stepLabelsOnScreen()).toEqual(stepsOnAccess);
+    expect(stepDotCount()).toBe(stepsOnAccess.length);
   });
 
   it("backs from the sign-in checkpoint to Access without exiting the wizard", async () => {
@@ -1939,6 +2160,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await vi.waitFor(() => {
       expect(container.textContent).toContain("Finish connecting Notion");
     });
+    expect(getConnectionMock).not.toHaveBeenCalled();
     expect(container.textContent).toContain("identity and agent access will stay the same");
     expect(container.textContent).not.toContain("Choose access before sign-in");
     expect(buttonByText("Continue to sign in")).toBeUndefined();
@@ -2052,7 +2274,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
     expect(container.textContent).toContain(
-      credentialPolicy === "per_user" ? "Just me" : "Any human in the company",
+      credentialPolicy === "per_user" ? "Just me" : "Any human in the organization",
     );
     expect(container.textContent).toContain("Existing agent access stays the same");
     await passAccessStep();
@@ -2105,7 +2327,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
 
     await render();
-    expect(container.textContent).toContain("Any human in the company");
+    expect(container.textContent).toContain("Any human in the organization");
     await passAccessStep();
     await submitCuratedOAuthSetup();
 
@@ -2256,7 +2478,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledWith("company-1", {
       galleryKey: "notion",
       connectionMethodKey: "mcp-oauth",
-      name: "Notion for the company",
+      name: "Notion for the organization",
       credentialSource: "paperclip_vault",
       credentialValues: {},
       configValues: undefined,
@@ -2523,7 +2745,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const [, input] = connectAppMock.mock.calls[0];
     expect(input).toMatchObject({
       link: "https://www.example.com/actions",
-      name: "example.com/actions for the company",
+      name: "example.com/actions for the organization",
     });
     expect(input.credentialValues).toBeUndefined();
   });
@@ -2600,7 +2822,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
       link: zapierUrl,
-      name: "Zapier for the company",
+      name: "Zapier for the organization",
       galleryKey: "zapier",
       connectionMethodKey: "generated-url",
     });
@@ -2608,6 +2830,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("gives Zapier the shared credential and agent access opener", async () => {
+    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
     mockSearch.value = "source=zapier";
     listGalleryMock.mockResolvedValueOnce({
       apps: [
@@ -2637,7 +2860,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
           },
         ],
       },
-      catalog: [],
+      catalog: [{ id: "action-1", status: "active" }, { id: "action-2", status: "active" }],
       suggestedDefaults: { askFirstRiskLevels: [] },
     });
     await render();
@@ -2646,9 +2869,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Connect Zapier");
     expect(container.textContent).toContain("Which humans can use this credential?");
     expect(container.textContent).toContain("Which agents can use this connection?");
-    expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
+    expect(container.querySelector('[data-remote-mcp-provider="zapier"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
-    expect(container.querySelector('input[placeholder^="https://mcp.zapier.com"]')).toBeNull();
+    expect(container.querySelector('input[placeholder="Paste the full URL from Zapier"]')).toBeNull();
 
     await act(async () => {
       radioContaining("Just me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -2657,10 +2880,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await passAccessStep();
 
     expect(container.textContent).toContain("Step 2 of 2");
-    expect(container.textContent).toContain("Add MCP URL");
+    expect(container.textContent).toContain("MCP server URL");
 
     const linkInput = container.querySelector<HTMLInputElement>(
-      'input[placeholder^="https://mcp.zapier.com"]',
+      'input[placeholder="Paste the full URL from Zapier"]',
     );
     expect(linkInput?.type).toBe("password");
     expect(linkInput?.autocomplete).toBe("off");
@@ -2669,7 +2892,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     await act(async () => {
-      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -2741,7 +2964,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const [, input] = connectAppMock.mock.calls[0];
     expect(input).toMatchObject({
       link: "https://www.example.com/actions",
-      name: "Bla for the company",
+      name: "Bla for the organization",
       applicationId: "app-77",
     });
   });
@@ -2878,7 +3101,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=github");
     const [, input] = connectAppMock.mock.calls[0];
-    expect(input).toMatchObject({ galleryKey: "github", name: "GitHub for the company" });
+    expect(input).toMatchObject({ galleryKey: "github", name: "GitHub for the organization" });
   });
 
   it("continues an exact credential-based draft instead of creating a replacement", async () => {
@@ -2892,7 +3115,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       connections: [{
         id: connectionId,
         applicationId: "app-github",
-        name: "Engineering GitHub for the company",
+        name: "Engineering GitHub for the organization",
         authKind: "api_key",
         credentialPolicy: "shared",
         status: "draft",
@@ -2917,7 +3140,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       galleryKey: "github",
       connectionMethodKey: "mcp-key",
       resumeConnectionId: connectionId,
-      name: "Engineering GitHub for the company",
+      name: "Engineering GitHub for the organization",
       credentialValues: { "credentials.authorization": "replacement-key" },
     });
   });
@@ -2943,7 +3166,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const [, input] = connectAppMock.mock.calls[0];
     expect(input).toMatchObject({
       galleryKey: "github",
-      name: "GitHub for the company",
+      name: "GitHub for the organization",
     });
   });
 
@@ -2980,7 +3203,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const [, input] = connectAppMock.mock.calls[0];
     expect(input).toMatchObject({
       galleryKey: "google-sheets",
-      name: "Google Sheets for the company",
+      name: "Google Sheets for the organization",
       configValues: { allowedSpreadsheetIds: ["sheet_123"] },
     });
   });
@@ -3111,7 +3334,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     });
     await flushReact();
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
-      name: "127.0.0.1:47399/mcp for the company",
+      name: "127.0.0.1:47399/mcp for the organization",
     });
   });
 
@@ -3290,6 +3513,36 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     // Residual risk of a real-but-hostile authorization page: name the host the
     // operator is being handed to (PAP-17099).
     expect(container.textContent).toContain("auth.example.test");
+  });
+
+  // The curated flow has its own regression test for this. The generic flow is
+  // a separate three-step model with a separate override, so it needs its own —
+  // otherwise the waiting screen could quietly drop back to the curated
+  // two-step labels here and nothing would catch it.
+  it("keeps the generic three-step model when a pasted endpoint hands off to sign-in", async () => {
+    connectAppMock.mockResolvedValue({
+      connectionId: "conn-1",
+      application: { id: "app-1", name: "mcp.example.test" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://auth.example.test/authorize?state=abc" },
+    });
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+
+    const stepsBeforeHandoff = stepLabelsOnScreen();
+    expect(stepsBeforeHandoff).toEqual(["Pick app", "Access", "Add your key"]);
+
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // Signing in must neither grow the stepper nor shrink it to the curated
+    // two-step set the pasted endpoint never walked.
+    expect(stepLabelsOnScreen()).toEqual(stepsBeforeHandoff);
+    expect(stepDotCount()).toBe(stepsBeforeHandoff.length);
   });
 
   it("exchanges a managed connect response in the tenant without opening Cloud confirmation", async () => {

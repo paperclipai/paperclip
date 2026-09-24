@@ -146,6 +146,8 @@ export interface NativeSession {
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
   startTurn(input: {
     message: NativeUserMessage;
+    /** Set by orchestration only after successful provider-session recovery. */
+    continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
   }): Promise<{
     turnId: string;

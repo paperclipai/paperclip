@@ -9,7 +9,7 @@ import {
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
 
-export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.29" as const;
+export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.32" as const;
 export const DEFAULT_OPENCODE_RUNNER_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;
@@ -109,7 +109,7 @@ export type PaperclipRunnerNativeProviderInput =
       provider: "acpx";
       model: string;
       acpxAgent: QualifiedPaperclipRunnerAcpxAgent;
-      acpxPermissionMode: "approve-all" | "approve-reads" | "deny-all";
+      acpxPermissionMode: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
     };
 
 export class PaperclipRunnerProviderProfileError extends Error {
@@ -476,7 +476,7 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       acpxPermissionMode: resolvePaperclipRunnerPermissionMode(
         "acpx",
         config.acpxPermissionMode,
-      ) as "approve-all" | "approve-reads" | "deny-all",
+      ) as "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all",
     };
   }
   if (profile.provider === "claude_managed") {

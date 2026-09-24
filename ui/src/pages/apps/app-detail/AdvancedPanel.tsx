@@ -30,7 +30,6 @@ export function AdvancedPanel({
   connection,
   appName,
   galleryEntry,
-  childConnectionCount,
   removing,
   onRemove,
   onReplaced,
@@ -47,7 +46,6 @@ export function AdvancedPanel({
   onRevokeIdentity,
 }: Pick<AppDetailSectionProps, "connection" | "appName" | "galleryEntry"> & {
   removing: boolean;
-  childConnectionCount?: number;
   onRemove: () => void;
   onReplaced: () => void;
   canReplaceCredential?: boolean;
@@ -69,7 +67,6 @@ export function AdvancedPanel({
         appName={appName}
         connection={connection}
         galleryEntry={galleryEntry}
-        childConnectionCount={childConnectionCount}
         removing={removing}
         onRemove={onRemove}
         onReplaced={onReplaced}
@@ -294,7 +291,7 @@ function ReconnectForm({
     : null;
   const fields = (method?.credentialFields ?? []).map((field) => ({
     ...field,
-    configPath: credentialConfigPath(field),
+    configPath: credentialConfigPath(field, method),
     helpUrl: method?.consoleLinks?.keys ?? method?.consoleLinks?.docs ?? "",
   }));
   const [values, setValues] = useState<Record<string, string>>({});
@@ -427,7 +424,6 @@ export function DangerZone({
   appName,
   connection,
   galleryEntry = null,
-  childConnectionCount = 0,
   removing,
   onRemove,
   onReplaced,
@@ -446,7 +442,6 @@ export function DangerZone({
   appName: string;
   connection?: ToolConnection;
   galleryEntry?: AppDefinition | null;
-  childConnectionCount?: number;
   removing: boolean;
   onRemove: () => void;
   onReplaced?: () => void;
@@ -567,9 +562,7 @@ export function DangerZone({
               <div>
                 <p className="text-sm font-medium text-foreground">Remove this app</p>
                 <p className="text-xs text-muted-foreground">
-                  {childConnectionCount > 0
-                    ? `Deletes credentials for ${appName} and ${childConnectionCount} connected ${childConnectionCount === 1 ? "service" : "services"}.`
-                    : `Deletes credentials for ${appName} and removes agent access. Reconnecting requires a new sign-in or key.`}
+                  {`Deletes credentials for ${appName} and removes agent access. Reconnecting requires a new sign-in or key.`}
                 </p>
               </div>
               {confirming ? (

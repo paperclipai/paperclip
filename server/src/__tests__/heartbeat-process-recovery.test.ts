@@ -212,6 +212,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
 import {
   claimNativeRestartRecoveries,
   currentNativeControllerIdentity,
@@ -4221,8 +4222,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("schedules an infra retry for a setup failure caused by a transient sandbox provider worker restart", async () => {
-    // Reproduces the production incident: the "Kubernetes Sandbox" plugin
-    // worker was mid-restart when a run tried to acquire a lease. The lease
+    // Model a configured plugin manager whose worker is mid-restart when
+    // a run tries to acquire a lease. A missing manager is a wiring error,
+    // not a worker restart. The lease
     // acquisition fails BEFORE the adapter is ever dispatched (no call to
     // mockAdapterExecute), so this hits the setup-failure catch (errorCode
     // "setup_failed") rather than the adapter-failure catch. The condition is
@@ -4342,16 +4344,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .set({ status: "in_progress" })
       .where(eq(issues.id, issueId));
 
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, {
+      pluginWorkerManager: {
+        isRunning: () => false,
+        call: vi.fn(),
+      } as unknown as PluginWorkerManager,
+    });
     await heartbeat.resumeQueuedRuns();
 
+    // The real manager waits up to five seconds for worker readiness before
+    // lease acquisition fails and the heartbeat can schedule its retry.
     const runs = await waitForValue(async () => {
       const rows = await db
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
       return rows.length >= 2 ? rows : null;
-    });
+    }, 10_000);
     expect(runs).toHaveLength(2);
 
     const failedRun = runs?.find((row) => row.id === runId);

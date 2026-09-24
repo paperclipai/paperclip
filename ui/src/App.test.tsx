@@ -57,7 +57,7 @@ async function waitForText(container: HTMLElement, text: string) {
   await vi.waitFor(() => expect(container.textContent).toContain(text));
 }
 
-function renderGate(container: HTMLElement) {
+function renderGate(container: HTMLElement, allowMembershipRequest = false) {
   const root = createRoot(container);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -66,7 +66,7 @@ function renderGate(container: HTMLElement) {
   flushSync(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <CloudAccessGate />
+        <CloudAccessGate allowMembershipRequest={allowMembershipRequest} />
       </QueryClientProvider>,
     );
   });
@@ -120,6 +120,40 @@ describe("CloudAccessGate", () => {
     expect(container.textContent).toContain("No organization access");
     expect(container.textContent).not.toContain("Outlet content");
 
+    unmountRoot(root);
+  });
+
+  it("admits signed-in nonmembers only for the private invitation landing page", async () => {
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ isInstanceAdmin: false, companyIds: [] });
+    const root = renderGate(container, true);
+    await waitForText(container, "Outlet content");
+    unmountRoot(root);
+  });
+
+  it("still requires sign-in for the invitation landing page", async () => {
+    mockAuthApi.getSession.mockResolvedValue(null);
+    const root = renderGate(container, true);
+    await waitForText(container, "Navigate:/auth?next=");
+    expect(container.textContent).not.toContain("Outlet content");
+    unmountRoot(root);
+  });
+
+  it("still blocks invitation pages while cloud bootstrap is pending", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated", deploymentExposure: "public", bootstrapStatus: "bootstrap_pending" });
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
+    const root = renderGate(container, true);
+    await waitForText(container, "This Paperclip is waiting on its first admin");
+    expect(container.textContent).not.toContain("Outlet content");
+    unmountRoot(root);
+  });
+
+  it("keeps invitation pages closed when cloud access checks fail", async () => {
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
+    mockAccessApi.getCurrentBoardAccess.mockRejectedValueOnce(new Error("Access check unavailable"));
+    const root = renderGate(container, true);
+    await waitForText(container, "Access check unavailable");
+    expect(container.textContent).not.toContain("Outlet content");
     unmountRoot(root);
   });
 

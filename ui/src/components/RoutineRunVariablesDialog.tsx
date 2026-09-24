@@ -1,3 +1,5 @@
+import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
@@ -12,7 +14,6 @@ import { useQuery } from "@tanstack/react-query";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
-import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
@@ -254,7 +255,8 @@ export function RoutineRunVariablesDialog({
     retry: false,
   });
 
-  const workspaceSelectionEnabled = supportsRoutineRunWorkspaceSelection(
+  const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
+  const workspaceSelectionEnabled = workspaceIsolationControlsVisible && supportsRoutineRunWorkspaceSelection(
     selectedProject,
     experimentalSettings?.enableIsolatedWorkspaces === true,
   );
@@ -272,9 +274,11 @@ export function RoutineRunVariablesDialog({
     setWorkspaceBranchName(defaultExecutionWorkspace?.branchName ?? null);
   }, [defaultAssigneeAgentId, defaultExecutionWorkspace, defaultProjectId, open, projects, variables]);
 
-  const workspaceBranchAutoValue = workspaceSelectionEnabled && workspaceBranchName
+  const workspaceBranchAutoValue = workspaceSelectionEnabled
     ? workspaceBranchName
-    : null;
+    : defaultExecutionWorkspace?.projectId === selection.projectId
+      ? defaultExecutionWorkspace?.branchName ?? null
+      : null;
 
   const isAutoWorkspaceBranchVariable = useCallback(
     (variable: RoutineVariable) =>
@@ -374,7 +378,7 @@ export function RoutineRunVariablesDialog({
                   option ? (
                     currentAssignee ? (
                       <>
-                        <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <AgentAvatar agent={currentAssignee} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                         <span className="truncate">{option.label}</span>
                       </>
                     ) : (
@@ -389,7 +393,7 @@ export function RoutineRunVariablesDialog({
                   const assignee = agents.find((agent) => agent.id === option.id);
                   return (
                     <>
-                      {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                      {assignee ? <AgentAvatar agent={assignee} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/> : null}
                       <span className="truncate">{option.label}</span>
                     </>
                   );

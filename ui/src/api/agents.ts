@@ -259,7 +259,16 @@ export const agentsApi = {
       reason: "retry_failed_run",
       failedRunId,
     });
-    if ("id" in result) return { runId: result.id, issueId: null };
+    if ("id" in result) {
+      // Exact retries are idempotent: a repeated click can return a successor
+      // that has already stopped. It does not mean a new attempt was queued.
+      if (["failed", "timed_out", "cancelled", "interrupted"].includes(result.status)) {
+        throw new Error(
+          "The previous retry has already stopped. Refresh the task and retry its latest failed run.",
+        );
+      }
+      return { runId: result.id, issueId: null };
+    }
     if ("actionId" in result) {
       if (result.status === "failed" || result.status === "cancelled") {
         throw new Error(

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope, AskUserQuestionsInteraction } from "@paperclipai/shared";
 
 import { formatDurableQuestionResponseSummary } from "../question-response-delivery.js";
+import { buildNativeCompletionContract } from "./completion-contracts.js";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
@@ -59,6 +61,7 @@ describe("native execution input external-chat framing", () => {
         },
         taskPrompt:
           "Continue the user's original request with their selected answer.",
+        initialCommunicationGuidance: "Initial Slack communication preferences.",
         wakePayload,
         resumedSession,
         workspace: {
@@ -100,18 +103,18 @@ describe("native execution input external-chat framing", () => {
         ],
       };
       const input = buildNativeExecutionInput(args);
+      expect(input.initialCommunicationGuidance).toBe("Initial Slack communication preferences.");
+      // The runtime adds this only after deciding whether provider recovery succeeded.
+      expect(input.task.prompt).not.toContain("Initial Slack communication preferences.");
       expect(input.task.title).toBe("External chat follow-up");
       expect(input.task.prompt).toContain("Amber");
+      expect(input.task.prompt).not.toContain("## Questions that need a user response");
       expect(input.task.prompt).toContain(
         "semantic completion summary is the user-visible final answer",
       );
       expect(input.task.prompt).not.toContain(
         "including marking the task done",
       );
-      expect(input.task.prompt).toContain("request_human_input");
-      expect(input.task.prompt).toContain('interactionKind="questions"');
-      expect(input.task.prompt).toContain("one question at a time");
-      expect(input.task.prompt).toContain("Never fabricate answer URLs");
       expect(input.task.prompt.indexOf("Choose a color: Amber")).toBeLessThan(
         input.task.prompt.indexOf(
           "Ask for a color, then tell me the selected color.",
@@ -242,7 +245,7 @@ describe("native execution input external-chat framing", () => {
       expect(sequential.task.title).toBe("External chat follow-up");
       expect(sequential.task.prompt).toContain("Circle");
       expect(sequential.task.prompt).toContain("Amber");
-      expect(sequential.task.prompt).toContain("next unanswered question");
+      expect(sequential.task.prompt).not.toContain("## Questions that need a user response");
       expect(
         sequential.task.prompt.indexOf("Choose a shape: Circle"),
       ).toBeLessThan(sequential.task.prompt.indexOf("Choose a color: Amber"));
@@ -333,10 +336,6 @@ describe("native execution input external-chat framing", () => {
       expect(input.task.description).toBeNull();
       expect(input.task.prompt).toContain("read_current_wake_comments");
       expect(input.task.prompt).toContain(staleRootTitle);
-      expect(input.task.prompt).toContain("request_human_input");
-      expect(input.task.prompt).toContain("Never fabricate answer URLs");
-      expect(input.task.prompt).toContain("not a self-contained text answer");
-      expect(input.task.prompt).toContain('continuationPolicy="wake_assignee"');
     },
   );
 
@@ -451,7 +450,14 @@ describe("native execution input external-chat framing", () => {
       }
     },
   );
-  it("gives ordinary Board tasks the same durable-question guidance as external chat", () => {
+  it.each([
+    { provider: "codex", resumedSession: false },
+    { provider: "codex", resumedSession: true },
+    { provider: "acpx", resumedSession: false },
+    { provider: "acpx", resumedSession: true },
+    { provider: "opencode", resumedSession: false },
+    { provider: "opencode", resumedSession: true },
+  ] as const)("keeps question documentation in the tool on $provider (resumed: $resumedSession)", ({ provider, resumedSession }) => {
     const input = buildNativeExecutionInput({
       companyId: "10000000-0000-4000-8000-000000000001",
       runId: "50000000-0000-4000-8000-000000000005",
@@ -459,18 +465,61 @@ describe("native execution input external-chat framing", () => {
       issue: { id: "20000000-0000-4000-8000-000000000002", identifier: "QA-1", title: "Welcome", description: null, workMode: "standard" },
       taskPrompt: "Ask whether the welcome should sound warm or formal before writing it.",
       workspace: { id: "40000000-0000-4000-8000-000000000004", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
-      normalizedSessionId: null,
-      provider: "codex",
+      normalizedSessionId: resumedSession ? "60000000-0000-4000-8000-000000000006" : null,
+      provider, resumedSession,
+      acpxAgent: "claude",
+      model: provider === "acpx" ? "claude-sonnet-5" : provider === "opencode" ? "openai/gpt-5.5" : "gpt-5.6-sol",
       completionContract: {
         id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
         contract: { revision: "1", objective: "Write a welcome after the user's answer", criteria: [{ id: "objective", requirement: "Use the selected tone" }] },
       },
       runtimeContext: nativeRuntimeContextFixture(),
     });
-    expect(input.task.prompt).toContain('interactionKind="questions"');
-    expect(input.task.prompt).toContain('continuationPolicy="wake_assignee"');
-    expect(input.task.prompt).toContain("Create the actual question before yielding");
-    expect(input.task.prompt).toContain("Wait for its real answer");
+    expect(input.provider).toMatchObject(provider === "acpx"
+      ? { kind: "acpx", permissionMode: "approve-all" }
+      : provider === "opencode" ? { kind: "opencode", permissionMode: "allow" }
+      : { kind: "codex", approvalPolicy: "never" });
+    expect(input.task.prompt).not.toContain("## Questions that need a user response");
+    expect(input.task.prompt).toContain("Use Paperclip's request_human_input for durable task questions.");
+    expect(input.task.prompt).not.toContain("payload.questionSet");
   });
 
+});
+
+
+describe("follow-up context size", () => {
+  it("keeps old messages out of resume deltas while retaining scoped human answers", () => {
+    const message = (id: string, body: string) => ({
+      id, body, authorType: "user", authorId: "board", createdAt: "2026-09-17T00:00:00Z",
+      updatedAt: "2026-09-17T00:00:00Z", deleted: false, sourceTrust: null,
+    });
+    const oldBody = "PREVIOUS_TASK_TEXT ".repeat(1000);
+    const newBody = "Actually, save the plan first.";
+    const answerText = "No budget. Wait for my approval.";
+    const continuation: ExecutionContinuationEnvelope = {
+      version: 1, companyId: "company", issueId: "issue", objective: "Welcome",
+      trigger: { reason: "issue_commented", interactionId: "answer-id", sourceRunId: null },
+      originCommentIds: ["new"], messages: [message("old", oldBody), message("new", newBody)],
+      resumeDelta: { baseRunId: "previous-run", messages: [message("new", newBody)] },
+      humanResponses: [{ id: "answer-id", kind: "ask_user_questions", status: "answered",
+        resolvedByUserId: "board", resolvedAt: "2026-09-17T00:01:00Z",
+        result: { answers: [{ questionId: "scope", optionIds: [], otherText: answerText }] } }],
+      interactionOutcomes: [], completedWork: null, unresolvedInteractionIds: [],
+      coverage: { kind: "full_task_history", throughCommentId: "new", summaryThroughCommentId: null },
+    };
+    const wake = { executionContinuation: continuation };
+    const fresh = renderPaperclipWakePrompt(wake);
+    const resumed = renderPaperclipWakePrompt(wake, { resumedSession: true });
+    const contract = buildNativeCompletionContract({ title: "Welcome", description: oldBody }, {
+      immediateRequest: newBody, humanResponseId: "answer-id",
+    });
+    expect(fresh).toContain(oldBody);
+    expect(resumed).not.toContain("PREVIOUS_TASK_TEXT");
+    expect(resumed.split(newBody)).toHaveLength(2);
+    expect(resumed.split(answerText)).toHaveLength(2);
+    expect(resumed).toContain("earlier history remains in this session");
+    expect(JSON.stringify(contract)).not.toContain(oldBody);
+    expect(JSON.stringify(contract)).not.toContain(answerText);
+    expect(resumed.length + JSON.stringify(contract).length).toBeLessThan(fresh.length);
+  });
 });

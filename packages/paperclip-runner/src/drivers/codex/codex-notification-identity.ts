@@ -15,6 +15,8 @@ const informational = new Set([
   "configWarning",
   "guardianWarning",
   "deprecationNotice",
+  // Child startup may arrive before thread/started establishes its lineage.
+  "mcpServer/startupStatus/updated",
 ]);
 const record = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v)

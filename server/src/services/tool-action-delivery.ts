@@ -115,7 +115,7 @@ export function toolActionDeliveryService(
         )
         .limit(1);
       if (pending) return false;
-      const outcomes = await tx
+      const readyOutcomes = await tx
         .select({
           receipt: toolActionDeliveries,
           receiptCreatedAtText: sql<string>`${toolActionDeliveries.createdAt}::text`,
@@ -163,7 +163,14 @@ export function toolActionDeliveryService(
           asc(toolActionDeliveries.createdAt),
           asc(toolActionDeliveries.actionRequestId),
         );
-      if (!outcomes.length) return false;
+      if (!readyOutcomes.length) return false;
+      // A task can have reviews from different external conversations. Never
+      // combine their results into a wake that would publish to only one origin.
+      const sourceOutcome = readyOutcomes.find((row) => row.request.id === source.actionRequestId);
+      if (!sourceOutcome) return false;
+      const outcomes = readyOutcomes.filter(
+        (row) => row.invocation.runId === sourceOutcome.invocation.runId,
+      );
       const sourceRunIds = outcomes.flatMap((row) =>
         row.invocation.runId ? [row.invocation.runId] : [],
       );
@@ -297,6 +304,7 @@ export function toolActionDeliveryService(
           triggerDetail: "system",
           reason: "issue_commented",
           idempotencyKey,
+          allowRunCoalescing: false,
           issueStateGuard: {
             statuses: [issue.status],
             assigneeAgentId: agent.id,
@@ -337,6 +345,29 @@ export function toolActionDeliveryService(
   }
   return {
     deliver,
+    async deliverForRun(input: { companyId: string; runId: string }) {
+      // A review can settle before its source run yields. Retry that run's
+      // receipts as soon as execution cleanup finishes; the periodic sweep
+      // remains the recovery path if this callback is interrupted.
+      const pending = await db
+        .select({ id: toolActionDeliveries.actionRequestId })
+        .from(toolActionDeliveries)
+        .innerJoin(toolActionRequests, and(
+          eq(toolActionRequests.id, toolActionDeliveries.actionRequestId),
+          eq(toolActionRequests.companyId, input.companyId),
+        ))
+        .innerJoin(toolInvocations, and(
+          eq(toolInvocations.id, toolActionRequests.invocationId),
+          eq(toolInvocations.companyId, input.companyId),
+          eq(toolInvocations.runId, input.runId),
+        ))
+        .where(and(
+          eq(toolActionDeliveries.companyId, input.companyId),
+          isNull(toolActionDeliveries.deliveredAt),
+          inArray(toolActionRequests.status, terminalStatuses),
+        ));
+      for (const row of pending) await deliver(row.id);
+    },
     async sweepPending() {
       let cursor: string | undefined;
       let scanned = 0;

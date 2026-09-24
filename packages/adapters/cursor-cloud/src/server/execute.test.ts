@@ -168,6 +168,22 @@ describe("cursor_cloud execute", () => {
     expect(prompt).not.toContain("Create child issues");
   });
 
+  it("delivers a large wake through the SDK prompt without a configured JSON env copy", async () => {
+    const sdkAgent = createMockSdkAgent();
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+    const description = "start " + "context ".repeat(25_000) + " end";
+    ctx.config.env = { CURSOR_API_KEY: "cursor-secret", PAPERCLIP_WAKE_PAYLOAD_JSON: description };
+    ctx.context.paperclipWake = {
+      reason: "issue_assigned",
+      issue: { id: "issue-1", description },
+    };
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).not.toHaveProperty("PAPERCLIP_WAKE_PAYLOAD_JSON");
+    expect(sdkAgent.send.mock.calls[0]?.[0]).toContain(description);
+  });
+
   it("creates a fresh Cursor agent and injects Paperclip env without CURSOR_API_KEY", async () => {
     const run = createMockRun({
       agentId: "agent-fresh",

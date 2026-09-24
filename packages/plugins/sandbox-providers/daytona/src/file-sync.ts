@@ -151,7 +151,7 @@ async function withHostTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 }
 
 /**
- * Build a host-side tarball of a directory, mirroring the runtime's own
+ * Build a host-side gzip-compressed tarball of a directory, mirroring the runtime's own
  * `createTarballFromDirectory`: archive top-level entries by name (no "." self
  * entry), suppress AppleDouble/xattr sidecars, honor `exclude`, and reproduce the
  * `followSymlinks` → `-h` mapping so the native path is observationally identical
@@ -167,14 +167,17 @@ async function createHostTarball(input: {
   const entries = (await fs.readdir(input.localDir)).sort((left, right) => left.localeCompare(right));
   if (entries.length === 0) {
     // An empty source is valid (blank workspace / empty asset dir). Write a valid
-    // empty tar (1024-byte zero EOF marker) so extraction is a clean no-op.
-    await fs.writeFile(input.archivePath, Buffer.alloc(1024));
+    // gzip-compressed empty tar (1024-byte zero EOF marker) so extraction is a
+    // clean no-op and uses the same transport as non-empty directories.
+    await fs.writeFile(input.archivePath, await new Promise<Buffer>((resolve, reject) => {
+      zlib.gzip(Buffer.alloc(1024), (error, compressed) => error ? reject(error) : resolve(compressed));
+    }));
     return;
   }
   await execFileAsync(
     "tar",
     [
-      "-c",
+      "-cz",
       "--no-xattrs",
       ...(input.followSymlinks ? ["-h"] : []),
       "-f",
@@ -845,7 +848,7 @@ async function syncInDirectoryMapping(input: {
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
   const { sandbox, mapping, remoteDir, timeoutSeconds } = input;
   return withHostTempDir(async (tmp) => {
-    const archivePath = path.join(tmp, "sync-in.tar");
+    const archivePath = path.join(tmp, "sync-in.tar.gz");
     // The pack step is host-local: it builds the tarball and makes no sandbox
     // round trip. The `pack` span records its wall time.
     // `pack` span: build a tarball on the host — no sandbox round trip.
@@ -862,7 +865,7 @@ async function syncInDirectoryMapping(input: {
     const bytesTransferred = (await fs.stat(archivePath)).size;
     // The tar bytes ride the native bulk channel (string source ⇒ streamed);
     // only the extract/cleanup control commands use exec.
-    const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
+    const remoteTar = path.posix.join(remoteDir, scratchName(".tar.gz"));
     // Count the serial guard round trips before the transfer, so the transfer
     // span records how much of the wall time is guard cost.
     let guardRoundTrips = 0;
@@ -901,7 +904,27 @@ async function syncInDirectoryMapping(input: {
       });
       // Extract the uploaded tarball onto the already-created target directory,
       // then remove the scratch tarball.
+      const immutable = mapping.mode !== undefined && (mapping.mode & 0o222) === 0;
       const extractScript = [
+        // A resumed sandbox can already contain these immutable 0444/0555
+        // assets. Repack a private extraction as the sandbox user: tar --diff
+        // otherwise rejects identical bytes because the host UID/GID differ.
+        // Compare content and modes, never chmod the live bundle or skip
+        // unverified old files. Extra user files in the target stay untouched.
+        ...(immutable ? [
+          `compare_dir=${shellQuote(`${remoteTar}.compare`)};`,
+          `compare_tar=${shellQuote(`${remoteTar}.normalized`)};`,
+          `compare_list=${shellQuote(`${remoteTar}.members`)};`,
+          'cleanup_compare() { if [ -d "$compare_dir" ]; then find "$compare_dir" -type d -exec chmod u+w {} +; rm -rf "$compare_dir"; fi; rm -f "$compare_tar" "$compare_list"; };',
+          "trap cleanup_compare EXIT;",
+          'mkdir -m 700 "$compare_dir" || exit 43;',
+          `tar -xf ${shellQuote(remoteTar)} --no-same-owner --delay-directory-restore -C "$compare_dir" || exit 43;`,
+          '(cd "$compare_dir" && find . -mindepth 1 -maxdepth 1 -print0) > "$compare_list" || exit 43;',
+          'tar -cf "$compare_tar" --format=pax -C "$compare_dir" --null -T "$compare_list" || exit 43;',
+          `if tar -df "$compare_tar" -C ${shellQuote(mapping.targetPath)} >/dev/null 2>&1; then rm -f ${shellQuote(remoteTar)}; exit 0; fi;`,
+          "cleanup_compare;",
+          "trap - EXIT;",
+        ] : []),
         // BSD archives may revisit a directory after its parent's files. Keep
         // GNU tar from restoring a read-only skill directory's mode before all
         // of its children are extracted; final permissions remain unchanged.

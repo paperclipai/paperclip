@@ -22,6 +22,15 @@ export interface ExecutionContinuationEnvelope {
     deleted: boolean;
     sourceTrust: unknown;
   }>;
+  /** Only direct human resolutions, projected from server-owned resolver columns. */
+  humanResponses?: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    resolvedByUserId: string;
+    resolvedAt: string;
+    result: unknown;
+  }>;
   interactionOutcomes: Array<{
     id: string;
     kind: string;

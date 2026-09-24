@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   nativeRunFinalizations,
   nativeRunResults,
 } from "@paperclipai/db";
@@ -288,6 +289,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
 
     await this.#db.transaction(async (tx) => {
+      // Result insertion checks the task foreign key. Acquire that parent lock
+      // before the run, matching task mutations that subsequently update a run.
+      // Otherwise concurrent chat/status writes can deadlock after generation.
+      await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
+        .for("key share");
       const run = await tx.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
         .then((rows) => rows[0] ?? null);

@@ -110,11 +110,12 @@ const llm = shape({
   costStatus: oneOf("reported", "partial", "unpriced", "unavailable"),
 });
 const billing = shape({
+  judge: optional(shape({ inputTokens: nullable(number), outputTokens: nullable(number), estimatedCostUsd: nullable(number), reservedCostUsd: number })),
   llm,
   runtime,
   reportedCostUsd: number,
   estimatedRuntimeCostUsd: number,
-  observedAndEstimatedCostUsd: number,
+  observedAndEstimatedCostUsd: nullable(number),
   complete: boolean,
 });
 const matcher: Rule = (value, at) => {
@@ -230,6 +231,20 @@ const fields = {
       }),
     ),
   ),
+  firstTask: optional(shape({
+    caseId: string, nonce: string, onboardingIssueId: string, agentId: string,
+    source: optional(shape({ sha: string, ref: string, dirty: boolean })),
+    initialTaskIds: array(string), configuredModel: nullable(string), observedModels: array(string), runtimeSettings: optional(object),
+    instructions: array(shape({ path: string, content: string, sha256: string, contentSha256: optional(string), redacted: optional(boolean) })),
+    checkpoints: array(shape({ id: string, at: date, phase: oneOf("opening", "response", "clarified", "revised", "accepted", "rejected", "finished"), issueId: string,
+      tasks: array(object), agents: array(object), comments: array(object), interactions: array(object), documents: array(object), attachments: optional(array(object)), runs: array(object) })),
+    checks: array(shape({ id: string, passed: boolean, notReached: optional(string), evidence: array(string), detail: string })),
+  })),
+  firstTaskQuality: optional(shape({
+    status: oneOf("completed", "failed", "pending"), informational: boolean, config: object, configHash: string, evidenceHash: string,
+    scores: array(shape({ dimension: oneOf("questionRelevance", "useOfFacts", "proposalUsefulness", "clarity", "lowFriction"), score: integer, rationale: string, evidence: array(string) })),
+    inputTokens: nullable(integer), outputTokens: nullable(integer), estimatedCostUsd: nullable(number), reservedCostUsd: number, recordedAt: date, error: optional(string),
+  })),
   cleanup: oneOf("not_started", "passed", "failed"),
 } satisfies Record<keyof RunnerE2EResult, Rule>;
 const result = shape(fields);

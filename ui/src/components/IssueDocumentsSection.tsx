@@ -149,7 +149,7 @@ function downloadDocumentFile(key: string, body: string) {
 function getRevisionActor(
   revision: DocumentRevision,
   maps: {
-    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
     userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   },
 ): DocumentFrameHeaderRevisionActor {
@@ -159,6 +159,7 @@ function getRevisionActor(
       kind: "agent",
       name: agent?.name ?? revision.createdByAgentId.slice(0, 8),
       agentIcon: agent?.icon ?? null,
+      agent: agent ?? { id: revision.createdByAgentId },
     };
   }
   if (revision.createdByUserId) {
@@ -275,7 +276,7 @@ export function IssueDocumentsSection({
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   extraActions?: ReactNode;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   /**
    * Seed which document annotation panels are open on first render. Mostly useful

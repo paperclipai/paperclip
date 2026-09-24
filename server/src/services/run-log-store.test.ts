@@ -33,6 +33,14 @@ function createMemoryProvider() {
         err.name = "NoSuchKey";
         throw err;
       }
+      // Real S3 answers 416 when the range starts at or past EOF — the mock
+      // must too, or caught-up-reader regressions (PAPERCLIP-BACKEND-9) pass
+      // silently with an empty slice.
+      if (input.range && (input.range.start >= buf.length || input.range.start > input.range.end)) {
+        const err = new Error("Invalid range") as Error & { name: string };
+        err.name = "InvalidRange";
+        throw err;
+      }
       const slice = input.range ? buf.subarray(input.range.start, input.range.end + 1) : buf;
       return { stream: Readable.from(slice), contentLength: slice.length };
     },
@@ -120,6 +128,39 @@ describe("createDurableRunLogStore", () => {
     const tail = await store.read(handle, { offset: total - 3, limitBytes: 100 });
     expect(Buffer.byteLength(tail.content, "utf8")).toBe(3);
     expect(tail.nextOffset).toBeUndefined();
+  });
+
+  it("S3 fallback returns an empty read (no InvalidRange) when the reader is fully caught up", async () => {
+    // Regression test for PAPERCLIP-BACKEND-9: a poller that had consumed the
+    // whole log kept polling at offset === total after the pod rolled; the S3
+    // path clamped end up to start and requested `bytes=total-total`, which
+    // S3 rejects with 416 InvalidRange -> 500.
+    const { provider } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, keyPrefix: "p" } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "0123456789", ts: "t" });
+    await store.finalize(handle);
+    const full = await store.read(handle);
+    const total = Buffer.byteLength(full.content, "utf8");
+    await fs.rm(baseDir, { recursive: true, force: true }); // force S3 path
+    const caughtUp = await store.read(handle, { offset: total, limitBytes: 100 });
+    expect(caughtUp.content).toBe("");
+    expect(caughtUp.nextOffset).toBeUndefined();
+    // Past-EOF offsets clamp to the same empty read.
+    const pastEof = await store.read(handle, { offset: total + 50, limitBytes: 100 });
+    expect(pastEof.content).toBe("");
+    expect(pastEof.nextOffset).toBeUndefined();
+  });
+
+  it("local read at offset === size returns an empty read with undefined nextOffset", async () => {
+    const store = createDurableRunLogStore({ basePath: baseDir });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "abc", ts: "t" });
+    const full = await store.read(handle);
+    const total = Buffer.byteLength(full.content, "utf8");
+    const caughtUp = await store.read(handle, { offset: total, limitBytes: 100 });
+    expect(caughtUp.content).toBe("");
+    expect(caughtUp.nextOffset).toBeUndefined();
   });
 
   it("falls back to S3 when the local file vanishes between stat() and open (TOCTOU race)", async () => {

@@ -1,4 +1,5 @@
 import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
+import { waitForWarmAttachmentReadiness } from "./warm-attachment-readiness.js";
 import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
@@ -863,7 +864,7 @@ async function awaitAdoptedRunnerAuthentication(input: {
   }
 }
 
-function bridgedCodexQuestionParams(
+export function bridgedCodexQuestionParams(
   request: Record<string, unknown>,
   method: string,
   threadId: string,
@@ -884,6 +885,12 @@ function bridgedCodexQuestionParams(
         ? request.itemId
         : String(request.requestId ?? "runtime-input"),
   };
+  // ACPX has already normalized and bound these IDs in Rust. Reconstructing a
+  // Codex form here would change option IDs and break the answer's return path.
+  if (method === "elicitation/create") {
+    return { ...common, questionSet, origin: request.origin,
+      message: questionSet.description ?? questionSet.title ?? "A tool needs your input" };
+  }
   if (method === "mcpServer/elicitation/request") {
     const required: string[] = [];
     const properties = Object.fromEntries(
@@ -3027,22 +3034,15 @@ function authorizedToolSet(
   };
 }
 
-const ACPX_RESERVED_TERMINAL_TOOLS = new Set([
-  "paperclip_finish",
-  "paperclip_block",
-]);
-
 export function authorizedToolSetForProvider(
-  provider: CapabilityRunnerdCodexTransportOptions["provider"],
+  _provider: CapabilityRunnerdCodexTransportOptions["provider"],
   tools: readonly Readonly<Record<string, unknown>>[],
 ): Record<string, unknown> {
-  return authorizedToolSet(
-    provider === "acpx"
-      ? tools.filter(
-          (tool) => !ACPX_RESERVED_TERMINAL_TOOLS.has(String(tool.name ?? "")),
-        )
-      : tools,
-  );
+  // ACPX terminal calls are resolved through the authenticated semantic
+  // bridge before the provider receives a result. Keep them in the provider
+  // authority catalog so the sidecar can project the call and await
+  // server-side completion feedback.
+  return authorizedToolSet(tools);
 }
 
 /**
@@ -3085,7 +3085,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
     return {
       ...createSanitizedOpenCodeRunnerEnvironment(input.options.environment),
       PAPERCLIP_OPENCODE_PERMISSION_MODE:
-        input.options.opencodePermissionMode ?? "ask",
+        input.options.opencodePermissionMode ?? "allow",
       PAPERCLIP_OPENCODE_RUNTIME_DIR:
         input.options.opencodeRuntimeDirectory ??
         resolve(input.options.stateDirectory ?? tmpdir(), "opencode"),
@@ -3156,7 +3156,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
 export function resolveRunnerdAcpxPermissionMode(
   configured: CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"],
 ): NonNullable<CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"]> {
-  return configured ?? "approve-reads";
+  return configured ?? "approve-all";
 }
 
 const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
@@ -3671,34 +3671,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // same budget here so a transient tunnel reconnect cannot trip the shorter
     // generic command timeout and replace an otherwise healthy warm runner.
     const reconnectGraceMs = this.options.runnerReconnectGraceMs ?? 5_000;
-    const deadline = Date.now() + reconnectGraceMs;
-    let consecutiveReadyProbes = 0;
-    let lastBlockers: unknown = null;
-    while (Date.now() < deadline) {
-      await this.#awaitWarmRunnerConnection(deadline);
-      const snapshot = await this.#commandResult(
+    await waitForWarmAttachmentReadiness({
+      graceMs: reconnectGraceMs,
+      waitForConnection: (deadline) => this.#awaitWarmRunnerConnection(deadline),
+      snapshot: (deadline) => this.#commandResult(
         "session.snapshot",
         {
           quiesceForWarmAttach: true,
         },
         deadline,
-      );
-      lastBlockers = snapshot.warmAttachBlockers;
-      if (snapshot.warmAttachReady === true) {
-        consecutiveReadyProbes += 1;
-        // A second barrier prevents a provider frame emitted immediately after
-        // its terminal notification from racing the authority rotation. Each
-        // snapshot wakes runnerd, polls the provider, and drains the preceding
-        // durable event prefix before the next probe.
-        if (consecutiveReadyProbes >= 2) return;
-      } else {
-        consecutiveReadyProbes = 0;
-      }
-      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 25));
-    }
-    throw new Error(
-      `native_runner_warm_attachment_not_quiescent: ${JSON.stringify(lastBlockers)}`,
-    );
+      ),
+      onBlocked: (blockers) => this.#diagnostic(`warm attachment awaiting quiescence: ${JSON.stringify(blockers)}`),
+    });
   }
 
   async #awaitWarmRunnerConnection(deadline: number): Promise<void> {
@@ -4581,7 +4565,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                       ? "opencode_server"
                       : "codex_app_server",
                   providerVersion:
-                    provider === "opencode" ? "1.18.29" : "codex-app-server-v1",
+                    provider === "opencode" ? "1.18.32" : "codex-app-server-v1",
                   command:
                     provider === "opencode"
                       ? providerNodeCommand
@@ -4633,8 +4617,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                       : "default",
                   includeCollaborationModeInstructions:
                     includeCodexCollaborationInstructions,
-                  includeSkillInstructions:
-                    provider === "codex" && runtimeContext !== null,
+                  ...(provider === "codex"
+                    ? { includeSkillInstructions: runtimeContext !== null }
+                    : {}),
                   runtimeContext,
                 },
     };
@@ -5454,7 +5439,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         "PRP semantic tool call no longer belongs to an admitted turn",
       );
     }
-    return unwrapToolResponse(
+    const outcome = unwrapToolResponse(
       await this.#handler({
         id: call.callId,
         method: "item/tool/call",
@@ -5475,6 +5460,29 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           : {}),
       }),
     );
+    if (call.operationId === "call_api") {
+      const result = record(outcome.result);
+      if (
+        result.operationId !== call.operationId ||
+        result.callId !== call.callId
+      ) {
+        // HTTP receipts also contain `ok` and `operationId` (the HTTP route).
+        // Bind that application value inside a real semantic envelope so the
+        // runner cannot mistake the route for the provider tool's identity.
+        return {
+          ...outcome,
+          result: {
+            ok: !outcome.isError,
+            operationId: call.operationId,
+            callId: call.callId,
+            ...(outcome.isError
+              ? { error: outcome.result }
+              : { result: outcome.result }),
+          },
+        };
+      }
+    }
+    return outcome;
   }
 
   async #startTurn(
@@ -5487,8 +5495,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const commandDeadline = Date.now() + turnStartTimeoutMs;
     const input = Array.isArray(params.input) ? params.input.map(record) : [];
     const message = input
+      .filter((item) => item.type !== "skill")
       .map((item) => (typeof item.text === "string" ? item.text : ""))
       .join("\n");
+    const skills = resolveRunnerdCodexSkillInputs(
+      input.filter((item) => item.type === "skill"),
+      this.options.runtimeContext ?? null,
+      resolve(this.options.runnerFilesystemRoot ?? this.#root, "codex-home"),
+    );
+    if (skills.length && (this.options.provider ?? "codex") !== "codex") {
+      throw new Error("Explicit skill inputs are supported only by Codex");
+    }
     const pendingTurnId = `turn_lab_${randomUUID().replaceAll("-", "")}`;
     this.#turnId = pendingTurnId;
     const responseEpoch = ++this.#turnStartResponseEpoch;
@@ -5514,6 +5531,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         "turn.start",
         {
           text: message,
+          ...(skills.length ? { skills } : {}),
           turnId: pendingTurnId,
         },
         commandDeadline,
@@ -5885,7 +5903,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           params &&
           (method === "item/tool/requestUserInput" ||
             method === "tool/requestUserInput" ||
-            method === "mcpServer/elicitation/request") &&
+            method === "mcpServer/elicitation/request" ||
+            method === "elicitation/create") &&
           !this.#bridgedRuntimeInputs.has(requestId)
         ) {
           this.#bridgedRuntimeInputs.set(requestId, {
@@ -6608,3 +6627,30 @@ export const runnerdRecoveryInternals = Object.freeze({
   turnStartNotificationDisposition,
   turnStartResponseReady,
 });
+
+
+/** Map controller asset paths to the assigned copy on the provider filesystem. */
+export function resolveRunnerdCodexSkillInputs(
+  inputs: Record<string, unknown>[],
+  context: NativeRuntimeContextSnapshot | null,
+  codexHome: string,
+): Array<{ type: "skill"; name: string; path: string }> {
+  if (inputs.length > 64) throw new Error("Too many explicit skill inputs");
+  const seen = new Set<string>();
+  return inputs.map((input) => {
+    const assigned = context?.skills.find((skill) => skill.runtimeName === input.name);
+    if (
+      !assigned || !/^[a-zA-Z0-9_-]+$/.test(assigned.runtimeName)
+      || input.path !== resolve(assigned.bundle.rootPath, "SKILL.md")
+      || seen.has(assigned.runtimeName)
+    ) {
+      throw new Error("Explicit skill input must reference a unique assigned runtime skill");
+    }
+    seen.add(assigned.runtimeName);
+    return {
+      type: "skill",
+      name: assigned.runtimeName,
+      path: resolve(codexHome, "skills", assigned.runtimeName, "SKILL.md"),
+    };
+  });
+}

@@ -54,7 +54,7 @@ describe("local service supervision", () => {
           workspaceRuntime: {
             services: [{
               name: "web",
-              command: "node -e \"const http=require('node:http'); process.on('SIGTERM',()=>{}); http.createServer((req,res)=>{ process.stdout.write('request '+req.url+'\\\\n',(error)=>{ if (!error) res.end('ok'); }); }).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              command: "command -v node; node --version; node -e \"const http=require('node:http'); console.log('fixture starting', process.execPath, process.env.PORT); process.on('SIGTERM',()=>{}); http.createServer((req,res)=>{ process.stdout.write('request '+req.url+'\\\\n',(error)=>{ if (!error) res.end('ok'); }); }).listen(Number(process.env.PORT), '127.0.0.1',()=>console.log('fixture listening', process.env.PORT))\"",
               port: { type: "auto" },
               readiness: {
                 type: "http",

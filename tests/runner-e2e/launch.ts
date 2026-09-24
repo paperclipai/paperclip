@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { prepareCodexCiSandbox } from "./codex-ci-sandbox.js";
+import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { createRequire } from "node:module";
@@ -647,7 +647,7 @@ async function runAttempt(input: {
       temporaryRoot,
       process.env.PATH,
     );
-    if (execution.environment.id === "local" && execution.profile.id === "runner-codex") {
+    if (requiresCodexCiSandbox(execution)) {
       await prepareCodexCiSandbox(repositoryRoot, temporaryRoot);
     }
     const agentJwtSecret = secret(48);
@@ -778,42 +778,50 @@ async function runAttempt(input: {
       isolationError = error;
     }
     let persistedStateError: unknown;
-    try {
-      const expectedEphemeralCredentials = new Set<string>();
-      for (const [label, directory] of [
-        ["Paperclip home", paperclipHome],
-        ["workspace", workspace],
-      ] as const) {
-        while (true) {
-          // The managed Codex home may legitimately contain upstream source-code
-          // fixtures with fake `sk-*` strings. Reject exact campaign credentials.
-          const leak = await findSecretLeakInDirectory(directory, credentials, {
-            includeShapes: false,
-            ignoreFile: (file) => expectedEphemeralCredentials.has(file),
-            allowDisappearedFile: (file) =>
-              label === "Paperclip home" && isEphemeralPostgresScanFile(paperclipHome, file),
-          });
-          if (!leak) break;
-          const isManagedCodexRuntimeAuth =
-            label === "Paperclip home" &&
-            isEphemeralCodexRuntimeAuthFile(paperclipHome, leak.file);
-          if (isManagedCodexRuntimeAuth) {
-            const metadata = await lstat(leak.file);
-            if (metadata.isFile() && (metadata.mode & 0o777) === 0o600) {
-              // Codex CLI API-key mode requires this one runtime auth file. It
-              // lives only in the disposable cell root, is never published,
-              // must be owner-only, and is removed with the root below.
-              expectedEphemeralCredentials.add(leak.file);
-              continue;
+    // Onboarding evaluates behavior; credential persistence belongs to a separate layer.
+    // Keep artifact redaction/publication checks independent of this filesystem scan.
+    const persistenceCheckedExecutions = executions.filter(
+      (candidate) => candidate.suite.id !== "first-task",
+    );
+    if (persistenceCheckedExecutions.length > 0) {
+      try {
+        const expectedEphemeralCredentials = new Set<string>();
+        for (const [label, directory] of [
+          ["Paperclip home", paperclipHome],
+          ["workspace", workspace],
+        ] as const) {
+          while (true) {
+            // The managed Codex home may legitimately contain upstream source-code
+            // fixtures with fake `sk-*` strings. Reject exact campaign credentials.
+            const leak = await findSecretLeakInDirectory(directory, credentials, {
+              includeShapes: false,
+              ignoreFile: (file) => expectedEphemeralCredentials.has(file),
+              allowDisappearedFile: (file) =>
+                label === "Paperclip home" &&
+                isEphemeralPostgresScanFile(paperclipHome, file),
+            });
+            if (!leak) break;
+            const isManagedCodexRuntimeAuth =
+              label === "Paperclip home" &&
+              isEphemeralCodexRuntimeAuthFile(paperclipHome, leak.file);
+            if (isManagedCodexRuntimeAuth) {
+              const metadata = await lstat(leak.file);
+              if (metadata.isFile() && (metadata.mode & 0o777) === 0o600) {
+                // Codex CLI API-key mode requires this one runtime auth file. It
+                // lives only in the disposable cell root, is never published,
+                // must be owner-only, and is removed with the root below.
+                expectedEphemeralCredentials.add(leak.file);
+                continue;
+              }
             }
+            throw new Error(
+              `Secret leak in persisted ${label} state at ${path.relative(temporaryRoot, leak.file)}: ${leak.reason}`,
+            );
           }
-          throw new Error(
-            `Secret leak in persisted ${label} state at ${path.relative(temporaryRoot, leak.file)}: ${leak.reason}`,
-          );
         }
+      } catch (error) {
+        persistedStateError = error;
       }
-    } catch (error) {
-      persistedStateError = error;
     }
     for (const [index, candidate] of executions.entries()) {
       let result = results[index];
@@ -843,7 +851,7 @@ async function runAttempt(input: {
             : isolationMessage,
         };
       }
-      if (persistedStateError) {
+      if (persistedStateError && persistenceCheckedExecutions.includes(candidate)) {
         const persistedStateMessage =
           persistedStateError instanceof Error
             ? persistedStateError.message

@@ -184,11 +184,20 @@ function record(value: unknown): Record<string, unknown> {
 
 export function isExternalChatPresentationContext(
   contextSnapshot: unknown,
+  verifiedToolReviewChatOrigin = false,
 ): boolean {
   const context = record(contextSnapshot);
   const wake = record(context.paperclipWake);
   const source =
     typeof context.source === "string" ? context.source.trim() : "";
+  // Approvals and Board comments also resume ordinary internal tasks. Only
+  // durable source-run or mirrored-comment proof authorizes an external reply.
+  if (
+    source === "tool_action_review" ||
+    source.startsWith("issue.comment") ||
+    source === "issue.update"
+  )
+    return verifiedToolReviewChatOrigin;
   return (
     source.startsWith("chat:") ||
     context.externalChatContinuation === true ||
@@ -565,22 +574,38 @@ export function findHeartbeatRunCompletionComment<T extends { id: string }>(
     return comments[0] ?? null;
   }
 
-  const progressCommentIds = new Set<string>();
+  const generatedCommentIds = new Set<string>();
   for (const receipt of Object.values(receipts)) {
     if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
       continue;
     const receiptRecord = receipt as Record<string, unknown>;
-    if (receiptRecord.operationId !== "report_progress") continue;
     const result = receiptRecord.result;
     if (!result || typeof result !== "object" || Array.isArray(result))
       continue;
-    const commentId = (result as Record<string, unknown>).commentId;
-    if (typeof commentId === "string" && commentId.length > 0) {
-      progressCommentIds.add(commentId);
+    const receiptResult = result as Record<string, unknown>;
+    if (receiptRecord.operationId === "report_progress") {
+      const commentId = receiptResult.commentId;
+      if (typeof commentId === "string" && commentId.length > 0) {
+        generatedCommentIds.add(commentId);
+      }
+    } else if (
+      receiptRecord.operationId === "register_deliverable" &&
+      typeof receiptResult.attachmentId === "string" &&
+      receiptResult.commandId === `deliverable-prepared:${receiptResult.attachmentId}` &&
+      ["applied", "duplicate"].includes(String(receiptResult.disposition)) &&
+      Array.isArray(receiptResult.entityRefs)
+    ) {
+      // File preparation binds an attachment to a generated comment. That
+      // receipt is not the agent's final answer. Use the server-issued entity
+      // references, never the comment's wording, to exclude its comment from
+      // final-response deduplication. The attachment and binding stay intact.
+      for (const ref of receiptResult.entityRefs) {
+        if (typeof ref === "string") generatedCommentIds.add(ref);
+      }
     }
   }
 
   return (
-    comments.find((comment) => !progressCommentIds.has(comment.id)) ?? null
+    comments.find((comment) => !generatedCommentIds.has(comment.id)) ?? null
   );
 }

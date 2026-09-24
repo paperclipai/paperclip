@@ -4,6 +4,8 @@ import { agents, companies, connectionGrants, issueThreadInteractions, toolConne
 import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
+  isRemoteMcpConnectorId,
+  isMemoryConnectorId,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   isAgentStatusAssignableToWork,
@@ -16,6 +18,7 @@ import {
   type ToolConnection,
   type ToolConnectionCreateCapabilities,
   connectToolAppSchema,
+  configureRailwaySshSchema,
   createConnectionGrantDelegationSchema,
   createToolStdioCommandTemplateSchema,
   createToolApplicationSchema,
@@ -55,7 +58,7 @@ import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, ge
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
-import type { ComposioClient } from "../services/composio.js";
+import { RailwayError } from "../services/railway.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
   appWithPaperclipCloudConnectorAvailability,
@@ -65,6 +68,7 @@ import {
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
 import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   completePaperclipCloudConnectorEnrollment,
   loadPaperclipCloudConnectorIdentity,
@@ -236,7 +240,6 @@ export function toolAccessRoutes(
     /** Test-only seams forwarded to the tool access service. */
     remoteHttpEndpointLookup?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpEndpointLookup"];
     remoteHttpRequest?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpRequest"];
-    composioClientFactory?: (apiKey: string) => ComposioClient;
     vercelConnectClient?: VercelConnectClient | null;
     paperclipCloudConnector?: PaperclipCloudConnector | null;
     connectionIntentHeartbeat?: Pick<Heartbeat, "wakeup">;
@@ -813,6 +816,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         ? await options.paperclipCloudConnector.getCapabilities()
         : [];
     const vercelConnect = vercelConnectIntegrationStatus();
+    const { enableMcpAggregators, enableMemoryConnectors } = await instanceSettingsService(db).getExperimental();
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
       credentialSources: {
@@ -828,7 +832,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
             : "Vercel Connect setup is disabled on this Paperclip instance.",
         },
       },
-      apps: APP_STORE_DEFINITIONS.map((app) =>
+      apps: APP_STORE_DEFINITIONS.filter((app) => (enableMcpAggregators || !isRemoteMcpConnectorId(app.slug)) && (enableMemoryConnectors || !isMemoryConnectorId(app.slug))).map((app) =>
         appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
       ),
     });
@@ -1672,56 +1676,17 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(connection);
   });
 
-  router.get("/tool-connections/:connectionId/services", async (req, res) => {
+  router.post("/tool-connections/:connectionId/railway/ssh", validate(configureRailwaySshSchema), async (req, res) => {
+    assertBoard(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
     await assertToolConnectionConfigureAccess(req, connection);
-    res.json(await svc.listComposioServices(connection.id, getActorInfo(req)));
-  });
-
-  router.post("/tool-connections/:connectionId/services/:toolkitSlug/connect", async (req, res) => {
-    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
-    if (!connection) return;
-    await assertToolConnectionConfigureAccess(req, connection);
-    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
-    const result = await svc.startComposioServiceConnect(connection.id, req.params.toolkitSlug as string, {
-      ...(typeof body.authConfigId === "string" ? { authConfigId: body.authConfigId } : {}),
-      ...(typeof body.callbackUrl === "string" ? { callbackUrl: body.callbackUrl } : {}),
+    const setup = await svc.configureRailwaySsh(connection.id, connection.companyId, req.body, getActorInfo(req)).catch((error) => {
+      if (error instanceof RailwayError) throw new HttpError(error.status, error.message);
+      throw error;
     });
-    await logActivity(db, {
-      companyId: connection.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "composio.service_connect_started",
-      entityType: "tool_connection",
-      entityId: connection.id,
-      details: { toolkitSlug: req.params.toolkitSlug, authConfigId: result.authConfigId },
-    });
-    res.status(201).json(result);
-  });
-
-  router.get("/tool-connections/:connectionId/services/:toolkitSlug/status", async (req, res) => {
-    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
-    if (!connection) return;
-    await assertToolConnectionConfigureAccess(req, connection);
-    res.json(await svc.pollComposioService(connection.id, req.params.toolkitSlug as string, getActorInfo(req)));
-  });
-
-  router.delete("/tool-connections/:connectionId/services/:toolkitSlug", async (req, res) => {
-    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
-    if (!connection) return;
-    await assertToolConnectionConfigureAccess(req, connection);
-    const result = await svc.disconnectComposioService(connection.id, req.params.toolkitSlug as string, getActorInfo(req));
-    await logActivity(db, {
-      companyId: connection.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "composio.service_disconnected",
-      entityType: "tool_connection",
-      entityId: connection.id,
-      details: { toolkitSlug: req.params.toolkitSlug, removedChildCount: result.removedChildIds.length },
-    });
-    res.json(result);
+    await logActivity(db, { companyId: connection.companyId, actorType: "user", actorId: req.actor.userId ?? "board", action: "tool_connection.railway_ssh_updated", entityType: "tool_connection", entityId: connection.id, details: { action: req.body.action, grantId: req.body.grantId, enabled: setup?.enabled ?? false } });
+    res.json(setup);
   });
 
   router.get("/tool-connections/:connectionId/grants", async (req, res) => {
@@ -2137,7 +2102,6 @@ function connectorEnrollmentPrincipal(req: Request): string {
       existing.id,
       existing.companyId,
       getActorInfo(req),
-      { confirmComposioChildren: req.query.confirmComposioChildren === "true" },
     );
     const applicationAfter = await svc.getApplication(existing.applicationId);
     // The receipt is counts and outcomes only. Removal is a revocation boundary

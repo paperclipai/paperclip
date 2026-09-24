@@ -1,3 +1,4 @@
+import * as nativeExecutor from "./native-runtime/native-session-executor.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -6,17 +7,18 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { beforeAll, afterAll, describe, it, expect } from "vitest";
+import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import {
   approvals, issueApprovals, issueThreadInteractions,
   agentWakeupRequests, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
-  issues, nativeRunFinalizations, environmentLeases, environments, issueRelations, issueTreeHolds, issueTreeHoldMembers,
+  issues, nativeRunFinalizations, nativeRunResults, completionContracts, environmentLeases, environments, issueRelations, issueTreeHolds, issueTreeHoldMembers,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { heartbeatService, persistHeartbeatRunProcessMetadata, type HeartbeatEnvironmentRuntime } from "./heartbeat.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { createDurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("explicit native conversation continuation", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -372,6 +374,32 @@ const support = await getEmbeddedPostgresTestSupport();
       agentId: f.agentId, status: "queued", contextSnapshot: { issueId: f.issueId, previousRunId: result.previousRunId, forceFreshSession: true } });
     return result;
   });
+
+  it.each(["verified", "unproven", "changed", "dry_run", "retry", "duplicate"])(
+    "requires exact local cleanup for a new turn after worker loss (%s)", async mode => {
+      const f = await seed();
+      await db.update(heartbeatRuns).set({ errorCode: "native_session_cleanup_quarantined" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      const retire = vi.fn(() => mode !== "changed");
+      const verify = vi.spyOn(nativeExecutor, "verifyStoppedNativeSessionForContinuation").mockResolvedValue(
+        mode === "unproven" ? null : { evidence: { runId: f.sourceRunId, schema: "paperclip.stopped_native_conversation.v1" }, retire });
+      try {
+        const result = mode === "retry"
+          ? await db.transaction(tx => admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db,
+              reason: "retry_failed_run", failedRunId: f.sourceRunId }))
+          : await admit(f, mode === "dry_run");
+        expect(Boolean(result)).toBe(["verified", "dry_run", "duplicate"].includes(mode));
+        expect(retire).toHaveBeenCalledTimes(["verified", "changed", "duplicate"].includes(mode) ? 1 : 0);
+        const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+        expect(Boolean(actions[0].evidence.explicitUserContinuation)).toBe(["verified", "duplicate"].includes(mode));
+        const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.sourceRunId),
+          eq(heartbeatRunEvents.eventType, "native.stopped_conversation_verified")));
+        expect(events).toHaveLength(["verified", "duplicate"].includes(mode) ? 1 : 0);
+        if (mode === "duplicate") {
+          expect(await admit(f)).toBeNull();
+          expect(retire).toHaveBeenCalledTimes(1);
+        }
+      } finally { verify.mockRestore(); }
+    });
 
   it.each(["suspended", "ready", "wrong_run", "wrong_thread", "active_provider", "pending_tool", "pending_output", "missing_state", "new_launch"])(
     "recovers a historical run without process metadata only from exact suspended state (%s)", async kind => {
@@ -952,6 +980,62 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(coordinator.attempt).toBe(3);
     expect(coordinator.failureDetail?.replacementDenied).toBe("explicit_user_continuation");
   });
+  it.each(["failed", "succeeded_result", "rejected_result", "still_committing", "controller", "successor", "live_process"])(
+    "requires a fully committed failed result and verified stop for a new turn (%s)", async scenario => {
+      const f = await seed(), contractId = randomUUID(), resultId = randomUUID();
+      await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
+        revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test",
+        risk: "standard", completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+        contractJson: {}, canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
+      await db.update(heartbeatRuns).set({ completionContractId: contractId,
+        ...(scenario === "live_process" ? { processPid: process.pid } : {}),
+      }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId,
+        runId: f.sourceRunId, completionContractId: contractId, serverFingerprint: resultId,
+        schemaStatus: scenario === "rejected_result" ? "rejected" : "accepted", canonicalSha256: resultId,
+        resultJson: { terminal: { runTerminalState: scenario === "succeeded_result" ? "succeeded" : "failed" } } });
+      await db.update(nativeRunFinalizations).set({ resultId,
+        phase: scenario === "still_committing" ? "result_accepted" : "committed",
+        leaseOwner: scenario === "controller" ? "active-controller" : null,
+        failureDetail: scenario === "successor" ? { successorRunId: randomUUID() } : null,
+      }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      const result = await admit(f);
+      if (scenario === "failed") {
+        expect(result).toEqual({ previousRunId: f.sourceRunId, commentId: f.commentId });
+        expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+        const [saved] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+        expect(saved).toMatchObject({ phase: "committed", resultId });
+      } else {
+        expect(result).toBeNull();
+        expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+      }
+    });
+  it.each(["linked", "revoked", "unlinked", "wrong_author"])(
+    "admits a fresh Slack message after failure only with current linked-user authority (%s)", async scenario => {
+      const f = await seed();
+      // Keep execution queued so this tests real admission without launching a provider.
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+      const authorize = vi.fn(async () => { if (scenario === "revoked") throw new Error("chat_authorization_revoked"); });
+      const request = createDurableChatWakeupRequest({ id: randomUUID(), ...f,
+        requestedByActorType: scenario === "unlinked" ? "system" : "user",
+        requestedByActorId: scenario === "wrong_author" ? "another-user" : "board", requestedAt: new Date(), authorize });
+      const wake = () => heartbeatService(db).wakeup(f.agentId, {
+        source: "assignment", triggerDetail: "system", reason: "External chat message received",
+        requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
+        payload: { issueId: f.issueId, wakeCommentId: f.commentId, mutation: "chat_message_received" },
+        contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId, source: "chat:slack" },
+        durableChatRequest: request,
+      });
+      if (scenario === "revoked") await expect(wake()).rejects.toThrow("chat_authorization_revoked");
+      else await wake();
+      expect(authorize).toHaveBeenCalled();
+      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+      expect(successors).toHaveLength(scenario === "linked" ? 1 : 0);
+      if (scenario === "linked") {
+        expect(successors[0].contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.sourceRunId });
+        expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+      } else expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+    });
   it.each(["live_process", "missing_process", "lease", "coordinator", "successor", "agent_message", "old_comment", "wrong_author", "run_authored", "reassigned", "automatic", "approval", "question", "malformed_comment", "legacy_owner"])("keeps the hold for %s", async kind => {
     const f = await seed();
     if (kind === "legacy_owner") await db.insert(heartbeatRuns).values({ companyId: f.companyId,

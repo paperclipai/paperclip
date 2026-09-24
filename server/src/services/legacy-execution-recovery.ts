@@ -37,6 +37,11 @@ export function legacyExecutionNeedsReconciliation(
       evidence?.kind === "ai_connection_wait" && evidence.providerWorkStarted === false) return false;
   if (run.status === "cancelled" && run.errorCode === "workspace_busy" &&
       evidence?.kind === "workspace_wait" && evidence.providerWorkStarted === false) return false;
+  // Setup owns the bounded retry budget for temporary workspace scans. Its
+  // exhaustion needs workspace repair, not reconciliation of provider actions
+  // that the bootstrap evidence proves never started. Keep unknown outcomes held.
+  if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
+      evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false

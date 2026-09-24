@@ -268,6 +268,13 @@ describe("missing @sentry/node package", () => {
   it("logs one warning and resolves", async () => {
     process.env[BACKEND_DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Keep this failure-mode test valid when the optional real-SDK tests run.
+    vi.doMock("../peer-version-check.js", () => ({
+      checkExactPeerVersions: () => ({
+        ok: false,
+        detail: { missing: ["@sentry/node"], mismatched: [] },
+      }),
+    }));
 
     const { sentryReady } = await importFreshSentry();
 
@@ -537,6 +544,47 @@ describe("buildSentryInitOptions serverName", () => {
   });
 });
 
+describe("buildSentryInitOptions release", () => {
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const readBuildCommit = vi.fn<() => string | null>();
+  const integrations = {
+    httpIntegration: () => ({ name: "Http" }),
+    onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+  };
+
+  beforeEach(() => {
+    vi.stubEnv("SENTRY_RELEASE", "");
+    readBuildCommit.mockReturnValue(commit);
+    vi.doMock("../build-commit.js", () => ({ readBuildCommit }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.doUnmock("../build-commit.js");
+    readBuildCommit.mockReset();
+  });
+
+  it("uses the server build commit", async () => {
+    const { buildSentryInitOptions } = await importFreshSentry();
+    expect(buildSentryInitOptions("test-dsn", integrations).release).toBe(commit);
+  });
+
+  it("preserves an operator's explicit release", async () => {
+    vi.stubEnv("SENTRY_RELEASE", " custom-release ");
+    const { buildSentryInitOptions } = await importFreshSentry();
+    expect(buildSentryInitOptions("test-dsn", integrations).release).toBe("custom-release");
+  });
+
+  it("leaves an unknown build unattributed", async () => {
+    // Keep one module factory and change its return value explicitly for this
+    // case, rather than depending on a second factory replacing the first.
+    readBuildCommit.mockReturnValue(null);
+    const { buildSentryInitOptions } = await importFreshSentry();
+    expect(buildSentryInitOptions("test-dsn", integrations).release).toBeUndefined();
+    expect(readBuildCommit).toHaveBeenCalled();
+  });
+});
+
 describe("with @sentry/node mocked", () => {
   it("initializes the client and shares captureException / shutdownSentry with it", async () => {
     process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
@@ -643,6 +691,22 @@ describe.skipIf(!sentryPackage)("captured event shape against the real @sentry/n
     };
     Sentry.init(options);
   }
+
+  it("attaches the actual build commit to an emitted event", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    vi.stubEnv("PAPERCLIP_BUILD_COMMIT", commit);
+    vi.stubEnv("SENTRY_RELEASE", "");
+    try {
+      let captured: Record<string, unknown> | null = null;
+      await initRealSentryForTest((event) => { captured = event; });
+      sentryPackage!.captureException(new Error("build attribution check"));
+      await sentryPackage!.flush(2000);
+      expect(captured).toMatchObject({ release: commit });
+      expect(captured).not.toHaveProperty("request");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("a server event captured after a console.error call carries no console breadcrumb", async () => {
     const Sentry = sentryPackage!;

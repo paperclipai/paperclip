@@ -287,84 +287,27 @@ describeEmbeddedPostgres("question response delivery", () => {
     };
   }
 
-  it("persists the receipt atomically and steers exactly once into a running successor", async () => {
+  it("queues an answer to a running successor instead of automatically steering", async () => {
     const seeded = await seed({ successorStatus: "running" });
-    const newerRunId = randomUUID();
-    await db.insert(heartbeatRuns).values({
-      id: newerRunId,
-      companyId: seeded.companyId,
-      agentId: seeded.agentId,
-      invocationSource: "manual",
-      status: "running",
-      runtimeMode: "native",
-      driverKind: "codex",
-      contextSnapshot: { issueId: seeded.issueId },
-      startedAt: new Date(),
+    const steer = vi.fn().mockResolvedValue({ turnId: "unexpected" });
+    const wakeup = vi.fn().mockImplementation(async () => {
+      await db.insert(agentWakeupRequests).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+        idempotencyKey: `question-response:${seeded.interaction.id}`,
+        payload: { issueId: seeded.issueId, mutation: "interaction", interactionId: seeded.interaction.id,
+          interactionStatus: "answered" } });
+      return null;
     });
-    await db
-      .update(issues)
-      .set({ executionRunId: seeded.successorRunId })
-      .where(eq(issues.id, seeded.issueId));
-    const persistedBeforeDelivery = await db
-      .select()
-      .from(issueQuestionResponseDeliveries)
-      .where(
-        eq(
-          issueQuestionResponseDeliveries.interactionId,
-          seeded.interaction.id,
-        ),
-      )
-      .then((rows) => rows[0]);
-    expect(persistedBeforeDelivery).toMatchObject({
-      status: "pending",
-      correlationId: `question-response:${seeded.interaction.id}`,
-      sourceRunId: seeded.sourceRunId,
-    });
-
-    const steer = vi.fn().mockResolvedValue({ turnId: "turn-successor" });
-    const wakeup = vi.fn();
-    const service = questionResponseDeliveryService(db, {
-      heartbeat: { wakeup } as never,
-      steer,
-    });
+    const service = questionResponseDeliveryService(db, { heartbeat: { wakeup } as never, steer });
     const first = await service.deliver(seeded.interaction.id);
     const second = await service.deliver(seeded.interaction.id);
-
-    expect(first).toMatchObject({
-      status: "delivered",
-      mode: "steered",
-      targetRunId: seeded.successorRunId,
-      targetTurnId: "turn-successor",
-      duplicate: false,
-    });
-    expect(second).toMatchObject({ mode: "steered", duplicate: true });
-    expect(steer).toHaveBeenCalledTimes(1);
-    expect(steer).toHaveBeenCalledWith(
-      expect.objectContaining({
-        runId: seeded.successorRunId,
-        correlationId: `question-response:${seeded.interaction.id}`,
-        message: expect.stringContaining("- Runtime — Which runtime?: Node.js"),
-      }),
-    );
-    expect(wakeup).not.toHaveBeenCalled();
-
-    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
-    expect(delivery).toMatchObject({
-      status: "delivered",
-      deliveryMode: "steered",
-      targetRunId: seeded.successorRunId,
-      targetTurnId: "turn-successor",
-      attemptCount: 1,
-    });
-    const deliveryEvents = await db
-      .select()
-      .from(activityLog)
-      .where(eq(activityLog.action, "issue.question_response_delivered"));
-    expect(deliveryEvents).toHaveLength(1);
-    expect(JSON.stringify(deliveryEvents[0]?.details)).not.toContain(
-      "Internal API",
-    );
-    expect(JSON.stringify(deliveryEvents[0]?.details)).not.toContain("Node.js");
+    expect(steer).not.toHaveBeenCalled();
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup).toHaveBeenCalledWith(seeded.agentId, expect.objectContaining({
+      payload: expect.objectContaining({ interactionId: seeded.interaction.id, interactionStatus: "answered" }),
+    }));
+    expect(first).toMatchObject({ status: "fallback_queued", mode: "wake_fallback" });
+    expect(second).toMatchObject({ mode: "wake_fallback", duplicate: true });
   });
 
   it.each(["native", "legacy"] as const)(
@@ -1236,7 +1179,7 @@ describeEmbeddedPostgres("question response delivery", () => {
     },
   );
 
-  it("falls back once when successor steering is unsupported", async () => {
+  it("queues once without probing successor steering", async () => {
     const seeded = await seed({ successorStatus: "running" });
     const fallbackRunId = randomUUID();
     const steer = vi.fn().mockRejectedValue(
@@ -1272,7 +1215,7 @@ describeEmbeddedPostgres("question response delivery", () => {
       targetRunId: fallbackRunId,
     });
     expect(second?.duplicate).toBe(true);
-    expect(steer).toHaveBeenCalledTimes(1);
+    expect(steer).not.toHaveBeenCalled();
     expect(wakeup).toHaveBeenCalledTimes(1);
   });
 

@@ -35,12 +35,23 @@ Existing tiers already in index.css (~80+ tokens) — extraction maps to these o
 7. **Words are part of the system.** One name per concept across the entire UI — the canonical term is *task* (never *issue* or *ticket* in copy, labels, or empty states). Buttons name the action ("Approve hire," not "Submit"). Errors say what happened and what to do. Empty states say what to do first. **Note:** enforcing the task rename is a visible change and is explicitly OUT of the zero-visual-change extraction run; it happens in its own follow-up run.
 8. **Agent-modifiable by design.** The system must be changeable via instructions: single token source, lint rules that enforce it, and this document kept current. A correct change should be expressible as "edit tokens + run checks," not "visit 40 files."
 
+## Form and wizard footers
+
+Keep **Save & exit** (or Cancel/Back) and the primary Continue/Connect/Finish
+action in one shared footer row, vertically centered. Put the subdued secondary
+action on the left and the primary action on the right. A step owns its whole
+footer: do not render Save & exit in a separate parent block below it. Check this
+alignment in every step and conditional state, not just the first screen.
+
 ## Contextual feedback
 
 Do not show a toast for task or run state already visible on the current screen.
 This includes descendant runs represented by the open subtree. Show local action
 results in place; keep failures actionable inline. Notifications for other work
-remain useful. Expected cancellation is neutral gray, not an error. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
+remain useful. Repeated delivery of the same run outcome must refresh cached state
+without repeating its toast, including after reconnecting. A terminal outcome
+delivered more than five minutes after the run finished is historical and should
+refresh state silently. Expected cancellation is neutral gray, not an error. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
 paused.” and “Resume this task to send a message.” with a “Resume task” action.
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.

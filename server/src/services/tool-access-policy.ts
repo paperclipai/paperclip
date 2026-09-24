@@ -1183,6 +1183,11 @@ export function toolAccessPolicyService(db: Db) {
     const { ctx, redaction } = loaded;
     const profileState = await effectiveProfiles(ctx);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
+    const permittedByProfile = profileState.profiles.some((profile) => {
+      const matchingEntries = profileState.entries.filter((entry) => entry.profileId === profile.id && profileEntryMatches(entry, ctx));
+      return !matchingEntries.some((entry) => entry.effect === "exclude")
+        && (profile.defaultAction === "allow" || matchingEntries.some((entry) => entry.effect === "include"));
+    });
     const policies = await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt));
     for (const policy of policies) {
       const conditions = policyConditions(policy);
@@ -1276,6 +1281,9 @@ export function toolAccessPolicyService(db: Db) {
         return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
       if (policy.policyType === "require_approval") {
+        // The connection's Ask first control restricts an existing action grant;
+        // it must never grant access to agents outside that connection's profile.
+        if (policy.config?.source === "app_gallery_finish" && !permittedByProfile) continue;
         return decision("require_approval", "requires_approval_policy", policy.description ?? "Tool access requires approval.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
       if (policy.policyType === "allow") {

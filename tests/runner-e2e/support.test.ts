@@ -18,7 +18,7 @@ import {
 } from "./harness-env.js";
 import { runnerExecutionById, runnerMatrix } from "./catalog.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
-import { evaluateMatchers } from "./matchers.js";
+import { evaluateMatchers, persistedFinalRunMessage } from "./matchers.js";
 import {
   assertSecretFree,
   findSecretLeak,
@@ -162,7 +162,7 @@ describe("runner E2E provider environment", () => {
           { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
           [execution],
         ),
-      ).toEqual({ KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "true" });
+      ).toEqual({ KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "true", PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false" });
     }
 
     for (const execution of [nativeOpenCode, breadthOpenCode]) {
@@ -171,7 +171,16 @@ describe("runner E2E provider environment", () => {
           { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
           [execution],
         ),
-      ).toEqual({ KEEP_ME: "yes" });
+      ).toEqual({ KEEP_ME: "yes", PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false" });
+    }
+  });
+
+  it("disables announcements through the server boundary for every runner cell", () => {
+    for (const execution of runnerMatrix) {
+      const source = { PAPERCLIP_ANNOUNCEMENTS_ENABLED: "true" };
+      const env = buildRunnerE2EProcessEnvironment(source, [execution]);
+      expect(buildPaperclipServerEnvironment(env).PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("false");
+      expect(source.PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("true");
     }
   });
 });
@@ -696,6 +705,16 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it("classifies sandbox file-transfer RPC deadlines without hiding other RPC defects", () => {
+    for (const method of ["environmentSyncIn", "environmentSyncOut"]) {
+      expect(classifyFailure(new Error(
+        `Stopped waiting for everyday recover-controller settled: native execution failed native_session_interrupted: RPC call "${method}" timed out after 330000ms`,
+      ))).toBe("transient_infrastructure");
+    }
+    expect(classifyFailure(new Error('RPC call "run.attach" timed out after 330000ms')))
+      .toBe("candidate_failure");
+  });
+
   it.each([
     "native_session_close_unrecoverable: provider transport failed",
     "Provider connection closed: runner did not durably suspend before checkpoint",
@@ -1299,5 +1318,81 @@ describe("runner E2E macOS shared-memory cleanup", () => {
         creatorPid: 52172,
       },
     ]);
+  });
+});
+
+
+describe("persisted final response selection", () => {
+  const comments = [
+    { id: "attachment-comment", body: "Prepared file for this response.", createdByRunId: "run-1" },
+    { id: "reply", body: "FINAL", createdByRunId: "run-1" },
+    { id: "other-run", body: "unrelated", createdByRunId: "run-2" },
+  ];
+  const run = { id: "run-1", resultJson: { presentationDecision: { commentId: "reply" } } };
+  it("grades the real final comment independently from an attachment's preparation comment", () => {
+    expect(persistedFinalRunMessage(comments, run)).toBe("FINAL");
+  });
+  it("fails closed when the selected final comment is missing or belongs to another run", () => {
+    expect(persistedFinalRunMessage(comments.slice(0, 1), run)).toBe("");
+    expect(persistedFinalRunMessage(comments, { ...run, resultJson: { presentationDecision: { commentId: "other-run" } } })).toBe("");
+  });
+  it("keeps legacy fallback and does not replace absent visible text with a summary", () => {
+    expect(persistedFinalRunMessage(comments, { id: "run-1" })).toBe("Prepared file for this response.\nFINAL");
+    expect(persistedFinalRunMessage([], { id: "run-1", resultJson: { summary: "FINAL" } })).toBe("");
+  });
+});
+
+describe("warm continuity grading scope", () => {
+  it("checks workspace bytes, lifecycle, and ordered turn markers without exact response formatting", () => {
+    const execution = runnerMatrix.find((cell) => cell.task.flow === "warm_three_turn")!;
+    const matchers = execution.task.buildMatchers("test-nonce", execution);
+    expect(matchers).toContainEqual({
+      kind: "message_occurrences", expected: "PAPERCLIP_E2E_WARM_T1_test-nonce", count: 1,
+    });
+    expect(matchers).toContainEqual({
+      kind: "message_occurrences", expected: "PAPERCLIP_E2E_WARM_T2_test-nonce", count: 1,
+    });
+    expect(matchers).toContainEqual({
+      kind: "message_occurrences", expected: "PAPERCLIP_E2E_WARM_T3_test-nonce", count: 1,
+    });
+    expect(matchers).toContainEqual({
+      kind: "message_ordered",
+      expected: [
+        "PAPERCLIP_E2E_WARM_T1_test-nonce",
+        "PAPERCLIP_E2E_WARM_T2_test-nonce",
+        "PAPERCLIP_E2E_WARM_T3_test-nonce",
+      ],
+    });
+    expect(matchers).toContainEqual({
+      kind: "file_exact", path: "daytona-warm-test-nonce.txt",
+      expected: "T1-test-nonce\nT2-test-nonce\nT3-test-nonce\n",
+    });
+    expect(matchers).toContainEqual({ kind: "issue_status", expected: "done" });
+    const hello = runnerMatrix.find((cell) => cell.task.id === "hello-complete")!;
+    expect(hello.task.buildMatchers("test-nonce", hello).some((matcher) => matcher.kind === "message_exact")).toBe(true);
+  });
+
+  it("accepts warm-turn prose while rejecting missing, duplicate, or out-of-order markers", async () => {
+    const execution = runnerMatrix.find((cell) => cell.task.flow === "warm_three_turn")!;
+    const matchers = execution.task.buildMatchers("test-nonce", execution)
+      .filter((matcher) => matcher.kind.startsWith("message_"));
+    const passing = await evaluateMatchers(matchers, {
+      message: [
+        "Turn one is complete: PAPERCLIP_E2E_WARM_T1_test-nonce.",
+        "Turn two is complete: PAPERCLIP_E2E_WARM_T2_test-nonce.",
+        "Turn three is complete: PAPERCLIP_E2E_WARM_T3_test-nonce.",
+      ].join("\n"),
+    });
+    expect(passing.every((result) => result.passed)).toBe(true);
+
+    const invalidMessages = [
+      "PAPERCLIP_E2E_WARM_T1_test-nonce PAPERCLIP_E2E_WARM_T1_test-nonce PAPERCLIP_E2E_WARM_T2_test-nonce PAPERCLIP_E2E_WARM_T3_test-nonce",
+      "PAPERCLIP_E2E_WARM_T1_test-nonce PAPERCLIP_E2E_WARM_T3_test-nonce",
+      "PAPERCLIP_E2E_WARM_T3_test-nonce PAPERCLIP_E2E_WARM_T2_test-nonce PAPERCLIP_E2E_WARM_T1_test-nonce",
+    ];
+    for (const message of invalidMessages) {
+      const results = await evaluateMatchers(matchers, { message });
+      expect(results.some((result) => !result.passed)).toBe(true);
+    }
   });
 });
