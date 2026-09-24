@@ -2207,7 +2207,11 @@ needs to call search, follow that instruction, and respect saved user choices.
 Exact built-in matches (including reviewed aliases) take precedence over external
 routes. An explicit query such as “HubSpot through Arcade” keeps the named
 provider and returns instructions to pass its app slug as `targetService` with the
-direct provider request. Native administrative restrictions still cannot be bypassed. With
+direct provider request only when a persisted message from the responsible human
+proves that choice. An agent-supplied query alone does not count. Unclear or missing
+message evidence falls back to a question naming that provider and None; alternatives
+remain a provider-choice question. New human consent must postdate any saved decline
+or different choice. Native administrative restrictions still cannot be bypassed. With
 `enableMcpAggregators` enabled, a missing built-in match can return eligible
 Composio, Arcade, Executor, and Zapier routes in that order. Search itself makes no
 provider requests and starts no authorization.

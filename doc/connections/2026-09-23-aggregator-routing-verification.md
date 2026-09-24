@@ -95,3 +95,11 @@ dates. CI also exposed two old tests that needed the expanded input schema and a
 enabled aggregator experiment. Those expectations were updated without weakening
 production validation. The unrelated workspace preview startup failed readiness
 on its first CI run; the subsequent head reruns that check without changing it.
+
+The second review required authoritative evidence for direct requests with a target
+app. These now require either the matching saved answer or a newer, unambiguous
+message from the responsible human. Agent-supplied search text cannot override None
+or a different provider. When persisted consent cannot be verified, search confirms
+the named provider; it does not silently choose a different one. Queries naming
+alternatives keep the full choice question. Regressions cover wrong humans, old
+messages, None, a different provider, and a new explicit user request after decline.

@@ -222,7 +222,12 @@ export function explicitAggregatorQuery(query: string) {
       /\b(?:through|via|using)\s+(composio|arcade|executor|zapier)\b/gi,
     ),
   ];
-  if (matches.length !== 1) return null;
+  const namedProviders = new Set(
+    (query.match(/\b(?:composio|arcade|executor|zapier)\b/gi) ?? []).map(
+      (name) => name.toLowerCase(),
+    ),
+  );
+  if (matches.length !== 1 || namedProviders.size !== 1) return null;
   const match = matches[0]!;
   return {
     provider: match[1]!.toLowerCase() as RemoteMcpConnectorId,

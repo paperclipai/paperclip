@@ -90,4 +90,5 @@ it("keeps dates per app/provider claim and parses only an unambiguous explicit p
     explicitAggregatorQuery("HubSpot via Arcade or via Composio"),
   ).toBeNull();
   expect(explicitAggregatorQuery("arcade games")).toBeNull();
+  expect(explicitAggregatorQuery("HubSpot via Arcade or Composio")).toBeNull();
 });

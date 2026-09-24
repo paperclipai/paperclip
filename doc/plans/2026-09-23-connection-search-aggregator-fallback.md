@@ -145,7 +145,9 @@ workspace tools (including Executor). Broad execution tools alone are not eviden
 of app support. No universal anonymous live provider search API is assumed.
 
 Explicit queries such as “HubSpot through Arcade” retain the named provider and
-skip the redundant provider-choice question. Search returns the direct provider
+skip the redundant provider-choice question when the latest persisted message from
+the responsible human clearly names that app and provider. Otherwise, confirm the
+named provider instead of treating the agent query as user consent. Search returns the direct provider
 identifier and instructs `connection_request` to include `targetService`. The
 server revalidates app support and existing restrictions; both new setup and
 account reuse retain app-specific disclosure. Direct provider access keeps its

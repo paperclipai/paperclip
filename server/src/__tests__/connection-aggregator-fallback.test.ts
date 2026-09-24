@@ -8,6 +8,7 @@ import {
   goals,
   heartbeatRuns,
   issueThreadInteractions,
+  issueComments,
   issues,
   createDb,
   toolApplications,
@@ -111,7 +112,24 @@ const support = await getEmbeddedPostgresTestSupport();
       await cleanup?.();
     });
 
+    async function userRequest(body: string, userId = "responsible-user") {
+      const [run] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      await db
+        .insert(issueComments)
+        .values({
+          companyId: claims.company_id,
+          issueId: run!.contextSnapshot!.issueId as string,
+          authorUserId: userId,
+          body,
+        });
+    }
     async function resetQuestions() {
+      await db
+        .delete(issueComments)
+        .where(eq(issueComments.companyId, claims.company_id));
       await db
         .delete(issueThreadInteractions)
         .where(eq(issueThreadInteractions.companyId, claims.company_id));
@@ -600,6 +618,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
     it("honors explicitly named providers and preserves target app context", async () => {
       await resetQuestions();
+      await userRequest("Connect HubSpot through Arcade");
       const service = connectionIntentService(db);
       const result = await service.search(claims, "HubSpot through Arcade");
       expect(result.results.map((item) => item.service)).toEqual(["arcade"]);
@@ -626,6 +645,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
     it("permits explicit provider preference for a supported native app but not a native denial", async () => {
       await resetQuestions();
+      await userRequest("Connect Jira via Arcade");
       const service = connectionIntentService(db);
       expect(
         (await service.search(claims, "Jira via Arcade")).results.map(
@@ -636,6 +656,72 @@ const support = await getEmbeddedPostgresTestSupport();
       expect((await service.search(claims, "Jira via Arcade")).results).toEqual(
         [expect.objectContaining({ service: "jira", state: "unavailable" })],
       );
+    });
+
+    it("does not let an agent-supplied explicit query or direct target override a saved choice", async () => {
+      await resetQuestions();
+      const service = connectionIntentService(db);
+      const unproven = await service.search(claims, "HubSpot via Arcade");
+      expect(
+        unproven.providerQuestion?.options.map((option) => option.id),
+      ).toEqual(["via:arcade:hubspot", "none"]);
+      await expect(
+        service.request(claims, "arcade", { targetService: "hubspot" }),
+      ).rejects.toThrow("cannot connect");
+      await userRequest("Connect HubSpot via Arcade is just an example; do not connect yet");
+      await expect(service.request(claims,"arcade",{targetService:"hubspot"})).rejects.toThrow("cannot connect");
+      await userRequest("Connect HubSpot via Arcade");
+      await selectProvider("none");
+      expect(
+        (await service.search(claims, "HubSpot via Arcade")).results,
+      ).toEqual([]);
+      await expect(
+        service.request(claims, "arcade", { targetService: "hubspot" }),
+      ).rejects.toThrow("cannot connect");
+      await userRequest("Connect HubSpot via Arcade", "someone-else");
+      await expect(
+        service.request(claims, "arcade", { targetService: "hubspot" }),
+      ).rejects.toThrow("cannot connect");
+      await userRequest("Please connect HubSpot through Arcade");
+      expect(
+        (await service.request(claims, "arcade", { targetService: "hubspot" }))
+          .state,
+      ).toBe("needs_user_action");
+      await resetQuestions();
+      const chosen = await selectProvider("via:composio:hubspot");
+      await expect(
+        service.request(claims, "arcade", { targetService: "hubspot" }),
+      ).rejects.toThrow("cannot connect");
+      const accepted = await service.request(claims, "composio", {
+        targetService: "hubspot",
+      });
+      expect(
+        (await service.loadIntent(accepted.interactionId!)).interaction.payload,
+      ).toMatchObject({
+        upstreamService: { selectionInteractionId: chosen.id },
+      });
+    });
+
+    it("asks for a choice when human and agent messages name alternatives", async () => {
+      await resetQuestions();
+      await userRequest("Connect HubSpot via Arcade or Composio");
+      const result = await connectionIntentService(db).search(
+        claims,
+        "HubSpot via Arcade or Composio",
+      );
+      expect(
+        result.providerQuestion?.options.map((option) => option.id),
+      ).toEqual([
+        "via:composio:hubspot",
+        "via:arcade:hubspot",
+        "via:zapier:hubspot",
+        "none",
+      ]);
+      await expect(
+        connectionIntentService(db).request(claims, "arcade", {
+          targetService: "hubspot",
+        }),
+      ).rejects.toThrow("cannot connect");
     });
   },
 );

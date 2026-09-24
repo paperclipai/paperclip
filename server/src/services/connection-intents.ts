@@ -1,7 +1,7 @@
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq, desc, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -10,6 +10,7 @@ import {
   companyMemberships,
   heartbeatRuns,
   issueThreadInteractions,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -393,10 +394,12 @@ export function connectionIntentService(db: Db) {
     const exact = candidates.filter(({ item }) => normalizeConnectionQuery(item.service) === normalizeConnectionQuery(query)
       || normalizeConnectionQuery(item.name) === normalizeConnectionQuery(query)
       || item.service === publicService?.slug);
-    if (exact.length && (!explicit || exact.some(({ item }) => item.state === "unavailable"))) return directSearchResult(query, exact.map(({ item }) => item));
     const targetService = publicService?.slug ?? normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-");
     // Indexed-only app labels must be identical when requests re-search the slug.
     const targetName = publicService?.name ?? targetService.split("-").map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+    const previous = await providerSelections(run.companyId, issue.id, agent.id, run.responsibleUserId!, `connection-provider:${targetService}`);
+    const explicitConsent = explicit && await hasExplicitProviderRequest(run.companyId, issue.id, run.responsibleUserId!, targetService, explicit.provider, previous[0]);
+    if (exact.length && (!explicitConsent || exact.some(({ item }) => item.state === "unavailable"))) return directSearchResult(query, exact.map(({ item }) => item));
     const alternatives: ConnectionSearchResultItem[] = [];
     if (aggregatorsEnabled && /^[a-z0-9][a-z0-9-]{0,79}$/.test(targetService)) {
       for (const provider of AGGREGATOR_PRIORITY) {
@@ -438,7 +441,7 @@ export function connectionIntentService(db: Db) {
         });
       }
     }
-    if (explicit) {
+    if (explicit && explicitConsent) {
       const selected = alternatives.find(item => item.aggregator?.provider === explicit.provider);
       if (!selected) return { version: 1, query, results: [], instruction: "The explicitly requested external provider is unavailable or its app support could not be verified. Explain the limitation. Do not switch providers automatically." };
       return { version: 1, query, results: [{ ...selected, service: explicit.provider }],
@@ -447,7 +450,6 @@ export function connectionIntentService(db: Db) {
     if (!alternatives.length) return directSearchResult(query, candidates.filter(({ item, score }) => !isRemoteMcpConnectorId(item.service) && score >= tokens.length)
       .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name)).slice(0, 20).map(({ item }) => item), true);
     const question = aggregatorProviderQuestion(targetService, targetName, alternatives);
-    const previous = await providerSelections(run.companyId, issue.id, agent.id, run.responsibleUserId!, question.id);
     const latest = previous[0];
     if (latest && (latest.status === "pending" || !options.retryProviderChoice)) {
       if (latest.status === "pending") return { version: 1, query, results: alternatives, instruction: "The provider-choice question is already pending. Finish independent work, then yield. Do not ask again.", selectionInteractionId: latest.id };
@@ -458,7 +460,11 @@ export function connectionIntentService(db: Db) {
         instruction: `The user selected ${selected.name}. Call connection_request with service ${selected.service} and selectionInteractionId ${latest.id}. Follow its returned instruction; underlying app access is not yet verified.` };
       if (choice) return { version: 1, query, results: [], instruction: "The chosen external provider is no longer available for this service. Explain the restriction or missing support. Do not switch providers automatically. The user may explicitly request a new provider choice." };
     }
-    return { version: 1, query, results: alternatives, providerQuestion: question,
+    // An agent's query is not proof of human choice. Keep its named provider as
+    // the sole confirmation option unless a saved user message proves consent.
+    const offered = explicit ? alternatives.filter(item => item.aggregator?.provider === explicit.provider) : alternatives;
+    if (!offered.length) return { version: 1, query, results: [], instruction: "The requested external provider is unavailable. Do not switch providers automatically." };
+    return { version: 1, query, results: offered, providerQuestion: aggregatorProviderQuestion(targetService, targetName, offered),
       instruction: "No matching built-in Paperclip connection was found. Ask the responsible user with providerQuestion exactly as returned (including its id, full prompt, and options). With native request_human_input, use interactionKind questions, continuationPolicy wake_assignee, and payload {version:1, questions:[providerQuestion]}; do not add questionSet. Otherwise use ask_user_questions with the same questions payload. These are external services. Wait for the saved answer; then call connection_request with the selected service identifier and selectionInteractionId set to the answered question interaction ID. None for now means do not connect. Do not claim app access yet." };
   }
 
@@ -482,6 +488,26 @@ export function connectionIntentService(db: Db) {
       && (!row.resolvedByUserId || row.resolvedByUserId === userId)
       && askUserQuestionsPayloadSchema.safeParse(row.payload).success
       && (row.payload as { questions: Array<{ id: string }> }).questions.some(question => question.id === questionId));
+  }
+
+  async function hasExplicitProviderRequest(companyId: string, issueId: string, userId: string, target: string, provider: string, latest?: typeof issueThreadInteractions.$inferSelect) {
+    if (latest?.status === "pending") return false;
+    // Use a persisted human-authored message, never the agent-supplied query or
+    // mutable task description. Conservative parsing falls back to confirmation.
+    const [message] = await db.select().from(issueComments).where(and(
+      eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+      eq(issueComments.authorUserId, userId), isNull(issueComments.authorAgentId),
+      isNull(issueComments.createdByRunId), isNull(issueComments.derivedAuthorAgentId), isNull(issueComments.deletedAt),
+    )).orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+    if (!message || !/^(?:please\s+)?(?:connect|use)\b/i.test(message.body.trim())) return false;
+    if (latest && message.createdAt <= (latest.resolvedAt ?? latest.createdAt)) return false;
+    const request = explicitAggregatorQuery(message.body);
+    if (request?.provider !== provider) return false;
+    const known = findAggregatorService(target);
+    const requested = normalizeConnectionQuery(message.body).replace(/^(?:please )?(?:connect|use) (?:to )?/, "");
+    const names = known ? [known.slug, known.name, ...known.aliases] : [target];
+    return names.some(name => ["through", "via", "using"].some(preposition =>
+      requested === `${normalizeConnectionQuery(name)} ${preposition} ${provider}`));
   }
 
   function selectedProvider(row: typeof issueThreadInteractions.$inferSelect, expected: ReturnType<typeof aggregatorProviderQuestion>) {
@@ -517,9 +543,9 @@ export function connectionIntentService(db: Db) {
     if (options.targetService) {
       if (route || options.purpose || !isRemoteMcpConnectorId(serviceSlug)) throw unprocessable("An explicit target app requires a direct external-provider request");
       const found = await search(claims, `${options.targetService} through ${serviceSlug}`);
-      const selected = found.results.find(item => item.service === serviceSlug && item.aggregator);
-      if (!selected?.aggregator) throw forbidden("The requested provider cannot connect this app");
-      upstreamService = { slug: selected.aggregator.targetService, name: selected.aggregator.targetName };
+      const selected = found.results.find(item => item.aggregator?.provider === serviceSlug && (item.service === serviceSlug || Boolean(found.selectionInteractionId && !found.providerQuestion)));
+      if (!selected?.aggregator) throw forbidden("The requested provider cannot connect this app without verified support and a recorded user choice or explicit user request");
+      upstreamService = { slug: selected.aggregator.targetService, name: selected.aggregator.targetName, ...(found.selectionInteractionId ? { selectionInteractionId: found.selectionInteractionId } : {}) };
     }
     if (route) {
       if (options.purpose) throw unprocessable("Aggregator routes are tool connections only");
