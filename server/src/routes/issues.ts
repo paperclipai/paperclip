@@ -299,7 +299,11 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
-import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import {
+  normalizeGatedExecutionWorkspaceField,
+  parseIssueExecutionWorkspaceSettings,
+  unhonourableGatedExecutionWorkspaceFields,
+} from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -682,12 +686,6 @@ function hasOwn(record: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-const EXECUTION_WORKSPACE_FIELDS = [
-  "executionWorkspaceId",
-  "executionWorkspacePreference",
-  "executionWorkspaceSettings",
-] as const;
-
 /** Key-order-independent, so a re-sent settings blob still compares equal. */
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -707,67 +705,26 @@ function isSameExecutionWorkspaceValue(requested: unknown, stored: unknown) {
 }
 
 /**
- * Normalizes a requested or stored value to the form the column would hold.
- *
- * `executionWorkspaceSettings` goes through the same parse `issueService.update`
- * applies before writing, so the comparison below is against what would actually
- * land rather than against raw request text. The parse keeps only the keys it
- * recognises, and it returns `{}` — not `null` — for a blob whose every key is
- * dropped. `{ environmentId }` is exactly that blob, since the service calls the
- * parse without `includeEnvironmentId`, so the empty result is collapsed to
- * `null` here; otherwise it could never match a stored `null` and issue
- * environment selection, a different feature behind a different flag, would be
- * refused as an isolated-workspaces violation.
- */
-function normalizeExecutionWorkspaceField(field: string, value: unknown) {
-  if (field !== "executionWorkspaceSettings") return value ?? null;
-  const parsed = parseIssueExecutionWorkspaceSettings(value);
-  return parsed && Object.keys(parsed).length > 0 ? parsed : null;
-}
-
-/**
- * Whether a normalized value names exactly the state the gate produces: no
- * execution workspace of the task's own, running on the shared checkout.
- *
- * Such a request is asking for what it is going to get, so it is honoured even
- * though the strip drops it. This matters well beyond tidiness — the project
- * picker posts all three keys on *every* project change
- * (`ui/src/components/issue-properties/IssueProperties.tsx`), and refusing them
- * would turn "move a task to another project" into a 422 on a
- * default-configured instance, a worse regression than the bug being fixed.
- *
- * `executionWorkspaceId` admits only `null`, never a real id: pointing a task at
- * a workspace is precisely the write this endpoint was silently swallowing.
- */
-function isGatedExecutionWorkspaceBaseline(field: string, normalized: unknown) {
-  if (normalized === null) return true;
-  if (field === "executionWorkspacePreference") return normalized === "shared_workspace";
-  if (field === "executionWorkspaceSettings") {
-    return (normalized as Record<string, unknown>).mode === "shared_workspace" &&
-      Object.keys(normalized as Record<string, unknown>).length === 1;
-  }
-  return false;
-}
-
-/**
  * Names the execution-workspace fields in a PATCH body that the
- * isolated-workspaces gate cannot honour.
+ * isolated-workspaces gate cannot honour, and that would therefore be dropped
+ * on the way to the row.
  *
- * `issueService.update` deletes all three fields while the gate is off, before
- * they reach reference validation or the row. The strip itself is deliberate —
- * the internal shared-workspace binding depends on it — but it used to be
- * silent, so a caller pointing a task at a workspace got HTTP 200 and an empty
- * change receipt while nothing moved, and only a re-read revealed it.
+ * While the gate is off, `issueService.update` drops the values it cannot
+ * honour before they reach reference validation or the row. The drop is
+ * deliberate, but it used to be both silent *and* total: a caller pointing a
+ * task at a workspace got HTTP 200 and an empty change receipt while nothing
+ * moved, and only a re-read revealed it.
  *
- * A field is unhonourable when the request asks for something the gate withholds
- * *and* the row does not already say it. Two shapes therefore pass through:
+ * Two shapes are honoured, and the service now writes them rather than dropping
+ * them, so this is a statement about what lands and not a pardon:
  *
- * - **The gate's own baseline** — see `isGatedExecutionWorkspaceBaseline`. The
- *   caller is asking for the state it is going to get either way.
- * - **Re-sending the value the row already holds.** Nothing changes whether or
- *   not it is stripped, which keeps a client that round-trips a fetched issue
- *   back into a PATCH working, and keeps a task whose workspace the runtime
- *   bound past the strip (`bindRuntimeSharedWorkspace`) editable.
+ * - **The gate's own baseline** — see `isGatedExecutionWorkspaceBaseline`. It
+ *   removes execution-workspace configuration instead of introducing any, so it
+ *   is safe to persist with the feature off, and clearing works for real.
+ * - **Re-sending the value the row already holds.** A no-op either way, which
+ *   keeps a client that round-trips a fetched issue back into a PATCH working
+ *   even when the runtime bound a workspace past the gate
+ *   (`bindRuntimeSharedWorkspace`).
  *
  * What is left refused is the write the ticket was opened for: naming a real
  * `executionWorkspaceId`, or a preference or settings blob asking for an
@@ -775,10 +732,11 @@ function isGatedExecutionWorkspaceBaseline(field: string, normalized: unknown) {
  * way to deliver.
  *
  * Two residuals are known and accepted rather than claimed away. A PATCH that
- * only moves `environmentId` inside the settings blob still passes here and is
- * still swallowed by the strip — that is the pre-existing interaction between
- * this gate and issue environments, which `selectEnvironmentExecutionWorkspaceSettings`
- * handles separately, not something this guard introduces. And
+ * only moves `environmentId` inside the settings blob normalizes to `null` and
+ * so passes here, and the service's own parse drops it for the same reason —
+ * that is the pre-existing interaction between this gate and issue
+ * environments, which `selectEnvironmentExecutionWorkspaceSettings` handles
+ * separately, not something this guard introduces. And
  * `resolveExecutionWorkspaceMode` returns `agent_default`, not
  * `shared_workspace`, when an assignee override sets `useProjectWorkspace:
  * false`, so the baseline allowance is not a promise about the mode a task
@@ -788,15 +746,13 @@ function unhonourableExecutionWorkspaceFields(
   body: Record<string, unknown>,
   existing: Record<string, unknown>,
 ) {
-  return EXECUTION_WORKSPACE_FIELDS.filter((field) => {
-    if (!hasOwn(body, field)) return false;
-    const requested = normalizeExecutionWorkspaceField(field, body[field]);
-    if (isGatedExecutionWorkspaceBaseline(field, requested)) return false;
-    return !isSameExecutionWorkspaceValue(
-      requested,
-      normalizeExecutionWorkspaceField(field, existing[field]),
-    );
-  });
+  return unhonourableGatedExecutionWorkspaceFields(body).filter(
+    (field) =>
+      !isSameExecutionWorkspaceValue(
+        normalizeGatedExecutionWorkspaceField(field, body[field]),
+        normalizeGatedExecutionWorkspaceField(field, existing[field]),
+      ),
+  );
 }
 
 async function auditAgentIssueCreateAttributionSpoof(input: {

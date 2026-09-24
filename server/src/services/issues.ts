@@ -116,6 +116,7 @@ import {
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
   resolvePinnedIssueWorkspaceStrategyType,
+  unhonourableGatedExecutionWorkspaceFields,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -10627,10 +10628,18 @@ export function issueService(db: Db) {
       // Warm sandbox continuity is runtime bookkeeping, independent of the
       // opt-in UI for creating isolated worktrees. Public updates still obey
       // the feature gate; only the internal shared-workspace binding bypasses it.
+      //
+      // The gate withholds isolation; it does not pin a task to an isolated
+      // posture it already holds. Only values asking for more than the gate can
+      // give are dropped — a baseline value clears configuration rather than
+      // introducing any, so it is written. That is what makes clearing a stale
+      // binding work: the project picker posts `executionWorkspaceId: null` on
+      // every project change, and a blanket strip left the task pointing at the
+      // previous project's workspace while answering 200.
       if (!isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
-        delete issueData.executionWorkspaceSettings;
+        for (const field of unhonourableGatedExecutionWorkspaceFields(issueData)) {
+          delete issueData[field];
+        }
       }
 
       if (issueData.status) {

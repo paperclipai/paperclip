@@ -53,7 +53,11 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     },
   });
 
-  async function seed(options: { isolatedWorkspaces: boolean; storeWorkspaceBinding?: boolean }) {
+  async function seed(options: {
+    isolatedWorkspaces: boolean;
+    storeWorkspaceBinding?: boolean;
+    storeIsolatedSettings?: boolean;
+  }) {
     await instanceSettingsService(ctx.db).updateExperimental({
       enableIsolatedWorkspaces: options.isolatedWorkspaces,
     });
@@ -87,6 +91,14 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
       // gate refuses to *change* — the state left behind by an instance that
       // once ran with the gate on.
       ...(options.storeWorkspaceBinding ? { executionWorkspaceId: workspaceId } : {}),
+      // The state an instance is left in when the gate is switched off after
+      // tasks were already configured under it.
+      ...(options.storeIsolatedSettings
+        ? {
+          executionWorkspacePreference: "isolated_workspace" as const,
+          executionWorkspaceSettings: { mode: "isolated_workspace" as const },
+        }
+        : {}),
     });
 
     return { ...company, projectId, otherProjectId, workspaceId, issueId };
@@ -282,15 +294,19 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
   });
 
   /**
-   * The same body *with* a project change is still refused — but by
-   * "Execution workspace must belong to the selected project", a validation that
-   * predates this guard and fires on the binding left in the row. Pinned so the
-   * distinction stays visible: this guard must not be what refuses it, or a
-   * later reader would read the 422 as the gate check being over-broad and
-   * loosen the wrong code. That a runtime-bound task cannot be moved between
-   * projects while the gate is off is pre-existing and out of scope here.
+   * The picker's full body against a runtime-bound row, which used to be
+   * unmovable. The blanket strip deleted the `executionWorkspaceId: null`, so
+   * `update()` fell back to the id already in the row
+   * (`issueData.executionWorkspaceId !== undefined ? … : existing.…`) and
+   * `assertValidExecutionWorkspace` refused the move with "Execution workspace
+   * must belong to the selected project" — a workspace of the *old* project.
+   * Any task that had run once was stuck in its project.
+   *
+   * Letting the baseline null survive the strip clears the binding in the same
+   * patch, so the ownership check has nothing stale to object to. The re-read
+   * proves both halves: the project moved *and* the binding is gone.
    */
-  it("is not the reason a project move with a stale binding is refused", async () => {
+  it("lets a runtime-bound task move project, clearing the stale binding", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeWorkspaceBinding: true });
 
     const res = await patch(seeded, {
@@ -300,7 +316,58 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
       executionWorkspaceSettings: null,
     });
 
+    expect(res.status).toBe(200);
     expect(JSON.stringify(res.body)).not.toContain("isolated_workspaces_disabled");
+    expect(res.body.projectId).toBe(seeded.otherProjectId);
+    expect(await storedWorkspaceFields(seeded)).toMatchObject({
+      executionWorkspaceId: null,
+    });
+  });
+
+  /**
+   * A downgrade is a real change, and the row is left holding isolated values
+   * whenever the gate is switched off after tasks were configured under it. The
+   * blanket strip swallowed the downgrade and answered 200, so the task kept
+   * running isolated with the feature supposedly disabled and the API insisting
+   * the change had been accepted.
+   *
+   * Refusing it instead would be no better: the project picker posts exactly
+   * this body on every project change. Because a baseline value only ever
+   * *removes* configuration, the gate has no reason to withhold it — so it is
+   * written, and the re-read proves it. This is the case the response receipt
+   * used to lie about in both directions.
+   */
+  it("persists a downgrade to shared_workspace on a row holding isolated values", async () => {
+    const seeded = await seed({ isolatedWorkspaces: false, storeIsolatedSettings: true });
+
+    const res = await patch(seeded, {
+      executionWorkspacePreference: "shared_workspace",
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await storedWorkspaceFields(seeded)).toMatchObject({
+      executionWorkspacePreference: "shared_workspace",
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    });
+  });
+
+  /**
+   * The clearing direction, against the binding the runtime writes past the gate
+   * (`bindRuntimeSharedWorkspace`). Clearing it never worked: the strip dropped
+   * the null, so the task stayed pointed at a workspace — after a project move,
+   * one belonging to the *previous* project — while the response reported
+   * success. The re-read is the whole point of this test.
+   */
+  it("persists a cleared workspace binding instead of dropping the null", async () => {
+    const seeded = await seed({ isolatedWorkspaces: false, storeWorkspaceBinding: true });
+
+    const res = await patch(seeded, { executionWorkspaceId: null });
+
+    expect(res.status).toBe(200);
+    expect(await storedWorkspaceFields(seeded)).toMatchObject({
+      executionWorkspaceId: null,
+    });
   });
 
   /**
