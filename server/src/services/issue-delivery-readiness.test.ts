@@ -44,6 +44,7 @@ function primary(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
     metadata: {
       deliveryEvidence: {
         reconciledAt: "2026-09-15T12:00:00.000Z",
+        productUpdatedAt: "2026-09-15T12:00:00.000Z",
         commitOnTarget: true,
         combinedRegressionChecks: [{ name: "server regression", status: "passed" }],
       },

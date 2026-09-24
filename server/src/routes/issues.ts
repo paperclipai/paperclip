@@ -275,6 +275,8 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
+  verifyIssueDoneDeliveryReady,
+  type IssueDoneDeliveryReadinessProof,
   type IssuePostCommitAction,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -3549,18 +3551,6 @@ export function issueRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
-  const assertIssueDoneDeliveryReady = async (issueId: string, store: Db = db) => {
-    const readiness = await executionWorkspaceServiceDirect(store)
-      .getIssueDoneDeliveryReadiness(issueId);
-    if (!readiness || !readiness.required || readiness.ready) return;
-    throw conflict(
-      "Code work cannot transition to Done until review, merge delivery, health, regression, and reconciliation evidence are complete.",
-      {
-        code: "issue_delivery_not_ready",
-        reasonCodes: readiness.reasonCodes,
-      },
-    );
-  };
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
@@ -13513,12 +13503,13 @@ export function issueRoutes(
       } = { value: null };
       const postCommitActivityPublications: ActivityPublication[] = [];
       const postCommitIssueActions: IssuePostCommitAction[] = [];
-      const issueUpdateData = {
+      let deliveryReadinessProof: IssueDoneDeliveryReadinessProof | undefined;
+      const issueUpdateData = () => ({
         ...updateFields,
         actorAgentId: actor.agentId ?? null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        ...(updateFields.status === "done" ? { deliveryReadinessVerified: true } : {}),
-      };
+        ...(deliveryReadinessProof ? { deliveryReadinessProof } : {}),
+      });
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&
         existing.status !== "done" &&
@@ -13530,7 +13521,7 @@ export function issueRoutes(
           if (shouldCollectCompletionPublication) {
             return svc.update(
               id,
-              issueUpdateData,
+              issueUpdateData(),
               tx,
               postCommitActivityPublications,
               postCommitIssueActions,
@@ -13539,16 +13530,16 @@ export function issueRoutes(
           return shouldCollectTerminalIssueActions
             ? svc.update(
                 id,
-                issueUpdateData,
+                issueUpdateData(),
                 tx,
                 undefined,
                 postCommitIssueActions,
               )
-            : svc.update(id, issueUpdateData, tx);
+              : svc.update(id, issueUpdateData(), tx);
         }
         return shouldCollectCompletionPublication
-          ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
-          : svc.update(id, issueUpdateData);
+          ? svc.update(id, issueUpdateData(), db, postCommitActivityPublications)
+          : svc.update(id, issueUpdateData());
       };
       const assertLockedReviewPolicyAllowsMutation = async (
         tx: Parameters<typeof svc.update>[2],
@@ -13574,7 +13565,10 @@ export function issueRoutes(
           });
         }
         if (lockedExisting.status !== "done" && updateFields.status === "done") {
-          await assertIssueDoneDeliveryReady(lockedExisting.id, tx as unknown as Db);
+          deliveryReadinessProof = await verifyIssueDoneDeliveryReady(
+            lockedExisting.id,
+            tx as unknown as Db,
+          );
         }
         return true;
       };

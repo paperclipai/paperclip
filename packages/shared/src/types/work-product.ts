@@ -91,6 +91,8 @@ export interface CommitWorkProductMetadata {
 export interface IssueWorkProductDeliveryEvidence {
   /** Timestamp of the last reconciliation against the configured target branch. */
   reconciledAt: string;
+  /** Server-stamped work-product revision covered by this evidence. */
+  productUpdatedAt?: string;
   /** Required when no local isolated Git workspace is available for verification. */
   commitOnTarget?: boolean;
   combinedRegressionChecks: Array<{

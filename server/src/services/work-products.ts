@@ -125,6 +125,45 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
   };
 }
 
+export function stampDeliveryEvidenceRevision(
+  metadata: Record<string, unknown> | null | undefined,
+  updatedAt: Date,
+  minimumCoveredAt?: Date,
+): Record<string, unknown> | null | undefined {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return metadata;
+  }
+  const deliveryEvidenceValue = metadata.deliveryEvidence;
+  if (
+    !deliveryEvidenceValue
+    || typeof deliveryEvidenceValue !== "object"
+    || Array.isArray(deliveryEvidenceValue)
+  ) {
+    return metadata;
+  }
+  const deliveryEvidence = deliveryEvidenceValue as Record<string, unknown>;
+  const { productUpdatedAt: _callerProductUpdatedAt, ...unstampedEvidence } = deliveryEvidence;
+  const reconciledAt = typeof deliveryEvidence.reconciledAt === "string"
+    ? Date.parse(deliveryEvidence.reconciledAt)
+    : Number.NaN;
+  if (
+    minimumCoveredAt
+    && (!Number.isFinite(reconciledAt) || reconciledAt < minimumCoveredAt.getTime())
+  ) {
+    return {
+      ...metadata,
+      deliveryEvidence: unstampedEvidence,
+    };
+  }
+  return {
+    ...metadata,
+    deliveryEvidence: {
+      ...unstampedEvidence,
+      productUpdatedAt: updatedAt.toISOString(),
+    },
+  };
+}
+
 /**
  * Refresh runtime-service work products from the live runtime rows they point at
  * (PAP-17572).
@@ -244,6 +283,7 @@ export function workProductService(
     },
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
+      const updatedAt = new Date();
       const row = await db.transaction(async (tx) => {
         if (data.isPrimary) {
           await tx
@@ -261,8 +301,10 @@ export function workProductService(
           .insert(issueWorkProducts)
           .values({
             ...data,
+            metadata: stampDeliveryEvidenceRevision(data.metadata, updatedAt),
             companyId,
             issueId,
+            updatedAt,
           })
           .returning()
           .then((rows) => rows[0] ?? null);
@@ -278,6 +320,7 @@ export function workProductService(
           .where(eq(issueWorkProducts.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+        const updatedAt = new Date();
 
         if (patch.isPrimary === true) {
           await tx
@@ -294,7 +337,19 @@ export function workProductService(
 
         return await tx
           .update(issueWorkProducts)
-          .set({ ...patch, updatedAt: new Date() })
+          .set({
+            ...patch,
+            ...(patch.metadata === undefined
+              ? {}
+              : {
+                  metadata: stampDeliveryEvidenceRevision(
+                    patch.metadata,
+                    updatedAt,
+                    existing.updatedAt,
+                  ),
+                }),
+            updatedAt,
+          })
           .where(eq(issueWorkProducts.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);

@@ -246,6 +246,53 @@ export type IssuePostCommitAction = {
   issueStatus: string;
 };
 
+export type IssueDoneDeliveryReadinessProof = Readonly<{
+  issueId: string;
+}>;
+
+const issueDoneDeliveryReadinessProofs = new WeakMap<
+  IssueDoneDeliveryReadinessProof,
+  { issueId: string; store: object }
+>();
+
+async function assertIssueDoneDeliveryReady(
+  issueId: string,
+  store: Db,
+): Promise<void> {
+  const { executionWorkspaceService } = await import("./execution-workspaces.js");
+  const readiness = await executionWorkspaceService(store)
+    .getIssueDoneDeliveryReadiness(issueId);
+  if (!readiness || !readiness.required || readiness.ready) return;
+  throw conflict(
+    "Code work cannot transition to Done until review, merge delivery, health, regression, and reconciliation evidence are complete.",
+    {
+      code: "issue_delivery_not_ready",
+      reasonCodes: readiness.reasonCodes,
+    },
+  );
+}
+
+export async function verifyIssueDoneDeliveryReady(
+  issueId: string,
+  store: Db,
+): Promise<IssueDoneDeliveryReadinessProof> {
+  await assertIssueDoneDeliveryReady(issueId, store);
+  const proof = Object.freeze({ issueId });
+  issueDoneDeliveryReadinessProofs.set(proof, { issueId, store });
+  return proof;
+}
+
+function consumeIssueDoneDeliveryReadinessProof(
+  proof: IssueDoneDeliveryReadinessProof | undefined,
+  issueId: string,
+  store: object,
+): boolean {
+  if (!proof) return false;
+  const record = issueDoneDeliveryReadinessProofs.get(proof);
+  issueDoneDeliveryReadinessProofs.delete(proof);
+  return record?.issueId === issueId && record.store === store;
+}
+
 /** Execute side effects that must never run before the issue transaction commits. */
 export async function executeIssuePostCommitActions(
   db: Db,
@@ -10538,7 +10585,7 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
-        deliveryReadinessVerified?: boolean;
+        deliveryReadinessProof?: IssueDoneDeliveryReadinessProof;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10584,7 +10631,7 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         companyGuard,
-        deliveryReadinessVerified,
+        deliveryReadinessProof,
         ...issueData
       } = data;
       if (
@@ -10856,24 +10903,18 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
-        if (
-          !deliveryReadinessVerified
-          && receiptExisting.status !== "done"
-          && patch.status === "done"
-        ) {
+        if (receiptExisting.status !== "done" && patch.status === "done") {
           // Enforce delivery readiness at the shared mutation boundary. Several
           // internal completion paths call issueService directly and do not pass
           // through the HTTP route checks.
-          const { executionWorkspaceService } = await import("./execution-workspaces.js");
-          const readiness = await executionWorkspaceService(tx as unknown as Db)
-            .getIssueDoneDeliveryReadiness(receiptExisting.id);
-          if (readiness?.required && !readiness.ready) {
-            throw conflict(
-              "Code work cannot transition to Done until review, merge delivery, health, regression, and reconciliation evidence are complete.",
-              {
-                code: "issue_delivery_not_ready",
-                reasonCodes: readiness.reasonCodes,
-              },
+          if (!consumeIssueDoneDeliveryReadinessProof(
+            deliveryReadinessProof,
+            receiptExisting.id,
+            tx,
+          )) {
+            await assertIssueDoneDeliveryReady(
+              receiptExisting.id,
+              tx as unknown as Db,
             );
           }
         }

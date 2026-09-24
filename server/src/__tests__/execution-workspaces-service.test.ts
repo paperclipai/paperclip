@@ -39,6 +39,7 @@ import {
   readMetadataReopenPendingConsumptionSince,
 } from "../services/execution-workspaces.ts";
 import { issueService } from "../services/issues.ts";
+import { workProductService } from "../services/work-products.ts";
 import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -532,9 +533,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       executionWorkspaceId: workspaceId,
     });
     await db.update(executionWorkspaces).set({ sourceIssueId: issueId }).where(eq(executionWorkspaces.id, workspaceId));
-    await db.insert(issueWorkProducts).values({
-      companyId,
-      issueId,
+    await workProductService(db).createForIssue(issueId, companyId, {
       executionWorkspaceId: workspaceId,
       type: "commit",
       provider: "github",
@@ -557,6 +556,47 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const workspace = await svc.getById(workspaceId);
     expect(workspace?.deliveryState).toBe("merged_by_patch_equivalence");
   }, 20_000);
+
+  it("does not trust a caller-controlled delivery-readiness flag", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `F${companyId.slice(0, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Undelivered code",
+      status: "in_review",
+      priority: "medium",
+      reviewPolicy: "not_creator",
+    });
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "Open PR",
+      status: "active",
+      reviewState: "none",
+      isPrimary: true,
+      healthStatus: "unknown",
+    });
+
+    await expect(issueService(db).update(issueId, {
+      status: "done",
+      deliveryReadinessVerified: true,
+    } as any)).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({ code: "issue_delivery_not_ready" }),
+    });
+    await expect(issueService(db).getById(issueId)).resolves.toMatchObject({
+      status: "in_review",
+    });
+  });
 
   it("flags a historical Done issue with a non-merged primary code product even without a workspace", async () => {
     const companyId = randomUUID();

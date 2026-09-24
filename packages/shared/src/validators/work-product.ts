@@ -75,6 +75,7 @@ export const issueWorkProductMetadataSchema = z
     resourceRef: workspaceFileRefSchema.optional().nullable(),
     deliveryEvidence: z.object({
       reconciledAt: z.string().datetime(),
+      productUpdatedAt: z.string().datetime().optional(),
       commitOnTarget: z.boolean().optional(),
       combinedRegressionChecks: z.array(z.object({
         name: z.string().trim().min(1),

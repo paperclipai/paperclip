@@ -29,6 +29,7 @@ export interface IssueDoneDeliveryReadiness {
 
 type DeliveryEvidence = {
   reconciledAt?: unknown;
+  productUpdatedAt?: unknown;
   commitOnTarget?: unknown;
   combinedRegressionChecks?: unknown;
 };
@@ -128,7 +129,18 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
     const reconciledAt = typeof evidence.reconciledAt === "string" ? Date.parse(evidence.reconciledAt) : Number.NaN;
     if (!Number.isFinite(reconciledAt)) {
       reasons.push("delivery_not_reconciled");
-    } else if (product.updatedAt && reconciledAt < new Date(product.updatedAt).getTime()) {
+    }
+    const evidenceProductUpdatedAt = typeof evidence.productUpdatedAt === "string"
+      ? Date.parse(evidence.productUpdatedAt)
+      : Number.NaN;
+    const productUpdatedAt = product.updatedAt
+      ? new Date(product.updatedAt).getTime()
+      : Number.NaN;
+    if (
+      !Number.isFinite(evidenceProductUpdatedAt)
+      || !Number.isFinite(productUpdatedAt)
+      || evidenceProductUpdatedAt !== productUpdatedAt
+    ) {
       reasons.push("delivery_evidence_stale");
     }
     if (!input.hasIsolatedGitWorkspace && evidence.commitOnTarget !== true) {

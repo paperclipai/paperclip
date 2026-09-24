@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   enrichWorkProductMetadataWithDiff,
   refreshPullRequestWorkProductMetadata,
+  stampDeliveryEvidenceRevision,
   workProductDiffSummaryFromEventPayload,
   workProductService,
 } from "../services/work-products.ts";
@@ -61,6 +62,42 @@ describe("workProductService", () => {
       changedFiles: 2,
       additions: 9,
       deletions: 4,
+    });
+  });
+
+  it("server-stamps delivery evidence with the covered work-product revision", () => {
+    const updatedAt = new Date("2026-09-24T17:00:00.000Z");
+    expect(stampDeliveryEvidenceRevision({
+      repo: "paperclipai/paperclip",
+      deliveryEvidence: {
+        reconciledAt: "2026-09-24T17:00:00.000Z",
+        productUpdatedAt: "forged-client-value",
+        combinedRegressionChecks: [{ name: "server", status: "passed" }],
+      },
+    }, updatedAt)).toEqual({
+      repo: "paperclipai/paperclip",
+      deliveryEvidence: {
+        reconciledAt: "2026-09-24T17:00:00.000Z",
+        productUpdatedAt: "2026-09-24T17:00:00.000Z",
+        combinedRegressionChecks: [{ name: "server", status: "passed" }],
+      },
+    });
+  });
+
+  it("does not refresh a replayed delivery-evidence revision", () => {
+    const priorRevision = new Date("2026-09-24T17:00:00.000Z");
+    const nextRevision = new Date("2026-09-24T17:05:00.000Z");
+    expect(stampDeliveryEvidenceRevision({
+      deliveryEvidence: {
+        reconciledAt: "2026-09-24T16:59:00.000Z",
+        productUpdatedAt: nextRevision.toISOString(),
+        combinedRegressionChecks: [{ name: "server", status: "passed" }],
+      },
+    }, nextRevision, priorRevision)).toEqual({
+      deliveryEvidence: {
+        reconciledAt: "2026-09-24T16:59:00.000Z",
+        combinedRegressionChecks: [{ name: "server", status: "passed" }],
+      },
     });
   });
 

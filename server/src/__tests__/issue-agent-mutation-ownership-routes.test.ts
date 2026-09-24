@@ -194,6 +194,21 @@ function registerRouteMocks() {
 
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
+    verifyIssueDoneDeliveryReady: async (issueId: string) => {
+      const readiness = await mockExecutionWorkspaceService
+        .getIssueDoneDeliveryReadiness(issueId);
+      if (readiness?.required && !readiness.ready) {
+        throw new HttpError(
+          409,
+          "Code work cannot transition to Done until review, merge delivery, health, regression, and reconciliation evidence are complete.",
+          {
+            code: "issue_delivery_not_ready",
+            reasonCodes: readiness.reasonCodes,
+          },
+        );
+      }
+      return Object.freeze({ issueId });
+    },
   }));
 
   vi.doMock("../services/work-products.js", () => ({
