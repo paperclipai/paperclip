@@ -621,15 +621,17 @@ active. Writes to the run's own source issue are not counted. Assignee self-comm
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
 
 The native run issue takes precedence over legacy snapshot source fields. Manual
-and timer runs can start without a source issue. Their first write to a verified
-held issue binds one fixed guard source in an
+and timer runs can start without a source issue. Their first guarded write
+attempt to a verified held issue binds one fixed guard source in an
 `issue.cross_issue_influence_source_bound` activity receipt. The run-row lock
 serializes this binding. The task must be non-terminal, assigned to the actor,
 and held by the same run's checkout or execution lock, with no conflicting lock.
 The guard locks the issue while it records the binding. A contended issue is
 counted instead of bound. The binding survives release, completion, and snapshot
 updates; another checkout cannot expand or move the exemption. Route permissions
-still apply to the subsequent mutation.
+still apply to the subsequent mutation. Like the attempt counter, this source
+selection commits before that mutation and survives its validation failure.
+The source identifies the checked-out task; it is not a receipt of write success.
 
 Other writes consume the normal per-run budget and record a null source if no
 source exists. Missing source context alone is not an invalid run. Assignment

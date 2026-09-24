@@ -2569,9 +2569,13 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])(
-    "lets an assigned agent comment and complete a task from a manual run (checkout: %s)",
-    async (checkedOut) => {
+  it.each([
+    { checkedOut: false, rejectFirstWrite: false },
+    { checkedOut: true, rejectFirstWrite: false },
+    { checkedOut: true, rejectFirstWrite: true },
+  ])(
+    "lets an assigned agent comment and complete a manual task (checkout: $checkedOut, rejected attempt: $rejectFirstWrite)",
+    async ({ checkedOut, rejectFirstWrite }) => {
       const actual = await vi.importActual<typeof import("../services/cross-issue-influence-limit.js")>(
         "../services/cross-issue-influence-limit.js",
       );
@@ -2605,6 +2609,15 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       } as typeof mockTx));
       const app = await installActor(createApp(), actor);
+      if (rejectFirstWrite) {
+        mockIssueService.update.mockRejectedValueOnce(new HttpError(422, "invalid_issue_disposition"));
+        const rejected = await request(app).patch(`/api/issues/${existing.id}`).send({ status: "done" });
+        expect(rejected.status).toBe(422);
+        expect(mockTxInsertValues.mock.calls
+          .map(([row]) => row as Record<string, unknown>)
+          .filter((row) => row.action === "issue.cross_issue_influence_source_bound"))
+          .toEqual([expect.objectContaining({ entityId: existing.id })]);
+      }
       const comment = await request(app).post(`/api/issues/${existing.id}/comments`)
         .send({ body: "Work complete." });
       expect(comment.status, JSON.stringify(comment.body)).toBe(201);
@@ -2612,8 +2625,8 @@ describe.sequential("issue comment reopen routes", () => {
       expect(completion.status, JSON.stringify(completion.body)).toBe(200);
       expect(completion.body.status).toBe("done");
       expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
-      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
-      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(2);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(rejectFirstWrite ? 2 : 1);
+      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(rejectFirstWrite ? 3 : 2);
       const observations = mockTxInsertValues.mock.calls
         .map(([row]) => row as Record<string, unknown>)
         .filter((row) => row.action === "issue.cross_issue_influence_observed");

@@ -137,8 +137,9 @@ export async function observeCrossIssueInfluence(
 
     // Manual and timer runs can select work after dispatch. Checkout records
     // ownership on the issue, without adding a source to the run snapshot.
-    // Pin only the first verified held issue, under the run-row lock. A later
-    // checkout cannot expand the exemption to a second issue.
+    // Pin the first attempted write's verified held issue, under the run-row
+    // lock. Like the counter below, this survives a later mutation failure.
+    // A later checkout cannot expand the exemption to a second issue.
     if (!sourceIssueId && isUuidLike(input.targetIssueId)) {
       const [ownedIssue] = await tx
         .select({ id: issues.id })
