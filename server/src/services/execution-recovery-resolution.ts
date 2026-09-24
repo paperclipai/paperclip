@@ -483,7 +483,12 @@ export async function settleUnrecoverableExecutions(
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         if (current) {
-          const unblockAction = task.unblockDescriptor?.action?.trim() || note;
+          // Preserve the action that created a durable block. The recovery
+          // action is the best source of the concrete next step when the task
+          // has no descriptor yet. Replacing it with a generic disposition note
+          // would send board operators to the wrong next step.
+          const unblockAction =
+            task.unblockDescriptor?.action?.trim() || action.nextAction || note;
           const unblockDescriptor: IssueUnblockDescriptor = {
             owner: "board",
             action: unblockAction,

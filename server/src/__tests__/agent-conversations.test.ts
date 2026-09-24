@@ -874,6 +874,7 @@ const support = await getEmbeddedPostgresTestSupport();
           evidence: { runId: run.id }, nextAction: "Reconcile stopped work",
         }).returning();
       }
+      const expectedUnblockAction = actions[0]!.nextAction;
       await settleUnrecoverableExecutions(db);
       const [settledTask] = await db.select().from(issues).where(eq(issues.id, task.id));
       const [settledAction] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, task.id));
@@ -882,7 +883,7 @@ const support = await getEmbeddedPostgresTestSupport();
       if (!scenario.superseded) {
         expect(settledTask.unblockDescriptor).toEqual({
           owner: "board",
-          action: "Reconcile stopped work",
+          action: expectedUnblockAction,
         });
         expect(settledTask.blockedTransitionAt).toBeInstanceOf(Date);
       }

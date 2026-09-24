@@ -396,7 +396,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(blocked.status).toBe("blocked");
     expect(blocked.unblockDescriptor).toEqual({
       owner: "board",
-      action: "Verify whether email-1 was sent before continuing.",
+      action: existing!.nextAction,
     });
     const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
     expect(actions).toHaveLength(1);
