@@ -1578,18 +1578,16 @@ export async function runEverydayFlow(input: Input) {
         ),
       });
     }
-    await input.evidence("everyday-workflow.json", ev);
-    await input.evidence("api-state.json", {
-      capturePhase: "everyday-final",
-      issue: parent,
-      runs: ev.runs,
-      issues: ev.issues,
-      checks: ev.checks,
-    });
-    if (aggregatorFixture) {
-      await input.evidence("aggregator-provider-calls.json", {calls:aggregatorFixture.captures});
-      await aggregatorFixture.close();
+    try {
+      await input.evidence("everyday-workflow.json", ev);
+      await input.evidence("api-state.json", {
+        capturePhase: "everyday-final", issue: parent, runs: ev.runs,
+        issues: ev.issues, checks: ev.checks,
+      });
+      if (aggregatorFixture) await input.evidence("aggregator-provider-calls.json", { calls: aggregatorFixture.captures });
+    } finally {
+      try { await aggregatorFixture?.close(); }
+      finally { await review?.close(); }
     }
-    await review?.close();
   }
 }

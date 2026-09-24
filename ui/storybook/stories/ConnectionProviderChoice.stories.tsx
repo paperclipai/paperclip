@@ -7,6 +7,7 @@ import {
   type ConnectionSearchResultItem,
   type RemoteMcpConnectorId,
 } from "@paperclipai/shared";
+import { RemoteMcpAccountChoice } from "@/features/connections/remote-mcp/RemoteMcpAccountChoice";
 import { QuestionForm } from "@/components/task-chat/QuestionForm";
 import { RemoteMcpConnectionReview } from "../prototypes/RemoteMcpConnectionReview";
 
@@ -156,5 +157,48 @@ export const ExistingAccount: Story = {
     await expect(
       canvas.getByText(/HubSpot access still needs to be verified/),
     ).toBeVisible();
+  },
+};
+
+export const ReuseAccount: Story = {
+  render: function ReuseAccountStory() {
+    const [selected, setSelected] = useState(false);
+    return (
+      <div className="mx-auto max-w-3xl p-6">
+        {selected ? (
+          <p role="status">
+            Arcade is available. HubSpot authorization still needs to be
+            verified.
+          </p>
+        ) : (
+          <RemoteMcpAccountChoice
+            providerName="Arcade"
+            upstreamServiceName="HubSpot"
+            connections={[
+              { id: "review-arcade", name: "Existing Arcade account" },
+            ]}
+            onSelect={() => setSelected(true)}
+            onConnectNew={() => {}}
+          />
+        )}
+      </div>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole("heading", { name: "Connect HubSpot through Arcade" }),
+    ).toBeVisible();
+    await expect(
+      canvas.getByText(
+        /Arcade is an external service that handles the connection and requests to HubSpot/,
+      ),
+    ).toBeVisible();
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Existing Arcade account" }),
+    );
+    await expect(canvas.getByRole("status")).toHaveTextContent(
+      "HubSpot authorization still needs to be verified",
+    );
   },
 };

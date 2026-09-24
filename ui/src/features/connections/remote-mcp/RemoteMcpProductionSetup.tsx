@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { REMOTE_MCP_CONNECTOR_METHODS, type ToolConnection } from "@paperclipai/shared";
-import { Button } from "@/components/ui/button";
-import { ConnectionChoiceList } from "../ConnectionChoiceList";
+import { RemoteMcpAccountChoice } from "./RemoteMcpAccountChoice";
 import { readConnectionIntentOAuthOutcome, type ConnectionSetupFlowProps } from "../ConnectionSetupFlow";
 import { agentsApi } from "@/api/agents";
 import { toolsApi } from "@/api/tools";
@@ -180,15 +179,13 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     resumeDraft: () => edit({ step: "connect" }), finish: () => { if (savedConnection.current) void finish(savedConnection.current.id); },
     refresh: () => {}, reconnect: () => edit({ step: "connect" }), disconnect: () => {},
   };
-  if (showChoices && onUseExisting) return <div className="space-y-5">
-    <div><h1 className="text-xl font-bold">Connect {provider.name}</h1><p className="mt-2 text-sm text-muted-foreground">Use an existing connection or connect a new account. Existing access stays unchanged.</p></div>
-    <ConnectionChoiceList choices={existingConnections.map((c) => ({ id: c.id, name: c.name, description: "Ready to use" }))} pendingId={choicePending} onSelect={(id) => {
+  if (showChoices && onUseExisting) return <RemoteMcpAccountChoice
+    providerName={provider.name} upstreamServiceName={upstreamServiceName}
+    connections={existingConnections} pendingId={choicePending} error={choiceError}
+    onCancel={onCancel} onConnectNew={() => setShowChoices(false)} onSelect={(id) => {
       setChoicePending(id); setChoiceError(null);
       void onUseExisting(id).catch((error) => { setChoiceError(error instanceof Error ? error.message : "Could not use this connection."); setChoicePending(null); });
-    }} />
-    {choiceError && <p role="alert" className="text-sm text-destructive">{choiceError}</p>}
-    <div className="flex items-center justify-between gap-3"><Button variant="ghost" disabled={Boolean(choicePending)} onClick={onCancel}>Cancel</Button><Button disabled={Boolean(choicePending)} onClick={() => setShowChoices(false)}>Connect new</Button></div>
-  </div>;
+    }} />;
   if (connection && !installs.data) return <div className="space-y-3 p-8"><p>{installs.isError ? "Could not load saved access. Retry before changing this connection." : "Loading saved access…"}</p>{installs.isError && <button type="button" className="text-primary underline" onClick={() => void installs.refetch()}>Try again</button>}</div>;
   return <RemoteMcpConnectionSetup upstreamServiceName={upstreamServiceName} host={host} lockedAgentId={requestedAgentId} authorizationUrl={host === "dialog" ? authorizationUrl.current : undefined} provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;
 }

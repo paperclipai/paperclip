@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   AGGREGATOR_PRIORITY,
+  AGGREGATOR_SUPPORT_INDEX,
+  explicitAggregatorQuery,
   findAggregatorService,
   parseAggregatorRoute,
   aggregatorProviderQuestion,
@@ -74,4 +76,18 @@ it("recognizes a service in capability searches without guessing ambiguous or pa
     findAggregatorService("HubSpot and Salesforce contacts"),
   ).toBeUndefined();
   expect(findAggregatorService("notionally similar")).toBeUndefined();
+});
+
+it("keeps dates per app/provider claim and parses only an unambiguous explicit provider", () => {
+  for (const app of AGGREGATOR_SUPPORT_INDEX)
+    for (const date of Object.values(app.providers))
+      expect(date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  expect(explicitAggregatorQuery("HubSpot through Arcade")).toEqual({
+    provider: "arcade",
+    serviceQuery: "HubSpot",
+  });
+  expect(
+    explicitAggregatorQuery("HubSpot via Arcade or via Composio"),
+  ).toBeNull();
+  expect(explicitAggregatorQuery("arcade games")).toBeNull();
 });

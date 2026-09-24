@@ -8,6 +8,7 @@ export const connectionsSearchInputSchema = z.object({
 export const connectionRequestInputSchema = z.object({
   service: z.string().trim().min(1).max(120),
   selectionInteractionId: z.string().guid().optional(),
+  targetService: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/).optional().describe("App slug returned by search only when the user explicitly named this external provider"),
 }).strict();
 
 export const completeConnectionIntentSchema = z.object({

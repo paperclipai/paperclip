@@ -264,7 +264,7 @@ export class PaperclipRunnerToolAuthority {
         return connections.search(claims, input.query, { retryProviderChoice: input.retryProviderChoice });
       }
       const input = connectionRequestInputSchema.parse(call.arguments);
-      const result = await connections.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId });
+      const result = await connections.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService });
       if (result.state === "ready" && this.binding.pinnedMcpDigest && this.binding.enqueueWakeup) {
         const current = await resolveNativeRuntimeMcpSnapshot({ db: this.db, agent: { id: this.binding.agentId, companyId: this.binding.companyId }, runId: this.binding.runId });
         if (current.digest !== this.binding.pinnedMcpDigest) {

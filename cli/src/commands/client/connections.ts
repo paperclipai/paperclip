@@ -65,10 +65,11 @@ export function registerConnectionIntentCommands(program: Command) {
   connections
     .command("request")
     .argument("<service>", "Connectable service slug")
+    .option("--target-service <slug>", "Requested app when the user explicitly names an external provider")
     .option("--selection-interaction-id <id>", "Answered external-provider question ID")
     .option("--json", "Print formatted JSON")
-    .action(async (service: string, options: RuntimeConnectionOptions) => {
-      const input = connectionRequestInputSchema.parse({ service, selectionInteractionId: (options as RuntimeConnectionOptions & { selectionInteractionId?: string }).selectionInteractionId });
+    .action(async (service: string, options: RuntimeConnectionOptions & { targetService?: string }) => {
+      const input = connectionRequestInputSchema.parse({ service, targetService: options.targetService, selectionInteractionId: (options as RuntimeConnectionOptions & { selectionInteractionId?: string }).selectionInteractionId });
       writeResult(await callRuntimeConnectionTool(
         "PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL",
         input,

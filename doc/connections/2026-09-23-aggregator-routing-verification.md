@@ -80,7 +80,18 @@ Additional stories: `only-one-provider`, `narrow-choice`, `decline`,
   clarified to require search even when a service tool is already installed; the
   subsequent targeted run passed. One passing rerun does not establish a statistical
   reliability rate or change the underlying permission boundary.
-- Direct provider requests skip redundant selection, but app-specific inline card
-  labeling currently requires the structured selected route.
+- Explicit provider queries now preserve app-specific context through the direct
+  request and existing-account screens, with focused regressions. These additions
+  were made during PR review, after the browser campaigns listed above.
 - Live production-provider walkthroughs and broader model/profile reliability
   remain acceptance work. Fixture success must not be substituted for that proof.
+
+## PR review follow-up — 2026-09-24
+
+Rebased on master `b0155a681`. Review identified and corrected stable display names
+for indexed-only apps, explicit provider selection, app disclosure on account reuse,
+fixture closure when evidence export fails, and per-app/per-provider verification
+dates. CI also exposed two old tests that needed the expanded input schema and an
+enabled aggregator experiment. Those expectations were updated without weakening
+production validation. The unrelated workspace preview startup failed readiness
+on its first CI run; the subsequent head reruns that check without changing it.

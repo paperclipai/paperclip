@@ -15,7 +15,7 @@ export const RUNTIME_CONNECTION_TOOL_DEFINITIONS = [
     description: CONNECTION_REQUEST_TOOL_DESCRIPTION,
     inputSchema: {
       type: "object",
-      properties: { service: { type: "string" }, selectionInteractionId: { type: "string", description: "Saved answered provider-choice interaction ID for aggregator routes" } },
+      properties: { service: { type: "string" }, targetService: { type: "string", description: "App slug returned by search only when the user explicitly named this external provider" }, selectionInteractionId: { type: "string", description: "Saved answered provider-choice interaction ID for aggregator routes" } },
       required: ["service"],
       additionalProperties: false,
     },

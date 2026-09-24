@@ -2205,14 +2205,17 @@ Paperclip, never copied from provider tool descriptions. Core agent guidance onl
 needs to call search, follow that instruction, and respect saved user choices.
 
 Exact built-in matches (including reviewed aliases) take precedence over external
-routes, including when a built-in connection is restricted. With
+routes. An explicit query such as “HubSpot through Arcade” keeps the named
+provider and returns instructions to pass its app slug as `targetService` with the
+direct provider request. Native administrative restrictions still cannot be bypassed. With
 `enableMcpAggregators` enabled, a missing built-in match can return eligible
 Composio, Arcade, Executor, and Zapier routes in that order. Search itself makes no
 provider requests and starts no authorization.
 
 Maintain the reviewed support snapshot in
 `packages/shared/src/connection-routing.ts`. Add a service only after checking its
-official provider catalog; update its verification date and aliases. A catalog
+official provider catalog; update only that app/provider claim’s verification date
+and the service aliases. Do not refresh other claims’ dates without checking them. A catalog
 listing establishes possible support, not the user's gateway configuration or
 account authorization. Executor requires evidence from the authorized workspace's
 indexed tools. Search must not read another user's private catalog. Unknown

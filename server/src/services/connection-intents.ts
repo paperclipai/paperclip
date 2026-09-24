@@ -14,8 +14,8 @@ import {
 } from "@paperclipai/db";
 import {
   APP_STORE_DEFINITIONS,
-  AGGREGATOR_PRIORITY, AGGREGATOR_NAMES, AGGREGATOR_CATALOG_SOURCES, AGGREGATOR_SUPPORT_VERIFIED_AT,
-  findAggregatorService, normalizeConnectionQuery, parseAggregatorRoute, aggregatorProviderQuestion,
+  AGGREGATOR_PRIORITY, AGGREGATOR_NAMES, AGGREGATOR_CATALOG_SOURCES,
+  findAggregatorService, explicitAggregatorQuery, normalizeConnectionQuery, parseAggregatorRoute, aggregatorProviderQuestion,
   aggregatorContinuationInstruction, isRemoteMcpConnectorId, askUserQuestionsPayloadSchema, askUserQuestionsResultSchema,
   CONNECTABLE_APP_DEFINITIONS,
   connectionIntentPayloadSchema,
@@ -387,13 +387,16 @@ export function connectionIntentService(db: Db) {
         connectionId: ready?.id ?? null,
       }});
     }
-    const publicService = findAggregatorService(query);
+    const explicit = explicitAggregatorQuery(query);
+    const serviceQuery = explicit?.serviceQuery ?? query;
+    const publicService = findAggregatorService(serviceQuery);
     const exact = candidates.filter(({ item }) => normalizeConnectionQuery(item.service) === normalizeConnectionQuery(query)
       || normalizeConnectionQuery(item.name) === normalizeConnectionQuery(query)
       || item.service === publicService?.slug);
-    if (exact.length) return directSearchResult(query, exact.map(({ item }) => item));
-    const targetService = publicService?.slug ?? normalizeConnectionQuery(query).replaceAll(" ", "-");
-    const targetName = publicService?.name ?? query.trim();
+    if (exact.length && (!explicit || exact.some(({ item }) => item.state === "unavailable"))) return directSearchResult(query, exact.map(({ item }) => item));
+    const targetService = publicService?.slug ?? normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-");
+    // Indexed-only app labels must be identical when requests re-search the slug.
+    const targetName = publicService?.name ?? targetService.split("-").map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
     const alternatives: ConnectionSearchResultItem[] = [];
     if (aggregatorsEnabled && /^[a-z0-9][a-z0-9-]{0,79}$/.test(targetService)) {
       for (const provider of AGGREGATOR_PRIORITY) {
@@ -415,7 +418,8 @@ export function connectionIntentService(db: Db) {
           });
           for (const entry of matching) if (!indexedAt || entry.lastSeenAt > indexedAt) indexedAt = entry.lastSeenAt;
         }
-        const published = publicService?.providers.some(value => value === provider) ?? false;
+        const publishedAt = publicService ? (publicService.providers as Partial<Record<string, string>>)[provider] : undefined;
+        const published = Boolean(publishedAt);
         if (!published && !indexedAt) continue;
         if (await administrativeDenial(run.companyId, agent.id, provider, inventory)) continue;
         const app = await resolveService(provider, run.companyId, run.responsibleUserId!, agent.id);
@@ -429,10 +433,16 @@ export function connectionIntentService(db: Db) {
             : provider === "arcade" ? "Set up an Arcade gateway with this app's tools, then authorize the app."
             : `Connect ${app.name}, then verify and authorize ${targetName}.`,
           aggregator: { provider, targetService, targetName, evidenceUrl: published ? AGGREGATOR_CATALOG_SOURCES[provider] ?? null : null,
-            verifiedAt: published ? AGGREGATOR_SUPPORT_VERIFIED_AT : indexedAt!.toISOString(),
+            verifiedAt: publishedAt ?? indexedAt!.toISOString(),
             readiness: ready ? "requires_app_verification" : "requires_provider_setup" },
         });
       }
+    }
+    if (explicit) {
+      const selected = alternatives.find(item => item.aggregator?.provider === explicit.provider);
+      if (!selected) return { version: 1, query, results: [], instruction: "The explicitly requested external provider is unavailable or its app support could not be verified. Explain the limitation. Do not switch providers automatically." };
+      return { version: 1, query, results: [{ ...selected, service: explicit.provider }],
+        instruction: `The user explicitly requested ${AGGREGATOR_NAMES[explicit.provider]}. Disclose that this external service handles the connection and requests to ${targetName}. Do not ask another provider-choice question or substitute another provider. Call connection_request with service ${explicit.provider} and targetService ${targetService}. Follow its returned instruction; app authorization is not yet verified.` };
     }
     if (!alternatives.length) return directSearchResult(query, candidates.filter(({ item, score }) => !isRemoteMcpConnectorId(item.service) && score >= tokens.length)
       .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name)).slice(0, 20).map(({ item }) => item), true);
@@ -499,11 +509,18 @@ export function connectionIntentService(db: Db) {
   async function request(
     claims: ConnectionRunClaims,
     serviceSlug: string,
-    options: { purpose?: "ai"; selectionInteractionId?: string } = {},
+    options: { purpose?: "ai"; selectionInteractionId?: string; targetService?: string } = {},
   ): Promise<ConnectionRequestResult> {
     const context = await loadRunContext(claims);
     const route = parseAggregatorRoute(serviceSlug);
-    let upstreamService: { slug: string; name: string; selectionInteractionId: string } | undefined;
+    let upstreamService: { slug: string; name: string; selectionInteractionId?: string } | undefined;
+    if (options.targetService) {
+      if (route || options.purpose || !isRemoteMcpConnectorId(serviceSlug)) throw unprocessable("An explicit target app requires a direct external-provider request");
+      const found = await search(claims, `${options.targetService} through ${serviceSlug}`);
+      const selected = found.results.find(item => item.service === serviceSlug && item.aggregator);
+      if (!selected?.aggregator) throw forbidden("The requested provider cannot connect this app");
+      upstreamService = { slug: selected.aggregator.targetService, name: selected.aggregator.targetName };
+    }
     if (route) {
       if (options.purpose) throw unprocessable("Aggregator routes are tool connections only");
       const found = await search(claims, route.targetService);

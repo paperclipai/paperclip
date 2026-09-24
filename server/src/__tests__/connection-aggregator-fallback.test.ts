@@ -128,11 +128,12 @@ const support = await getEmbeddedPostgresTestSupport();
         enableMcpAggregators: true,
       });
     }
-    async function selectProvider(option: string, userId = "responsible-user") {
-      const result = await connectionIntentService(db).search(
-        claims,
-        "hubspot",
-      );
+    async function selectProvider(
+      option: string,
+      userId = "responsible-user",
+      query = "hubspot",
+    ) {
+      const result = await connectionIntentService(db).search(claims, query);
       const [run] = await db
         .select()
         .from(heartbeatRuns)
@@ -198,35 +199,29 @@ const support = await getEmbeddedPostgresTestSupport();
           config: { sourceTemplateKey: provider },
         })
         .returning();
-      await db
-        .insert(connectionGrants)
-        .values({
-          companyId: claims.company_id,
-          connectionId: connection!.id,
-          kind: "user",
-          subjectUserId: userId,
-          status: "active",
-        });
-      await db
-        .insert(toolCatalogEntries)
-        .values({
-          companyId: claims.company_id,
-          connectionId: connection!.id,
-          toolName,
-          name: toolName,
-          versionHash: "fixture",
-          status: "active",
-          entryKind: "tool",
-          lastSeenAt: new Date("2026-09-20T00:00:00Z"),
-        });
-      await db
-        .insert(toolConnectionInstalls)
-        .values({
-          companyId: claims.company_id,
-          connectionId: connection!.id,
-          targetType: "agent",
-          targetId: claims.sub,
-        });
+      await db.insert(connectionGrants).values({
+        companyId: claims.company_id,
+        connectionId: connection!.id,
+        kind: "user",
+        subjectUserId: userId,
+        status: "active",
+      });
+      await db.insert(toolCatalogEntries).values({
+        companyId: claims.company_id,
+        connectionId: connection!.id,
+        toolName,
+        name: toolName,
+        versionHash: "fixture",
+        status: "active",
+        entryKind: "tool",
+        lastSeenAt: new Date("2026-09-20T00:00:00Z"),
+      });
+      await db.insert(toolConnectionInstalls).values({
+        companyId: claims.company_id,
+        connectionId: connection!.id,
+        targetType: "agent",
+        targetId: claims.sub,
+      });
       if (allowed) {
         const [profile] = await db
           .insert(toolProfiles)
@@ -238,14 +233,12 @@ const support = await getEmbeddedPostgresTestSupport();
             status: "active",
           })
           .returning();
-        await db
-          .insert(toolProfileBindings)
-          .values({
-            companyId: claims.company_id,
-            profileId: profile!.id,
-            targetType: "agent",
-            targetId: claims.sub,
-          });
+        await db.insert(toolProfileBindings).values({
+          companyId: claims.company_id,
+          profileId: profile!.id,
+          targetType: "agent",
+          targetId: claims.sub,
+        });
       }
       return connection!;
     }
@@ -585,6 +578,64 @@ const support = await getEmbeddedPostgresTestSupport();
       );
       expect(result.results).toEqual([]);
       expect(result.instruction).toContain("could not be verified");
+    });
+    it("preserves indexed-only display names when a saved choice is requested by slug", async () => {
+      await resetQuestions();
+      await seedProvider("executor", "heliotrope:list_records");
+      const answer = await selectProvider(
+        "via:executor:heliotrope",
+        "responsible-user",
+        "HELIOTROPE",
+      );
+      const result = await connectionIntentService(db).request(
+        claims,
+        "via:executor:heliotrope",
+        { selectionInteractionId: answer.id },
+      );
+      expect(result.state).toBe("ready");
+      expect(result.instruction).toContain(
+        "Heliotrope access is not yet verified",
+      );
+    });
+
+    it("honors explicitly named providers and preserves target app context", async () => {
+      await resetQuestions();
+      const service = connectionIntentService(db);
+      const result = await service.search(claims, "HubSpot through Arcade");
+      expect(result.results.map((item) => item.service)).toEqual(["arcade"]);
+      expect(result.providerQuestion).toBeUndefined();
+      expect(result.instruction).toContain("targetService hubspot");
+      const request = await service.request(claims, "arcade", {
+        targetService: "hubspot",
+      });
+      const intent = await service.loadIntent(request.interactionId!);
+      expect(intent.interaction.payload).toMatchObject({
+        serviceName: "HubSpot through Arcade",
+        upstreamService: { slug: "hubspot", name: "HubSpot" },
+      });
+      expect(
+        (await service.search(claims, "HubSpot through Executor")).results,
+      ).toEqual([]);
+      await expect(
+        service.request(claims, "executor", { targetService: "hubspot" }),
+      ).rejects.toThrow("cannot connect");
+      await expect(
+        service.request(claims, "github", { targetService: "hubspot" }),
+      ).rejects.toThrow("direct external-provider");
+    });
+
+    it("permits explicit provider preference for a supported native app but not a native denial", async () => {
+      await resetQuestions();
+      const service = connectionIntentService(db);
+      expect(
+        (await service.search(claims, "Jira via Arcade")).results.map(
+          (item) => item.service,
+        ),
+      ).toEqual(["arcade"]);
+      await seedProvider("jira", "jira_read", "responsible-user", false);
+      expect((await service.search(claims, "Jira via Arcade")).results).toEqual(
+        [expect.objectContaining({ service: "jira", state: "unavailable" })],
+      );
     });
   },
 );

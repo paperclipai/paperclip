@@ -109,7 +109,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       }
       if (name === "connection_request") {
         const input = connectionRequestInputSchema.parse(params.arguments ?? {});
-        const result = await service.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId });
+        const result = await service.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService });
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         return;
       }
@@ -133,7 +133,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   });
   router.post("/runtime-tools/connections/request", async (req, res) => {
     const input = connectionRequestInputSchema.parse(req.body ?? {});
-    res.json(await service.request(runtimeClaims(req), input.service, { selectionInteractionId: input.selectionInteractionId }));
+    res.json(await service.request(runtimeClaims(req), input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService }));
   });
   return router;
 }

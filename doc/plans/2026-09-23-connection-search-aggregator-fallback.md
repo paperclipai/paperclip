@@ -144,11 +144,12 @@ Composio, Arcade, and Zapier, plus app-specific evidence from authorized cached
 workspace tools (including Executor). Broad execution tools alone are not evidence
 of app support. No universal anonymous live provider search API is assumed.
 
-Direct requests naming a provider continue through its existing direct setup path
-without a redundant provider-choice question. App-specific card labeling is currently
-carried by the structured `via:*` selection path; automatically extracting and
-preserving the app from an explicit natural-language provider request remains a
-follow-up.
+Explicit queries such as “HubSpot through Arcade” retain the named provider and
+skip the redundant provider-choice question. Search returns the direct provider
+identifier and instructs `connection_request` to include `targetService`. The
+server revalidates app support and existing restrictions; both new setup and
+account reuse retain app-specific disclosure. Direct provider access keeps its
+existing permission boundary; this field does not grant additional tool access.
 
 Validation results and acceptance limits are recorded in
 [the implementation report](../connections/2026-09-23-aggregator-routing-verification.md).

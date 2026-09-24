@@ -29,102 +29,159 @@ export const AGGREGATOR_SUPPORT_INDEX = [
     slug: "hubspot",
     name: "HubSpot",
     aliases: ["hub spot"],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "salesforce",
     name: "Salesforce",
     aliases: [],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "ashby",
     name: "Ashby",
     aliases: [],
-    providers: ["composio", "arcade"],
+    providers: { composio: "2026-09-23", arcade: "2026-09-23" },
   },
   {
     slug: "pipedrive",
     name: "Pipedrive",
     aliases: [],
-    providers: ["composio", "zapier"],
+    providers: { composio: "2026-09-23", zapier: "2026-09-23" },
   },
-  { slug: "gong", name: "Gong", aliases: [], providers: ["composio"] },
+  {
+    slug: "gong",
+    name: "Gong",
+    aliases: [],
+    providers: { composio: "2026-09-23" },
+  },
   {
     slug: "outlook",
     name: "Outlook",
     aliases: ["microsoft outlook"],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "microsoft-teams",
     name: "Microsoft Teams",
     aliases: ["teams"],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "firecrawl",
     name: "Firecrawl",
     aliases: [],
-    providers: ["composio", "arcade"],
+    providers: { composio: "2026-09-23", arcade: "2026-09-23" },
   },
   {
     slug: "tavily",
     name: "Tavily",
     aliases: [],
-    providers: ["composio", "arcade"],
+    providers: { composio: "2026-09-23", arcade: "2026-09-23" },
   },
-  { slug: "exa", name: "Exa", aliases: [], providers: ["composio", "arcade"] },
+  {
+    slug: "exa",
+    name: "Exa",
+    aliases: [],
+    providers: { composio: "2026-09-23", arcade: "2026-09-23" },
+  },
   {
     slug: "jira",
     name: "Jira",
     aliases: ["atlassian jira"],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "notion",
     name: "Notion",
     aliases: [],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "github",
     name: "GitHub",
     aliases: ["git hub"],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "gmail",
     name: "Gmail",
     aliases: ["google mail"],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "slack",
     name: "Slack",
     aliases: [],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "airtable",
     name: "Airtable",
     aliases: [],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "asana",
     name: "Asana",
     aliases: [],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
   {
     slug: "linear",
     name: "Linear",
     aliases: [],
-    providers: ["composio", "arcade", "zapier"],
+    providers: {
+      composio: "2026-09-23",
+      arcade: "2026-09-23",
+      zapier: "2026-09-23",
+    },
   },
 ] as const;
-export const AGGREGATOR_SUPPORT_VERIFIED_AT = "2026-09-23";
 export const AGGREGATOR_CATALOG_SOURCES: Partial<
   Record<RemoteMcpConnectorId, string>
 > = {
@@ -156,6 +213,23 @@ export function findAggregatorService(query: string) {
     ),
   );
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** Preserve a provider explicitly named by the user instead of applying default ranking. */
+export function explicitAggregatorQuery(query: string) {
+  const matches = [
+    ...query.matchAll(
+      /\b(?:through|via|using)\s+(composio|arcade|executor|zapier)\b/gi,
+    ),
+  ];
+  if (matches.length !== 1) return null;
+  const match = matches[0]!;
+  return {
+    provider: match[1]!.toLowerCase() as RemoteMcpConnectorId,
+    serviceQuery: (
+      query.slice(0, match.index) + query.slice(match.index! + match[0].length)
+    ).trim(),
+  };
 }
 
 export function parseAggregatorRoute(service: string) {

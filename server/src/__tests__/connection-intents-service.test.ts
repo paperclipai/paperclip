@@ -33,6 +33,7 @@ import { issueThreadInteractionService } from "../services/issue-thread-interact
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -679,6 +680,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   });
 
   it("preserves an authorizing card through comments and later runs", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
     const service = connectionIntentService(db);
     const first = await service.request(claims, "zapier");
     await service.updatePhase(first.interactionId!, "authorizing", claims.responsible_user_id);
