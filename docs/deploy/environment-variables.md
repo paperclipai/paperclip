@@ -114,6 +114,16 @@ Daytona snapshot for future leases.
   while the rest of the page stays up. UI-visibility only; the secret
   provider-config and proposal APIs stay live for agents and integrations.
 
+- `workspaces.isolation` hides project execution-workspace policy, task and
+  routine workspace selectors, pipeline workspace overrides, isolated re-issue
+  actions, and the execution-workspace Configuration tab (including direct
+  links). Workspace navigation, files, status, and runtime access stay available.
+  This key only controls UI visibility: it does not disable isolation, change
+  saved policies, or block APIs used by agents. New tasks and routine runs omit
+  hidden draft overrides so the server applies the existing defaults. Tasks
+  launched from a workspace or parent task keep that explicit context. Hide the two
+  experimental isolation toggles separately when the operator manages them.
+
 Unknown keys are logged and ignored, so one list can be rolled across a fleet
 of mixed app versions, and retired keys (like `instance.heartbeats`, whose
 page was removed) can stay in an operator list without breaking older or

@@ -63,13 +63,13 @@ test("canary reuses exact-source proof while stable keeps full verification", ()
 
 test("source proof requires every source check and does not wait on image publication", () => {
   const readiness = readWorkflow("cloud-readiness.yml");
-  const proof = readiness.split("  source_verified:\n")[1].split("\n  ready:")[0];
+  const proof = readiness.split("  source_verified:\n")[1];
   assert.match(proof, /name: Cloud source verified v1/);
   assert.match(proof, /needs: \[verify\]/);
   assert.match(proof, /node --test scripts\/cloud-source-verification.test.mjs/);
   assert.match(proof, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
   assert.doesNotMatch(proof, /always\(\)|continue-on-error|needs:.*(?:image|artifacts)/);
-  assert.match(readiness.split("  ready:\n")[1], /needs: \[verify, image, artifacts\]/);
+  assert.doesNotMatch(readiness, /^  (?:image|artifacts|ready):/m);
 });
 
 test("onboard smoke container binds beyond loopback so the mapped port is reachable", () => {
@@ -433,12 +433,13 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
 });
 
 
-test("direct Grok qualification installs the pinned binary and scopes its API key", () => {
+test("direct Grok qualification installs the pinned binary and scopes the selected credential", () => {
   const workflow = readWorkflow("runner-protocol-live-evals.yml");
   assert.ok(workflow.includes("XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}"));
   assert.ok(workflow.includes("if [ -f packages/grok-acp/install.mjs ]; then"));
   assert.ok(workflow.indexOf("node packages/grok-acp/install.mjs") < workflow.indexOf("pnpm --filter @paperclipai/paperclip-runner deploy --prod"));
-  assert.ok(!workflow.includes("secrets.GROK_AUTH_JSON"));
+  assert.ok(workflow.includes("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: ${{ matrix.credentialName == 'PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET' && secrets.GROK_AUTH_JSON || '' }}"));
+  assert.equal((workflow.match(/secrets\.GROK_AUTH_JSON/gu) ?? []).length, 1);
 });
 
 test("direct protocol concurrency override only lowers the configured ceiling", () => {
