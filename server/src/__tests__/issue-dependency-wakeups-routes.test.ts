@@ -106,6 +106,16 @@ vi.mock("../services/index.js", () => ({
   }),
 }));
 
+vi.mock("../services/issues.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/issues.js")>(
+    "../services/issues.js",
+  );
+  return {
+    ...actual,
+    verifyIssueDoneDeliveryReady: async (issueId: string) => Object.freeze({ issueId }),
+  };
+});
+
 vi.mock("../services/issue-dependency-wakeups.js", async () => {
   const actual = await vi.importActual<typeof import("../services/issue-dependency-wakeups.js")>(
     "../services/issue-dependency-wakeups.js",

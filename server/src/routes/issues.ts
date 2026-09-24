@@ -10748,20 +10748,28 @@ export function issueRoutes(
               .limit(1)
               .then((rows) => rows[0] ?? null)
           : null;
+      const trustedDeliveryEvidenceAuthority =
+        deliveryEvidenceAuthority
+        && createInput.metadata
+        && typeof createInput.metadata === "object"
+        && !Array.isArray(createInput.metadata)
+        && Object.prototype.hasOwnProperty.call(createInput.metadata, "deliveryEvidence")
+          ? deliveryEvidenceAuthority
+          : undefined;
       const product = existingRunAttachmentProduct
-        ? deliveryEvidenceAuthority
+        ? trustedDeliveryEvidenceAuthority
           ? await workProductsSvc.update(
               existingRunAttachmentProduct.id,
               createInput,
-              { deliveryEvidenceAuthority },
+              { deliveryEvidenceAuthority: trustedDeliveryEvidenceAuthority },
             )
           : await workProductsSvc.update(existingRunAttachmentProduct.id, createInput)
-        : deliveryEvidenceAuthority
+        : trustedDeliveryEvidenceAuthority
           ? await workProductsSvc.createForIssue(
               issue.id,
               issue.companyId,
               createInput,
-              { deliveryEvidenceAuthority },
+              { deliveryEvidenceAuthority: trustedDeliveryEvidenceAuthority },
             )
           : await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
       if (!product) {
@@ -11162,8 +11170,18 @@ export function issueRoutes(
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
       };
-      const product = deliveryEvidenceAuthority
-        ? await workProductsSvc.update(id, workProductPatch, { deliveryEvidenceAuthority })
+      const trustedDeliveryEvidenceAuthority =
+        deliveryEvidenceAuthority
+        && patch.metadata
+        && typeof patch.metadata === "object"
+        && !Array.isArray(patch.metadata)
+        && Object.prototype.hasOwnProperty.call(patch.metadata, "deliveryEvidence")
+          ? deliveryEvidenceAuthority
+          : undefined;
+      const product = trustedDeliveryEvidenceAuthority
+        ? await workProductsSvc.update(id, workProductPatch, {
+            deliveryEvidenceAuthority: trustedDeliveryEvidenceAuthority,
+          })
         : await workProductsSvc.update(id, workProductPatch);
       if (!product) {
         res.status(404).json({ error: "Work product not found" });
