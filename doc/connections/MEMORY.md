@@ -333,6 +333,30 @@ No provider credentials entered the sandbox. The native PRP relay handled all
 calls without a public tunnel. The local agent configuration was restored, and
 sandbox `6a9723dd-972e-4933-b227-6b8e7e2133ae` was deleted and verified absent.
 
+### Bundled Cognee bridge acceptance (September 24)
+
+The final implementation was retested after replacing the external MCP client
+with the bundled Cloud bridge. Local managed write run
+`16e7820c-2a94-41d9-8d7b-abe6524edf01` stored the bronze-telescope fact in
+`paperclip_memory_bundled_bridge_20260924`; the immediate recall did not yet
+prove indexing completion. Follow-up run `8e12cad1-f2f4-4471-a790-d589ffa050b7`
+returned “He keeps a bronze telescope in a birch observatory.”
+
+Final Daytona run `a56f9f97-3fb3-498c-abf6-974ddc7d5d30` independently recalled
+that fact, then stored “The Daytona Cognee test cartographer keeps a silver
+globe in a cedar study.” in `paperclip_memory_daytona_bridge_20260924`.
+The provider returned dataset `9518ab46-e777-5f38-994b-9ceabfff4856`, then graph
+recall returned the silver globe and cedar study. Every call used the native
+runner relay and reported `transport: cognee_cloud`, `spawnedLocalProcess: false`.
+The run succeeded. No provider credentials entered the sandbox. The original
+local agent configuration was restored, and sandbox
+`3b980bc0-6bcd-4cfe-9b17-b518c1aed64a` was deleted and verified absent.
+
+The gateway regression suite passed all 71 tests, including immediate recovery
+from a provider error in an authenticated public deployment without a trusted
+local runtime host. The regression asserts that no runtime slot is created.
+The bundled bridge's 25 contract and validation tests also passed.
+
 ## Branding provenance
 
 Official artwork downloaded September 24, 2026; no invented marks or colors:
