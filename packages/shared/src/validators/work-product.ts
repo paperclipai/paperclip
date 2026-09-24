@@ -92,6 +92,11 @@ export const issueWorkProductMetadataSchema = z
     deliveryDisposition: z.object({
       kind: z.literal("no_merge"),
       reason: z.string().trim().min(1),
+      verifiedBy: z.object({
+        kind: z.enum(["instance_admin", "system"]),
+        actorId: z.string().trim().min(1),
+        verifiedAt: z.string().datetime(),
+      }).strict().optional(),
     }).strict().optional(),
   })
   .passthrough();

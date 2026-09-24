@@ -10753,7 +10753,10 @@ export function issueRoutes(
         && createInput.metadata
         && typeof createInput.metadata === "object"
         && !Array.isArray(createInput.metadata)
-        && Object.prototype.hasOwnProperty.call(createInput.metadata, "deliveryEvidence")
+        && (
+          Object.prototype.hasOwnProperty.call(createInput.metadata, "deliveryEvidence")
+          || Object.prototype.hasOwnProperty.call(createInput.metadata, "deliveryDisposition")
+        )
           ? deliveryEvidenceAuthority
           : undefined;
       const product = existingRunAttachmentProduct
@@ -11175,7 +11178,10 @@ export function issueRoutes(
         && patch.metadata
         && typeof patch.metadata === "object"
         && !Array.isArray(patch.metadata)
-        && Object.prototype.hasOwnProperty.call(patch.metadata, "deliveryEvidence")
+        && (
+          Object.prototype.hasOwnProperty.call(patch.metadata, "deliveryEvidence")
+          || Object.prototype.hasOwnProperty.call(patch.metadata, "deliveryDisposition")
+        )
           ? deliveryEvidenceAuthority
           : undefined;
       const product = trustedDeliveryEvidenceAuthority

@@ -60,9 +60,15 @@ export function hasExplicitNoMergeDisposition(
   product: Pick<DeliveryWorkProduct, "metadata"> | null,
 ): boolean {
   const disposition = record(record(product?.metadata)?.deliveryDisposition);
+  const verifier = record(disposition?.verifiedBy);
   return disposition?.kind === "no_merge"
     && typeof disposition.reason === "string"
-    && disposition.reason.trim().length > 0;
+    && disposition.reason.trim().length > 0
+    && (verifier?.kind === "instance_admin" || verifier?.kind === "system")
+    && typeof verifier.actorId === "string"
+    && verifier.actorId.trim().length > 0
+    && typeof verifier.verifiedAt === "string"
+    && Number.isFinite(Date.parse(verifier.verifiedAt));
 }
 
 function combinedRegressionState(evidence: DeliveryEvidence): "missing" | "failed" | "passed" {
@@ -77,6 +83,7 @@ function combinedRegressionState(evidence: DeliveryEvidence): "missing" | "faile
 
 export function evaluateIssueDoneDeliveryReadiness(input: {
   primaryWorkProduct: DeliveryWorkProduct | null;
+  hasAnyCodeWorkProduct?: boolean;
   hasIsolatedGitWorkspace: boolean;
   workspaceDeliveryState?: ExecutionWorkspaceDeliveryState | null;
   workspaceGit?: ExecutionWorkspaceCloseGitReadiness | null;
@@ -88,7 +95,12 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
   const primaryIsCode = Boolean(
     input.primaryWorkProduct && CODE_WORK_PRODUCT_TYPES.has(input.primaryWorkProduct.type),
   );
-  if (!primaryIsCode && hasExplicitNoMergeDisposition(input.primaryWorkProduct)) {
+  const hasAnyCodeWorkProduct = input.hasAnyCodeWorkProduct ?? primaryIsCode;
+  if (
+    !hasAnyCodeWorkProduct
+    && !input.hasIsolatedGitWorkspace
+    && hasExplicitNoMergeDisposition(input.primaryWorkProduct)
+  ) {
     return {
       required: false,
       ready: true,
@@ -96,7 +108,7 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
       reasonCodes: [],
     };
   }
-  const required = primaryIsCode || input.hasIsolatedGitWorkspace;
+  const required = hasAnyCodeWorkProduct || input.hasIsolatedGitWorkspace;
 
   if (!required) {
     return {

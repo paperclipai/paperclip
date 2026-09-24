@@ -115,6 +115,38 @@ describe("workProductService", () => {
     });
   });
 
+  it("server-attests no-merge dispositions only for an authorized writer", () => {
+    const updatedAt = new Date("2026-09-24T17:00:00.000Z");
+    const metadata = {
+      deliveryDisposition: {
+        kind: "no_merge",
+        reason: "Analysis only.",
+        verifiedBy: {
+          kind: "system",
+          actorId: "forged-client",
+          verifiedAt: updatedAt.toISOString(),
+        },
+      },
+    };
+    expect(stampDeliveryEvidenceRevision(metadata, updatedAt)).toEqual({
+      deliveryDisposition: { kind: "no_merge", reason: "Analysis only." },
+    });
+    expect(stampDeliveryEvidenceRevision(metadata, updatedAt, undefined, {
+      kind: "instance_admin",
+      actorId: "local-board",
+    })).toEqual({
+      deliveryDisposition: {
+        kind: "no_merge",
+        reason: "Analysis only.",
+        verifiedBy: {
+          kind: "instance_admin",
+          actorId: "local-board",
+          verifiedAt: updatedAt.toISOString(),
+        },
+      },
+    });
+  });
+
   it("does not refresh a replayed delivery-evidence revision", () => {
     const priorRevision = new Date("2026-09-24T17:00:00.000Z");
     const nextRevision = new Date("2026-09-24T17:05:00.000Z");

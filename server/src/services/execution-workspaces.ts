@@ -53,7 +53,7 @@ import {
   type PullRequestMergeDetailsResolver,
 } from "./github-pull-request-merge.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { createGitRemoteAuthProvider } from "./git-credentials.js";
+import { createGitRemoteAuthProvider, isGitHubHttpsRemoteUrl } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
@@ -405,8 +405,11 @@ async function pathExists(value: string | null | undefined) {
   }
 }
 
-async function runGit(args: string[], cwd: string) {
-  return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+async function runGit(args: string[], cwd: string, options?: { env?: NodeJS.ProcessEnv }) {
+  return await execFileAsync("git", ["-C", cwd, ...args], {
+    cwd,
+    ...(options?.env ? { env: options.env } : {}),
+  });
 }
 
 async function runExpensiveGitStatus(input: {
@@ -794,7 +797,15 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
   }
 }
 
-export async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
+export async function inspectGitCloseReadiness(
+  workspace: ExecutionWorkspace,
+  options: {
+    refreshTargetRef?: (input: {
+      repoRoot: string;
+      remoteBranch: string;
+    }) => Promise<string | null>;
+  } = {},
+): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
   statusInspectionSucceeded: boolean;
@@ -897,20 +908,14 @@ export async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): P
 
   if (repoRoot && baseRef) {
     let targetRef: string = baseRef;
-    try {
-      await runGit(["remote", "get-url", "origin"], workspacePath);
-      const remoteBranch = baseRef.startsWith("refs/remotes/origin/")
-        ? baseRef.slice("refs/remotes/origin/".length)
-        : baseRef.startsWith("origin/")
-          ? baseRef.slice("origin/".length)
-          : baseRef;
-      if (!/^[0-9a-f]{40}$/i.test(remoteBranch)) {
-        await runGit(["fetch", "--quiet", "origin", `${remoteBranch}:refs/remotes/origin/${remoteBranch}`], workspacePath);
-        targetRef = `refs/remotes/origin/${remoteBranch}`;
-      }
-    } catch {
-      // Local-only repositories and immutable refs have no authoritative remote
-      // to refresh; retain the configured target ref for those workspaces.
+    const remoteBranch = baseRef.startsWith("refs/remotes/origin/")
+      ? baseRef.slice("refs/remotes/origin/".length)
+      : baseRef.startsWith("origin/")
+        ? baseRef.slice("origin/".length)
+        : baseRef;
+    if (!/^[0-9a-f]{40}$/i.test(remoteBranch) && options.refreshTargetRef) {
+      targetRef = await options.refreshTargetRef({ repoRoot, remoteBranch })
+        .catch(() => null) ?? baseRef;
     }
     try {
       const counts = (await runGit(["rev-list", "--left-right", "--count", `${targetRef}...HEAD`], workspacePath)).stdout.trim();
@@ -1335,6 +1340,35 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   >();
   const pullRequestStateCacheTtlMs = 5 * 60 * 1000;
 
+  async function inspectAuthoritativeGitCloseReadiness(workspace: ExecutionWorkspace) {
+    return inspectGitCloseReadiness(workspace, {
+      refreshTargetRef: async ({ repoRoot, remoteBranch }) => {
+        const remoteUrl = workspace.repoUrl?.trim() ?? "";
+        if (!isGitHubHttpsRemoteUrl(remoteUrl)) return null;
+        await runGit(["check-ref-format", "--branch", remoteBranch], repoRoot);
+        const auth = await createGitRemoteAuthProvider(db, workspace.companyId, {
+          issueId: workspace.sourceIssueId,
+        })(remoteUrl).catch(() => null);
+        const targetRef = `refs/remotes/paperclip-readiness/${remoteBranch}`;
+        await runGit([
+          ...(auth?.configArgs ?? ["-c", "credential.helper="]),
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          remoteUrl,
+          `+refs/heads/${remoteBranch}:${targetRef}`,
+        ], repoRoot, {
+          env: {
+            ...process.env,
+            GIT_TERMINAL_PROMPT: "0",
+            ...(auth?.env ?? {}),
+          },
+        });
+        return targetRef;
+      },
+    });
+  }
+
   // The terminal-workspace reaper scans the candidate set in fixed-size pages.
   // It keeps this keyset cursor between sweeps so each sweep continues after the
   // previous page. A skipped candidate keeps its updatedAt, so a cursor is
@@ -1516,7 +1550,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
 
     const [current, currentHeadSha, currentBranchName] = await Promise.all([
-      inspectGitCloseReadiness(toExecutionWorkspace(workspace)),
+      inspectAuthoritativeGitCloseReadiness(toExecutionWorkspace(workspace)),
       readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null),
       readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], workspacePath).catch(() => null),
     ]);
@@ -1919,16 +1953,29 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .then((rows) => rows[0] ?? null);
     if (!issue) return null;
 
-    const primaryWorkProducts = await db
-      .select()
-      .from(issueWorkProducts)
-      .where(and(
-        eq(issueWorkProducts.companyId, issue.companyId),
-        eq(issueWorkProducts.issueId, issue.id),
-        eq(issueWorkProducts.isPrimary, true),
-      ))
-      .orderBy(desc(issueWorkProducts.updatedAt))
-      .limit(100);
+    const [primaryWorkProducts, anyCodeWorkProduct] = await Promise.all([
+      db
+        .select()
+        .from(issueWorkProducts)
+        .where(and(
+          eq(issueWorkProducts.companyId, issue.companyId),
+          eq(issueWorkProducts.issueId, issue.id),
+          eq(issueWorkProducts.isPrimary, true),
+        ))
+        .orderBy(desc(issueWorkProducts.updatedAt))
+        .limit(100),
+      db
+        .select({ id: issueWorkProducts.id })
+        .from(issueWorkProducts)
+        .where(and(
+          eq(issueWorkProducts.companyId, issue.companyId),
+          eq(issueWorkProducts.issueId, issue.id),
+          inArray(issueWorkProducts.type, [...CODE_WORK_PRODUCT_TYPES]),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    const hasAnyCodeWorkProduct = Boolean(anyCodeWorkProduct);
     const primaryWorkProduct = primaryWorkProducts.find((product) =>
       CODE_WORK_PRODUCT_TYPES.has(product.type)
     ) ?? primaryWorkProducts[0] ?? null;
@@ -1944,6 +1991,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     if (!hasIsolatedGitWorkspace || !workspace) {
       return evaluateIssueDoneDeliveryReadiness({
         primaryWorkProduct,
+        hasAnyCodeWorkProduct,
         hasIsolatedGitWorkspace: false,
         issueStatus: issue.status,
         reviewPolicy: issue.reviewPolicy,
@@ -1951,12 +1999,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       });
     }
 
-    const inspection = await inspectGitCloseReadiness(toExecutionWorkspace(workspace));
+    const inspection = await inspectAuthoritativeGitCloseReadiness(toExecutionWorkspace(workspace));
     const assessment = await assessDelivery(workspace, inspection.git, {
       treatSourceIssueAsTerminal: true,
     });
     return evaluateIssueDoneDeliveryReadiness({
       primaryWorkProduct,
+      hasAnyCodeWorkProduct,
       hasIsolatedGitWorkspace: true,
       workspaceDeliveryState: assessment.deliveryState,
       workspaceGit: inspection.git,
@@ -2440,7 +2489,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         git,
         warnings: gitWarnings,
         statusInspectionSucceeded,
-      } = await inspectGitCloseReadiness(executionWorkspace);
+      } = await inspectAuthoritativeGitCloseReadiness(executionWorkspace);
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
@@ -2741,7 +2790,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
+        const { git, statusInspectionSucceeded } = await inspectAuthoritativeGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
           result.skippedUndelivered += 1;
           continue;

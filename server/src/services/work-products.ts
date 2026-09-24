@@ -139,13 +139,35 @@ export function stampDeliveryEvidenceRevision(
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
     return metadata;
   }
+  let stampedMetadata = { ...metadata };
+  const dispositionValue = metadata.deliveryDisposition;
+  if (
+    dispositionValue
+    && typeof dispositionValue === "object"
+    && !Array.isArray(dispositionValue)
+  ) {
+    const { verifiedBy: _callerVerifiedBy, ...unstampedDisposition } =
+      dispositionValue as Record<string, unknown>;
+    stampedMetadata = {
+      ...stampedMetadata,
+      deliveryDisposition: authority
+        ? {
+            ...unstampedDisposition,
+            verifiedBy: {
+              ...authority,
+              verifiedAt: updatedAt.toISOString(),
+            },
+          }
+        : unstampedDisposition,
+    };
+  }
   const deliveryEvidenceValue = metadata.deliveryEvidence;
   if (
     !deliveryEvidenceValue
     || typeof deliveryEvidenceValue !== "object"
     || Array.isArray(deliveryEvidenceValue)
   ) {
-    return metadata;
+    return stampedMetadata;
   }
   const deliveryEvidence = deliveryEvidenceValue as Record<string, unknown>;
   const {
@@ -161,18 +183,18 @@ export function stampDeliveryEvidenceRevision(
     && (!Number.isFinite(reconciledAt) || reconciledAt < minimumCoveredAt.getTime())
   ) {
     return {
-      ...metadata,
+      ...stampedMetadata,
       deliveryEvidence: unstampedEvidence,
     };
   }
   if (!authority) {
     return {
-      ...metadata,
+      ...stampedMetadata,
       deliveryEvidence: unstampedEvidence,
     };
   }
   return {
-    ...metadata,
+    ...stampedMetadata,
     deliveryEvidence: {
       ...unstampedEvidence,
       productUpdatedAt: updatedAt.toISOString(),

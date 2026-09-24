@@ -187,16 +187,61 @@ describe("issue Done delivery readiness", () => {
     expect(result.reasonCodes).toContain("delivery_evidence_untrusted");
   });
 
-  it("recognizes an explicit analysis-only no-merge disposition even with an isolated workspace", () => {
+  it("recognizes an authorized analysis-only no-merge disposition", () => {
     const product = primary({
       type: "document",
-      metadata: { deliveryDisposition: { kind: "no_merge", reason: "Analysis only; no repository changes." } },
+      metadata: {
+        deliveryDisposition: {
+          kind: "no_merge",
+          reason: "Analysis only; no repository changes.",
+          verifiedBy: {
+            kind: "instance_admin",
+            actorId: "local-board",
+            verifiedAt: "2026-09-15T12:00:00.000Z",
+          },
+        },
+      },
     });
     expect(hasExplicitNoMergeDisposition(product)).toBe(true);
     expect(evaluateIssueDoneDeliveryReadiness({
       primaryWorkProduct: product,
-      hasIsolatedGitWorkspace: true,
+      hasIsolatedGitWorkspace: false,
     })).toMatchObject({ required: false, ready: true, disposition: "no_merge" });
+  });
+
+  it("does not let no-merge metadata bypass code products or a Git workspace", () => {
+    const product = primary({
+      type: "document",
+      metadata: {
+        deliveryDisposition: {
+          kind: "no_merge",
+          reason: "Analysis only.",
+          verifiedBy: {
+            kind: "instance_admin",
+            actorId: "local-board",
+            verifiedAt: "2026-09-15T12:00:00.000Z",
+          },
+        },
+      },
+    });
+    expect(evaluateIssueDoneDeliveryReadiness({
+      primaryWorkProduct: product,
+      hasAnyCodeWorkProduct: true,
+      hasIsolatedGitWorkspace: false,
+    })).toMatchObject({ required: true, ready: false });
+    expect(evaluateIssueDoneDeliveryReadiness({
+      primaryWorkProduct: product,
+      hasAnyCodeWorkProduct: false,
+      hasIsolatedGitWorkspace: true,
+    })).toMatchObject({ required: true, ready: false });
+  });
+
+  it("rejects caller-authored no-merge metadata without a server verifier", () => {
+    const product = primary({
+      type: "document",
+      metadata: { deliveryDisposition: { kind: "no_merge", reason: "Analysis only." } },
+    });
+    expect(hasExplicitNoMergeDisposition(product)).toBe(false);
   });
 
   it("live-verifies patch-equivalent cherry-picks against the configured target", async () => {

@@ -112,4 +112,9 @@ export interface IssueWorkProductDeliveryEvidence {
 export interface IssueWorkProductDeliveryDisposition {
   kind: "no_merge";
   reason: string;
+  verifiedBy?: {
+    kind: "instance_admin" | "system";
+    actorId: string;
+    verifiedAt: string;
+  };
 }
