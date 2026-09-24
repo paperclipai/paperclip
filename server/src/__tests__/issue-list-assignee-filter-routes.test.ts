@@ -141,6 +141,13 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     ]);
 
     const app = createApp(companyId);
+    const unsupported = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ assigneeId: "00000000-0000-0000-0000-000000000000" });
+    expect(unsupported.status).toBe(400);
+    expect(unsupported.body.error).toBe(
+      "assigneeId is not supported. Use assigneeAgentId or assigneeUserId.",
+    );
     const res = await request(app)
       .get(`/api/companies/${companyId}/issues`)
       .query({ status: "todo", assigneeAgentId: "null", limit: "20" });

@@ -1,6 +1,6 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, isNull, notInArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -91,6 +91,7 @@ export async function observeCrossIssueInfluence(
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
+        nativeIssueId: heartbeatRuns.nativeIssueId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -109,15 +110,41 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    const sourceIssueId = run.nativeIssueId ?? readRunSourceIssueId(run.contextSnapshot);
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId && (
+        sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      )
     ) {
       return null;
     }
 
+    // Manual and timer runs can select work after dispatch. Checkout records
+    // ownership on the issue, without adding a source to the run snapshot.
+    // A recorded source stays authoritative; checking out another task cannot
+    // change the exemption for an already scoped run.
+    if (!sourceIssueId && isUuidLike(input.targetIssueId)) {
+      const [ownedIssue] = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.targetIssueId),
+          eq(issues.companyId, input.companyId),
+          eq(issues.assigneeAgentId, input.agentId),
+          isNull(issues.assigneeUserId),
+          notInArray(issues.status, ["done", "cancelled"]),
+          or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, input.runId)),
+          or(isNull(issues.executionRunId), eq(issues.executionRunId, input.runId)),
+          or(eq(issues.checkoutRunId, input.runId), eq(issues.executionRunId, input.runId)),
+        ))
+        .limit(1);
+      if (ownedIssue) return null;
+    }
+
+    // A valid run without a source still has an attributable, locked counter.
+    // Charge writes without checkout proof conservatively, and retain null
+    // source provenance rather than inventing a source or rejecting all work.
     const priorCount = await tx
       .select({ count: count() })
       .from(activityLog)

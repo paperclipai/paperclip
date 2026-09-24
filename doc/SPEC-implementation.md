@@ -620,6 +620,19 @@ rollout mode, and fails closed with the cap in the error once enforcement is
 active. Writes to the run's own source issue are not counted. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
 
+The native run issue takes precedence over legacy snapshot source fields. Manual
+and timer runs can start without a source issue. For those runs, writes to a
+non-terminal task assigned to the actor and held by the same run's checkout or
+execution lock are exempt, provided neither lock belongs to another run. Other
+writes consume the normal per-run budget and record a null source issue. Missing
+source context alone is not an invalid run. Assignment alone and historical
+run-issue activity do not exempt a write from the budget.
+
+Issue assignment and list filters use `assigneeAgentId` or `assigneeUserId`. The
+issue list rejects the unsupported `assigneeId` query parameter with `400` rather
+than returning an unfiltered list. Checkout claims `assigneeAgentId` and the run
+locks; it does not create an `assigneeId` field.
+
 Agent-authored issue comments persist the responsible user derived from the
 authenticated actor; clients cannot choose that attribution. Each comment also
 records the write-policy reason, and spoof attempts fail with an audited 422.

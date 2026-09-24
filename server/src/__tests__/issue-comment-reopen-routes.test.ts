@@ -2569,6 +2569,63 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "lets an assigned agent comment and complete a task from a manual run (checkout: %s)",
+    async (checkedOut) => {
+      const actual = await vi.importActual<typeof import("../services/cross-issue-influence-limit.js")>(
+        "../services/cross-issue-influence-limit.js",
+      );
+      mockObserveCrossIssueInfluence.mockImplementation(actual.observeCrossIssueInfluence);
+      const actor = { ...agentActor(), runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
+      const existing = { ...makeIssue("in_progress"), checkoutRunId: checkedOut ? actor.runId : null };
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockImplementation(async (_id, patch) => makeIssueUpdateReceipt(existing, patch));
+      let count = 0;
+      mockDb.transaction.mockImplementation(async (callback) => callback({
+        ...mockTx,
+        select: (selection: Record<string, unknown>) => ({
+          from: () => ({
+            where: () => ({
+              for: async () => [{
+                id: actor.runId, companyId: actor.companyId, agentId: actor.agentId,
+                nativeIssueId: null, contextSnapshot: {},
+              }],
+              limit: async () => checkedOut ? [{ id: existing.id }] : [],
+              then: (resolve: (rows: unknown[]) => unknown) => {
+                expect(selection).toHaveProperty("count");
+                return Promise.resolve([{ count: count++ }]).then(resolve);
+              },
+            }),
+          }),
+        }),
+      } as typeof mockTx));
+      const app = await installActor(createApp(), actor);
+      const comment = await request(app).post(`/api/issues/${existing.id}/comments`)
+        .send({ body: "Work complete." });
+      expect(comment.status, JSON.stringify(comment.body)).toBe(201);
+      const completion = await request(app).patch(`/api/issues/${existing.id}`).send({ status: "done" });
+      expect(completion.status, JSON.stringify(completion.body)).toBe(200);
+      expect(completion.body.status).toBe("done");
+      expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(2);
+      const observations = mockTxInsertValues.mock.calls
+        .map(([row]) => row as Record<string, unknown>)
+        .filter((row) => row.action === "issue.cross_issue_influence_observed");
+      expect(observations).toHaveLength(checkedOut ? 0 : 2);
+    },
+  );
+
+  it("rejects the unsupported assigneeId list filter with the canonical field names", async () => {
+    const app = await installActor(createApp());
+    const result = await request(app).get("/api/companies/company-1/issues")
+      .query({ assigneeId: "00000000-0000-0000-0000-000000000000" });
+    expect(result.status).toBe(400);
+    expect(result.body.error).toBe(
+      "assigneeId is not supported. Use assigneeAgentId or assigneeUserId.",
+    );
+  });
+
   it("counts a comment-only cross-issue PATCH once", async () => {
     const agentA = "44444444-4444-4444-8444-444444444444";
     const existing = {
