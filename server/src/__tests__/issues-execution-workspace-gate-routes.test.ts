@@ -237,6 +237,11 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     const res = await patch(seeded, { executionWorkspaceSettings: null });
 
     expect(res.status).toBe(200);
+    // The clear itself still takes — the suppression is of the sync, not of the
+    // write, so this is not the accepted-and-discarded behaviour in disguise.
+    expect(await storedWorkspaceFields(seeded)).toMatchObject({
+      executionWorkspaceSettings: null,
+    });
     expect(await storedWorkspaceConfig(seeded)).toMatchObject({
       provisionCommand: "make setup",
       teardownCommand: "make teardown",
@@ -454,17 +459,13 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
    * the change had been accepted.
    *
    * Refusing it instead would be no better: the project picker posts exactly
-   * this body on every project change. So the preference — a scalar that only
-   * ever *removes* configuration — is written, and the re-read proves it.
-   *
-   * `executionWorkspaceSettings` is the deliberate exception, asserted here so
-   * the limit is pinned rather than only described. Writing a baseline settings
-   * blob overwrites the column and can erase the bound workspace's own
-   * provisioning config, which two tests above prove; the conservative drop is
-   * chosen over a write that destroys configuration the caller never named. The
-   * field that actually unsticks a task, `executionWorkspaceId`, does persist.
+   * this body on every project change. So both fields — each of which only ever
+   * *removes* configuration — are written, and the re-read proves it. Leaving
+   * `executionWorkspaceSettings` behind would leave the task holding
+   * `isolated_workspace` in one of the three sibling fields the ticket named,
+   * ready to take effect again the moment the gate is switched back on.
    */
-  it("persists a preference downgrade but still drops the settings blob", async () => {
+  it("persists a downgrade of both the preference and the settings blob", async () => {
     const seeded = await seed({ isolatedWorkspaces: false, storeIsolatedSettings: true });
 
     const res = await patch(seeded, {
@@ -473,9 +474,80 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
     });
 
     expect(res.status).toBe(200);
+    expect(res.body.changes).toHaveProperty("executionWorkspaceSettings");
     expect(await storedWorkspaceFields(seeded)).toMatchObject({
       executionWorkspacePreference: "shared_workspace",
-      executionWorkspaceSettings: { mode: "isolated_workspace" },
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    });
+  });
+
+  /**
+   * The clearing direction of the same field. `null` is the one settings value
+   * that unambiguously says "clear the column", as distinct from a blob that
+   * merely normalizes away to nothing, and it must reach the row.
+   */
+  it("persists a cleared settings blob over a stored isolated posture", async () => {
+    const seeded = await seed({ isolatedWorkspaces: false, storeIsolatedSettings: true });
+
+    const res = await patch(seeded, { executionWorkspaceSettings: null });
+
+    expect(res.status).toBe(200);
+    expect(await storedWorkspaceFields(seeded)).toMatchObject({
+      executionWorkspaceSettings: null,
+    });
+  });
+
+  /**
+   * `networkEgress` travels in the gated blob but is not gated content:
+   * `selectEnvironmentExecutionWorkspaceSettings` keeps exactly that key when the
+   * feature is off, so it is the one setting a gated instance still honours.
+   * Refusing a blob for carrying it, or accepting and dropping it, would leave no
+   * way to set it at all.
+   */
+  it("persists a network-egress settings blob the gate still honours", async () => {
+    const seeded = await seed({ isolatedWorkspaces: false });
+
+    const res = await patch(seeded, {
+      executionWorkspaceSettings: {
+        mode: "shared_workspace",
+        networkEgress: { allowFqdns: ["registry.npmjs.org"], allowCidrs: [] },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await storedWorkspaceFields(seeded)).executionWorkspaceSettings).toMatchObject({
+      mode: "shared_workspace",
+      networkEgress: { allowFqdns: ["registry.npmjs.org"] },
+    });
+  });
+
+  /**
+   * The two halves that used to be in tension, now asserted in one request: a
+   * baseline settings blob against a runtime-bound row both lands on the issue
+   * *and* leaves the bound workspace's own config alone. The blob names none of
+   * the keys the config sync writes, so syncing it would only erase them.
+   */
+  it("persists a settings downgrade without touching the bound workspace's config", async () => {
+    const seeded = await seed({
+      isolatedWorkspaces: false,
+      storeRuntimeBinding: true,
+      workspaceConfig: {
+        provisionCommand: "make setup",
+        teardownCommand: "make teardown",
+        cleanupCommand: "make clean",
+      },
+    });
+
+    const res = await patch(seeded, { executionWorkspaceSettings: { mode: "shared_workspace" } });
+
+    expect(res.status).toBe(200);
+    expect(await storedWorkspaceFields(seeded)).toMatchObject({
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    });
+    expect(await storedWorkspaceConfig(seeded)).toMatchObject({
+      provisionCommand: "make setup",
+      teardownCommand: "make teardown",
+      cleanupCommand: "make clean",
     });
   });
 

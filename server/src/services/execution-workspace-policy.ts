@@ -499,8 +499,15 @@ export function isGatedExecutionWorkspaceBaseline(
   if (normalized === null) return true;
   if (field === "executionWorkspacePreference") return normalized === "shared_workspace";
   if (field === "executionWorkspaceSettings") {
-    const settings = normalized as Record<string, unknown>;
-    return settings.mode === "shared_workspace" && Object.keys(settings).length === 1;
+    // `networkEgress` rides in the same blob but is not gated content:
+    // `selectEnvironmentExecutionWorkspaceSettings` keeps exactly that key when
+    // the feature is off, so it is the one setting a gated instance still
+    // honours. Refusing a blob for carrying it would leave no way to set it at
+    // all. What is left after removing it must still be the gate's own posture.
+    const { networkEgress: _networkEgress, ...gated } = normalized as Record<string, unknown>;
+    const keys = Object.keys(gated);
+    if (keys.length === 0) return true;
+    return gated.mode === "shared_workspace" && keys.length === 1;
   }
   // `executionWorkspaceId` admits only `null`, never a real id: pointing a task
   // at a workspace is the write the gate exists to withhold.
@@ -531,47 +538,44 @@ export function unhonourableGatedExecutionWorkspaceFields(
  * Names the gated fields a patch cannot carry into the row while the gate is
  * off, so `issueService.update` can drop exactly those.
  *
- * This is deliberately *wider* than `unhonourableGatedExecutionWorkspaceFields`,
- * by exactly one field: a baseline `executionWorkspaceSettings` is accepted by
- * the route and still not written. Persisting it destroys configuration the
- * caller never named, in two proven ways:
+ * This is the route's refusal set plus one narrow case, and the narrowness is
+ * the point: everything the route answers 200 for is written, so "accepted" and
+ * "persisted" mean the same thing. A baseline `executionWorkspaceId`,
+ * `executionWorkspacePreference` or `executionWorkspaceSettings` removes
+ * execution-workspace configuration rather than introducing any, so the gate has
+ * nothing to withhold and the write lands — a clear clears, and a downgrade
+ * downgrades.
  *
- * - **It overwrites the column.** `update()` stores
- *   `parseIssueExecutionWorkspaceSettings(...)`, which drops the keys it does not
- *   recognise. `{ environmentId }` — issue environment selection, a different
- *   feature behind a different flag — parses to `{}`, so writing it replaces a
- *   stored blob and takes `networkEgress` with it. Normalizing to nothing means
- *   "carries no gated content", not "clear the column"; only the second is a
- *   write, and treating them alike loses data.
- * - **It reaches the bound workspace's own config.** On a row the runtime bound
- *   (`executionWorkspaceId` + `reuse_existing`, the shape of any task that has
- *   run once), a settings write is propagated to the workspace row, and the
- *   patch builder emits an explicit `null` for every config key it knows — so a
- *   content-free settings value erases that workspace's `provisionCommand`,
- *   `teardownCommand`, `environmentId` and `workspaceRuntime`.
+ * The one exception is a settings blob that is **not** `null` and still
+ * normalizes away to nothing. `update()` stores
+ * `parseIssueExecutionWorkspaceSettings(...)`, which keeps only the keys it
+ * recognises, so `{ environmentId }` — issue environment selection, a different
+ * feature behind a different flag that travels in this same blob — parses to
+ * `{}`. Writing that would replace the stored blob and take `networkEgress` with
+ * it, over a request that never mentioned either. "Carries nothing the column
+ * holds" is not the same statement as "clear the column"; only the second is a
+ * write, and only the second is spelled `null`.
  *
- * `executionWorkspaceId` and `executionWorkspacePreference` carry no such
- * payload: a baseline value there is a scalar that removes configuration rather
- * than a blob written over one, and neither triggers the propagation. The id in
- * particular *must* persist — clearing a stale binding is what lets a
- * runtime-bound task change project at all.
- *
- * The residual is therefore that a settings clear or downgrade is still dropped
- * rather than persisted on a gated instance. That is unchanged from before this
- * fix, and it is the conservative side of the trade: the alternative is a write
- * that silently deletes a workspace's provisioning commands.
+ * Persisting a baseline settings value also reaches one layer further out: on a
+ * row the runtime bound (`executionWorkspaceId` + `reuse_existing`, the shape of
+ * any task that has run once), a settings write is propagated to the workspace's
+ * own config, and the patch builder emits an explicit `null` for every key it
+ * knows. A baseline blob names none of them, so that propagation is suppressed
+ * while the gate is off — see the call site in `issueService.update`.
  */
 export function unpersistableGatedExecutionWorkspaceFields(
   patch: Record<string, unknown>,
 ): GatedExecutionWorkspaceField[] {
-  return GATED_EXECUTION_WORKSPACE_FIELDS.filter(
-    (field) =>
-      Object.prototype.hasOwnProperty.call(patch, field) &&
-      patch[field] !== undefined &&
-      (field === "executionWorkspaceSettings" ||
-        !isGatedExecutionWorkspaceBaseline(
-          field,
-          normalizeGatedExecutionWorkspaceField(field, patch[field]),
-        )),
-  );
+  return GATED_EXECUTION_WORKSPACE_FIELDS.filter((field) => {
+    if (!Object.prototype.hasOwnProperty.call(patch, field)) return false;
+    const requested = patch[field];
+    if (requested === undefined) return false;
+    const normalized = normalizeGatedExecutionWorkspaceField(field, requested);
+    if (!isGatedExecutionWorkspaceBaseline(field, normalized)) return true;
+    return (
+      field === "executionWorkspaceSettings" &&
+      requested !== null &&
+      normalized === null
+    );
+  });
 }
