@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,13 +63,13 @@ test("canary reuses exact-source proof while stable keeps full verification", ()
 
 test("source proof requires every source check and does not wait on image publication", () => {
   const readiness = readWorkflow("cloud-readiness.yml");
-  const proof = readiness.split("  source_verified:\n")[1].split("\n  ready:")[0];
+  const proof = readiness.split("  source_verified:\n")[1];
   assert.match(proof, /name: Cloud source verified v1/);
   assert.match(proof, /needs: \[verify\]/);
   assert.match(proof, /node --test scripts\/cloud-source-verification.test.mjs/);
   assert.match(proof, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
   assert.doesNotMatch(proof, /always\(\)|continue-on-error|needs:.*(?:image|artifacts)/);
-  assert.match(readiness.split("  ready:\n")[1], /needs: \[verify, image, artifacts\]/);
+  assert.doesNotMatch(readiness, /^  (?:image|artifacts|ready):/m);
 });
 
 test("onboard smoke container binds beyond loopback so the mapped port is reachable", () => {
@@ -320,7 +321,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
   ];
   const paidWorkflowNameSet = new Set(paidWorkflowNames);
   const providerSecretReference =
-    /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)['"]\])/g;
+    /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)['"]\])/g;
   for (const name of readdirSync(path.join(repoRoot, ".github/workflows"))) {
     if (!/\.ya?ml$/.test(name)) continue;
     const workflow = readWorkflow(name);
@@ -428,5 +429,30 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
         `chaos workflow test path does not exist: ${testPath}`,
       );
     }
+  }
+});
+
+
+test("direct Grok qualification installs the pinned binary and scopes the selected credential", () => {
+  const workflow = readWorkflow("runner-protocol-live-evals.yml");
+  assert.ok(workflow.includes("XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}"));
+  assert.ok(workflow.includes("if [ -f packages/grok-acp/install.mjs ]; then"));
+  assert.ok(workflow.indexOf("node packages/grok-acp/install.mjs") < workflow.indexOf("pnpm --filter @paperclipai/paperclip-runner deploy --prod"));
+  assert.ok(workflow.includes("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: ${{ matrix.credentialName == 'PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET' && secrets.GROK_AUTH_JSON || '' }}"));
+  assert.equal((workflow.match(/secrets\.GROK_AUTH_JSON/gu) ?? []).length, 1);
+});
+
+test("direct protocol concurrency override only lowers the configured ceiling", () => {
+  const workflow = readWorkflow("runner-protocol-live-evals.yml");
+  const start = workflow.indexOf('          if [ -n "${REQUESTED_MAX_PARALLEL:-}" ]; then');
+  const end = workflow.indexOf("          node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs catalog", start);
+  assert.ok(start > 0 && end > start);
+  const script = workflow.slice(start, end) + '\nprintf "%s" "$MAX_PARALLEL"\n';
+  for (const [requested, expected] of [["", "8"], ["2", "2"], ["8", "8"], ["1", null], ["9", null], ["0", null], ["-1", null], ["2.5", null], ["garbage", null], ["9999999999999999999999", null]]) {
+    const result = spawnSync("bash", ["-eu", "-c", script], {
+      env: { ...process.env, MAX_PARALLEL: "8", REQUESTED_MAX_PARALLEL: requested }, encoding: "utf8",
+    });
+    assert.equal(result.status, expected === null ? 1 : 0, requested);
+    if (expected !== null) assert.equal(result.stdout, expected);
   }
 });

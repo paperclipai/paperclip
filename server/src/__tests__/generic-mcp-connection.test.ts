@@ -22,6 +22,9 @@ import {
   principalPermissionGrants,
   secretAccessEvents,
   toolAccessAuditEvents,
+  toolCallEvents,
+  toolInvocations,
+  toolActionRequests,
   toolApplications,
   toolCatalogEntries,
   toolConnectionInstalls,
@@ -33,13 +36,16 @@ import {
   toolRuntimeSlots,
 } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
-import { MCP_CONFIG_HELP_PROMPT } from "@paperclipai/shared";
+import { APP_DEFINITIONS, MCP_CONFIG_HELP_PROMPT } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { ComposioApiError, type ComposioClient } from "../services/composio.js";
+import { createComposioSessionManager } from "../services/composio-session-manager.js";
+import { createToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
@@ -197,6 +203,13 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
         const supplied = headers[options.requiredHeader.name.toLowerCase()];
         if (supplied !== options.requiredHeader.value) return unauthorizedMcpResponse(resourceMetadataUrl);
       }
+      const rpc = parsedBody as Record<string, unknown>;
+      if (rpc.method === "tools/call") {
+        return jsonResponse({ jsonrpc: "2.0", id: rpc.id, result: {
+          content: [{ type: "text", text: "Fixture meeting data" }],
+          structuredContent: { meeting_id: "meeting-1" },
+        } });
+      }
       return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools } });
     }
 
@@ -335,6 +348,9 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    await db.delete(toolCallEvents);
+    await db.delete(toolInvocations);
+    await db.delete(toolActionRequests);
     await db.delete(toolOauthStates);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
@@ -380,6 +396,88 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     }
     return false;
   }
+
+  it.each(["mcp-oauth", "mcp-api-key"])("connects Fireflies through %s with vaulted credentials and its stable meeting tools", async (methodKey) => {
+    // Keep the real catalog method and governance identity; redirect only its
+    // transport URL to the deterministic protocol fixture.
+    const method = APP_DEFINITIONS.find((app) => app.slug === "fireflies")!.methods.find((entry) => entry.key === methodKey)!;
+    const originalUrl = method.defaults!.serverUrl;
+    method.defaults!.serverUrl = MCP_URL;
+    try {
+      const names = ["fireflies_get_transcripts", "fireflies_get_transcript", "fireflies_get_summary"];
+      const availableTools = [...names.map((name) => ({ name, annotations: { readOnlyHint: true } })), { name: "fireflies_share_meeting" }, { name: "fireflies_move_meeting" }];
+      const fixture = installMcpOAuthFixture({
+        auth: methodKey === "mcp-oauth" ? "oauth" : "header",
+        requiredHeader: { name: "Authorization", value: "Bearer fixture-fireflies-key" },
+        tools: availableTools,
+      });
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "fireflies", connectionMethodKey: methodKey,
+        ...(methodKey === "mcp-api-key" ? { credentialValues: { "credentials.authorization": "fixture-fireflies-key" } } : {}),
+      });
+      if (methodKey === "mcp-oauth") {
+        const actor = { actorType: "user" as const, actorId: "board-user" };
+        const start = await service.startOAuth(company.id, connected.connectionId, { redirectUri: REDIRECT_URI, actor });
+        expect(start.registrationSource).toBe("dcr");
+        const url = new URL(start.authorizationUrl);
+        expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+        const completed = await service.completeOAuthCallback({ state: url.searchParams.get("state")!, code: fixture.issueAuthorizationCode(start.authorizationUrl), iss: ISSUER, redirectUri: REDIRECT_URI, actor });
+        expect(completed.actions.readOnly.map((action) => action.toolName)).toEqual(names);
+      } else {
+        expect(connected.actions.readOnly.map((action) => action.toolName)).toEqual(names);
+        expect(connected.actions.canMakeChanges.map((action) => action.toolName)).toEqual(["fireflies_share_meeting", "fireflies_move_meeting"]);
+        expect(fixture.requestsTo("/mcp").at(-1)?.headers.authorization).toBe("Bearer fixture-fireflies-key");
+      }
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      expect(connection!.config).toMatchObject({ sourceTemplateKey: "fireflies", connectionMethodKey: methodKey });
+      expect(connection!.credentialSecretRefs.length).toBeGreaterThan(0);
+      expect(JSON.stringify({ connected, connection })).not.toContain("fixture-fireflies-key");
+      expect(JSON.stringify(connection!.config)).not.toContain("fixture-access-");
+      const refreshed = await service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board-user" });
+      const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Meeting reviewer", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
+      await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+        enabledCatalogEntryIds: refreshed.catalog.filter((entry) => entry.toolName !== "fireflies_move_meeting").map((entry) => entry.id),
+        askFirstCatalogEntryIds: refreshed.catalog.filter((entry) => entry.toolName === "fireflies_share_meeting").map((entry) => entry.id),
+        access: { agentIds: [agent!.id] },
+      }, { actorType: "user", actorId: "board-user" });
+      const gateway = createToolGatewayService(db, { toolActionSigningSecret: "fireflies-test-only-signing-secret" });
+      for (const toolName of names) {
+        await expect(gateway.executeTestCall({ companyId: company.id, connectionId: connected.connectionId, agentId: agent!.id, userId: "board-user", toolName, parameters: {} }))
+          .resolves.toMatchObject({ decision: "allowed", result: { data: { structuredContent: { meeting_id: "meeting-1" } } } });
+      }
+      const policy = toolAccessPolicyService(db);
+      const entry = refreshed.catalog.find((item) => item.toolName === "fireflies_share_meeting")!;
+      // Re-authentication must retain both Off and Ask first selections.
+      // Newly discovered tools still receive the normal connection defaults.
+      availableTools.push({ name: "fixture_new_read", annotations: { readOnlyHint: true } });
+      if (methodKey === "mcp-oauth") {
+        const actor = { actorType: "user" as const, actorId: "board-user" };
+        const start = await service.startOAuth(company.id, connected.connectionId, { redirectUri: REDIRECT_URI, actor });
+        await service.completeOAuthCallback({ state: new URL(start.authorizationUrl).searchParams.get("state")!, code: fixture.issueAuthorizationCode(start.authorizationUrl), iss: ISSUER, redirectUri: REDIRECT_URI, actor });
+      } else {
+        const reconnected = await service.reconnectGalleryApp(connected.connectionId, company.id, {
+          credentialValues: { "credentials.authorization": "fixture-fireflies-key" },
+        });
+        expect(reconnected.connection.id).toBe(connected.connectionId);
+      }
+      await service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board-user" });
+      await expect(gateway.executeTestCall({ companyId: company.id, connectionId: connected.connectionId, agentId: agent!.id, userId: "board-user", toolName: "fixture_new_read", parameters: {} }))
+        .resolves.toMatchObject({ decision: "allowed" });
+      await expect(policy.decide({ companyId: company.id, actor: { actorType: "agent", actorId: agent!.id, agentId: agent!.id }, request: { connectionId: connected.connectionId, catalogEntryId: entry.id, toolName: entry.toolName } }))
+        .resolves.toMatchObject({ allowed: false, decision: "require_approval" });
+      const offEntry = refreshed.catalog.find((item) => item.toolName === "fireflies_move_meeting")!;
+      await expect(policy.decide({ companyId: company.id, actor: { actorType: "agent", actorId: agent!.id, agentId: agent!.id }, request: { connectionId: connected.connectionId, catalogEntryId: offEntry.id, toolName: offEntry.toolName } }))
+        .resolves.toMatchObject({ allowed: false, decision: "deny" });
+      await expect(gateway.executeTestCall({ companyId: randomUUID(), connectionId: connected.connectionId, agentId: agent!.id, userId: "board-user", toolName: names[0]!, parameters: {} })).rejects.toThrow();
+      await service.archiveConnection(connected.connectionId, company.id);
+      await expect(gateway.executeTestCall({ companyId: company.id, connectionId: connected.connectionId, agentId: agent!.id, userId: "board-user", toolName: names[0]!, parameters: {} })).rejects.toThrow();
+      expect((await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId)))[0]?.status).toBe("archived");
+    } finally {
+      method.defaults!.serverUrl = originalUrl;
+    }
+  });
 
   it("discovers every tool for a public unknown endpoint without activating the draft", async () => {
     installMcpOAuthFixture({ auth: "public" });

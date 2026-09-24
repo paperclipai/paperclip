@@ -49,6 +49,11 @@ describe("hideable setting keys", () => {
 });
 
 describe("parseHiddenSettingsList", () => {
+  it("accepts workspace controls independently of experimental flags", () => {
+    expect(parseHiddenSettingsList("workspaces.isolation")).toEqual({ hidden: ["workspaces.isolation"], unknown: [] });
+    expect(hidesExperimentalSetting(new Set(["workspaces.isolation"]), "enableIsolatedWorkspaces")).toBe(false);
+  });
+
   it("returns nothing hidden for undefined or empty input", () => {
     expect(parseHiddenSettingsList(undefined)).toEqual({ hidden: [], unknown: [] });
     expect(parseHiddenSettingsList(" , ,")).toEqual({ hidden: [], unknown: [] });

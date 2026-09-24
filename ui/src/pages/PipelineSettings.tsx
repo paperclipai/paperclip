@@ -1,3 +1,4 @@
+import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1559,7 +1560,9 @@ export function PipelineSettings() {
       ?? null,
     [selectedAutomationProject, stageProjectWorkspaceId],
   );
+  const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const selectedProjectSupportsExecutionWorkspace =
+    workspaceIsolationControlsVisible &&
     experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true
     && Boolean(selectedAutomationProject?.executionWorkspacePolicy?.enabled);
   const reusableExecutionWorkspacesQuery = useQuery({
@@ -1705,11 +1708,12 @@ export function PipelineSettings() {
     if (!stageProjectWorkspaceId) {
       setStageProjectWorkspaceId(defaultProjectWorkspaceIdForProject(selectedAutomationProject));
     }
-    if (!stageExecutionWorkspacePreference) {
+    if (workspaceIsolationControlsVisible && !stageExecutionWorkspacePreference) {
       setStageExecutionWorkspacePreference(defaultExecutionWorkspaceModeForProject(selectedAutomationProject));
     }
   }, [
     selectedAutomationProject,
+    workspaceIsolationControlsVisible,
     stageExecutionWorkspacePreference,
     stageProjectId,
     stageProjectWorkspaceId,
@@ -2082,7 +2086,7 @@ export function PipelineSettings() {
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
     setStageProjectId(nextProjectId);
     setStageProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
-    setStageExecutionWorkspacePreference(nextProject ? defaultExecutionWorkspaceModeForProject(nextProject) : "");
+    setStageExecutionWorkspacePreference(nextProject && workspaceIsolationControlsVisible ? defaultExecutionWorkspaceModeForProject(nextProject) : "");
     setStageExecutionWorkspaceId("");
     setStageExecutionWorkspaceSettings(null);
   };

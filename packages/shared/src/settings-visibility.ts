@@ -99,7 +99,12 @@ export function experimentalSettingKey(key: InstanceFeatureKey): HideableExperim
   return `instance.experimental.${key}`;
 }
 
+/** Workspace policy editors and selectors. UI-only; execution and APIs stay active. */
+export const HIDEABLE_WORKSPACE_SECTIONS = ["workspaces.isolation"] as const;
+export type HideableWorkspaceSection = (typeof HIDEABLE_WORKSPACE_SECTIONS)[number];
+
 export type HideableSettingKey =
+  | HideableWorkspaceSection
   | HideableInstancePage
   | HideableCompanyPage
   | HideableCompanySection
@@ -108,6 +113,7 @@ export type HideableSettingKey =
 
 /** Every key `PAPERCLIP_HIDDEN_SETTINGS` accepts. */
 export const HIDEABLE_SETTING_KEYS: readonly HideableSettingKey[] = [
+  ...HIDEABLE_WORKSPACE_SECTIONS,
   ...HIDEABLE_INSTANCE_PAGES,
   ...HIDEABLE_COMPANY_PAGES,
   ...HIDEABLE_COMPANY_SECTIONS,

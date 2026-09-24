@@ -10396,7 +10396,7 @@ describe("runnerd provider runtime wiring", () => {
   });
 
   it.each([
-    ...["current", "stale", "missing", "retained", "retained-mismatch", "retained-error", "retained-timeout", "retained-explicit"]
+    ...["current", "preinstalled-exact", "preinstalled-mismatch", "preinstalled-error", "preinstalled-timeout", "stale", "missing", "retained", "retained-mismatch", "retained-error", "retained-timeout", "retained-explicit"]
       .map((image) => ({ image, version: "0.156.0", compatible: true })),
     ...["0.149.0", "0.149.1", "0.153.4", "0.156.1"]
       .map((version) => ({ image: "current", version, compatible: true })),
@@ -10405,11 +10405,11 @@ describe("runnerd provider runtime wiring", () => {
   ])("uses shared Codex and the server-owned replacement artifact (image=$image, Codex=$version)", async ({ image, version, compatible }) => {
     const retained = image.startsWith("retained");
     const exactRetained = image === "retained" || image === "retained-explicit";
-    const needsReplacement = image !== "current" && !exactRetained;
+    const needsReplacement = image !== "current" && image !== "preinstalled-exact" && !exactRetained;
     // The mocked remote executes metadata probes; artifact staging only needs bytes.
     // Keep this regression independent of a locally compiled Rust runner binary.
     const controllerArtifact = join(isolatedStateDirectory, "paperclip-runnerd");
-    if (needsReplacement || retained) {
+    if (needsReplacement || retained || image === "preinstalled-exact") {
       await writeFile(controllerArtifact, "fixture runner artifact");
       state.resolveRunnerBinary.mockReturnValueOnce(controllerArtifact);
     }
@@ -10420,10 +10420,10 @@ describe("runnerd provider runtime wiring", () => {
         let stdout = "";
         const script = command.args?.[1] ?? "";
         if (script.includes('sha256sum "$1"')) {
-          if (image === "retained-error") throw new Error("checksum unavailable");
+          if (image.endsWith("-error")) throw new Error("checksum unavailable");
           return {
-            exitCode: 0, signal: null, timedOut: image === "retained-timeout", stderr: "",
-            stdout: `${createHash("sha256").update(image === "retained-mismatch" ? "stale artifact" : "fixture runner artifact").digest("hex")}  ${command.args?.[3]}\n`,
+            exitCode: 0, signal: null, timedOut: image.endsWith("-timeout"), stderr: "",
+            stdout: `${createHash("sha256").update(image.endsWith("-mismatch") ? "stale artifact" : "fixture runner artifact").digest("hex")}  ${command.args?.[3]}\n`,
           };
         } else if (command.args?.[0] === "--build-metadata") {
           stdout = JSON.stringify({
