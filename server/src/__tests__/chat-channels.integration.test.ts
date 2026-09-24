@@ -4000,7 +4000,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(runtime.endpoints.get(endpoint.id)!.posts.filter(post => post.text.includes("Retry this work"))).toHaveLength(1);
   });
 
-  it.each(["revoked", "relinked", "private-membership"] as const)("rechecks %s authority before queued Slack Board messages and replies", async (change) => {
+  it.each(["revoked", "relinked", "private-membership", "later-cancelled"] as const)("rechecks %s authority before queued Slack Board messages and replies", async (change) => {
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
     const fixture = await seedCompany();
     let canRead = true;
@@ -4029,7 +4029,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await initializeRunIdentity(db, { companyId: fixture.companyId, runId, issueId: conversation.issueId, responsibleUserId: "owner-user", messageIds: [comment.id], cause: "user_message" });
     await addSelectedChatFinal({ companyId: fixture.companyId, issueId: conversation.issueId, agentId: fixture.assignedAgentId, runId, body: "Queued final before access changed" });
     expect(await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpoint.id))).toHaveLength(2);
-    if (change === "private-membership") canRead = false;
+    if (change === "later-cancelled") {
+      const later = await issueService(db).addComment(conversation.issueId, "A different, cancelled request", { userId: "owner-user" }, { authorType: "user", mirrorToSlack: true });
+      await db.update(chatActions).set({ status: "cancelled" }).where(and(eq(chatActions.endpointId, endpoint.id), eq(sql<string>`${chatActions.payload}->>'commentId'`, later.id)));
+      await db.update(chatPublications).set({ state: "cancelled" }).where(eq(chatPublications.commentId, later.id));
+    } else if (change === "private-membership") canRead = false;
     else {
       await db.update(chatIdentityLinks).set({ status: "revoked", revokedAt: new Date() }).where(eq(chatIdentityLinks.id, link.id));
       if (change === "relinked") {
@@ -4040,8 +4044,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(await slackBoardReplyBindings(db, { companyId: fixture.companyId, issueId: conversation.issueId, agentId: fixture.assignedAgentId, userId: "owner-user", commentIds: [comment.id] })).toEqual([]);
     }
     await service.processPendingPublications();
-    expect(runtime.endpoints.get(endpoint.id)!.posts).toEqual([]);
-    expect((await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpoint.id))).every(row => row.state === "cancelled")).toBe(true);
+    if (change === "later-cancelled") {
+      expect(runtime.endpoints.get(endpoint.id)!.posts.map(post => post.text)).toEqual([
+        "**Owner User (via Paperclip)**\n\nQueued before access changed", "Queued final before access changed",
+      ]);
+    } else {
+      expect(runtime.endpoints.get(endpoint.id)!.posts).toEqual([]);
+      expect((await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpoint.id))).every(row => row.state === "cancelled")).toBe(true);
+    }
   });
 
   it.each(["cancelled", "paused", "blocked", "closed-workspace"] as const)("does not bypass %s task guards from the Slack Board composer or its outbox", async (guard) => {
@@ -4124,6 +4134,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
     expect(runtime.endpoints.get(endpoint.id)!.posts.filter(post => post.text.includes("One resume"))).toHaveLength(1);
   });
+
+  it("dispatches and publishes a queued Slack Board send with a one-connection database pool", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup, runtime } = await configuredSlackEndpoint(fixture, { linkedBoardUser: true });
+    const channel = makeThread({ channelId: "CPOOL", id: "slack:CPOOL:8300.1", name: "pool" });
+    await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread,
+      message: makeMessage({ id: "8300.1", text: "@maya start here", mentioned: true }), trigger: "mention" });
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+    const [conversation] = await service.listConversations(endpoint.id);
+    runtime.endpoints.get(endpoint.id)!.posts.length = 0;
+    wakeup.mockRejectedValueOnce(new Error("scheduler unavailable"));
+    await service.publishBoardMessage(endpoint.id, conversation.id, "Small pool work", randomUUID(), "owner-user");
+    const smallDb = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 1 });
+    const smallWake = vi.fn(async () => ({ accepted: true }));
+    const worker = chatChannelService(smallDb, {
+      fetch: fakeSlackFetch() as typeof fetch,
+      heartbeat: { wakeup: smallWake },
+      publicBaseUrl: "https://paperclip.example",
+      runtime: runtime as unknown as ChatSdkRuntime,
+    });
+    fixtureServices.add(worker);
+    await worker.processPendingDeliveries();
+    await worker.processPendingPublications();
+    expect(smallWake).toHaveBeenCalledTimes(1);
+    expect(runtime.endpoints.get(endpoint.id)!.posts.map(post => post.text)).toEqual(["**Owner User (via Paperclip)**\n\nSmall pool work"]);
+  }, 15_000);
 
   it("provides assigned Slack tools to routine tasks and can DM only their linked responsible user", async () => {
     const { resolveConnectorAssignments, executeConnectorTool } = await import("../services/connector-runtime.js");

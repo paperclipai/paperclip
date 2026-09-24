@@ -1,3 +1,4 @@
+import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
 import { assertSlackBoardWorkAllowed } from "./slack-board-resume.js";
@@ -6714,11 +6715,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function resolveCredentialRefs(
     endpoint: EndpointRow,
     refs: ToolCredentialSecretRef[],
+    database: DbOrTransaction = db,
   ): Promise<Record<string, string>> {
     const values: Record<string, string> = {};
     for (const ref of refs) {
       const key = ref.configPath.replace(/^credentials\./, "");
-      values[key] = await secrets.resolveSecretValue(
+      values[key] = await (database === db ? secrets : secretService(database as Db)).resolveSecretValue(
         endpoint.companyId,
         ref.secretId,
         ref.versionSelector ?? "latest",
@@ -6736,8 +6738,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function resolveCredentials(
     endpoint: EndpointRow,
+    database: DbOrTransaction = db,
   ): Promise<Record<string, string>> {
-    const connection = await db
+    const connection = await database
       .select({ refs: toolConnections.credentialSecretRefs, config: toolConnections.config })
       .from(toolConnections)
       .where(
@@ -6748,7 +6751,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .then((rows) => rows[0] ?? null);
     if (!connection) throw notFound("Chat connection not found");
-    const values = await resolveCredentialRefs(endpoint, connection.refs);
+    const values = await resolveCredentialRefs(endpoint, connection.refs, database);
     if (endpoint.provider === "imessage-photon") {
       const configuration = photonChannelConfigurationSchema.parse(connection.config.photon);
       return { ...values, ...configuration, lineId: configuration.allocation === "shared" ? photonSharedScope(configuration.projectId) : configuration.lineId };
@@ -27694,16 +27697,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
    * or no-longer-available files are omitted without losing the text turn.
    */
   async function processPendingSlackBoardMessages(limit = 25) {
-    const pending = await db.select({ id: chatActions.id }).from(chatActions)
+    const pending = await db.select({ id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId }).from(chatActions)
       .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.companyId, chatActions.companyId)))
       .where(and(eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received"), notInArray(chatEndpoints.status, ["paused", "attention"])))
       .orderBy(asc(chatActions.createdAt)).limit(limit);
     for (const candidate of pending) {
-      // Hold an advisory lock across the durable state transition and external
-      // scheduler call. Other workers skip it; process death releases it.
-      await db.transaction(async (leaseTx) => {
-        const lock = await leaseTx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`slack-board-work:${candidate.id}`}, 0)) as locked`);
-        if (!(lock as unknown as Array<{ locked: boolean }>)[0]?.locked) return;
+      await withSlackBoardLease(db, { ...candidate, actionId: candidate.id }, fetchImpl, async (lease) => {
         const [action] = await db.select().from(chatActions).where(and(eq(chatActions.id, candidate.id), eq(chatActions.status, "received")));
         if (!action) return;
         const issueId = String(action.payload.issueId);
@@ -27711,7 +27710,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         const agentId = String(action.payload.agentId);
         const commentId = String(action.payload.commentId);
         async function cancelWork(message: string) {
-          await db.transaction(async (tx) => {
+          await lease.commit(async (tx) => {
             await tx.update(chatActions).set({ status: "cancelled", result: { code: "slack_board_work_not_authorized", message }, updatedAt: new Date() }).where(eq(chatActions.id, action.id));
             await tx.update(chatPublications).set({ state: "cancelled", redactedError: message, nextAttemptAt: null, updatedAt: new Date() }).where(and(
               eq(chatPublications.companyId, action.companyId), eq(chatPublications.endpointId, action.endpointId),
@@ -27731,12 +27730,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const [publication] = await db.select().from(chatPublications).where(and(eq(chatPublications.companyId, action.companyId), eq(chatPublications.endpointId, action.endpointId), eq(chatPublications.commentId, commentId))).limit(1);
           const [conversation] = await db.select().from(chatConversations).where(and(eq(chatConversations.companyId, action.companyId), eq(chatConversations.id, action.conversationId!)));
           const credentials = currentEndpoint ? await resolveCredentials(currentEndpoint.endpoint) : null;
-          if (!publication || !conversation || !currentEndpoint || !await authorizeSlackBoardPublication(db, currentEndpoint.endpoint, conversation, publication, credentials?.botToken ?? "", fetchImpl)) {
+          if (!publication || !conversation || !currentEndpoint || !await authorizeSlackBoardPublication(db, currentEndpoint.endpoint, conversation, publication, credentials?.botToken ?? "", lease.fetch)) {
             throw forbidden("The Slack message author no longer has access to this conversation");
           }
           // Persist the resume and its marker together before waking. If a
           // scheduler response is lost, retry cannot reopen work a second time.
-          const issue = await db.transaction(async (tx) => {
+          const issue = await lease.commit(async (tx) => {
             const [current] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, action.companyId), eq(issues.assigneeAgentId, agentId))).for("update");
             if (!current) throw forbidden("The task is no longer assigned to the Slack agent");
             await assertSlackBoardWorkAllowed(tx as unknown as Db, current);
@@ -27749,6 +27748,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             }
             return current;
           });
+          await lease.commit(async () => {});
           await options.heartbeat.wakeup(agentId, {
             source: "automation", triggerDetail: "system", reason: "issue_commented",
             idempotencyKey: `slack-board-comment:${action.id}`, allowRunCoalescing: false,
@@ -27756,7 +27756,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             payload: { issueId, commentId, resumeIntent: true, followUpRequested: true },
             contextSnapshot: { issueId, taskId: issueId, taskKey: issue.identifier ?? issueId, wakeCommentId: commentId, source: "issue.comment", resumeIntent: true, followUpRequested: true },
           });
-          await db.update(chatActions).set({ status: "processed", updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+          await lease.commit(async (tx) => {
+            await tx.update(chatActions).set({ status: "processed", updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+          });
         } catch (error) {
           if (error instanceof HttpError && [400, 403, 404, 409].includes(error.status)) {
             await cancelWork(error.message);
@@ -33936,7 +33938,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
       let authorizationActionId: string | null = null;
       if (endpoint.provider === "slack") {
-        const credentials = await resolveCredentials(endpoint);
+        const credentials = await resolveCredentials(endpoint, tx);
         if (!await authorizeSlackBoardPublication(tx, endpoint, conversation, input.publication, credentials.botToken ?? "", fetchImpl)) return null;
       }
       if (
