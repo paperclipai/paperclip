@@ -1003,6 +1003,13 @@ stack id to the Cloud tenant portfolio endpoint. Client-supplied user ids are
 never forwarded. Successful responses are cached briefly per user; self-hosted
 instances return `404`.
 
+On Cloud-managed instances, the Members page offers **Invite people** to the
+current stack's owner/admin. It opens that stack's Cloud People settings with a
+full-page navigation. The destination uses the configured Cloud origin and the
+current stack from the authenticated portfolio. The action stays hidden until
+that role is known, or when the portfolio request fails. Hiding the tenant-local
+Invites tab does not hide this Cloud action.
+
 ## 10.2 Goals
 
 - `GET /companies/:companyId/goals`
