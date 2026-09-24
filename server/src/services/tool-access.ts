@@ -3524,7 +3524,9 @@ export function toolAccessService(
   function assertLocalStdioCanBeEnabled(
     transport: ToolConnectionTransport,
     enabled: boolean,
+    config: Record<string, unknown> = {},
   ) {
+    if (config.templateId === "paperclip.cognee-cloud") return;
     if (
       transport === "local_stdio" &&
       enabled &&
@@ -6511,7 +6513,7 @@ export function toolAccessService(
   async function ensureRuntimeSlot(
     connection: typeof toolConnections.$inferSelect,
   ): Promise<ToolRuntimeSlot | null> {
-    if (connection.transport !== "local_stdio") return null;
+    if (connection.transport !== "local_stdio" || connection.config.templateId === "paperclip.cognee-cloud") return null;
     const slotKey = `mcp:${connection.companyId}:${connection.id}`;
     const [existing] = await db
       .select()
@@ -17432,7 +17434,7 @@ export function toolAccessService(
       if (transport === "mcp_remote")
         await assertRemoteConnectionEndpointsAllowed(config);
       if (transport === "local_stdio") await stdioTemplateId(companyId, config);
-      assertLocalStdioCanBeEnabled(transport, input.enabled ?? false);
+      assertLocalStdioCanBeEnabled(transport, input.enabled ?? false, config);
       await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
       if (applicationId) {
         const app = await assertApplication(companyId, applicationId);
@@ -18356,6 +18358,7 @@ export function toolAccessService(
       assertLocalStdioCanBeEnabled(
         existing.transport,
         input.enabled ?? existing.enabled,
+        config,
       );
       await assertGoogleSheetsSpreadsheetOwnership(existing.companyId, config, {
         excludeConnectionId: existing.id,

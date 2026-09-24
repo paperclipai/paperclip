@@ -21,7 +21,7 @@ Official documentation and public endpoint discovery checked September 24, 2026.
 | [Mem0](https://docs.mem0.ai/platform/mem0-mcp) | Remote MCP, `https://mcp.mem0.ai/mcp/`, Bearer API key | Create a key in the Mem0 dashboard. The provider key controls project access; user/agent/session selectors are tool arguments. |
 | [Zep](https://help.getzep.com/memory-mcp-server) | Remote MCP, `https://api.getzep.com/mcp`, OAuth | Configure Memory MCP and the identity provider in Zep first. A project administrator assigns MCP seats and shared graphs. Sign in with the assigned work identity. An ordinary Zep API key is not the credential for this endpoint. |
 | [Supermemory](https://supermemory.ai/docs/supermemory-mcp/mcp) | Remote MCP, `https://mcp.supermemory.ai/mcp`, OAuth | Sign in and select the workspace, read/write access, and optional container tags offered by Supermemory. Developer API keys are separate from hosted MCP sign-in. |
-| [Cognee](https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp) | Bundled Cloud API bridge, Cloud API key | Copy the tenant API Base URL and key from Cognee Cloud → API Keys. Requires an active Cloud workspace. The existing approved-template runtime gate still applies in public deployments. |
+| [Cognee](https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp) | Bundled Cloud API bridge, Cloud API key | Copy the tenant API Base URL and key from Cognee Cloud → API Keys. Requires an active Cloud workspace. The bundled bridge works in public deployments without a local MCP runtime host. |
 | [Honcho](https://honcho.dev/docs/v3/guides/integrations/mcp) | Remote MCP, `https://mcp.honcho.dev`, Bearer API key | Create an organization and API key in the Honcho dashboard. Workspace, peer, and session selectors remain explicit provider tool arguments. |
 
 Zep and Supermemory use user grants, the existing PKCE OAuth broker, and automatic
@@ -36,7 +36,8 @@ Cloud API bridge for `remember`, `recall`, and `forget`, matching the reviewed
 remote-mode contract from `cognee-mcp` 0.5.5. The existing approved template ID
 and credential paths remain compatible, but no process or package manager runs:
 there is no runtime registry resolution, transitive dependency installation, or
-credential-bearing subprocess. The bridge uses the gateway's guarded HTTP
+credential-bearing subprocess or local runtime slot. Provider failures do not
+consume local restart budgets. The bridge uses the gateway's guarded HTTP
 client and bounded response reader. It sends credentials only to the validated
 HTTPS tenant origin under `*.aws.cognee.ai`; redirects, credentials in URLs,
 ports, paths, query strings, and fragments are rejected.

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /** Reviewed Cognee Cloud contract from cognee-mcp 0.5.5. Executed by the bundled bridge below. */
 export const COGNEE_STDIO_TEMPLATE = {
   name: "Cognee Cloud",
@@ -80,7 +82,7 @@ export async function callCogneeCloud(input: {
       });
     } else {
       const form = new FormData();
-      form.set("data", new Blob([String(args.data)], { type: "text/plain" }), "memory.txt");
+      form.set("data", new Blob([String(args.data)], { type: "text/plain" }), `memory_${createHash("sha256").update(String(args.data)).digest("hex")}.txt`);
       form.set("datasetName", String(dataset));
       if (args.custom_prompt) form.set("custom_prompt", String(args.custom_prompt));
       result = await post("/api/v1/remember", form);
