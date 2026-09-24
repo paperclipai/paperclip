@@ -68,6 +68,14 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Defaults to 0, which closes the ACP process after each run while retaining persistent session state.",
         meta: acpVisible,
       },
+      {
+        key: "quotaRotationWaitSec",
+        label: "Quota rotation wait seconds",
+        type: "number",
+        default: 0,
+        hint: "Disabled at 0. After a subscription quota failure, wait this long for an external credential watcher to switch accounts, then retry once.",
+        meta: acpVisible,
+      },
     ],
   };
 }
