@@ -219,6 +219,8 @@ Invariant:
 
 Routine execution issues add a routine-scoped env overlay after project env and before Paperclip runtime-owned keys. Routine env uses the same secret-aware binding format, is stored on `routines.env`, is snapshotted in routine revisions, and resolves secret refs against the routine binding target so routine-owned secrets do not require direct bindings on the executing agent.
 
+Scheduled routines can use the `skip_if_ran_today` concurrency policy. With this policy, dispatches from all schedule triggers share a routine-scoped lock and create at most one scheduled execution issue per calendar day. The day uses the timezone of the oldest enabled schedule trigger; if none exists, it uses the firing trigger's timezone, then UTC. Later schedule fires on that day record a skipped routine run linked to an existing execution issue. An active execution is also skipped. Manual, API, and webhook runs remain available; an issue created by one of those runs also counts as that day's marker for later scheduled dispatches. The existing issue remains the daily marker after it is completed, so finishing a run early does not allow another scheduled issue that day.
+
 Project source repositories use the existing `project_workspaces` collection.
 Each selected GitHub repository has a canonical `repo_url` and stable provider ID
 in `metadata.githubRepositoryId`; the first workspace remains the execution default.

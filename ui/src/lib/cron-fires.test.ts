@@ -86,6 +86,16 @@ describe("previewFirePolicies", () => {
     expect(preview.map((e) => e.disposition)).toEqual(["queued", "skipped", "skipped"]);
   });
 
+  it("skips only additional fires on the same local day under skip_if_ran_today", () => {
+    const sameDayFires = [
+      new Date("2026-06-09T14:00:00Z"),
+      new Date("2026-06-09T16:00:00Z"),
+      new Date("2026-06-10T14:00:00Z"),
+    ];
+    expect(previewFirePolicies(sameDayFires, "skip_if_ran_today", "UTC").map((e) => e.disposition))
+      .toEqual(["queued", "skipped", "queued"]);
+  });
+
   it("queues every fire under always_enqueue", () => {
     const preview = previewFirePolicies(fires, "always_enqueue");
     expect(preview.every((e) => e.disposition === "queued")).toBe(true);

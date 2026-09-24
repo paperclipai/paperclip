@@ -53,6 +53,11 @@ const concurrencyPolicyOptions = [
     title: "Skip if active",
     description: "Drop overlapping trigger occurrences while the routine is already active.",
   },
+  {
+    value: "skip_if_ran_today",
+    title: "Once per day",
+    description: "Create at most one scheduled issue per calendar day, even across multiple schedules. Manual runs remain available.",
+  },
 ];
 
 const catchUpPolicyOptions = [
@@ -802,7 +807,7 @@ function NextFiresPreview({
     if (!schedule) return null;
     return {
       timeZone: schedule.trigger.timezone ?? "UTC",
-      entries: previewFirePolicies(schedule.fires, concurrencyPolicy),
+      entries: previewFirePolicies(schedule.fires, concurrencyPolicy, schedule.trigger.timezone ?? "UTC"),
     };
   }, [triggers, concurrencyPolicy]);
 

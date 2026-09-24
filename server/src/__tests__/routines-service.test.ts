@@ -246,6 +246,33 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .then((rows) => rows[0]!);
   }
 
+  it("creates only one scheduled issue per local day across distinct triggers", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines)
+      .set({ concurrencyPolicy: "skip_if_ran_today" })
+      .where(eq(routines.id, routine.id));
+    const { trigger: firstTrigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule", cronExpression: "0 9 * * *", timezone: "Asia/Bangkok",
+    }, {});
+    const { trigger: secondTrigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule", cronExpression: "0 10 * * *", timezone: "Asia/Bangkok",
+    }, {});
+
+    const first = await svc.runRoutine(routine.id, { source: "schedule", triggerId: firstTrigger.id });
+    expect(first.status).toBe("issue_created");
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, first.linkedIssueId!));
+
+    const second = await svc.runRoutine(routine.id, { source: "schedule", triggerId: secondTrigger.id });
+    expect(second.status).toBe("skipped");
+    expect(second.linkedIssueId).toBe(first.linkedIssueId);
+    const executionIssues = await db.select({ id: issues.id }).from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(executionIssues).toHaveLength(1);
+
+    const manual = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(manual.status).toBe("issue_created");
+  });
+
   it("clears transient routine run failures when execution issues resume", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const runId = randomUUID();

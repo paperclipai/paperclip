@@ -239,8 +239,27 @@ const DISPOSITION_LABEL: Record<FireDisposition, string> = {
 export function previewFirePolicies(
   fires: Date[],
   concurrencyPolicy: string,
+  timeZone = "UTC",
 ): FirePreviewEntry[] {
+  const localDay = (at: Date) => new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(at);
+  const seenDays = new Set<string>();
   return fires.map((at, index) => {
+    if (concurrencyPolicy === "skip_if_ran_today") {
+      const day = localDay(at);
+      const alreadyRanToday = seenDays.has(day);
+      seenDays.add(day);
+      return {
+        at,
+        disposition: alreadyRanToday ? "skipped" : "queued",
+        label: DISPOSITION_LABEL[alreadyRanToday ? "skipped" : "queued"],
+        note: alreadyRanToday ? "a scheduled issue already exists today" : "runs if no earlier run is active",
+      };
+    }
     if (index === 0) {
       return {
         at,

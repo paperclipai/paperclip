@@ -1877,7 +1877,7 @@ export function routineService(
           id: issueOriginId,
         });
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          const status = input.routine.concurrencyPolicy === "skip_if_active" || input.routine.concurrencyPolicy === "skip_if_ran_today" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
               companyId: input.routine.companyId,
@@ -1901,6 +1901,54 @@ export function routineService(
             nextRunAt,
           }, txDb);
           return updated ?? createdRun;
+        }
+
+        // The routine row lock serializes dispatches from every schedule trigger.
+        // Use the oldest enabled schedule's timezone as the routine's calendar day,
+        // so triggers with different timezones cannot each create an issue.
+        if (input.source === "schedule" && input.routine.concurrencyPolicy === "skip_if_ran_today") {
+          const [primarySchedule] = await txDb
+            .select({ timezone: routineTriggers.timezone })
+            .from(routineTriggers)
+            .where(and(
+              eq(routineTriggers.companyId, input.routine.companyId),
+              eq(routineTriggers.routineId, input.routine.id),
+              eq(routineTriggers.kind, "schedule"),
+              eq(routineTriggers.enabled, true),
+              eq(routineTriggers.archived, false),
+            ))
+            .orderBy(asc(routineTriggers.createdAt), asc(routineTriggers.id))
+            .limit(1);
+          const timezone = primarySchedule?.timezone ?? input.trigger?.timezone ?? "UTC";
+          const [priorIssue] = await txDb
+            .select({ id: issues.id, originRunId: issues.originRunId })
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, input.routine.companyId),
+              eq(issues.originKind, issueOriginKind),
+              eq(issues.originId, issueOriginId),
+              visibleIssueCondition(),
+              sql`date(timezone(${timezone}, ${issues.createdAt})) = date(timezone(${timezone}, ${triggeredAt.toISOString()}::timestamptz))`,
+            ))
+            .orderBy(asc(issues.createdAt), asc(issues.id))
+            .limit(1);
+          if (priorIssue) {
+            const updated = await finalizeRun(createdRun.id, {
+              status: "skipped",
+              linkedIssueId: priorIssue.id,
+              coalescedIntoRunId: priorIssue.originRunId,
+              completedAt: triggeredAt,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status: "skipped",
+              issueId: priorIssue.id,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
+          }
         }
 
         try {
@@ -1944,7 +1992,7 @@ export function routineService(
             id: issueOriginId,
           });
           if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          const status = input.routine.concurrencyPolicy === "skip_if_active" || input.routine.concurrencyPolicy === "skip_if_ran_today" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
               companyId: input.routine.companyId,
