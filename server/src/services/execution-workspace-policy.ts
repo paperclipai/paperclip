@@ -526,3 +526,52 @@ export function unhonourableGatedExecutionWorkspaceFields(
       ),
   );
 }
+
+/**
+ * Names the gated fields a patch cannot carry into the row while the gate is
+ * off, so `issueService.update` can drop exactly those.
+ *
+ * This is deliberately *wider* than `unhonourableGatedExecutionWorkspaceFields`,
+ * by exactly one field: a baseline `executionWorkspaceSettings` is accepted by
+ * the route and still not written. Persisting it destroys configuration the
+ * caller never named, in two proven ways:
+ *
+ * - **It overwrites the column.** `update()` stores
+ *   `parseIssueExecutionWorkspaceSettings(...)`, which drops the keys it does not
+ *   recognise. `{ environmentId }` — issue environment selection, a different
+ *   feature behind a different flag — parses to `{}`, so writing it replaces a
+ *   stored blob and takes `networkEgress` with it. Normalizing to nothing means
+ *   "carries no gated content", not "clear the column"; only the second is a
+ *   write, and treating them alike loses data.
+ * - **It reaches the bound workspace's own config.** On a row the runtime bound
+ *   (`executionWorkspaceId` + `reuse_existing`, the shape of any task that has
+ *   run once), a settings write is propagated to the workspace row, and the
+ *   patch builder emits an explicit `null` for every config key it knows — so a
+ *   content-free settings value erases that workspace's `provisionCommand`,
+ *   `teardownCommand`, `environmentId` and `workspaceRuntime`.
+ *
+ * `executionWorkspaceId` and `executionWorkspacePreference` carry no such
+ * payload: a baseline value there is a scalar that removes configuration rather
+ * than a blob written over one, and neither triggers the propagation. The id in
+ * particular *must* persist — clearing a stale binding is what lets a
+ * runtime-bound task change project at all.
+ *
+ * The residual is therefore that a settings clear or downgrade is still dropped
+ * rather than persisted on a gated instance. That is unchanged from before this
+ * fix, and it is the conservative side of the trade: the alternative is a write
+ * that silently deletes a workspace's provisioning commands.
+ */
+export function unpersistableGatedExecutionWorkspaceFields(
+  patch: Record<string, unknown>,
+): GatedExecutionWorkspaceField[] {
+  return GATED_EXECUTION_WORKSPACE_FIELDS.filter(
+    (field) =>
+      Object.prototype.hasOwnProperty.call(patch, field) &&
+      patch[field] !== undefined &&
+      (field === "executionWorkspaceSettings" ||
+        !isGatedExecutionWorkspaceBaseline(
+          field,
+          normalizeGatedExecutionWorkspaceField(field, patch[field]),
+        )),
+  );
+}

@@ -732,11 +732,15 @@ function isSameExecutionWorkspaceValue(requested: unknown, stored: unknown) {
  * way to deliver.
  *
  * Two residuals are known and accepted rather than claimed away. A PATCH that
- * only moves `environmentId` inside the settings blob normalizes to `null` and
- * so passes here, and the service's own parse drops it for the same reason —
- * that is the pre-existing interaction between this gate and issue
- * environments, which `selectEnvironmentExecutionWorkspaceSettings` handles
- * separately, not something this guard introduces. And
+ * only moves `environmentId` inside the settings blob carries no gated content,
+ * so it passes here and the service strips the field rather than writing it —
+ * issue environment selection is a separate feature which
+ * `selectEnvironmentExecutionWorkspaceSettings` handles, and this guard neither
+ * refuses it nor lets it overwrite the settings column (see
+ * `unpersistableGatedExecutionWorkspaceFields`). Accepting a baseline settings
+ * value without persisting it is therefore deliberate, and narrower than it
+ * looks: the field the caller can actually clear through this endpoint, and the
+ * one that unsticks a task, is `executionWorkspaceId`. And
  * `resolveExecutionWorkspaceMode` returns `agent_default`, not
  * `shared_workspace`, when an assignee override sets `useProjectWorkspace:
  * false`, so the baseline allowance is not a promise about the mode a task

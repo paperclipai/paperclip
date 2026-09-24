@@ -116,7 +116,7 @@ import {
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
   resolvePinnedIssueWorkspaceStrategyType,
-  unhonourableGatedExecutionWorkspaceFields,
+  unpersistableGatedExecutionWorkspaceFields,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -10630,14 +10630,19 @@ export function issueService(db: Db) {
       // the feature gate; only the internal shared-workspace binding bypasses it.
       //
       // The gate withholds isolation; it does not pin a task to an isolated
-      // posture it already holds. Only values asking for more than the gate can
-      // give are dropped — a baseline value clears configuration rather than
-      // introducing any, so it is written. That is what makes clearing a stale
-      // binding work: the project picker posts `executionWorkspaceId: null` on
-      // every project change, and a blanket strip left the task pointing at the
-      // previous project's workspace while answering 200.
+      // posture it already holds. A baseline `executionWorkspaceId` or
+      // `executionWorkspacePreference` removes configuration rather than
+      // introducing any, so it is written instead of discarded — which is what
+      // makes clearing a stale binding work. The project picker posts
+      // `executionWorkspaceId: null` on every project change, and the blanket
+      // strip left the task pointing at the previous project's workspace while
+      // answering 200, so the move then failed reference validation.
+      //
+      // `executionWorkspaceSettings` stays stripped even at baseline: writing it
+      // overwrites the column and can erase the bound workspace's own config.
+      // See `unpersistableGatedExecutionWorkspaceFields`.
       if (!isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace) {
-        for (const field of unhonourableGatedExecutionWorkspaceFields(issueData)) {
+        for (const field of unpersistableGatedExecutionWorkspaceFields(issueData)) {
           delete issueData[field];
         }
       }
