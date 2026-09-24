@@ -4652,18 +4652,18 @@ describe("daytona native file-sync hooks", () => {
     await expect(fs.stat(path.join(hostRoot, "escape.txt"))).rejects.toThrow();
   });
 
-  it("syncOut refuses a sandbox-authored tarball carrying a symlink whose target escapes the extraction dir", async () => {
+  it.each(["../../outside.txt", "/tmp/paperclip-git-workspace-example/skills/demo"])("syncOut refuses a sandbox-authored tarball with escaping symlink target %s", async (linkTarget) => {
     const hostRoot = await makeHostDir();
     const restored = path.join(hostRoot, "restored");
     const sandbox = createMockSandbox();
     sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination?: string }>) => {
       return Promise.all(
         requests.map(async (req) => {
-          // Craft a tar whose sole member is a symlink pointing above the tree.
+          // Craft a tar whose sole member is a symlink pointing outside the tree.
           const staging = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-evil-"));
           tempDirs.push(staging);
           await fs.mkdir(path.join(staging, "sub"), { recursive: true });
-          await fs.symlink("../../outside.txt", path.join(staging, "sub", "evil"));
+          await fs.symlink(linkTarget, path.join(staging, "sub", "evil"));
           execFileSync("tar", ["-cf", req.destination!, "-C", path.join(staging, "sub"), "evil"]);
           return { source: req.source, result: req.destination };
         }),
@@ -4741,6 +4741,8 @@ describe("daytona native file-sync hooks", () => {
     await fs.writeFile(path.join(source, "secret"), "top-secret");
     await fs.chmod(path.join(source, "secret"), 0o600);
     await fs.symlink("nested/data.txt", path.join(source, "shortcut"));
+    await fs.mkdir(path.join(source, ".claude", "skills"), { recursive: true });
+    await fs.symlink("../../nested", path.join(source, ".claude", "skills", "demo"));
 
     // Simulate the sandbox filesystem with a host-side directory the mock tar
     // commands operate on, so the round-trip exercises real tar create/extract.
@@ -4798,6 +4800,8 @@ describe("daytona native file-sync hooks", () => {
     const linkStat = await fs.lstat(path.join(restored, "shortcut"));
     expect(linkStat.isSymbolicLink()).toBe(true);
     expect(await fs.readlink(path.join(restored, "shortcut"))).toBe("nested/data.txt");
+    expect(await fs.readlink(path.join(restored, ".claude", "skills", "demo"))).toBe("../../nested");
+    expect(await fs.readFile(path.join(restored, ".claude", "skills", "demo", "data.txt"), "utf8")).toBe("hello world");
   });
 
   // -------------------------------------------------------------------------
