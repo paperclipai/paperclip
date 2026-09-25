@@ -81,6 +81,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
+import { isOpenclawGatewayAgentWedged, repairOpenclawGatewayAgentAdapterConfig } from "../services/openclaw-gateway-config-recovery.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
@@ -4237,6 +4238,47 @@ export function agentRoutes(
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;
     if (!(await assertAgentReadAllowed(req, res, agent))) return;
+
+    // PHA-3517: detect and repair the openclaw_gateway adapterConfig wedge on
+    // read. Mirrors the wakeup-time repair so the board never observes a
+    // wedged state, even if the wedge fires between wakes.
+    if (isOpenclawGatewayAgentWedged(agent)) {
+      try {
+        await repairOpenclawGatewayAgentAdapterConfig({
+          db,
+          applyAdapterConfigPatch: async ({ agentId: targetId, companyId, adapterConfig, sourceRevisionId }) => {
+            await svc.update(
+              targetId,
+              { adapterConfig },
+              {
+                recordRevision: {
+                  source: "openclaw_gateway_wedge_recovery",
+                  rolledBackFromRevisionId: sourceRevisionId,
+                  createdByAgentId: null,
+                  createdByUserId: null,
+                },
+                allowBuiltInAgentMetadata: true,
+              },
+            );
+            void companyId;
+          },
+          agent,
+          trigger: { kind: "read", path: "GET /api/agents/:id" },
+        });
+        const refreshed = await svc.getById(id);
+        if (refreshed) Object.assign(agent, refreshed);
+      } catch (err) {
+        logger.error(
+          {
+            agentId: agent.id,
+            companyId: agent.companyId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          "GET /api/agents/:id openclaw_gateway wedge repair threw; returning current config",
+        );
+      }
+    }
+
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
     if (isSelf) {
       const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
