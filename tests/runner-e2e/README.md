@@ -25,6 +25,58 @@ The launcher always sets `PAPERCLIP_ANNOUNCEMENTS_ENABLED=false` for its isolate
 instances so announcement panels do not obscure screenshot evidence. No shell
 or workflow configuration is needed, including for Daytona cells.
 
+## Completion-update probes (explicit only)
+
+`--suite completion-updates` selects four local Product E2E cells: native Codex
+and native Claude, each with `interview-plan-accept` and
+`handoff-completion-idle`. This suite adds evidence and assertions only; it does
+not enable completion wakeups, change production prompts, or prescribe a
+system-generated notice. The onboarding cell reuses the real wizard and its
+existing pre-execution native runtime switch, retaining the production persona.
+
+The chat cell asks the agent to delegate one welcome note to a named worker and
+report its result without another user message. A bounded local file read in
+the managed project workspace delays completion until the source chat is positively
+observed idle, with a three-minute handoff setup budget and a four-minute worker
+wait limit. The brief is then released, the worker must save the output and
+reach Done. Its output must include the start time supplied only in that brief, allowing
+ordinary numeric and written forms. That check runs after completion observation
+so a content mismatch cannot suppress the communication evidence.
+The source thread is observed for 120 seconds. The probe retains a later
+correction even if an earlier reply already passes delivery and access. A later
+clarification does not erase an earlier accessible delivery.
+This proves the **after-idle** boundary, not completion during an active chat
+turn. The existing onboarding cell records its naturally occurring timing.
+
+The mechanical oracle requires a run-attributed source reply after durable
+completion, plus the actual saved output or a navigable task/output link.
+Browser verification checks that reply after reload, including the UI's automatic
+task-reference links. It opens the rendered result target, checks the task heading,
+and reads its saved output through the public API. Known request markers, identifiers without a rendered link,
+successful runs without Done, user-authored replies,
+and replies on the worker task do not satisfy it. Extra tasks and modified
+worker output are rejected by the chat story. Provider turns are bounded by
+the existing first-task limit (12) and chat limit (2–4).
+
+**Mechanical passage is not answer-quality qualification.** Inspect
+`completion-update.json`, its `latestResponse`, and all retained replies against the included semantic
+rubric: correct completion claim, useful result explanation, accessible output,
+and no invented verification or follow-up work. A stale promise with a valid
+link can pass delivery/access while failing this separate review. Do not
+replace this distinction with keyword matching for “done.”
+
+`completion-update-boundary.json`, worker output, source comments, per-run
+event evidence, and marked screenshots retain the chronology for diagnosis.
+Source SHA, suite digest, models, attempts, cleanup and partial billing remain
+in the normal result/report pipeline. A missing follow-up after a completed
+worker is a behavior failure; a failure before that boundary is not proof of
+the communication defect. Use the standard dashboard to compare the four cells.
+
+```sh
+pnpm test:e2e:runner -- --list --suite completion-updates
+pnpm test:e2e:runner -- --suite completion-updates
+```
+
 ## Credentials
 
 Copy `.env.runner-e2e.example` to `.env.runner-e2e.local` and fill only the

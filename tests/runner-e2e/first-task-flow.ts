@@ -2,6 +2,7 @@ import { isBlockedUnstartedWake } from "./non-execution-wake.js";
 import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
 import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { waitForFirstTaskReply } from "./first-task-replies.js";
+import { observeCompletionUpdate } from "./completion-update-flow.js";
 import {
   firstTaskNativeRuntimePatch,
   provisionFirstTaskFixtures,
@@ -336,6 +337,7 @@ export async function runFirstTaskFlow(input: {
     const agent = await api.get<Row>(`/api/agents/${fixtures.agent.id}`);
     e.configuredModel = agent.adapterConfig?.model ?? null;
     e.runtimeSettings = {
+      completionDeliveryProbe: execution.suite.id === "completion-updates",
       onboardingRuntime: fixtures.onboardingRuntime,
       adapterType: agent.adapterType,
       adapterConfig: agent.adapterConfig,
@@ -589,6 +591,14 @@ export async function runFirstTaskFlow(input: {
           "accepted",
           scenario.id !== "interview-plan-accept",
         );
+    }
+    if (execution.suite.id === "completion-updates") {
+      const children = (await api.get<Row[]>(tasksPath)).filter(t => t.parentId === issue.id);
+      expect(children).toHaveLength(1);
+      const completion = await observeCompletionUpdate({ ...input, sourceId: issue.id, workerId: children[0]!.id,
+        marker: scenario.marker, allRuns });
+      e.runtimeSettings!.completionRenderedLinks = completion.renderedLinks ?? [];
+      await snapshot("finished");
     }
     e.checks = gradeFirstTask(e);
     await input.evidence("first-task.json", e);

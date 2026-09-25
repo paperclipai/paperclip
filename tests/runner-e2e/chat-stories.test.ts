@@ -71,3 +71,21 @@ describe("active chat follow-up oracle", () => {
     }
   });
 });
+
+
+describe("bounded chat brief fixture", () => {
+  it("releases a waiting worker and rejects an unbounded wait", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "chat-brief-bounded-"));
+    try {
+      for (const timeout of [0, -1, Infinity, 300_001])
+        await expect(prepareChatBrief(directory, "invalid", timeout)).rejects.toThrow("bounded");
+      const brief = await prepareChatBrief(directory, "release", 2_000);
+      const running = promisify(execFile)(process.execPath, [brief.scriptPath]);
+      await expect.poll(() => readFile(brief.ready, "utf8").catch(() => "")).toBe("waiting");
+      await writeFile(brief.gate, "Meet at half past ten.");
+      expect((await running).stdout.trim()).toBe("Meet at half past ten.");
+      const expires = await prepareChatBrief(directory, "expires", 1);
+      await expect(promisify(execFile)(process.execPath, [expires.scriptPath])).rejects.toMatchObject({ code: 1 });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+});

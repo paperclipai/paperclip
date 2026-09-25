@@ -3,6 +3,7 @@ import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
 import { sanitizeJson } from "./redaction.js";
 import { createHash } from "node:crypto";
 import { firstTaskScenario } from "./first-task-cases.js";
+import { completionDelivery } from "./completion-updates.js";
 export type Row = { id: string; [key: string]: any };
 export interface FirstTaskCheckpoint {
   id: string;
@@ -463,6 +464,13 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   if (e.runtimeSettings?.adapterType === "paperclip_runner" &&
     ["task-reply-accept", "task-card-accept"].includes(e.caseId) && last.phase === "finished") {
     checks.push({ ...gradeNativeSessionContinuity(e.checkpoints.flatMap((checkpoint) => checkpoint.runs), e.onboardingIssueId), evidence: [last.id] });
+  }
+  if (e.runtimeSettings?.completionDeliveryProbe && last) {
+    const worker = last.tasks.find(t => t.parentId === e.onboardingIssueId) ?? {};
+    checks.push(...completionDelivery({ sourceId: e.onboardingIssueId, worker, documents: last.documents,
+      comments: last.comments, runs: last.runs, marker: scenario.marker,
+      renderedLinks: e.runtimeSettings.completionRenderedLinks as Array<{ commentId: string; href: string }> | undefined,
+    }).checks.map(check => ({ ...check, evidence: [last.id] })));
   }
   return checks;
 }
