@@ -138,6 +138,14 @@ analytical label.
 
 ## Evidence, provenance, and history
 
+Retained result snapshots and dated measurement reports belong in
+`paperclip-evals`; application tests, Product E2E fixtures/graders, and executable
+scenario inventories remain in this repository. Keep a compact results index
+with immutable archive links and public report links, as in the
+[lifecycle baseline](../tests/lifecycle-baseline/README.md#recorded-results-moved-to-paperclip-evals).
+The private archive is not a dependency of app test execution. Keep large logs,
+traces, and videos in the existing campaign artifact storage.
+
 An Evalbook report is a presentation of immutable attempt records, not the
 source of truth. Keep the campaign ID, Paperclip commit, `paperclip-evals`
 commit, catalog/roster or definition fingerprint, model/profile, environment,
@@ -232,3 +240,20 @@ records. See the [workflow and qualification limits](../tests/runner-e2e/README.
 The 26 native `first-task` cells exercise onboarding before native selection
 becomes the UI default. Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
+
+## Lifecycle behavior baseline
+
+The credential-free [lifecycle baseline](../tests/lifecycle-baseline/README.md)
+joins unit, scripted-runner, and database integration assertions to a scenario
+inventory before changing narrative-based lifecycle policy. Run
+`pnpm test:lifecycle-baseline` to retain current passes and failures. Its Product
+E2E matcher calibration is separate from live execution; unrun live coverage
+remains explicitly unmeasured.
+
+The separate [live lifecycle baseline](../tests/runner-e2e/LIFECYCLE-BASELINE.md)
+defines 46 real-provider Product E2E cells, including paired narrative probes and
+named existing controls on legacy and native Codex. Discover it with
+`pnpm test:e2e:runner -- --list --suite lifecycle-baseline`. Historical execution
+results and follow-up coverage are recorded in that suite's guide.
+
+Continuation accounting has an explicit-only eight-cell Product E2E [baseline suite](../tests/runner-e2e/CONTINUATION-ACCOUNTING.md), complementing the deterministic lifecycle inventory.

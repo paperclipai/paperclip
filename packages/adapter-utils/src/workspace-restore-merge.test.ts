@@ -126,6 +126,24 @@ describe("workspace restore merge", () => {
   });
 
   describe("classifyWorkspaceRestoreFailure", () => {
+    it.each([
+      "Daytona syncOut refusing tarball with an unparseable entry listing: private listing",
+      "Daytona syncOut refusing unparseable or ambiguous symlink entry: private listing",
+      "Daytona syncOut refusing unparseable or ambiguous hardlink entry: private listing",
+      "Daytona syncOut refusing tarball member that escapes the extraction dir: ../private",
+      "Daytona syncOut refusing tarball link whose target escapes the extraction dir: link -> /private",
+      "Daytona sync source path is not a confined absolute path: ../private",
+      "Daytona sync source path escapes the workspace remote dir: /private",
+      ...[40, 41, 42, 44, 45].map((code) => `Daytona outbound symlink-escape guard command failed (exit ${code}): private detail`),
+    ])("holds the deterministic confinement refusal: %s", (message) => {
+      expect(classifyWorkspaceRestoreFailure(new Error(message))).toBe("restore_unsafe_archive");
+      expect(describeWorkspaceRestoreFailure(classifyWorkspaceRestoreFailure(new Error(message)))).not.toContain("private");
+    });
+
+    it("preserves the generic policy for other outbound command failures", () => {
+      expect(classifyWorkspaceRestoreFailure(new Error("Daytona outbound symlink-escape guard command failed (exit 1): transport failed"))).toBe("restore_failed");
+    });
+
     it("maps an EACCES error to restore_permission_denied", () => {
       const error: NodeJS.ErrnoException = new Error("permission denied");
       error.code = "EACCES";

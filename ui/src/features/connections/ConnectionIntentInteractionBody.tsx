@@ -163,6 +163,7 @@ export function ConnectionIntentInteractionBody({
 
   const setupProps: ConnectionSetupFlowProps | null = setupQuery.data ? {
     host: "dialog",
+    upstreamServiceName: interaction.payload.upstreamService?.name,
     serviceSlug: interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug,
     configuredConnection: interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined,
     requestedAgentId: setupQuery.data.requestedAgentId,
@@ -181,8 +182,8 @@ export function ConnectionIntentInteractionBody({
     interaction.status === "accepted"
       ? {
           icon: CheckCircle2,
-          title: `${interaction.payload.serviceName} connected`,
-          body: isAi ? "This agent can now use the connection." : `${interaction.payload.requestingAgentName} can use this connection on the continuation run.`,
+          title: interaction.payload.upstreamService ? "External provider connected" : `${interaction.payload.serviceName} connected`,
+          body: interaction.payload.upstreamService ? `${interaction.payload.requestingAgentName} can now verify and authorize ${interaction.payload.upstreamService.name} through this provider. The app is not yet verified.` : isAi ? "This agent can now use the connection." : `${interaction.payload.requestingAgentName} can use this connection on the continuation run.`,
         }
       : interaction.status === "rejected"
         ? {

@@ -1,4 +1,5 @@
-import { isRemoteMcpConnectorMethod, connectionPurposeTransportSchema } from "@paperclipai/shared";
+import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl } from "./cognee-connection.js";
+import { isMemoryConnectorId, isRemoteMcpConnectorMethod, connectionPurposeTransportSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { githubBotRequest } from "./chat-github-client.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -815,6 +816,7 @@ const APPROVED_STDIO_TEMPLATES: Record<
       },
     ],
   },
+  "paperclip.cognee-cloud": COGNEE_STDIO_TEMPLATE,
   "paperclip.google-sheets": {
     name: "Google Sheets",
     command: "paperclip-google-sheets-mcp-server",
@@ -1040,7 +1042,7 @@ function credentialFieldsFor(app: AppDefinition, methodKey?: string | null) {
   const method = connectionMethodFor(app, methodKey);
   return (method.credentialFields ?? []).map((field) => ({
     label: field.label,
-    configPath: credentialConfigPath(field),
+    configPath: credentialConfigPath(field, method),
     helpUrl: method.consoleLinks?.keys ?? method.consoleLinks?.docs ?? "",
     required: field.required,
     placement:
@@ -2342,6 +2344,15 @@ export function classifyRisk(
   if (annotations.destructiveHint === true || annotations.destructive === true)
     return "destructive";
   const normalizedToolName = normalizedProviderToolName(tool.name);
+  if (isMemoryConnectorId(sourceTemplateKey)) {
+    if (verbMatches(tool.name, "delete|remove|destroy|forget|prune|reset")) return "destructive";
+    // Supermemory uses one add_memory tool for both save and forget.
+    if (sourceTemplateKey === "supermemory" && normalizedToolName === "add-memory") return "destructive";
+    if (verbMatches(tool.name, "add|remember|save|record|ingest|cognify|update|create|set|upload|select|rename|share")) return "write";
+    if (annotations.readOnlyHint === false || annotations.writeHint === true) return "write";
+    const reads = ["get", "list", "search", "recall", "query", "retrieve", "who"];
+    return verbMatches(tool.name, reads.join("|")) ? "read" : "write";
+  }
   const reviewedReads = AGGREGATOR_READ_TOOLS.get(sourceTemplateKey ?? "");
   if (reviewedReads) {
     if (verbMatches(tool.name, "delete|remove|destroy|unpublish")) return "destructive";
@@ -2827,6 +2838,7 @@ function healthFailureHttpStatus(failure: {
   if (failure.code === "user_authorization_required") return 422;
   if (failure.code === "composio_broker_retired") return 422;
   if (failure.code === "tool_connection_transport_unsupported") return 422;
+  if (failure.code === "cognee_access_unverified" || failure.code === "memory_api_key_rejected") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
   return 502;
 }
@@ -2845,6 +2857,9 @@ function sanitizeHttpFailure(error: unknown): {
 } {
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
+    if (code === "cognee_access_unverified" || code === "memory_api_key_rejected") {
+      return { status: "error", message: error.message, code };
+    }
     if (code === "slack_mcp_access_disabled") {
       return { status: "error", message: error.message, code };
     }
@@ -3509,7 +3524,9 @@ export function toolAccessService(
   function assertLocalStdioCanBeEnabled(
     transport: ToolConnectionTransport,
     enabled: boolean,
+    config: Record<string, unknown> = {},
   ) {
+    if (config.templateId === "paperclip.cognee-cloud") return;
     if (
       transport === "local_stdio" &&
       enabled &&
@@ -6496,7 +6513,7 @@ export function toolAccessService(
   async function ensureRuntimeSlot(
     connection: typeof toolConnections.$inferSelect,
   ): Promise<ToolRuntimeSlot | null> {
-    if (connection.transport !== "local_stdio") return null;
+    if (connection.transport !== "local_stdio" || connection.config.templateId === "paperclip.cognee-cloud") return null;
     const slotKey = `mcp:${connection.companyId}:${connection.id}`;
     const [existing] = await db
       .select()
@@ -6883,6 +6900,10 @@ export function toolAccessService(
       }
     }
     if (!response.ok) {
+      if ((response.status === 401 || response.status === 403)
+        && connection.authKind === "api_key" && isMemoryConnectorId(connection.config.sourceTemplateKey)) {
+        throw unprocessable("The provider rejected this API key. Check the key and its account access, then try again.", { code: "memory_api_key_rejected" });
+      }
       if (await isSlackMcpAccessDisabledResponse(endpoint, response)) {
         throw unprocessable(
           "Slack MCP access is disabled for this app. Ask the Slack app owner to enable MCP access, then refresh this connection.",
@@ -6990,6 +7011,34 @@ export function toolAccessService(
     return apiStatus === "available" ? [...descriptors, ...RAILWAY_TOOLS] : descriptors;
   }
 
+  async function validateCogneeConnection(connection: typeof toolConnections.$inferSelect, actor?: ActorInfo, probe = true) {
+    if (connection.config.templateId !== "paperclip.cognee-cloud") return;
+    const grant = await vaultGrantForConnection(connection, actor);
+    const refs = grant?.credentialSecretRefs ?? connection.credentialSecretRefs;
+    const values: Record<string, string> = {};
+    for (const key of COGNEE_STDIO_TEMPLATE.envKeys) {
+      const ref = refs.find((candidate) => candidate.configPath === `env.${key}`);
+      if (!ref) throw unprocessable("Reconnect Cognee to restore its Cloud credentials", { code: "missing_secret" });
+      values[key] = grant
+        ? (await resolveOAuthGrantSecret(connection, grant, ref, actor, undefined)).value
+        : await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.versionSelector ?? "latest", {
+            consumerType: "tool_connection", consumerId: connection.id, configPath: ref.configPath,
+            actorType: "system", actorId: null,
+          });
+    }
+    let base: URL;
+    try { base = cogneeCloudUrl(values.COGNEE_BASE_URL!); }
+    catch { throw badRequest("Copy the tenant API Base URL from Cognee’s API Keys page."); }
+    // Scheduled health checks validate configuration and vault access. A transient
+    // Cloud probe must not withdraw an already assigned local tool catalog.
+    if (!probe) return;
+    const response = await requestRemoteHttpEndpoint(new URL("/api/v1/datasets/", base), {
+      method: "GET", headers: { "X-Api-Key": values.COGNEE_API_KEY! }, signal: AbortSignal.timeout(15_000),
+    });
+    await response.body?.cancel();
+    if (!response.ok) throw unprocessable("Cognee Cloud could not verify access. Check the tenant URL, API key, and workspace subscription.", { code: "cognee_access_unverified" });
+  }
+
   async function localTools(
     connection: typeof toolConnections.$inferSelect,
   ): Promise<McpToolDescriptor[]> {
@@ -7062,6 +7111,7 @@ export function toolAccessService(
       throw unsupportedToolConnectionTransport();
     }
     await resolveCredentialHeaders(connection);
+    await validateCogneeConnection(connection, actor);
     return localTools(connection);
   }
 
@@ -7223,6 +7273,7 @@ export function toolAccessService(
       } else if (connection.transport === "local_stdio") {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);
+        await validateCogneeConnection(connection, actor, false);
       } else {
         throw unsupportedToolConnectionTransport();
       }
@@ -11818,12 +11869,10 @@ export function toolAccessService(
     return `${base.slice(0, 151).trimEnd()} (${randomUUID().slice(0, 6)})`;
   }
 
-  async function assertMcpAggregatorSetupEnabled(provider: unknown, method: unknown) {
-    if (isRemoteMcpConnectorMethod(provider, method)
-      && !(await instanceSettingsService(db).getExperimental()).enableMcpAggregators) {
-      throw forbidden("Enable MCP aggregators in Settings → Experimental to set up this connection", {
-        code: "mcp_aggregators_disabled",
-      });
+  async function assertExperimentalConnectorSetupEnabled(provider: unknown, existing = false) {
+    if (!existing && isMemoryConnectorId(provider)
+      && !(await instanceSettingsService(db).getExperimental()).enableMemoryConnectors) {
+      throw forbidden("Enable memory connectors in Settings → Experimental to set up this connection", { code: "memory_connectors_disabled" });
     }
   }
 
@@ -11975,7 +12024,10 @@ export function toolAccessService(
       ? connectionMethodFor(galleryEntry, inferredMethodKey)
       : null;
     const remoteMcpConnector = isRemoteMcpConnectorMethod(galleryEntry?.slug, method?.key);
-    await assertMcpAggregatorSetupEnabled(galleryEntry?.slug, method?.key);
+    await assertExperimentalConnectorSetupEnabled(galleryEntry?.slug, Boolean(
+      input.reconnectConnectionId && requestedResumeConnection?.status !== "draft"
+      && requestedResumeConnection?.config.sourceTemplateKey === galleryEntry?.slug,
+    ));
     if (galleryEntry && input.link) {
       const acceptsProviderGeneratedUrl =
         method?.transport === "mcp_remote" &&
@@ -12403,6 +12455,7 @@ export function toolAccessService(
       [];
     const credentialRefs: McpConnectionCredentialRef[] = [];
     const createdSecretIds: string[] = [];
+    const createdDefinitionIds: string[] = [];
     // "Just me" needs a named board user to own the consent. An agent actor
     // cannot hold a personal identity, and silently falling back to a shared
     // credential is exactly the mis-scoping the design forbids, so refuse.
@@ -12498,17 +12551,28 @@ export function toolAccessService(
           throw badRequest(`Missing credential value for ${field.configPath}`);
         }
         if (!value) continue;
-        const secret = await secrets.create(
-          companyId,
-          {
-            name: `${name} ${field.label} ${randomUUID().slice(0, 8)}`,
-            key: `tool_app.${randomUUID()}.${field.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
-            provider: "local_encrypted",
-            value,
-            description: `Credential for ${name} (${field.configPath}).`,
-          },
-          actorForSecret(actor),
-        );
+        const secretMetadata = {
+          name: `${name} ${field.label} ${randomUUID().slice(0, 8)}`,
+          key: `tool_app.${randomUUID()}.${field.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
+          provider: "local_encrypted" as const,
+          description: `Credential for ${name} (${field.configPath}).`,
+        };
+        // A personal grant must own a user-scoped vault value. Merely keeping a
+        // company secret off the connection row does not establish ownership.
+        const secret = personalIdentityUserId
+          ? await db.transaction(async (tx) => {
+              const personalSecrets = secretService(tx as unknown as Db);
+              const definition = await personalSecrets.createUserSecretDefinition(
+                companyId, secretMetadata, actorForSecret(actor),
+              );
+              const valueRow = await personalSecrets.createCurrentUserSecretValue(
+                companyId, personalIdentityUserId,
+                { definitionId: definition.id, value }, actorForSecret(actor),
+              );
+              createdDefinitionIds.push(definition.id);
+              return valueRow;
+            })
+          : await secrets.create(companyId, { ...secretMetadata, value }, actorForSecret(actor));
         createdSecretIds.push(secret.id);
         credentialSecretRefs.push({
           secretId: secret.id,
@@ -13247,6 +13311,9 @@ export function toolAccessService(
         for (const secretId of createdSecretIds) {
           await secrets.remove(secretId).catch(() => undefined);
         }
+        for (const definitionId of createdDefinitionIds) {
+          await db.delete(userSecretDefinitions).where(eq(userSecretDefinitions.id, definitionId)).catch(() => undefined);
+        }
       }
       if (identityRollbackError) {
         throw new HttpError(
@@ -13887,7 +13954,7 @@ export function toolAccessService(
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId, companyId);
     assertSupportedConnection(connection);
-    await assertMcpAggregatorSetupEnabled(connection.config.sourceTemplateKey, connection.config.connectionMethodKey);
+    await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");
     if (connection.status === "archived")
       throw conflict("Archived app connections cannot be reconnected");
     if (connection.credentialSource === "vercel_connect") {
@@ -13956,17 +14023,20 @@ export function toolAccessService(
         );
         continue;
       }
-      const secret = await secrets.create(
-        companyId,
-        {
-          name: `${connection.name} ${field.label} ${randomUUID().slice(0, 8)}`,
-          key: `tool_app.${randomUUID()}.${field.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
-          provider: "local_encrypted",
-          value,
-          description: `Credential for ${connection.name} (${field.configPath}).`,
-        },
-        actorForSecret(actor),
-      );
+      const metadata = {
+        name: `${connection.name} ${field.label} ${randomUUID().slice(0, 8)}`,
+        key: `tool_app.${randomUUID()}.${field.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
+        provider: "local_encrypted" as const,
+        description: `Credential for ${connection.name} (${field.configPath}).`,
+      };
+      const secret = personalIdentity
+        ? await db.transaction(async (tx) => {
+            const vault = secretService(tx as unknown as Db);
+            const definition = await vault.createUserSecretDefinition(companyId, metadata, actorForSecret(actor));
+            return vault.createCurrentUserSecretValue(companyId, personalIdentity.subjectUserId,
+              { definitionId: definition.id, value }, actorForSecret(actor));
+          })
+        : await secrets.create(companyId, { ...metadata, value }, actorForSecret(actor));
       credentialSecretRefs.push({
         secretId: secret.id,
         versionSelector: "latest",
@@ -14063,7 +14133,7 @@ export function toolAccessService(
   ): Promise<ToolOAuthStartResult> {
     let connection = await getConnectionRow(connectionId, companyId);
     assertSupportedConnection(connection);
-    await assertMcpAggregatorSetupEnabled(connection.config.sourceTemplateKey, connection.config.connectionMethodKey);
+    await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");
     if (connection.status === "archived")
       throw conflict("Archived app connections cannot start sign in");
     const sourceTemplateKey =
@@ -16560,7 +16630,7 @@ export function toolAccessService(
     if (!app || app.availability?.available === false)
       throw notFound("App not found");
     const method = connectionMethodFor(app, methodKey);
-    await assertMcpAggregatorSetupEnabled(app.slug, method.key);
+    await assertExperimentalConnectorSetupEnabled(app.slug);
     if (method.transport !== "mcp_remote" || !method.defaults?.serverUrl) {
       throw unprocessable(
         "This app method does not use a hosted remote MCP endpoint",
@@ -17358,7 +17428,7 @@ export function toolAccessService(
       if (transport === "mcp_remote")
         await assertRemoteConnectionEndpointsAllowed(config);
       if (transport === "local_stdio") await stdioTemplateId(companyId, config);
-      assertLocalStdioCanBeEnabled(transport, input.enabled ?? false);
+      assertLocalStdioCanBeEnabled(transport, input.enabled ?? false, config);
       await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
       if (applicationId) {
         const app = await assertApplication(companyId, applicationId);
@@ -18282,6 +18352,7 @@ export function toolAccessService(
       assertLocalStdioCanBeEnabled(
         existing.transport,
         input.enabled ?? existing.enabled,
+        config,
       );
       await assertGoogleSheetsSpreadsheetOwnership(existing.companyId, config, {
         excludeConnectionId: existing.id,

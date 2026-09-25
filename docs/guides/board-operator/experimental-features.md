@@ -18,6 +18,9 @@ If you need stable behavior for an important workflow, do not rely on an experim
 ## Where you enable them
 
 Board operators enable or disable experiments from **Instance Settings > Experimental** in the app.
+Controls are listed alphabetically within each section. Hosting operators can hide
+controls they manage; empty developer and legacy sections are omitted. Hidden
+controls retain their configured values.
 
 The CLI exposes the same surface:
 

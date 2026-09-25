@@ -230,6 +230,8 @@
   --new-issue-visual-viewport-offset-top: 0px;
   --new-issue-dialog-top-gap: max(1rem, env(safe-area-inset-top));
   --new-issue-dialog-bottom-gap: max(1rem, env(safe-area-inset-bottom));
+  --mobile-entity-picker-visual-viewport-height: 100dvh;
+  --mobile-entity-picker-visual-viewport-bottom: 100dvh;
 
   /* ────────────────────────────────────────────────────────────────────────
      Motion tokens — chat-style task thread (default; classic legacy view sits
@@ -3005,19 +3007,29 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    software keyboard. The fixed sheet also avoids scale motion during mobile
    viewport resizing. */
 @media (max-width: 40rem) {
+  [data-radix-popper-content-wrapper]:has(> [data-mobile-entity-picker]) {
+    transform: none !important;
+  }
+
   [data-mobile-entity-picker] {
     position: fixed !important;
-    inset: auto calc(var(--spacing) * 4) max(calc(var(--spacing) * 4), env(safe-area-inset-bottom)) !important;
+    inset: calc(var(--mobile-entity-picker-visual-viewport-bottom) - var(--spacing) * 4)
+      calc(var(--spacing) * 4) auto !important;
     width: auto !important;
     max-width: none !important;
-    max-height: calc(100dvh - calc(var(--spacing) * 8)) !important;
+    max-height: calc(var(--mobile-entity-picker-visual-viewport-height) - var(--spacing) * 8) !important;
     transform: none !important;
+    translate: 0 -100% !important;
     transform-origin: bottom center !important;
     animation: none !important;
   }
 
-  [data-mobile-entity-picker] [data-slot="command-list"] {
-    max-height: min(var(--sz-300px), calc(100dvh - calc(var(--spacing) * 24))) !important;
+  [data-mobile-entity-picker] [data-slot="command-list"],
+  [data-mobile-entity-picker-list] {
+    max-height: min(
+      var(--sz-300px),
+      calc(var(--mobile-entity-picker-visual-viewport-height) - var(--spacing) * 24)
+    ) !important;
   }
 }
 :root {

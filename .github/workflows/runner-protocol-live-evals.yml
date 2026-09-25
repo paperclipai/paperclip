@@ -22,6 +22,14 @@ on:
         description: "Optional lower concurrency (at least 2, no higher than the configured campaign limit)"
         type: string
         required: false
+      grok_authentication:
+        description: "Explicit Grok credential source; subscription uses protected GROK_AUTH_JSON"
+        type: choice
+        options:
+          - api_key
+          - subscription
+        default: api_key
+        required: false
       max_infrastructure_retries:
         description: "Automatic retries only for explicitly retryable infrastructure failures (0-3)"
         type: number
@@ -256,6 +264,7 @@ jobs:
           MAX_PARALLEL_LIMIT: ${{ needs.authorize.outputs.max_parallel_limit }}
           REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}
           ROSTERS: ${{ inputs.rosters || 'all' }}
+          GROK_AUTHENTICATION: ${{ inputs.grok_authentication || 'api_key' }}
         run: |
           set -euo pipefail
           if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -lt 2 ] || [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
@@ -272,6 +281,7 @@ jobs:
           node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs catalog \
             --evals-root .paperclip-evals \
             --rosters "$ROSTERS" \
+            --grok-authentication "$GROK_AUTHENTICATION" \
             --campaign-id "gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --max-parallel "$MAX_PARALLEL" \
             --output runner-protocol-eval-catalog.json
@@ -542,6 +552,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
+          PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: ${{ matrix.credentialName == 'PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET' && secrets.GROK_AUTH_JSON || '' }}
           PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID }}
           PAPERCLIP_CLAUDE_MANAGED_AGENT_ID: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_AGENT_ID }}
           PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION }}
@@ -582,19 +593,36 @@ jobs:
             --runner-package runner-protocol-build/extracted/paperclip-runner.tgz \
             --runnerd runner-protocol-build/extracted/paperclip-runnerd \
             --runs-root cell-output/runs \
+            --summary-path cell-output/roster-summary.json \
             --max-infrastructure-retries "$MAX_INFRASTRUCTURE_RETRIES" \
             --run-id "gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${CELL_ID}"
           status=$?
           set -e
           CELL_EXIT_CODE="$status" node --input-type=module <<'NODE'
-          import { writeFileSync } from "node:fs";
+          import { readFileSync, writeFileSync } from "node:fs";
+          let authenticationMode;
+          let authenticationEvidenceFailure;
+          if (["XAI_API_KEY", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"].includes(process.env.CREDENTIAL_NAME)) {
+            const expected = process.env.CREDENTIAL_NAME === "XAI_API_KEY" ? "api_key" : "subscription";
+            try {
+              const observed = JSON.parse(readFileSync("cell-output/roster-summary.json", "utf8")).authenticationMode;
+              // Never copy arbitrary provider output into cell metadata or errors.
+              if (["api_key", "subscription"].includes(observed)) authenticationMode = observed;
+              if (authenticationMode !== expected) authenticationEvidenceFailure = "grok_authentication_evidence_mismatch";
+            } catch {
+              authenticationEvidenceFailure = "grok_authentication_evidence_unreadable";
+            }
+          }
           writeFileSync("cell-output/cell.json", `${JSON.stringify({
             schema: "paperclip.runner-protocol-eval.cell/v1",
             cellId: process.env.CELL_ID,
             rosterFile: process.env.ROSTER_FILE,
             caseId: process.env.CASE_ID,
+            ...(authenticationMode ? { authenticationMode } : {}),
+            ...(authenticationEvidenceFailure ? { authenticationEvidenceFailure } : {}),
             exitCode: Number(process.env.CELL_EXIT_CODE),
           }, null, 2)}\n`, { mode: 0o600 });
+          if (authenticationEvidenceFailure) throw new Error(authenticationEvidenceFailure);
           NODE
           exit "$status"
 

@@ -92,6 +92,14 @@ describe("continuation behavioral evaluation", () => {
     r.checkpoints[0].documents.at(-1)!.latestRevisionId = "unapproved-v2";
     expect(failures(r)).toContain("initial.no-premature-output");
   });
+  it.each(["issueId", "key", "revisionId"] as const)("rejects a proposal confirmation with the wrong %s", (field) => {
+    const r = recording("revision-preserves-approval");
+    r.checkpoints[0].documents.push({ key: "welcome-note-plan", body: "After approval, write the note.", latestRevisionId: "plan-v1" });
+    const target = { type: "issue_document", issueId: "parent", key: "welcome-note-plan", revisionId: "plan-v1" };
+    target[field] = "wrong";
+    r.checkpoints[0].interactions.push({ kind: "request_confirmation", payload: { target } });
+    expect(failures(r)).toContain("initial.no-premature-output");
+  });
   it("does not treat an arbitrary deliverable targeted for confirmation as a plan", () => {
     const r = recording();
     r.checkpoints[0].documents.push({ key: "welcome-note", body: r.marker, latestRevisionId: "v1" });

@@ -9257,6 +9257,65 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        // Retrying an exhausted disposition repair is an explicit retry of the
+        // recorded owner, never permission to reopen a stopped/completed task or
+        // silently retry a new assignee from an old notice. All admission gates
+        // below still apply, even for a board operator.
+        if (
+          outcome === "restored" &&
+          sourceIssueStatus === "todo" &&
+          activeRecoveryAction.kind === "deliberate_wait_without_target"
+        ) {
+          if (
+            lockedIssue.status !== "blocked" ||
+            activeRecoveryAction.ownerType !== "board" ||
+            activeRecoveryAction.wakePolicy?.type !== "board_escalation" ||
+            !activeRecoveryAction.returnOwnerAgentId ||
+            lockedIssue.assigneeAgentId !== activeRecoveryAction.returnOwnerAgentId
+          ) {
+            throw conflict(
+              "This recovery notice no longer matches the task. Refresh the task before choosing its next step.",
+              { code: "disposition_recovery_retry_stale" },
+            );
+          }
+          const sourceOwner = lockedIssue.assigneeAgentId
+            ? await agentsSvc.getById(lockedIssue.assigneeAgentId)
+            : null;
+          if (
+            !sourceOwner ||
+            sourceOwner.companyId !== lockedIssue.companyId ||
+            sourceOwner.status === "paused" ||
+            sourceOwner.status === "terminated"
+          ) {
+            throw conflict(
+              "The assigned agent is unavailable. Resume or review the agent before retrying.",
+              { code: "disposition_recovery_owner_unavailable" },
+            );
+          }
+          const readiness = await svc.getDependencyReadiness(lockedIssue.id, tx);
+          if (readiness.unresolvedBlockerCount > 0) {
+            throw conflict("Resolve the task’s blockers before retrying.", { code: "disposition_recovery_retry_blocked" });
+          }
+          // Interaction creation also locks the source issue. Check the durable
+          // wait inside this transaction so retry cannot bypass a newer question
+          // or confirmation after the notice was rendered.
+          const [pendingInteraction] = await tx
+            .select({ id: issueThreadInteractions.id })
+            .from(issueThreadInteractions)
+            .where(and(
+              eq(issueThreadInteractions.companyId, lockedIssue.companyId),
+              eq(issueThreadInteractions.issueId, lockedIssue.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .limit(1);
+          if (pendingInteraction) {
+            throw conflict(
+              "Respond to the pending question or confirmation before retrying.",
+              { code: "disposition_recovery_interaction_pending" },
+            );
+          }
+        }
+
         if (
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
@@ -13679,6 +13738,7 @@ export function issueRoutes(
                 {
                   attachmentIds: commentAttachmentIds,
                   clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
+                  mirrorToSlack: actor.actorType === "user",
                   authorizationReason: issueMutationAuthorizationReason,
                   sourceTrust: attachmentCommentSourceTrust,
                 },
@@ -14284,6 +14344,7 @@ export function issueRoutes(
           {
             authorizationReason: issueMutationAuthorizationReason,
             clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
+            mirrorToSlack: actor.actorType === "user",
             sourceTrust: await sourceTrustForActorWrite(issue, actor),
           },
         );
@@ -14291,6 +14352,7 @@ export function issueRoutes(
         await externalObjectsSvc.syncCommentSafely(comment.id);
         if (
           issue.assigneeAgentId &&
+          !issue.externalConversationState &&
           !(
             actor.actorType === "agent" &&
             actor.actorId === issue.assigneeAgentId
@@ -14491,6 +14553,11 @@ export function issueRoutes(
             typeof wakeup.payload.issueId === "string"
               ? wakeup.payload.issueId
               : issue.id;
+          // Provider turns use the task identifier as their session key. Board
+          // messages must resume that same session instead of creating a UUID-keyed fork.
+          if (wakeIssueId === issue.id && issue.externalConversationState && issue.identifier) {
+            wakeup.contextSnapshot = { ...wakeup.contextSnapshot, taskKey: issue.identifier };
+          }
           wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
         };
         const addDependencyResolvedWakeup = async (input: {
@@ -17635,6 +17702,7 @@ export function issueRoutes(
           metadata: req.body.metadata ?? null,
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
+          mirrorToSlack: actor.actorType === "user",
           sourceTrust,
         };
         let txResult: {
@@ -17747,6 +17815,7 @@ export function issueRoutes(
           metadata: req.body.metadata ?? null,
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
+          mirrorToSlack: actor.actorType === "user",
           authorizationReason: commentAuthorizationReason,
           sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
         };
@@ -17772,6 +17841,9 @@ export function issueRoutes(
       await externalObjectsSvc.syncCommentSafely(comment.id);
       if (
         currentIssue.assigneeAgentId &&
+        // Slack-linked messages need the normal attributed wake boundary so
+        // the accepted requester and return-thread receipt travel with the run.
+        !currentIssue.externalConversationState &&
         !(
           actor.actorType === "agent" &&
           actor.actorId === currentIssue.assigneeAgentId
@@ -17955,6 +18027,9 @@ export function issueRoutes(
               : currentIssue.id;
           const key = `${agentId}:${wakeIssueId}`;
           if (wakeups.has(key)) return;
+          if (wakeIssueId === currentIssue.id && issue.externalConversationState && currentIssue.identifier) {
+            wakeup.contextSnapshot = { ...wakeup.contextSnapshot, taskKey: currentIssue.identifier };
+          }
           wakeups.set(key, { agentId, wakeup });
         };
         const addDependencyResolvedWakeup = async (input: {

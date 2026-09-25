@@ -1,3 +1,4 @@
+import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { persistActivity } from "./activity-log.js";
@@ -69,6 +70,10 @@ export async function validateExecutionReconciliation(input: {
     throw conflict(
       "The recovery source or task owner changed. Inspect the current execution before continuing.",
     );
+  }
+  if (hasWorkspaceRestoreFailure(run.resultJson) &&
+      (!decision.workspaceRepairEvidence || decision.workspaceRepairEvidence.trim().length < 20)) {
+    throw conflict("Verify safe workspace staging or repair and record workspaceRepairEvidence before continuing this run.");
   }
   for (const pid of [
     run.processPid,
@@ -471,7 +476,9 @@ export async function settleUnrecoverableExecutions(
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
         const note = current
-          ? "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
+          ? hasWorkspaceRestoreFailure(run.resultJson)
+            ? "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force."
+            : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         if (current) {

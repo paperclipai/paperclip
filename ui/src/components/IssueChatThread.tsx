@@ -1,3 +1,4 @@
+import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "./DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./task-chat/TaskChatPausedTakeover";
 import { useEmailComment } from "./EmailMessageCard";
@@ -3504,6 +3505,7 @@ function SystemNoticeCommentContent({
   const commentMetadata = isIssueCommentMetadata(custom.commentMetadata)
     ? custom.commentMetadata
     : null;
+  const recoverySnapshot = useDispositionRecoverySnapshot(commentMetadata);
   const runAgentId =
     typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -3599,6 +3601,10 @@ function SystemNoticeCommentContent({
         });
       });
   };
+
+  if (authorType === "system" && recoverySnapshot) {
+    return <div id={anchorId}><DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={toValidIsoString(message.createdAt)} defaultExpanded={presentation?.detailsDefaultOpen} /></div>;
+  }
 
   if (staleSuccessfulRunHandoffNotice) {
     return (

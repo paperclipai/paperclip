@@ -71,3 +71,18 @@ it("retries a busy AI subscription only when no provider work started", () => {
    expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: {} })).toBe(true);
    expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: true } } })).toBe(true);
  });
+
+
+it.each(["failed", "timed_out", "cancelled"])("holds an unsafe archive after %s even with conversation or bootstrap evidence", (status) => {
+  expect(legacyExecutionNeedsReconciliation({ runtimeMode: "legacy", status, errorCode: "workspace_restore_failed", resultJson: {
+    workspaceRestoreFailure: "restore_unsafe_archive", conversationContinuation: "continue_conversation_v1",
+    executionRecovery: { kind: "bootstrap", providerWorkStarted: false }, stopReason: "max_turns",
+  } })).toBe(true);
+});
+
+
+it("retains conversation retry eligibility for a transient restore lock timeout", () => {
+  expect(legacyExecutionNeedsReconciliation({ runtimeMode: "legacy", status: "failed", errorCode: "workspace_restore_failed", resultJson: {
+    workspaceRestoreFailure: "restore_lock_timeout", conversationContinuation: "continue_conversation_v1",
+  } })).toBe(false);
+});

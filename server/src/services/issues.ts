@@ -1,3 +1,4 @@
+import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
@@ -1133,6 +1134,7 @@ export async function resolveChatOriginPublicationBindings(
     const run = await dbOrTx
       .select({
         agentId: heartbeatRuns.agentId,
+        responsibleUserId: heartbeatRuns.responsibleUserId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -1146,6 +1148,7 @@ export async function resolveChatOriginPublicationBindings(
         (
           rows: Array<{
             agentId: string;
+            responsibleUserId: string | null;
             contextSnapshot: Record<string, unknown> | null;
           }>,
         ) => rows[0] ?? null,
@@ -1159,6 +1162,12 @@ export async function resolveChatOriginPublicationBindings(
       readStringFromRecord(snapshot, "issueId") ??
       readStringFromRecord(snapshot, "taskId");
     if (snapshotIssueId && snapshotIssueId !== issueId) return [];
+
+    const boardBindings = await slackBoardReplyBindings(dbOrTx, {
+      companyId, issueId, agentId: lineageAgentId!,
+      commentIds: readChatWakeCommentIds(snapshot), userId: run.responsibleUserId,
+    });
+    if (boardBindings.length) return boardBindings;
 
     // A native runner can emit its continuation immediately after the durable
     // `request.resolve` command is queued, before the delivery worker records
@@ -12071,6 +12080,8 @@ export function issueService(db: Db) {
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
         clientRequestId?: string;
+        /** Server-only: authenticated Paperclip messages also belong in the Slack thread. */
+        mirrorToSlack?: boolean;
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
@@ -12550,6 +12561,9 @@ export function issueService(db: Db) {
 
       if (issue.conversationAgentId && actor.userId) {
         await dbOrTx.update(issues).set({ conversationState: "active" }).where(eq(issues.id, issueId));
+      }
+      if (options?.mirrorToSlack && actor.userId && authorType === "user") {
+        await mirrorSlackBoardComment(dbOrTx, comment, { attachmentIds: options.attachmentIds });
       }
       if (authorType === "user" || actor.userId) {
         await resumeSlackConversation(dbOrTx, issue.companyId, issueId);

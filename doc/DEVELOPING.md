@@ -690,6 +690,8 @@ When an additional repository has a configured local checkout, Paperclip seeds t
 
 Sandbox staging, including Daytona, transfers each repository's Git history and working files. Restore merges files and commits back into each local task checkout independently. Durable sandbox recovery keeps the same repository snapshots. Normal ignore and workspace exclusion rules still apply. A clone failure stops task preparation with an error so the agent does not start with only part of the project.
 
+Staging preserves relative symlink targets in secondary repositories, including skill links such as `.claude/skills/demo -> ../../skills/demo`. It does not rewrite them to host temporary paths or copy their target contents in place of the link. Daytona still rejects outbound archives with absolute or escaping link targets before extraction.
+
 If a repository is detached or its source configuration changes, its previous task copy is retained under `.paperclip-runtime/detached-repositories/` and excluded from future sandbox transfers. Referenced projects continue to use the separate read-only multi-project workspace behavior.
 
 ## Config Freshness

@@ -1,3 +1,5 @@
+import { DispositionRecoveryNotice } from "../components/DispositionRecoveryNotice";
+import { SetupPrompt } from "./apps/chat/SetupPrompt";
 import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
 import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
 import { SetupWizardNavigation, SetupWizardFooter } from "../components/SetupWizard";
@@ -2188,6 +2190,13 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
+      <Section title="Disposition recovery notice">
+        <SubSection title="Needs attention, with inspectable details">
+          <DispositionRecoveryNotice snapshot={{ kind: "disposition_repair_escalated", actionId: "design-recovery", attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: null }} defaultExpanded />
+        </SubSection>
+        <p className="text-sm text-muted-foreground">Storybook’s Recovery notice stories show the actionable, pending, acknowledged, unavailable, failed, and mobile states using this production component.</p>
+      </Section>
+
       <Section title="Execution recovery">
         <p className="text-sm text-muted-foreground">
           Recovery runs in the background. Task lists keep their ordinary status without
@@ -2201,6 +2210,11 @@ export function DesignGuide() {
         <SavedProviderKeySelect options={[{ id: "example", label: "Claude API key (Your key)", binding: { type: "user_secret_ref", key: "ANTHROPIC_API_KEY", version: "latest" } }]} value="example" onChange={() => {}} loading={false} error={false} />
         <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading error={false} />
         <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading={false} error />
+      </Section>
+
+      <Section title="Browser setup prompt">
+        <p className="text-sm text-muted-foreground">A shared copy action for provider setup instructions. Confirms success inline and offers selectable text if clipboard access fails.</p>
+        <SetupPrompt prompt="Design guide example. This is a preview, not a real provider setup request." />
       </Section>
 
       <Section title="Connection Intent">

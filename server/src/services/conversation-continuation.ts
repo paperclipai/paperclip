@@ -16,7 +16,7 @@ export function isConversationAdapter(adapterType: string): boolean {
 export const CONVERSATION_CONTINUATION_POLICY = "continue_conversation_v1";
 
 export function hasConversationContinuationPolicy(result: Record<string, unknown> | null | undefined): boolean {
-  return result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
+  return result?.workspaceRestoreFailure !== "restore_unsafe_archive" && result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
 }
 
 /** Persisted by the server when it claims the run, before remote provisioning. */
@@ -52,6 +52,7 @@ export async function historicalAdapterType(db: Db, run: typeof heartbeatRuns.$i
 }
 
 export async function runUsedConversationAdapter(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
+  if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive") return false;
   if (hasConversationContinuationPolicy(run.resultJson)) return true;
   const adapterType = await historicalAdapterType(db, run);
   return adapterType !== null && isConversationAdapter(adapterType);
@@ -70,6 +71,7 @@ export function conversationRecoveryActionPredicate() {
         and ${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'
         and coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text
         and ${heartbeatRuns.runtimeMode} = 'legacy'
+        and coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
         and ${inArray(heartbeatRuns.status, ['failed', 'timed_out', 'interrupted', 'cancelled'])}
         and ${conversationRunPredicate()}
         and ${or(

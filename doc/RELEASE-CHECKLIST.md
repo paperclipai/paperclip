@@ -19,7 +19,7 @@ The release captain's checklist for every lane. The mechanics live in
 - [ ] the release smoke suite passed against the exact candidate canary
       before anything published
 - [ ] `npm view paperclipai@nightly version` shows the new `-nightly.N`
-- [ ] `nightly/v*` tag pushed; `:nightly` and `:nightly-cloud` images built
+- [ ] `nightly/v*` tag pushed; `:nightly` image built
 - [ ] on a tag-push rejection (workflows-permission error), follow the
       recovery commands in the job summary
 
@@ -34,7 +34,7 @@ Happy path:
 - [ ] dispatch `release.yml` with `channel: beta`
 - [ ] approve the `npm-beta` environment gate
 - [ ] `npm view paperclipai@beta version` shows the new `-beta.N`
-- [ ] `beta/v*` tag pushed; `:beta` and `:beta-cloud` images built
+- [ ] `beta/v*` tag pushed; `:beta` image built
 - [ ] post-publish smoke (`smoke_beta`) is green
 - [ ] `draft_stable_notes` pushed `release-notes/v<beta-version>`; open the
       notes PR from the job-summary link

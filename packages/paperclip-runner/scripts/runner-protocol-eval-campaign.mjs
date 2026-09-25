@@ -54,7 +54,14 @@ function inside(root, candidate, label) {
   return resolve(candidate);
 }
 
-export function credentialForConfig(config) {
+function validateGrokAuthenticationMode(mode) {
+  if (mode !== "api_key" && mode !== "subscription") {
+    throw new Error("Grok authentication mode must be api_key or subscription");
+  }
+  return mode;
+}
+
+export function credentialForConfig(config, grokAuthenticationMode = "api_key") {
   if (config.provider === "opencode") return "OPENROUTER_API_KEY";
   if (config.provider === "claude_managed") return "ANTHROPIC_API_KEY";
   if (config.provider === "aws_agentcore") return "AWS_AGENTCORE_OIDC";
@@ -64,7 +71,11 @@ export function credentialForConfig(config) {
   if (config.provider === "acpx") {
     if (config.acpxAgent === "pi") return "OPENROUTER_API_KEY";
     if (config.acpxAgent === "claude") return "ANTHROPIC_API_KEY";
-    if (config.acpxAgent === "grok") return "XAI_API_KEY";
+    if (config.acpxAgent === "grok") {
+      return validateGrokAuthenticationMode(grokAuthenticationMode) === "subscription"
+        ? "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"
+        : "XAI_API_KEY";
+    }
     if (config.acpxAgent === "codex") return "OPENAI_API_KEY";
   }
   throw new Error(
@@ -117,8 +128,10 @@ export async function buildProtocolEvalCatalog({
   campaignId,
   source = {},
   maxParallel = 100,
+  grokAuthenticationMode = "api_key",
 }) {
   safeId(campaignId, "campaign ID");
+  validateGrokAuthenticationMode(grokAuthenticationMode);
   if (
     !Number.isSafeInteger(maxParallel) ||
     maxParallel < 2 ||
@@ -159,7 +172,7 @@ export async function buildProtocolEvalCatalog({
       `Config for ${rosterId}`,
     );
     const config = await loadObject(configPath);
-    const credentialName = credentialForConfig(config);
+    const credentialName = credentialForConfig(config, grokAuthenticationMode);
     const cases = roster.cases.map((caseId) => safeId(caseId, "case ID"));
     if (new Set(cases).size !== cases.length) {
       throw new Error(`Live roster ${rosterId} repeats a case`);
@@ -172,6 +185,9 @@ export async function buildProtocolEvalCatalog({
       provider: String(config.provider ?? "codex"),
       driver: String(config.driver ?? "codex_app_server"),
       credentialName,
+      ...(config.provider === "acpx" && config.acpxAgent === "grok"
+        ? { authenticationMode: grokAuthenticationMode }
+        : {}),
       cases,
     });
   }
@@ -185,6 +201,9 @@ export async function buildProtocolEvalCatalog({
     }
   }
   if (rosters.length === 0) throw new Error("No live rosters were selected");
+  if (grokAuthenticationMode === "subscription" && !rosters.some((roster) => roster.authenticationMode === "subscription")) {
+    throw new Error("Subscription selection requires an explicit Grok roster");
+  }
 
   const cells = rosters.flatMap((roster) =>
     roster.cases.map((caseId) => ({
@@ -196,6 +215,7 @@ export async function buildProtocolEvalCatalog({
       provider: roster.provider,
       driver: roster.driver,
       credentialName: roster.credentialName,
+      ...(roster.authenticationMode ? { authenticationMode: roster.authenticationMode } : {}),
     })),
   );
   const shards = [[], []];
@@ -209,7 +229,7 @@ export async function buildProtocolEvalCatalog({
     schema: "paperclip.runner-protocol-eval.catalog/v1",
     campaignId,
     source,
-    selection: { kind: requested === null ? "maintained_full" : "subset", rosters: rosterSelection },
+    selection: { kind: requested === null ? "maintained_full" : "subset", rosters: rosterSelection, grokAuthenticationMode },
     rosters,
     cells,
     matrices: shards.map((include) => ({ include })),
@@ -399,6 +419,10 @@ export async function aggregateProtocolEvalCampaign({
     ) {
       throw new Error(`Downloaded cell metadata drifted for ${cellId}`);
     }
+    if (expected.authenticationMode !== undefined &&
+        (status.authenticationMode !== expected.authenticationMode || status.authenticationEvidenceFailure !== undefined)) {
+      throw new Error(`Invalid Grok authentication evidence for ${cellId}; retained cell metadata and attempts require inspection`);
+    }
     const attemptRoot = resolve(dirname(statusPath), "runs");
     const attemptIds = [];
     const attemptMetadata = await lstat(attemptRoot).catch(() => null);
@@ -473,6 +497,7 @@ export async function aggregateProtocolEvalCampaign({
       model: cell.model,
       provider: cell.provider,
       driver: cell.driver,
+      ...(cell.authenticationMode ? { authenticationMode: cell.authenticationMode } : {}),
       attemptIds,
       finalAttemptId,
       disposition: score.disposition,
@@ -513,6 +538,7 @@ export async function aggregateProtocolEvalCampaign({
       model: roster.model,
       provider: roster.provider,
       driver: roster.driver,
+      ...(roster.authenticationMode ? { authenticationMode: roster.authenticationMode } : {}),
       selected: roster.cases.length,
       passed: results.filter(
         (result) => result.rosterId === roster.rosterId && result.passed,
@@ -699,6 +725,7 @@ async function main() {
       rosterSelection: argument(args, "--rosters", "all"),
       campaignId: argument(args, "--campaign-id", `local-${Date.now()}`),
       maxParallel: Number(argument(args, "--max-parallel", "100")),
+      grokAuthenticationMode: argument(args, "--grok-authentication", "api_key"),
       source: {
         paperclipSha: process.env.PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA ?? null,
         evalsSha: process.env.PAPERCLIP_PROTOCOL_EVALS_SHA ?? null,

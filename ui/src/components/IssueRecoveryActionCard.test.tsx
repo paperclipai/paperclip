@@ -13,6 +13,10 @@ vi.mock("@/lib/router", () => ({
   ),
 }));
 
+const visibility = vi.hoisted(() => ({ visible: true, loaded: true }));
+vi.mock("@/hooks/useWorkspaceIsolationControls", () => ({ useWorkspaceIsolationControls: () => visibility }));
+beforeEach(() => { visibility.visible = true; visibility.loaded = true; });
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -456,6 +460,15 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
       />,
     );
     expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).toBeNull();
+  });
+
+  it("hides the isolated re-issue action under operator visibility policy", () => {
+    visibility.visible = false;
+    const onReissueIsolated = vi.fn();
+    const node = render(<IssueRecoveryActionCard action={buildWorkspaceValidationAction()} onReissueIsolated={onReissueIsolated} />);
+    expect(node.querySelector("[data-testid='recovery-action-reissue-trigger']")).toBeNull();
+    expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).not.toBeNull();
+    expect(onReissueIsolated).not.toHaveBeenCalled();
   });
 
   it("offers the re-issue action and passes the live branch as the base ref", () => {

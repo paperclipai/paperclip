@@ -1,3 +1,4 @@
+import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "@/components/DispositionRecoveryNotice";
 import { useId, useState } from "react";
 import {
   ChevronDown,
@@ -54,6 +55,7 @@ export function TaskChatSystemNotice({
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
 }) {
+  const recoverySnapshot = useDispositionRecoverySnapshot(item.metadata);
   const streamlined = useStreamlinedTaskChatPresentation();
   const [open, setOpen] = useState(Boolean(item.presentation?.detailsDefaultOpen));
   const detailsId = useId();
@@ -81,6 +83,10 @@ export function TaskChatSystemNotice({
       // The parent mutation owns visible error feedback.
       .catch(() => undefined);
   };
+
+  if (item.author === "system" && recoverySnapshot) {
+    return <DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={item.createdAtIso} defaultExpanded={item.presentation?.detailsDefaultOpen} />;
+  }
 
   return (
     <div

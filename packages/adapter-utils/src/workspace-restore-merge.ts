@@ -206,6 +206,7 @@ export const WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE = "ERR_WORKSPACE_RESTORE_LOCK_T
 export type WorkspaceRestoreFailureCode =
   | "restore_permission_denied"
   | "restore_lock_timeout"
+  | "restore_unsafe_archive"
   | "restore_failed";
 
 /**
@@ -222,13 +223,24 @@ export type WorkspaceRestoreOutcome =
  * `EACCES` and `EPERM` to a permission failure, the merge-lock timeout
  * (matched by {@link WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE}, never by the error
  * message text) to a lock-timeout failure, and every other error to a generic
- * failure. Never reads or returns `Error.message`, a filesystem path, or a
- * process id.
+ * failure. The known Daytona confinement diagnostic also identifies unsafe
+ * archives across plugin transports that retain only a message. Never returns
+ * raw messages, paths or process IDs.
  */
 export function classifyWorkspaceRestoreFailure(error: unknown): WorkspaceRestoreFailureCode {
   const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
   if (code === "EACCES" || code === "EPERM") return "restore_permission_denied";
   if (code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return "restore_lock_timeout";
+  const message = error instanceof Error ? error.message : "";
+  const archiveRefused = /Daytona syncOut refusing (?:tarball (?:with an unparseable entry listing|(?:link whose target|member that) escapes the extraction dir)|unparseable or ambiguous (?:sym|hard)link entry)/.test(message);
+  const outboundPathRefused = /Daytona sync source path (?:is not a confined absolute path|escapes the workspace remote dir):/.test(message);
+  // These are the fail-closed guard's own exit codes. Transport/command failures
+  // with other exit codes retain the existing transient failure policy.
+  const outboundGuardRefused = /Daytona outbound symlink-escape guard command failed \(exit (?:40|41|42|44|45)\)/.test(message);
+  if (code === "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" ||
+      archiveRefused || outboundPathRefused || outboundGuardRefused) {
+    return "restore_unsafe_archive";
+  }
   return "restore_failed";
 }
 
@@ -246,6 +258,8 @@ export function describeWorkspaceRestoreFailure(code: WorkspaceRestoreFailureCod
       return "the restore could not write to the workspace (permission denied)";
     case "restore_lock_timeout":
       return "the restore timed out waiting for the workspace merge lock";
+    case "restore_unsafe_archive":
+      return "the archive contains an unsafe link or path; workspace repair is required";
     case "restore_failed":
       return "the restore failed";
   }

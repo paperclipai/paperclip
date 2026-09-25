@@ -2675,11 +2675,13 @@ export {
   type InstanceFeatureKey,
 } from "./feature-catalog.js";
 export {
+  EXPERIMENTAL_SETTINGS_WILDCARD,
   HIDEABLE_COMPANY_PAGES,
   HIDEABLE_COMPANY_SECTIONS,
   HIDEABLE_GENERAL_SECTIONS,
   HIDEABLE_INSTANCE_PAGES,
   HIDEABLE_SETTING_KEYS,
+  HIDEABLE_WORKSPACE_SECTIONS,
   SETTINGS_OPERATOR_MANAGED_ERROR_CODE,
   UI_ONLY_GENERAL_SECTIONS,
   experimentalSettingKey,
@@ -2695,6 +2697,7 @@ export {
   type HideableGeneralSection,
   type HideableInstancePage,
   type HideableSettingKey,
+  type HideableWorkspaceSection,
   type ParsedHiddenSettings,
 } from "./settings-visibility.js";
 export {
@@ -2776,3 +2779,8 @@ export { REMOTE_MCP_CONNECTOR_METHODS, isRemoteMcpConnectorId, isRemoteMcpConnec
 export { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "./retired-composio.js";
 
 export * from "./slack-tools.js";
+
+export { MEMORY_CONNECTOR_IDS, isMemoryConnectorId, type MemoryConnectorId } from "./memory-connectors.js";
+export * from "./connection-routing.js";
+
+export { WORKSPACE_RESTORE_FAILURE_CODES, hasWorkspaceRestoreFailure, safeWorkspaceRestorePath } from "./workspace-restore.js";

@@ -119,6 +119,20 @@ from the default branch and provide:
   marked disabled;
 - `max_infrastructure_retries`: zero through three, applied only when an
   attempt explicitly reports a retryable infrastructure failure.
+- `grok_authentication`: `api_key` (the compatibility default) or `subscription`.
+  Subscription requires an explicitly selected Grok roster and the owner-approved
+  `GROK_AUTH_JSON` secret in the protected `runner-e2e-paid` environment. API mode
+  uses only `XAI_API_KEY`. A missing selected credential fails; it never changes
+  authentication mode or falls back to another credential.
+
+For subscription qualification, pass `-f grok_authentication=subscription` when
+dispatching the default-branch workflow. The immutable catalog, retained cell,
+campaign roster, and result record carry `authenticationMode`. The cell reads it
+from the pinned eval program's actual roster summary, and aggregation rejects
+missing or mismatched authentication evidence. Select an eval revision that
+supports Grok subscription admission and records this summary field. Keep API
+and subscription campaigns separate when interpreting results. Remove temporary
+subscription test secrets after the authorized qualification completes.
 
 The authorization job resolves the Paperclip branch to a commit and verifies
 the supplied eval commit before any checkout. A short-lived bot token generated

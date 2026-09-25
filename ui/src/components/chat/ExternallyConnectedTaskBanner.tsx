@@ -495,8 +495,9 @@ function ConnectedTaskComposer({
               Connected to {providerNames[binding.provider]}
             </p>
             <p className="truncate text-xs text-muted-foreground">
-              {binding.externalLabel} · Agent assignment is fixed for this
-              external task.
+              {binding.externalLabel} · {binding.provider === "slack"
+                ? "Messages you send here and agent replies are also posted to Slack."
+                : "Agent assignment is fixed for this external task."}
             </p>
           </div>
         </div>
@@ -825,7 +826,9 @@ function ConnectedTaskComposer({
           )}
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
-              Ordinary board comments remain Paperclip-only.
+              {binding.provider === "slack"
+                ? "Your message is posted to Slack with your name and starts the agent."
+                : "Ordinary board comments remain Paperclip-only."}
             </p>
             <Button
               size="sm"
