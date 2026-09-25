@@ -200,7 +200,8 @@ contains only an allowlisted OS/transport `errorCode` (otherwise `unknown`), an
 optional numeric HTTP error status, and an optional bounded process exit code.
 Up to four nested causes are inspected. Messages, URLs, filesystem paths, asset
 names, credentials, and response bodies are excluded. Every failed outbound
-task emits its own diagnostic; the original error and restore safety policy are
+task emits its own diagnostic; nested repository failures are logged once by
+the enclosing workspace task. The original error and restore safety policy are
 unchanged. These lines stay in the instance run log and its configured durable
 storage, and are not new first-party telemetry events.
 

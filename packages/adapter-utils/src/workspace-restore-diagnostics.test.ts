@@ -48,7 +48,37 @@ describe("workspace restore diagnostics", () => {
   });
 
   it("keeps the restore error even if a provider diagnostic getter throws", async () => {
-    const error = Object.defineProperty(new Error("original"), "code", { get() { throw new Error("getter failed"); } });
-    await expect(withWorkspaceRestoreDiagnostics("asset", async () => { throw error; }, vi.fn())).rejects.toBe(error);
+    const error = Object.defineProperty(Object.assign(new Error("original"), {
+      statusCode: 503, cause: { code: "ECONNRESET" },
+    }), "code", { get() { throw new Error("getter failed"); } });
+    const sink = vi.fn();
+    await expect(withWorkspaceRestoreDiagnostics("asset", async () => { throw error; }, sink)).rejects.toBe(error);
+    expect(sink).toHaveBeenCalledExactlyOnceWith(
+      '[paperclip] Workspace restore diagnostic: {"phase":"asset","errorCode":"ECONNRESET","httpStatus":503}\n',
+    );
+  });
+
+  it("uses valid fallback statuses when preferred fields are invalid", async () => {
+    const error = { status: "failed", statusCode: 503, exitCode: "failed", code: 7 };
+    const sink = vi.fn();
+    await expect(withWorkspaceRestoreDiagnostics("workspace", async () => { throw error; }, sink)).rejects.toBe(error);
+    expect(sink).toHaveBeenCalledExactlyOnceWith(
+      '[paperclip] Workspace restore diagnostic: {"phase":"workspace","errorCode":"unknown","httpStatus":503,"exitCode":7}\n',
+    );
+  });
+
+  it("logs nested failures once while preserving independent concurrent and later diagnostics", async () => {
+    const error = Object.assign(new Error("nested failure"), { code: "ENOENT" });
+    const sink = vi.fn();
+    const fail = async () => { await Promise.resolve(); throw error; };
+    const results = await Promise.allSettled([
+      withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreDiagnostics("workspace", fail, sink), sink),
+      withWorkspaceRestoreDiagnostics("asset", fail, sink),
+    ]);
+    expect(results).toEqual([{ status: "rejected", reason: error }, { status: "rejected", reason: error }]);
+    expect(sink).toHaveBeenCalledTimes(2);
+    expect(sink.mock.calls.map(([line]) => JSON.parse(line.split(": ")[1]).phase).sort()).toEqual(["asset", "workspace"]);
+    await expect(withWorkspaceRestoreDiagnostics("workspace", fail, sink)).rejects.toBe(error);
+    expect(sink).toHaveBeenCalledTimes(3);
   });
 });
