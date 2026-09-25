@@ -9,6 +9,7 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  list: vi.fn(),
   buildRunOutputSilence: vi.fn(),
   decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
@@ -393,6 +394,23 @@ describe("agent live run routes", () => {
       skipReasons: [],
     });
   });
+
+  it("limits company heartbeat run listings by default", async () => {
+    mockHeartbeatService.list.mockResolvedValue([]);
+    const app = await createApp();
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/heartbeat-runs"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith(
+      "company-1",
+      undefined,
+      200,
+      { summary: false },
+    );
+  }, 30_000);
 
   describe("heartbeat run ID validation", () => {
     const routes = [
