@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issues, issueWatchdogs } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
 
 const MAX_WATCHDOG_SCOPE_ANCESTRY_DEPTH = 100;
 export const TASK_WATCHDOG_ORIGIN_KIND = "task_watchdog";
@@ -56,7 +57,13 @@ export async function resolveTaskWatchdogMutationScope(
   const agentId = readString(actor.agentId);
   const runId = readString(actor.runId);
   const actorCompanyId = readString(actor.companyId);
-  if (!agentId || !runId) return { kind: "none" };
+  // heartbeatRuns.id is a Postgres uuid column -- a non-UUID runId (e.g. a hand-set
+  // X-Paperclip-Run-Id header from a manual/operator-key caller, not a real agent run)
+  // makes the query below throw a DB-level "invalid input syntax for type uuid" error
+  // instead of returning zero rows, which previously surfaced as an uncaught 500 on
+  // every mutating request that carried one. Treated identically to a missing runId:
+  // no real run to scope against, fall through to normal (non-watchdog) authorization.
+  if (!agentId || !runId || !isUuidLike(runId)) return { kind: "none" };
 
   const run = await db
     .select({

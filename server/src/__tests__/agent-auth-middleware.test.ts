@@ -486,6 +486,62 @@ describe("agent auth middleware", () => {
     });
   });
 
+  it("drops a non-UUID run-id header for agent-key actors instead of passing it through", async () => {
+    // Real regression: heartbeatRuns.id is a Postgres uuid column, and dozens of services
+    // query it by actor.runId trusting it's a real UUID. An agent-key caller (e.g. an
+    // operator/local-cli key, not a genuine agent run) can set X-Paperclip-Run-Id to any
+    // string -- unlike the agent_jwt path, nothing here signs or validates it. A malformed
+    // value previously passed straight through and crashed every subsequent mutating
+    // request with an uncaught 500 ("invalid input syntax for type uuid").
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_agent_key_bad_run_id";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+      },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", "manual-orchestrator-nudge");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "agent", agentId, companyId, source: "agent_key" });
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("keeps a well-formed UUID run-id header for agent-key actors", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const token = "pcp_test_agent_key_good_run_id";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+      },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "agent", agentId, companyId, source: "agent_key", runId });
+  });
+
   it("rejects agent keys that lack a responsible user binding and audits the denial", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

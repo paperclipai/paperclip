@@ -45,6 +45,30 @@ function readZodIssues(err: unknown): unknown[] | null {
   return Array.isArray(issues) ? issues : null;
 }
 
+/**
+ * Postgres error code 22P02 (invalid_text_representation) fires whenever a query binds a
+ * non-UUID string to a uuid column -- e.g. an unvalidated actor.runId reaching one of the
+ * many heartbeat_runs lookups across the codebase. drizzle-orm wraps the driver's error in
+ * a DrizzleQueryError and chains the original via the standard Error.cause; the postgres.js
+ * driver's own PostgresError carries `.code`. Walk that chain (bounded, to avoid an infinite
+ * loop on a malformed circular cause) rather than assuming one specific wrapper depth, since
+ * a query can reach this handler through more than one layer depending on the call path.
+ *
+ * This is caller error (a malformed input reached a query), not a server crash: it must map
+ * to 400, not fall through to the generic 500 below, which would report a crash for every
+ * such request and hide the real, fixable input-validation gap.
+ */
+function readPostgresErrorCode(err: unknown): string | null {
+  let current: unknown = err;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    if (typeof current === "object" && "code" in current && typeof (current as { code?: unknown }).code === "string") {
+      return (current as { code: string }).code;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return null;
+}
+
 function attachErrorContext(
   req: Request,
   res: Response,
@@ -245,6 +269,14 @@ export function errorHandler(
     "type" in err && err.type === "entity.parse.failed"
   ) {
     res.status(400).json({ error: "Invalid JSON body" });
+    return;
+  }
+
+  if (readPostgresErrorCode(err) === "22P02") {
+    res.status(400).json({
+      error: "bad_uuid_input",
+      details: { message: err instanceof Error ? err.message : String(err) },
+    });
     return;
   }
 
