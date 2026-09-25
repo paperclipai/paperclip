@@ -1,4 +1,7 @@
 name: Agent runtime images
+# Manual runs carry their requested version in the run title, which the "Wait
+# for earlier manual builds" step uses to find same-version runs.
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Agent runtime images (dispatch {0})', inputs.version) || format('Agent runtime images ({0})', github.sha) }}
 
 on:
   push:
@@ -29,9 +32,9 @@ permissions:
 #
 # workflow_dispatch runs must never be dropped that way (an explicitly
 # requested version tag would silently never get published), so each gets its
-# own group and is serialized by the "Wait for earlier manual builds" step
-# instead, which has no pending-run limit and isn't affected by Actions'
-# case-insensitive group names.
+# own group and same-version manual builds are serialized by the "Wait for
+# earlier manual builds" step instead, which has no pending-run limit and
+# isn't affected by Actions' case-insensitive group names.
 concurrency:
   group: ${{ github.event_name == 'workflow_dispatch' && format('agent-runtime-images-dispatch-{0}', github.run_id) || format('agent-runtime-images-{0}', github.ref) }}
   cancel-in-progress: false
@@ -45,23 +48,32 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Wait for earlier manual builds
-        # Serialize manual builds in start order so two dispatches for the same
-        # version can't interleave their pushes and leave the six tags pointing
-        # at different commits. Run ids only increase, so the oldest run never
-        # waits and this can't deadlock.
+        # Serialize manual builds of the same version in start order so two
+        # dispatches for e.g. "dev" can't interleave their pushes and leave the
+        # six tags pointing at different commits. Builds of other versions
+        # push other tags and don't wait. Run ids only increase, so the oldest
+        # run never waits and this can't deadlock. Querying each unfinished
+        # status (rather than the N most recent runs) means an old, still
+        # running build can't fall out of the result page.
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          TITLE: Agent runtime images (dispatch ${{ inputs.version }})
         run: |
-          # Fails the step (bash -e) if the API call fails, rather than
-          # building unserialized.
+          # bash -e: a failed API call fails the step rather than building
+          # unserialized.
           while true; do
-            older=$(gh run list --repo "${{ github.repository }}" \
-              --workflow agent-runtime-images.yml --event workflow_dispatch \
-              --limit 100 --json databaseId,status \
-              --jq '[.[] | select(.databaseId < ${{ github.run_id }} and .status != "completed")] | length')
+            : > "${RUNNER_TEMP}/unfinished.tsv"
+            for status in requested pending waiting queued in_progress; do
+              gh api --paginate \
+                "repos/${REPO}/actions/workflows/agent-runtime-images.yml/runs?event=workflow_dispatch&status=${status}&per_page=100" \
+                --jq '.workflow_runs[] | "\(.id)\t\(.display_title)"' >> "${RUNNER_TEMP}/unfinished.tsv"
+            done
+            older=$(awk -F'\t' -v me="${RUN_ID}" -v t="${TITLE}" '$1 < me && $2 == t' "${RUNNER_TEMP}/unfinished.tsv" | wc -l)
             [ "${older}" = "0" ] && break
-            echo "Waiting for ${older} earlier manual build(s) to finish..."
+            echo "Waiting for ${older} earlier build(s) of this version to finish..."
             sleep 30
           done
 
