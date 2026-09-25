@@ -28,12 +28,11 @@ describe("accumulateAssistantStreamText", () => {
     expect(events.reduce(accumulateAssistantStreamText, "")).toBe("Hello world!");
   });
 
-  it("honors replacement snapshots", () => {
+  it("uses non-empty text as the authoritative snapshot", () => {
     expect(
       accumulateAssistantStreamText("coordination draft", {
         text: "final answer",
         delta: "",
-        replace: true,
       }),
     ).toBe("final answer");
   });
