@@ -13,6 +13,7 @@ export type RunSnapshot = {
   id: string;
   companyId: string;
   agentId: string;
+  startedAt: Date | null;
   status: string;
   runtimeMode: string | null;
   errorCode: string | null;
@@ -33,6 +34,8 @@ export type IssueSnapshot = {
   companyId: string;
   identifier: string;
   status: string;
+  completedAt: Date | null;
+  cancelledAt: Date | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   hiddenAt: Date | null;

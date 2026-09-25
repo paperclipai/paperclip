@@ -89,6 +89,7 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
     id: row.id,
     companyId: row.companyId,
     agentId: row.agentId,
+    startedAt: row.startedAt,
     status: row.status,
     runtimeMode: row.runtimeMode,
     conversationContinuation: row.runtimeMode === "legacy" && hasConversationContinuationPolicy(row.resultJson),
@@ -108,6 +109,8 @@ function toIssueSnapshot(row: IssueRow): IssueSnapshot {
     companyId: row.companyId,
     identifier: row.identifier ?? "",
     status: row.status,
+    completedAt: row.completedAt,
+    cancelledAt: row.cancelledAt,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
     hiddenAt: row.hiddenAt,
@@ -367,12 +370,25 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       };
     },
 
-    async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
+    async getCommentReopenFacts({ companyId, issueId, finishingRunId, commentIds, runStartedAt }) {
+      const uniqueCommentIds = [...new Set(commentIds)];
       const rows = await tx
-        .select({ createdByRunId: issueComments.createdByRunId })
+        .select({
+          id: issueComments.id,
+          createdAt: issueComments.createdAt,
+          deletedAt: issueComments.deletedAt,
+          createdByRunId: issueComments.createdByRunId,
+        })
         .from(issueComments)
-        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
-      return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, uniqueCommentIds)));
+      const referencedCommentsComplete = rows.length === uniqueCommentIds.length && rows.every((row) => row.deletedAt === null);
+      return {
+        allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId),
+        referencedCommentsComplete,
+        hasLiveNonSelfCommentAfterRunStartedAt: referencedCommentsComplete && rows.some((row) =>
+          row.createdByRunId !== finishingRunId && row.createdAt > runStartedAt
+        ),
+      };
     },
 
     async isCompletedDelegationMention({ companyId, issueId, finishingRunId, wakeAgentId, commentIds }) {
