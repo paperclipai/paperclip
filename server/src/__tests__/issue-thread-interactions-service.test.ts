@@ -3013,6 +3013,171 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(listed[0]?.status).toBe("cancelled");
   });
 
+  it("clamps oversized legacy ask_user_questions payloads on read instead of failing the list (SON-3712)", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Legacy oversized ask_user_questions payload");
+
+    // Simulate a row persisted before the current payload caps were enforced
+    // (older builds capped question prompts at 500 chars and option labels at
+    // 120). A hard parse throws and 400s the whole listForIssue call, bricking
+    // the interaction inbox + audit flows on the affected card (SON-3712).
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: { kind: "none" },
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "q1",
+            prompt: "P".repeat(4200),
+            selectionMode: "single",
+            options: [
+              { id: "opt-a", label: "A".repeat(1200) },
+              { id: "opt-b", label: "Valid label" },
+            ],
+          },
+        ],
+      },
+      createdByUserId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.kind).toBe("ask_user_questions");
+    const payload = listed[0]?.payload as {
+      questions: Array<{
+        prompt: string;
+        options: Array<{ id: string; label: string }>;
+      }>;
+    };
+    const question = payload.questions[0];
+    expect(question.prompt.length).toBeLessThanOrEqual(4000);
+    expect(question.prompt.endsWith("...")).toBe(true);
+    expect(question.options[0]?.label.length).toBeLessThanOrEqual(1000);
+    expect(question.options[0]?.label.endsWith("...")).toBe(true);
+    // Well-formed siblings pass through untouched.
+    expect(question.options[1]?.label).toBe("Valid label");
+  });
+
+  it("serves the clamped payload when clamping leaves residual validation issues (SON-3977)", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue(
+      "Clamped payload with residual issues",
+    );
+
+    // Oversized prompt AND duplicate option ids: the clamp fixes the too_big
+    // strings, but the clamped payload still fails the uniqueness refine.
+    // The read must still serve the clamped copy, not the original raw row,
+    // or the inbox receives the untrimmed prompt despite read-degrade.
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: { kind: "none" },
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "q1",
+            prompt: "P".repeat(4200),
+            selectionMode: "single",
+            options: [
+              { id: "dup", label: "First" },
+              { id: "dup", label: "Second" },
+            ],
+          },
+        ],
+      },
+      createdByUserId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed).toHaveLength(1);
+    const payload = listed[0]?.payload as {
+      questions: Array<{ prompt: string; options: Array<{ id: string }> }>;
+    };
+    const question = payload.questions[0];
+    expect(question.prompt.length).toBeLessThanOrEqual(4000);
+    expect(question.prompt.endsWith("...")).toBe(true);
+    // Residual display-level issues survive, but oversized strings do not.
+    expect(question.options.map((option) => option.id)).toEqual([
+      "dup",
+      "dup",
+    ]);
+  });
+
+  it("guarantees consumer-indexed array fields on passthrough payloads (SON-3977)", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue(
+      "Passthrough payload missing questions",
+    );
+
+    // A legacy row persisted without the required questions array reaches
+    // the tier-3 passthrough. The answer handler maps payload.questions, so
+    // the passthrough must guarantee the array shape instead of handing a
+    // missing field to the action path.
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: { kind: "none" },
+      payload: { version: 1, title: "Legacy row without questions" },
+      createdByUserId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed).toHaveLength(1);
+    const payload = listed[0]?.payload as { questions: unknown };
+    expect(Array.isArray(payload.questions)).toBe(true);
+    expect(payload.questions).toHaveLength(0);
+
+    // Empty answers must not resolve an interaction whose repaired question
+    // set is empty; keep it pending for explicit cleanup or replacement.
+    await expect(interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, interactionId, { answers: [] }, { userId: "local-board" })).rejects.toThrow(
+      "Cannot answer an ask_user_questions interaction without valid questions",
+    );
+    const stored = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0]);
+    expect(stored?.status).toBe("pending");
+  });
+
+  it("guarantees the tasks array on passthrough suggest_tasks payloads (SON-3977)", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue(
+      "Passthrough suggest_tasks payload missing tasks",
+    );
+
+    // Same passthrough class as the missing questions array: task
+    // acceptance maps payload.tasks, so the passthrough guarantees it.
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: { kind: "none" },
+      payload: { version: 1 },
+      createdByUserId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed).toHaveLength(1);
+    const payload = listed[0]?.payload as { tasks: unknown };
+    expect(Array.isArray(payload.tasks)).toBe(true);
+    expect(payload.tasks).toHaveLength(0);
+  });
+
   it("derives legacy pending interactions as expired on closed issues without mutating the GET", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Legacy pending interaction on closed issue");
     const created = await interactionsSvc.create({ id: issueId, companyId }, {

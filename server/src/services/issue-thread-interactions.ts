@@ -625,6 +625,151 @@ function parseStoredInteractionResult<S extends z.ZodTypeAny>(
   return null;
 }
 
+type OversizedStoredStringIssue = {
+  path: PropertyKey[];
+  limit: number;
+};
+
+function oversizedStoredStringIssues(error: z.ZodError): OversizedStoredStringIssue[] {
+  const issues: OversizedStoredStringIssue[] = [];
+  for (const issue of error.issues) {
+    const raw = issue as unknown as Record<string, unknown>;
+    if (raw.code !== "too_big" || raw.origin !== "string") continue;
+    const maximum = raw.maximum;
+    if (typeof maximum !== "number" && typeof maximum !== "bigint") continue;
+    if (!Array.isArray(raw.path)) continue;
+    const inclusive = raw.inclusive !== false;
+    const limit = Number(inclusive ? maximum : Number(maximum) - 1);
+    if (!Number.isFinite(limit) || limit < 1) continue;
+    issues.push({ path: raw.path as PropertyKey[], limit });
+  }
+  return issues;
+}
+
+function clampOversizedPayloadStrings(
+  raw: unknown,
+  error: z.ZodError,
+): { value: unknown; mutated: boolean } {
+  const targets = oversizedStoredStringIssues(error);
+  if (targets.length === 0) return { value: raw, mutated: false };
+  // Stored payloads originate from JSONB, so a JSON round-trip is a safe
+  // deep copy we can clamp without mutating the row the caller passed in.
+  let value: unknown;
+  try {
+    value = JSON.parse(JSON.stringify(raw));
+  } catch {
+    return { value: raw, mutated: false };
+  }
+  let mutated = false;
+  const marker = "...";
+  for (const target of targets) {
+    const segments = [...target.path];
+    const key = segments.pop();
+    if (key === undefined) continue;
+    let container: unknown = value;
+    let navigable = true;
+    for (const segment of segments) {
+      if (container == null || typeof container !== "object") {
+        navigable = false;
+        break;
+      }
+      container = (container as Record<PropertyKey, unknown>)[segment];
+    }
+    if (!navigable || container == null || typeof container !== "object") continue;
+    const box = container as Record<PropertyKey, unknown>;
+    const current = box[key];
+    if (typeof current !== "string" || current.length <= target.limit) continue;
+    box[key] =
+      target.limit > marker.length
+        ? current.slice(0, target.limit - marker.length) + marker
+        : current.slice(0, target.limit);
+    mutated = true;
+  }
+  return { value, mutated };
+}
+
+/**
+ * Parse a stored interaction `payload` tolerantly. Rows persisted by older
+ * builds can carry embedded bodies that exceed the current schema caps (e.g.
+ * ask_user_questions prompts/option labels written before those limits were
+ * raised). A hard `.parse()` on such a row throws and 400s the *entire*
+ * issue's interaction list — the same blast radius as the LOOA-629 result
+ * tolerance above (web thread + plugin/notifier consumers all read through
+ * `hydrateInteraction`) — which bricks interaction inboxes and audit flows
+ * on the affected cards (SON-3712). Degrade in tiers instead of failing the
+ * route wholesale:
+ *   1. strict parse — unchanged for well-formed rows;
+ *   2. clamp exactly the strings named by `too_big` issues to the current
+ *      schema max (cut marked with a trailing "...") and re-parse;
+ *   3. last resort, list the interaction with its stored payload as-is
+ *      rather than throwing. The create path still validates strictly, so
+ *      only legacy rows can reach this branch. A passthrough payload still
+ *      guarantees the array fields consumers index unconditionally
+ *      (`questions`, `tasks`), so a degraded row acts like an empty list
+ *      instead of TypeError-ing on action.
+ */
+/**
+ * Payload array fields that downstream code indexes unconditionally. The
+ * tier-3 read-degrade passthrough serves stored payloads that still fail
+ * strict validation, so it must still guarantee these fields are arrays:
+ * the ask_user_questions answer handler maps `questions`, and suggest-task
+ * acceptance maps `tasks`. A legacy row that lacks them would otherwise turn
+ * a read-degraded interaction into a TypeError on action instead of a clean
+ * validation error (SON-3977 review finding).
+ */
+const structuralArrayFieldsByKind: Record<string, readonly string[]> = {
+  ask_user_questions: ["questions"],
+  suggest_tasks: ["tasks"],
+};
+
+function repairStructuralPayloadArrays(
+  kind: string,
+  value: unknown,
+): unknown {
+  const fields = structuralArrayFieldsByKind[kind];
+  if (!fields || value == null || typeof value !== "object") return value;
+  const box = { ...(value as Record<PropertyKey, unknown>) };
+  for (const field of fields) {
+    if (!Array.isArray(box[field])) box[field] = [];
+  }
+  return box;
+}
+
+function parseStoredInteractionPayload<S extends z.ZodTypeAny>(
+  schema: S,
+  raw: unknown,
+  row: Pick<IssueThreadInteractionRow, "id" | "kind">,
+): z.infer<S> {
+  const strict = schema.safeParse(raw);
+  if (strict.success) return strict.data;
+  const { value, mutated } = clampOversizedPayloadStrings(raw, strict.error);
+  if (mutated) {
+    const clamped = schema.safeParse(value);
+    if (clamped.success) {
+      console.warn(
+        `[paperclip] Clamped oversized legacy ${row.kind} interaction payload for interaction ${row.id}`,
+        strict.error.issues,
+      );
+      return clamped.data;
+    }
+    // The clamp alone did not make the row valid (residual issues such as
+    // duplicate option ids remain). Serve the clamped copy rather than the
+    // original raw payload: the oversized strings are already trimmed, and
+    // the residual issues are display-level, not a reason to hand the inbox
+    // an untrimmed prompt (SON-3977 review finding).
+    console.warn(
+      `[paperclip] Clamped oversized legacy ${row.kind} interaction payload for interaction ${row.id} but residual validation issues remain; serving clamped payload`,
+      clamped.error.issues,
+    );
+    return repairStructuralPayloadArrays(row.kind, value) as z.infer<S>;
+  }
+  console.warn(
+    `[paperclip] Passing through unparseable ${row.kind} interaction payload for interaction ${row.id}`,
+    strict.error.issues,
+  );
+  return repairStructuralPayloadArrays(row.kind, raw) as z.infer<S>;
+}
+
 function hydrateInteraction(
   row: IssueThreadInteractionRow,
 ): IssueThreadInteraction {
@@ -677,7 +822,11 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "suggest_tasks",
-        payload: suggestTasksPayloadSchema.parse(row.payload),
+        payload: parseStoredInteractionPayload(
+          suggestTasksPayloadSchema,
+          row.payload,
+          row,
+        ),
         result: parseStoredInteractionResult(
           suggestTasksResultSchema,
           row.result,
@@ -688,7 +837,11 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "ask_user_questions",
-        payload: askUserQuestionsPayloadSchema.parse(row.payload),
+        payload: parseStoredInteractionPayload(
+          askUserQuestionsPayloadSchema,
+          row.payload,
+          row,
+        ),
         result: parseStoredInteractionResult(
           askUserQuestionsResultSchema,
           row.result,
@@ -699,7 +852,11 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "request_confirmation",
-        payload: requestConfirmationPayloadSchema.parse(row.payload),
+        payload: parseStoredInteractionPayload(
+          requestConfirmationPayloadSchema,
+          row.payload,
+          row,
+        ),
         result: parseStoredInteractionResult(
           requestConfirmationResultSchema,
           row.result,
@@ -710,7 +867,11 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "request_checkbox_confirmation",
-        payload: requestCheckboxConfirmationPayloadSchema.parse(row.payload),
+        payload: parseStoredInteractionPayload(
+          requestCheckboxConfirmationPayloadSchema,
+          row.payload,
+          row,
+        ),
         result: parseStoredInteractionResult(
           requestCheckboxConfirmationResultSchema,
           row.result,
@@ -721,7 +882,11 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "request_item_verdicts",
-        payload: requestItemVerdictsPayloadSchema.parse(row.payload),
+        payload: parseStoredInteractionPayload(
+          requestItemVerdictsPayloadSchema,
+          row.payload,
+          row,
+        ),
         result: parseStoredInteractionResult(
           requestItemVerdictsResultSchema,
           row.result,
@@ -732,7 +897,11 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "connection_intent",
-        payload: connectionIntentPayloadSchema.parse(row.payload),
+        payload: parseStoredInteractionPayload(
+          connectionIntentPayloadSchema,
+          row.payload,
+          row,
+        ),
         result: parseStoredInteractionResult(
           connectionIntentResultSchema,
           row.result,
@@ -4765,6 +4934,11 @@ export function issueThreadInteractionService(
       const interaction = hydrateInteraction(
         current,
       ) as AskUserQuestionsInteraction;
+      if (interaction.payload.questions.length === 0) {
+        throw unprocessable(
+          "Cannot answer an ask_user_questions interaction without valid questions",
+        );
+      }
       const normalizedAnswers = normalizeQuestionAnswers({
         questions: interaction.payload.questions,
         answers: input.answers,
