@@ -4,6 +4,7 @@ import {
   agentDetailHref,
   agentLegacyAuditSection,
   agentScopedAuditHref,
+  isAgentPluginDetailView,
   parseAgentDetailView,
 } from "./agent-detail-navigation";
 
@@ -28,6 +29,16 @@ describe("agent detail navigation", () => {
     expect(parseAgentDetailView("configuration")).toBe("runtime");
     expect(parseAgentDetailView("prompts")).toBe("instructions");
     expect(agentDetailHref("codexcoder", "permissions")).toBe("/agents/codexcoder/permissions");
+  });
+
+  it("keeps plugin detail tabs as their own view", () => {
+    expect(isAgentPluginDetailView("plugin:acme:insights")).toBe(true);
+    expect(isAgentPluginDetailView("overview")).toBe(false);
+    expect(isAgentPluginDetailView(null)).toBe(false);
+    expect(parseAgentDetailView("plugin:acme:insights")).toBe("plugin:acme:insights");
+    expect(agentDetailHref("codexcoder", "plugin:acme:insights")).toBe(
+      "/agents/codexcoder/plugin:acme:insights",
+    );
   });
 
   it("maps legacy operational pages into scoped Audit sections", () => {

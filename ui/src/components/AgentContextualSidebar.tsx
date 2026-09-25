@@ -8,6 +8,7 @@ import {
   Library,
   MessageSquare,
   PlayCircle,
+  Puzzle,
   ReceiptText,
   Settings2,
   ShieldCheck,
@@ -18,6 +19,7 @@ import { agentsApi } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import { queryKeys } from "@/lib/queryKeys";
+import { usePluginSlots } from "@/plugins/slots";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { contextualSidebarStyles } from "./contextual-sidebar-styles";
@@ -69,6 +71,12 @@ export function AgentContextualSidebar({
   });
   const resolvedId = agentId ?? resolvedAgent?.id;
   const resolvedName = agentName ?? resolvedAgent?.name ?? "Agent";
+  const { slots: pluginDetailSlots } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "agent",
+    companyId: selectedCompanyId,
+    enabled: !!selectedCompanyId,
+  });
 
   return (
     <ContextualSidebarFrame
@@ -112,6 +120,27 @@ export function AgentContextualSidebar({
             </div>
           </div>
         ))}
+
+        {pluginDetailSlots.length > 0 && (
+          <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
+            <p
+              data-slot="contextual-sidebar-section-label"
+              className={contextualSidebarStyles.sectionLabel}
+            >
+              Plugins
+            </p>
+            <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
+              {pluginDetailSlots.map((slot) => (
+                <SidebarNavItem
+                  key={`${slot.pluginKey}:${slot.id}`}
+                  to={agentDetailHref(agentRef, `plugin:${slot.pluginKey}:${slot.id}`)}
+                  label={slot.displayName}
+                  icon={Puzzle}
+                />
+              ))}
+            </div>
+          </div>
+        )}
 
         <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
           <p

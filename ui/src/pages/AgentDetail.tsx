@@ -132,13 +132,16 @@ import {
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
+import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
   AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
   agentLegacyAuditSection,
   agentScopedAuditHref,
+  isAgentPluginDetailView,
   parseAgentDetailView,
   type AgentDetailView,
+  type AgentPluginDetailView,
 } from "./agent-detail-navigation";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
@@ -944,6 +947,32 @@ export function AgentDetail() {
     enabled: Boolean(resolvedCompanyId && needsOverviewData),
   });
 
+  const { slots: pluginDetailSlots, isLoading: pluginDetailSlotsLoading } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "agent",
+    companyId: resolvedCompanyId,
+    enabled: !!resolvedCompanyId,
+  });
+  const pluginViewItems = useMemo(
+    () => pluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}` as AgentPluginDetailView,
+      label: slot.displayName,
+      slot,
+    })),
+    [pluginDetailSlots],
+  );
+  const activePluginView = pluginViewItems.find((item) => item.value === activeView) ?? null;
+  // The slots query stays disabled until the agent's company resolves, and a
+  // disabled query reports isLoading=false — so "not loading" alone cannot
+  // distinguish "contribution unavailable" from "not asked yet" on cold loads.
+  const pluginViewDecisionLoaded = Boolean(resolvedCompanyId) && !pluginDetailSlotsLoading;
+  const pluginSlotContext = {
+    companyId: resolvedCompanyId,
+    companyPrefix: companyPrefix ?? null,
+    entityId: resolvedAgentId,
+    entityType: "agent" as const,
+  };
+
   const assignedIssues = useMemo(
     () => [...(allIssues ?? [])].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
     [allIssues],
@@ -1058,11 +1087,11 @@ export function AgentDetail() {
         const item = AGENT_DETAIL_NAVIGATION
           .flatMap((section) => section.items)
           .find((candidate) => candidate.value === activeView);
-        crumbs.push({ label: item?.label ?? "Overview" });
+        crumbs.push({ label: activePluginView?.label ?? item?.label ?? "Overview" });
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, activePluginView?.label, urlRunId]);
 
   useEffect(() => {
     closePanel();
@@ -1162,6 +1191,10 @@ export function AgentDetail() {
     return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
   }
   if (!urlRunId && !urlTab) {
+    return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
+  }
+  if (isAgentPluginDetailView(activeView) && !activePluginView) {
+    if (!pluginViewDecisionLoaded) return <PageSkeleton variant="detail" />;
     return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
   const isPendingApproval = agent.status === "pending_approval";
@@ -1317,6 +1350,14 @@ export function AgentDetail() {
               </Link>
             )}
           </AgentActionButtons>
+          <PluginSlotOutlet
+            slotTypes={["toolbarButton", "contextMenuItem"]}
+            entityType="agent"
+            context={pluginSlotContext}
+            className="flex flex-wrap items-center gap-2"
+            itemClassName="inline-flex"
+            missingBehavior="placeholder"
+          />
         </div>
       </header>
 
@@ -1385,7 +1426,7 @@ export function AgentDetail() {
         </div>
       )}
 
-      {activeView !== "run-detail" && activeView !== "channels" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? "Secrets & variables" : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
+      {activeView !== "run-detail" && activeView !== "channels" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? "Secrets & variables" : activePluginView ? activePluginView.label : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
 
       {/* View content */}
       {activeView === "overview" && (
@@ -1484,6 +1525,14 @@ export function AgentDetail() {
 
       {activeView === "revisions" && (
         <AgentRevisionsTab agent={agent} companyId={resolvedCompanyId ?? undefined} />
+      )}
+
+      {activePluginView && (
+        <PluginSlotMount
+          slot={activePluginView.slot}
+          context={pluginSlotContext}
+          missingBehavior="placeholder"
+        />
       )}
 
       {activeView === "run-detail" && (
