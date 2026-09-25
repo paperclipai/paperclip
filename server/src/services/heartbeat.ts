@@ -9499,6 +9499,12 @@ export function heartbeatService(
       const result = await scheduleBoundedRetryForRun(run, agent);
       return result.outcome === "scheduled" ? result.run : null;
     },
+    // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
+    // or interrupted run that has already consumed every bounded transient
+    // attempt cannot be retried again through this lane.
+    transientRetryBudgetSpent: (run) =>
+      executionFailureRetryCount(run) >=
+      BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   });
   const runDispatch = createRunDispatch(db);
 

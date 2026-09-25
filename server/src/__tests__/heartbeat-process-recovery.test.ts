@@ -3745,21 +3745,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(heartbeatRuns.id, runId));
     await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
-    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    const reconciled = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    // The budget stays spent across the restart: no successor run is
+    // queued, by the process-loss retry or by the sweeper.
     expect(
       await db
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId)),
     ).toHaveLength(1);
+    // A spent budget is no longer left to sit: the sweeper escalates the
+    // issue to a board-owned recovery action instead of skipping it on
+    // every tick with no live path. The action spawns no run of its own.
+    expect(reconciled.escalated).toBe(1);
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(1);
+    expect(recoveryActions[0]).toMatchObject({ status: "active", ownerType: "board", ownerAgentId: null });
+    const escalatedIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(escalatedIssue?.status).toBe("blocked");
+    // And the escalation is idempotent across further sweeps.
+    const again = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(again.escalated).toBe(0);
     expect(
       await db
         .select()
-        .from(issueRecoveryActions)
-        .where(eq(issueRecoveryActions.sourceIssueId, issueId)),
-    ).toEqual([]);
-    const run = await heartbeatService(db).getRun(runId);
-    expect(await getExecutionBlocker(db, run!.companyId, issueId)).toBeNull();
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId)),
+    ).toHaveLength(1);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -6004,6 +6023,176 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(sourceIssue?.status).toBe("blocked");
+  });
+
+  it("escalates an in_progress issue whose interrupted run has spent its transient retry budget", async () => {
+    // Three deploy restarts in a row interrupted a run and both of its
+    // bounded transient retries. The retry scheduler then reports the
+    // budget exhausted and queues nothing, and the sweeper used to skip
+    // the issue on every tick: in_progress, no run, no path, no notice.
+    const { companyId, agentId, runId, issueId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        runErrorCode: "server_shutdown_interrupted",
+        runError: "Interrupted by graceful server shutdown (SIGTERM)",
+        // A conversation adapter's interrupted run keeps its session for
+        // continuation, so legacy reconciliation does not terminalize it;
+        // the sweeper reaches the retry lane with a spent budget.
+        resultJson: {
+          stopReason: "interrupted",
+          conversationContinuation: "continue_conversation_v1",
+        },
+      });
+    const originalRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        scheduledRetryAttempt: 2,
+        scheduledRetryReason: "transient_failure",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "transient_failure_retry",
+          retryOfRunId: originalRunId,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+    const successors = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(0);
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.assigneeAgentId).toBe(agentId);
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(1);
+    expect(recoveryActions[0]).toMatchObject({
+      companyId,
+      status: "active",
+      previousOwnerAgentId: agentId,
+    });
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("bounded retry budget");
+    expect(comments[0]?.body).toContain("no live execution path");
+    expect(comments[0]?.authorType).toBe("system");
+    expect(comments[0]?.presentation).toMatchObject({
+      kind: "system_notice",
+      tone: "danger",
+    });
+
+    // The escalated issue is board-owned now: a second sweep leaves it alone.
+    const again = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(again.escalated).toBe(0);
+    expect(again.continuationRequeued).toBe(0);
+  });
+
+  it("keeps retrying an interrupted run while its transient retry budget remains", async () => {
+    const { agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "server_shutdown_interrupted",
+      runError: "Interrupted by graceful server shutdown (SIGTERM)",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        scheduledRetryAttempt: 1,
+        scheduledRetryReason: "transient_failure",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "transient_failure_retry",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    const successor = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(successor).toMatchObject({
+      agentId,
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 2,
+      scheduledRetryReason: "transient_failure",
+    });
+    const sourceIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("in_progress");
+  });
+
+  it("escalates an assigned todo issue whose lost dispatch has spent its transient retry budget", async () => {
+    const { agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      runErrorCode: "server_shutdown_interrupted",
+      runError: "Interrupted by graceful server shutdown (SIGTERM)",
+      resultJson: {
+        stopReason: "interrupted",
+        conversationContinuation: "continue_conversation_v1",
+      },
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        scheduledRetryAttempt: 2,
+        scheduledRetryReason: "transient_failure",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "transient_failure_retry",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.dispatchRequeued).toBe(0);
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.assigneeAgentId).toBe(agentId);
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain("bounded retry budget");
   });
 
   it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
