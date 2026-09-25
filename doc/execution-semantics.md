@@ -527,6 +527,17 @@ Plain comments alone do not make a recovery action stale. A comment can provide 
 
 ### Agent-assigned `todo`
 
+Queued dispatch backs off after an agent fails before provider work starts. Only
+explicit bootstrap evidence with no stdout or token usage qualifies; ambiguous
+failures retain their existing recovery rules. Consecutive startup failures delay
+the next claim by 5 seconds, doubling up to 5 minutes. A provider retry-not-before
+deadline takes precedence. The existing run stays `queued`, retaining its task
+context, wake receipt, and failure-attempt count. Comments remain editable and
+discardable. Startup and periodic queue resumption retry the claim through the
+same admission gates. After the delay, one run probes the agent while other
+requests stay queued. Successful work or evidence of provider progress clears
+this startup streak. Other agents keep their normal concurrency.
+
 This is dispatch state: ready to start, not yet actively claimed.
 
 A healthy dispatch state means at least one of these is true:

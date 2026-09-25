@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AdapterExecutionContext } from "../adapters/types.js";
 import {
   agents,
   approvals,
@@ -20,6 +21,7 @@ import {
   issueRelations,
   issues,
   projects,
+  type Db,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -28,6 +30,7 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
+import { deferQueuedRunAfterStartupFailure } from "../services/agent-startup-backoff.js";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
@@ -249,6 +252,447 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       createdAt: input.now,
     });
   }
+
+  describe("seat startup failure cooldown at dispatch", () => {
+    const adapterType = "seat_cooldown_test";
+    async function completeTask(context: AdapterExecutionContext) {
+      await context.onLog("stdout", "Completed task work.\n");
+      await db.update(issues).set({ status: "done" }).where(and(
+        eq(issues.companyId, context.agent.companyId), eq(issues.id, String(context.context.issueId))));
+      return { exitCode: 0, signal: null, timedOut: false, summary: "Completed task work." };
+    }
+    const execute = vi.fn(completeTask);
+    let issueNumber = 100;
+
+    beforeEach(() => {
+      issueNumber = 100;
+      execute.mockReset().mockImplementation(completeTask);
+      registerServerAdapter({
+        type: adapterType,
+        execute,
+        testEnvironment: async () => ({
+          adapterType, status: "pass", checks: [], testedAt: new Date().toISOString(),
+        }),
+      });
+    });
+
+    afterEach(async () => {
+      await heartbeat.drainActiveRunExecutions();
+      unregisterServerAdapter(adapterType);
+    });
+
+    async function seedFailedSeat(finishedAt = new Date()) {
+      const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+      await seedRetryFixture({ companyId, agentId, runId, now: finishedAt,
+        errorCode: "adapter_failed", adapterType });
+      await db.update(heartbeatRuns).set({ startedAt: new Date(finishedAt.getTime() - 100) })
+        .where(eq(heartbeatRuns.id, runId));
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 3 } } })
+        .where(eq(agents.id, agentId));
+      return { companyId, agentId, runId, finishedAt };
+    }
+
+    async function seedTask(companyId: string, agentId: string) {
+      const issueId = randomUUID();
+      issueNumber += 1;
+      await db.insert(issues).values({ id: issueId, companyId, title: "Preserve queued task",
+        status: "todo", priority: "medium", assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user", issueNumber,
+        identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-${issueNumber}` });
+      return { issueId, wakeReason: "issue_assigned", taskPayload: { instruction: "Keep this task context" } };
+    }
+
+    async function seedQueuedWork(companyId: string, agentId: string) {
+      const contextSnapshot = await seedTask(companyId, agentId);
+      const runId = randomUUID(), wakeupRequestId = randomUUID();
+      await db.insert(agentWakeupRequests).values({ id: wakeupRequestId, companyId, agentId,
+        source: "assignment", reason: "issue_assigned", status: "queued", payload: contextSnapshot });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued",
+        invocationSource: "assignment", wakeupRequestId, contextSnapshot });
+      await db.update(agentWakeupRequests).set({ runId }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+      return { runId, wakeupRequestId, contextSnapshot };
+    }
+
+    it("defers existing queued work and fresh task wakes without replacing their context or retry identity", async () => {
+      const seat = await seedFailedSeat();
+      const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+      await db.update(heartbeatRuns).set({ retryOfRunId: seat.runId, scheduledRetryAttempt: 2,
+        scheduledRetryReason: "transient_failure" }).where(eq(heartbeatRuns.id, queued.runId));
+      const [beforeDispatch] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.runId));
+      const freshContext = await seedTask(seat.companyId, seat.agentId);
+      const fresh = await heartbeat.wakeup(seat.agentId, { source: "assignment", reason: "issue_assigned",
+        allowRunCoalescing: false, contextSnapshot: freshContext });
+      expect(fresh).not.toBeNull();
+      await heartbeat.resumeQueuedRuns();
+
+      const [deferred] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.runId));
+      expect(deferred).toEqual(beforeDispatch);
+      expect(await heartbeat.getRun(fresh!.id)).toMatchObject({ status: "queued",
+        startedAt: null, scheduledRetryAt: null, contextSnapshot: freshContext });
+      expect(execute).not.toHaveBeenCalled();
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queued.wakeupRequestId));
+      expect(wake).toMatchObject({ runId: queued.runId, payload: queued.contextSnapshot });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, queued.contextSnapshot.issueId));
+      expect(issue.executionRunId).toBeNull();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, seat.agentId))).toHaveLength(3);
+    });
+
+    it.each([
+      { failures: 1, delayMs: 5_000, beforeDeadlineAge: 0 },
+      { failures: 2, delayMs: 10_000, beforeDeadlineAge: 7_000 },
+      { failures: 3, delayMs: 20_000, beforeDeadlineAge: 12_000 },
+      { failures: 10, delayMs: 300_000, beforeDeadlineAge: 250_000 },
+    ])("expires the $delayMs ms cooldown after $failures failures without resetting on unstarted cancelled placeholders", async ({ failures, delayMs, beforeDeadlineAge }) => {
+      const seat = await seedFailedSeat();
+      const [agent] = await db.select().from(agents).where(eq(agents.id, seat.agentId));
+      // A time beyond the preceding step, but before this step, proves that
+      // the deadline increases across independent failed run IDs.
+      const finishedAt = new Date(Date.now() - beforeDeadlineAge);
+      const agentId = randomUUID();
+      const failureIds: string[] = [];
+      await db.insert(agents).values({ ...agent, id: agentId, name: `Seat ${failures}` });
+      for (let index = 0; index < failures; index += 1) {
+        const failureAt = new Date(finishedAt.getTime() - (failures - index - 1) * 1_000);
+        const id = randomUUID();
+        failureIds.push(id);
+        await db.insert(heartbeatRuns).values({ id, companyId: seat.companyId, agentId, status: "failed",
+          errorCode: "adapter_failed", startedAt: new Date(failureAt.getTime() - 100), finishedAt: failureAt,
+          createdAt: new Date(failureAt.getTime() - 100), updatedAt: failureAt,
+          resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+      }
+      await db.insert(heartbeatRuns).values({ companyId: seat.companyId, agentId,
+        status: "cancelled", createdAt: finishedAt, updatedAt: finishedAt });
+      const queued = await seedQueuedWork(seat.companyId, agentId);
+      await heartbeat.resumeQueuedRuns();
+      expect((await heartbeat.getRun(queued.runId))?.status).toBe("queued");
+      expect(execute.mock.calls.filter(([context]) => context.agent.id === agentId)).toHaveLength(0);
+
+      // Move only durable failure history across expiry; neither the queued
+      // run nor its wake is rewritten or promoted to make it runnable.
+      const shiftMs = delayMs - beforeDeadlineAge + 1_000;
+      await db.update(heartbeatRuns).set({
+        startedAt: sql`${heartbeatRuns.startedAt} - ${shiftMs} * interval '1 millisecond'`,
+        finishedAt: sql`${heartbeatRuns.finishedAt} - ${shiftMs} * interval '1 millisecond'`,
+      }).where(inArray(heartbeatRuns.id, failureIds));
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect((await heartbeat.getRun(queued.runId))?.status).toBe("succeeded");
+      expect(execute.mock.calls.filter(([context]) => context.agent.id === agentId)).toHaveLength(1);
+    });
+
+    it("admits one probe after cooldown while another seat runs, then resumes queued work after progress", async () => {
+      const seat = await seedFailedSeat(new Date(Date.now() - 60 * 60_000));
+      const queued = await Promise.all(Array.from({ length: 3 }, () => seedQueuedWork(seat.companyId, seat.agentId)));
+      let releaseProbe!: () => void;
+      const probe = new Promise<void>((resolve) => { releaseProbe = resolve; });
+      const secondService = heartbeatService(db);
+      execute.mockImplementation(async (context) => {
+        if (context.agent.id === seat.agentId) await probe;
+        return completeTask(context);
+      });
+      try {
+        await Promise.all([heartbeat.resumeQueuedRuns(), secondService.resumeQueuedRuns()]);
+        await expect.poll(() => execute.mock.calls.length, { timeout: 5_000 }).toBeGreaterThan(0);
+        await heartbeat.resumeQueuedRuns();
+        const running = await db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.agentId, seat.agentId), eq(heartbeatRuns.status, "running")));
+        expect(running).toHaveLength(1);
+        expect(execute).toHaveBeenCalledTimes(1);
+
+        const [agent] = await db.select().from(agents).where(eq(agents.id, seat.agentId));
+        const otherAgentId = randomUUID();
+        await db.insert(agents).values({ ...agent, id: otherAgentId, name: "Healthy seat", status: "idle" });
+        const other = await seedQueuedWork(seat.companyId, otherAgentId);
+        await heartbeat.resumeQueuedRuns();
+        await expect.poll(async () => (await heartbeat.getRun(other.runId))?.status, { timeout: 5_000 }).toBe("succeeded");
+        expect(execute.mock.calls.filter(([context]) => context.agent.id === seat.agentId)).toHaveLength(1);
+      } finally {
+        releaseProbe();
+        await Promise.all([heartbeat.drainActiveRunExecutions(), secondService.drainActiveRunExecutions()]);
+      }
+
+      // Existing startup/periodic queue resumption owns the next dispatch.
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      for (const work of queued) expect((await heartbeat.getRun(work.runId))?.status).toBe("succeeded");
+      expect(execute.mock.calls.filter(([context]) => context.agent.id === seat.agentId)).toHaveLength(3);
+      // Four adapter completions plus concurrent service sweeps need a local
+      // timeout budget when the broader database shard runs under host load.
+    }, 30_000);
+
+    it("admits exactly one probe across concurrent database transactions without the process-local start lock", async () => {
+      const seat = await seedFailedSeat(new Date(Date.now() - 60 * 60_000));
+      const queued = await Promise.all(Array.from({ length: 3 }, () => seedQueuedWork(seat.companyId, seat.agentId)));
+      let entered = 0;
+      let releaseBarrier!: () => void;
+      const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+      try {
+        const decisions = await Promise.all(queued.map((work) => db.transaction(async (tx) => {
+          const [locked] = await tx.select().from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, work.runId)).for("update");
+          entered += 1;
+          if (entered === queued.length) releaseBarrier();
+          await barrier;
+          const deferred = await deferQueuedRunAfterStartupFailure(tx as unknown as Db, locked!);
+          if (!deferred) {
+            // Hold the admission-to-commit window open while other database
+            // sessions compete; no in-process scheduler lock protects this path.
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            await tx.update(heartbeatRuns).set({ status: "running", startedAt: new Date() })
+              .where(eq(heartbeatRuns.id, work.runId));
+          }
+          return deferred;
+        })));
+        expect(decisions.filter((deferred) => !deferred)).toHaveLength(1);
+        expect(decisions.filter(Boolean)).toHaveLength(2);
+        const rows = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, queued.map((work) => work.runId)));
+        expect(rows.filter((run) => run.status === "running")).toHaveLength(1);
+        expect(rows.filter((run) => run.status === "queued" && run.startedAt === null)).toHaveLength(2);
+      } finally {
+        // These claims deliberately have no adapter execution to settle them.
+        await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() })
+          .where(inArray(heartbeatRuns.id, queued.map((work) => work.runId)));
+      }
+    });
+
+    it("starts cooldown at the latest failure completion when concurrent attempts finish out of start order", async () => {
+      const seat = await seedFailedSeat();
+      await db.update(heartbeatRuns).set({ startedAt: new Date(seat.finishedAt.getTime() - 61_000) })
+        .where(eq(heartbeatRuns.id, seat.runId));
+      await db.insert(heartbeatRuns).values({ companyId: seat.companyId, agentId: seat.agentId,
+        status: "failed", errorCode: "adapter_failed",
+        startedAt: new Date(seat.finishedAt.getTime() - 51_000),
+        finishedAt: new Date(seat.finishedAt.getTime() - 50_000),
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+      const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+      await heartbeat.resumeQueuedRuns();
+      expect((await heartbeat.getRun(queued.runId))?.status).toBe("queued");
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    describe("durable startup history", () => {
+      async function seedExpiredFailures(seat: { companyId: string; agentId: string }, count: number) {
+        const latestCompletion = Date.now() - 10 * 60_000;
+        await db.insert(heartbeatRuns).values(Array.from({ length: count }, (_, index) => ({
+          companyId: seat.companyId, agentId: seat.agentId, status: "failed", errorCode: "adapter_failed",
+          startedAt: new Date(latestCompletion - index * 1_000 - 100),
+          finishedAt: new Date(latestCompletion - index * 1_000),
+          resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+        })));
+      }
+
+      it("keeps a late completion and provider deadline when seven later-started attempts finished earlier", async () => {
+        const seat = await seedFailedSeat();
+        await db.update(heartbeatRuns).set({ startedAt: new Date(Date.now() - 60 * 60_000),
+          resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+            retryNotBefore: new Date(Date.now() + 30 * 60_000).toISOString() },
+        }).where(eq(heartbeatRuns.id, seat.runId));
+        await seedExpiredFailures(seat, 7);
+        const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+        await heartbeat.resumeQueuedRuns();
+        expect((await heartbeat.getRun(queued.runId))?.status).toBe("queued");
+
+        // The provider's deadline still holds after every local delay expires.
+        await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 6 * 60_000) })
+          .where(eq(heartbeatRuns.id, seat.runId));
+        await heartbeat.resumeQueuedRuns();
+        expect((await heartbeat.getRun(queued.runId))?.status).toBe("queued");
+        expect(execute).not.toHaveBeenCalled();
+      });
+
+      it("honors an older provider deadline throughout a long consecutive failure streak", async () => {
+        const seat = await seedFailedSeat(new Date(Date.now() - 60 * 60_000));
+        await db.update(heartbeatRuns).set({ resultJson: {
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          retryNotBefore: new Date(Date.now() + 30 * 60_000).toISOString(),
+        } }).where(eq(heartbeatRuns.id, seat.runId));
+        await seedExpiredFailures(seat, 64);
+        const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+        await heartbeat.resumeQueuedRuns();
+        expect((await heartbeat.getRun(queued.runId))?.status).toBe("queued");
+        expect(execute).not.toHaveBeenCalled();
+      });
+
+      it("reads only the newest history row when completed successes keep the seat healthy", async () => {
+        const seat = await seedFailedSeat(new Date(Date.now() - 60_000));
+        await db.update(heartbeatRuns).set({ status: "succeeded", error: null, errorCode: null,
+          resultJson: null, stdoutExcerpt: "Completed real work." }).where(eq(heartbeatRuns.id, seat.runId));
+        await db.insert(heartbeatRuns).values(Array.from({ length: 31 }, (_, index) => ({
+          companyId: seat.companyId, agentId: seat.agentId, status: "succeeded",
+          startedAt: new Date(seat.finishedAt.getTime() - (index + 1) * 1_000 - 100),
+          finishedAt: new Date(seat.finishedAt.getTime() - (index + 1) * 1_000),
+          stdoutExcerpt: "Completed real work.",
+        })));
+        const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.runId));
+        let historyRowsRead = 0;
+        const deferred = await db.transaction((tx) => {
+          const observedTx = new Proxy(tx, {
+            get(target, property, receiver) {
+              if (property !== "select") return Reflect.get(target, property, receiver);
+              return (fields: any) => {
+                const builder = target.select(fields);
+                if (!fields?.finishedAt) return builder;
+                const from = builder.from.bind(builder);
+                builder.from = ((...args: any[]) => {
+                  const query = (from as any)(...args);
+                  const then = query.then.bind(query);
+                  query.then = (resolve: any, reject: any) => then((rows: unknown[]) => {
+                    historyRowsRead += rows.length;
+                    return rows;
+                  }).then(resolve, reject);
+                  return query;
+                }) as typeof builder.from;
+                return builder;
+              };
+            },
+          });
+          return deferQueuedRunAfterStartupFailure(observedTx as unknown as Db, run!);
+        });
+        expect(deferred).toBe(false);
+        expect(historyRowsRead).toBe(1);
+      });
+
+      it("bounds history reads while honoring an old provider deadline after more than a thousand failures", async () => {
+        const seat = await seedFailedSeat(new Date(Date.now() - 60 * 60_000));
+        await db.update(heartbeatRuns).set({ resultJson: {
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          retryNotBefore: new Date(Date.now() + 30 * 60_000).toISOString(),
+        } }).where(eq(heartbeatRuns.id, seat.runId));
+        await seedExpiredFailures(seat, 1_025);
+        const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.runId));
+        let historyReads = 0;
+        const deferred = await db.transaction((tx) => {
+          const observedTx = new Proxy(tx, {
+            get(target, property, receiver) {
+              if (property !== "select") return Reflect.get(target, property, receiver);
+              return (fields: any) => {
+                if (fields?.finishedAt) historyReads += 1;
+                return target.select(fields);
+              };
+            },
+          });
+          return deferQueuedRunAfterStartupFailure(observedTx as unknown as Db, run!);
+        });
+        expect(deferred).toBe(true);
+        expect(historyReads).toBeGreaterThan(0);
+        expect(historyReads).toBeLessThanOrEqual(3);
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.runId))).toEqual([run]);
+      });
+
+      it("stops considering older provider deadlines once completed progress breaks the long failure streak", async () => {
+        const seat = await seedFailedSeat(new Date(Date.now() - 60 * 60_000));
+        await db.update(heartbeatRuns).set({ resultJson: {
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          retryNotBefore: new Date(Date.now() + 30 * 60_000).toISOString(),
+        } }).where(eq(heartbeatRuns.id, seat.runId));
+        await db.insert(heartbeatRuns).values({ companyId: seat.companyId, agentId: seat.agentId,
+          status: "succeeded", startedAt: new Date(Date.now() - 65 * 60_000),
+          finishedAt: new Date(Date.now() - 15 * 60_000), stdoutExcerpt: "Completed real work." });
+        await seedExpiredFailures(seat, 64);
+        const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+        expect((await heartbeat.getRun(queued.runId))?.status).toBe("succeeded");
+        expect(execute).toHaveBeenCalledTimes(1);
+      });
+
+      it("defers when an active probe fails immediately after the failure history is read", async () => {
+        const seat = await seedFailedSeat(new Date(Date.now() - 60_000));
+        const probeId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: probeId, companyId: seat.companyId, agentId: seat.agentId,
+          status: "running", startedAt: new Date(Date.now() - 100) });
+        const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.runId));
+        const finalizerDb = createDb(tempDb!.connectionString);
+        let terminalized = false;
+        const racingDecision = await db.transaction(async (tx) => {
+          // Execute every query against PostgreSQL. Only the delivery of the
+          // history result is intercepted to reproduce a concurrent finalizer.
+          const observedTx = new Proxy(tx, {
+            get(target, property, receiver) {
+              if (property !== "select") return Reflect.get(target, property, receiver);
+              return (fields: any) => {
+                const builder = target.select(fields);
+                if (!fields?.finishedAt) return builder;
+                const from = builder.from.bind(builder);
+                builder.from = ((...args: any[]) => {
+                  const query = (from as any)(...args);
+                  const then = query.then.bind(query);
+                  query.then = (resolve: any, reject: any) => then(async (rows: unknown) => {
+                    if (!terminalized) {
+                      await finalizerDb.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+                        errorCode: "adapter_failed",
+                        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+                      }).where(eq(heartbeatRuns.id, probeId));
+                      terminalized = true;
+                    }
+                    return rows;
+                  }).then(resolve, reject);
+                  return query;
+                }) as typeof builder.from;
+                return builder;
+              };
+            },
+          });
+          return deferQueuedRunAfterStartupFailure(observedTx as unknown as Db, run!);
+        });
+        const freshDecision = await db.transaction((tx) =>
+          deferQueuedRunAfterStartupFailure(tx as unknown as Db, run!));
+        expect(terminalized).toBe(true);
+        expect({ racingDecision, freshDecision }).toEqual({ racingDecision: true, freshDecision: true });
+      });
+    });
+
+    it("honors a provider deadline after local cooldown expires and resumes the same queued run when it passes", async () => {
+      const seat = await seedFailedSeat(new Date(Date.now() - 60 * 60_000));
+      await db.update(heartbeatRuns).set({ resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        retryNotBefore: new Date(Date.now() + 60_000).toISOString(),
+      } }).where(eq(heartbeatRuns.id, seat.runId));
+      const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+      await heartbeat.resumeQueuedRuns();
+      expect((await heartbeat.getRun(queued.runId))?.status).toBe("queued");
+      expect(execute).not.toHaveBeenCalled();
+      await db.update(heartbeatRuns).set({ resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        retryNotBefore: new Date(Date.now() - 1_000).toISOString(),
+      } }).where(eq(heartbeatRuns.id, seat.runId));
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect((await heartbeat.getRun(queued.runId))?.status).toBe("succeeded");
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("clears the failure streak after productive work is cancelled", async () => {
+      const seat = await seedFailedSeat();
+      await db.insert(heartbeatRuns).values({ companyId: seat.companyId, agentId: seat.agentId,
+        status: "cancelled", startedAt: new Date(), finishedAt: new Date(),
+        stdoutExcerpt: "Applied requested change before the operator stopped this run." });
+      const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect((await heartbeat.getRun(queued.runId))?.status).toBe("succeeded");
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      { label: "successful work", evidence: { status: "succeeded", stdoutExcerpt: "Task completed." } },
+      { label: "missing pre-provider evidence", evidence: { resultJson: {} } },
+      { label: "positive output evidence", evidence: { stdoutExcerpt: "I changed the requested file." } },
+      { label: "positive usage evidence", evidence: { usageJson: { inputTokens: 10, outputTokens: 1 } } },
+      { label: "cached-input usage evidence", evidence: { usageJson: { cachedInputTokens: 10 } } },
+    ])("leaves $label runnable", async ({ evidence }) => {
+      const seat = await seedFailedSeat();
+      await db.update(heartbeatRuns).set(evidence).where(eq(heartbeatRuns.id, seat.runId));
+      const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect((await heartbeat.getRun(queued.runId))?.status).toBe("succeeded");
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+  });
 
   it("reuses one failure successor across concurrent and repeated scheduling", async () => {
     const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();

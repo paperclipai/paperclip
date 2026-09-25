@@ -2,6 +2,7 @@ import { agentWakeupRequests, heartbeatRuns, issues, type Db } from "@paperclipa
 import { and, eq } from "drizzle-orm";
 import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { claimNativeReviewExecutionLock, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { deferQueuedRunAfterStartupFailure } from "../agent-startup-backoff.js";
 
 /** The run, wake, and issue lock form one reviewer admission claim. */
 export async function claimQueuedNativeReviewRun(db: Db, input: {
@@ -33,6 +34,7 @@ export async function claimQueuedNativeReviewRun(db: Db, input: {
     )).for("update");
     if (!run || run.status !== "queued" || run.wakeupRequestId !== input.run.wakeupRequestId) return null;
     if ((run.contextSnapshot as Record<string, unknown> | null)?.issueId !== issueId) return null;
+    if (await deferQueuedRunAfterStartupFailure(tx as unknown as Db, run)) return null;
     const locked = await claimNativeReviewExecutionLock(tx as unknown as Db, {
       companyId: run.companyId, issueId, agentId: run.agentId, runId: run.id,
       contextSnapshot: context, agentNameKey: input.agentNameKey, claimedAt: input.claimedAt,

@@ -33,6 +33,7 @@ import {
   waitForAdapterStop,
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { deferQueuedRunAfterStartupFailure } from "./agent-startup-backoff.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
@@ -17459,6 +17460,9 @@ export function heartbeatService(
                 // envelope. Preserve their established claim path; only an
                 // explicitly bound queued-message envelope is subject to the
                 // live-comment discard gate below.
+                if (await deferQueuedRunAfterStartupFailure(tx as unknown as Db, lockedRun)) {
+                  return { kind: "stale" as const, run: null };
+                }
                 const [claimedRun] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -17545,6 +17549,9 @@ export function heartbeatService(
                 };
               }
 
+              if (await deferQueuedRunAfterStartupFailure(tx as unknown as Db, lockedRun)) {
+                return { kind: "stale" as const, run: null };
+              }
               await tx
                 .update(agentWakeupRequests)
                 .set({
@@ -17639,9 +17646,19 @@ export function heartbeatService(
               agentNameKey: normalizeAgentNameKey(agent.name),
             });
           }
-          return tx.update(heartbeatRuns).set(claimValues).where(and(
-            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
-          )).returning().then((rows) => rows[0] ?? null);
+          return tx.transaction(async (claimTx) => {
+            // Match comment/reviewer claims: lock the run before the agent
+            // admission lock, including callers that bypass the local start lock.
+            const [current] = await claimTx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+              eq(heartbeatRuns.agentId, run.agentId),
+            )).for("update");
+            if (!current || current.status !== "queued") return null;
+            if (await deferQueuedRunAfterStartupFailure(claimTx as unknown as Db, current)) return null;
+            return claimTx.update(heartbeatRuns).set(claimValues).where(and(
+              eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
+            )).returning().then((rows) => rows[0] ?? null);
+          });
         });
     if (!claimed) return null;
 
