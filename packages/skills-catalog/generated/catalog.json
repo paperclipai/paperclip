@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-11T15:05:34.526Z",
+  "generatedAt": "2026-09-24T21:33:34.075Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -1113,6 +1113,124 @@
         "path": "skills/last30days",
         "url": "https://github.com/mvanhorn/last30days-skill/tree/v3.3.0/skills/last30days"
       }
+    },
+    {
+      "id": "paperclipai:optional:software-development:author-connector-definition",
+      "key": "paperclipai/optional/software-development/author-connector-definition",
+      "kind": "optional",
+      "category": "software-development",
+      "slug": "author-connector-definition",
+      "name": "author-connector-definition",
+      "description": "Author one Paperclip catalog connector definition: probe the provider MCP metadata, fix the five connection axes, add official branding, edit the generator source, regenerate, and get the catalog tests green with evidence. Mechanical authoring only; not research approval, not PR submission.",
+      "path": "catalog/optional/software-development/author-connector-definition",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [
+        "git",
+        "curl",
+        "node",
+        "pnpm"
+      ],
+      "tags": [
+        "mcp",
+        "connectors",
+        "app-definition",
+        "catalog",
+        "codegen"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 26106,
+          "sha256": "0bfa0e4549dd2a1b0dc864c3f9bc537e46327bb54c66fb63fa5664084f909795"
+        },
+        {
+          "path": "references/catalog-contract.md",
+          "kind": "reference",
+          "sizeBytes": 19624,
+          "sha256": "5151ee91fff5407d49c12f671096bb4278a01d006ffab60ff40ae0c596c491ed"
+        },
+        {
+          "path": "references/live-acceptance.md",
+          "kind": "reference",
+          "sizeBytes": 5670,
+          "sha256": "24afcc38cfc9e56ca692d6d10e6eeba11d1ca41de939c47cb1caed42afba7928"
+        },
+        {
+          "path": "references/offline-verification.md",
+          "kind": "reference",
+          "sizeBytes": 18916,
+          "sha256": "a0843a9df5d1869f6e059c06c38fc63aded9e6d54f43aad83b5114b498581be6"
+        },
+        {
+          "path": "references/safe-discovery.md",
+          "kind": "reference",
+          "sizeBytes": 21230,
+          "sha256": "869e8d3f28feaf806439494031f5a9e8543a0141c12baad6ede0b840f21bf881"
+        }
+      ],
+      "contentHash": "sha256:2088e4a79c1f9e8deb2cf814f7fb879638c4cdf796ca8d6165afb66b077a6536"
+    },
+    {
+      "id": "paperclipai:optional:software-development:connect-agent-tools",
+      "key": "paperclipai/optional/software-development/connect-agent-tools",
+      "kind": "optional",
+      "category": "software-development",
+      "slug": "connect-agent-tools",
+      "name": "connect-agent-tools",
+      "description": "Get a Paperclip agent working with an outside tool, self-hosted or Cloud: start from the workflow and its proof, establish the deployment and its real reachability, take the smallest supported connection path, and verify a real agent run with provider-side readback. Not for catalog authoring.",
+      "path": "catalog/optional/software-development/connect-agent-tools",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "operations"
+      ],
+      "requires": [
+        "curl"
+      ],
+      "tags": [
+        "mcp",
+        "connectors",
+        "integrations",
+        "connections",
+        "verification"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 27587,
+          "sha256": "72634d7d8c3bbcbec22e29a011d917bf828c94236f5f9f5e17c68f83fd74199a"
+        },
+        {
+          "path": "references/chat-and-email.md",
+          "kind": "reference",
+          "sizeBytes": 4945,
+          "sha256": "c014394e04b46bf34460296936febfe8497926faf9f87ed47c27377acc0f2371"
+        },
+        {
+          "path": "references/deployment-support-matrix.md",
+          "kind": "reference",
+          "sizeBytes": 21528,
+          "sha256": "5ee2477d76c39842af4a0e5172a1acaae39d93406c84131ba1757851a458a35a"
+        },
+        {
+          "path": "references/verification-log.md",
+          "kind": "reference",
+          "sizeBytes": 25362,
+          "sha256": "fb3799a05d6f0054eeadc55cb7441278013f13959349e0479609fd6439ea3913"
+        }
+      ],
+      "contentHash": "sha256:60fe80ab5181aeb9a55cbb5ccae090ac2bf38872435b08d7f98725eb0be9fd54"
     },
     {
       "id": "paperclipai:optional:software-development:prepare-mcp-integration",

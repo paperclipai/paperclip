@@ -287,6 +287,191 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
   };
 }
 
+/**
+ * PAP-18519 — the same MCP endpoint, re-shaped to match a real MCP-direct
+ * vendor field for field.
+ *
+ * Every document below is a literal copy of a **public, unauthenticated**
+ * metadata response read from `https://wisdom-api.enterpret.com/server/mcp` and
+ * `https://oauth.enterpret.com` on 23 September 2026, re-hosted on the
+ * DNS-pinned IP literals this file already uses. Nothing in this fixture talks
+ * to that vendor: no client was registered against its authorization server, no
+ * consent was given, and no tool was called. The tool list is the vendor's
+ * *documented* list — an authenticated `tools/list` has never been observed —
+ * so treat discovered names here as a shape, not as proof of the live catalog.
+ *
+ * It is a second fixture rather than an option on the one above because the
+ * shape differs in four ways that each land on a different rung of the
+ * client-resolution ladder:
+ *
+ *   1. the 401 challenge carries `realm` and `scope` *around* the
+ *      `resource_metadata` parameter, rather than that parameter alone;
+ *   2. the authorization server is on a different origin from the MCP server
+ *      and its issuer has no path, so RFC 8414 well-known insertion never
+ *      applies and only the origin form can answer;
+ *   3. it advertises no Client ID Metadata Document, so CIMD is unavailable
+ *      whatever the callback origin looks like; and
+ *   4. it advertises no `revocation_endpoint`.
+ */
+const VENDOR_SHAPED_MCP_URL = `${MCP_ORIGIN}/server/mcp`;
+/** A pathless issuer on its own origin, the way a vendor splits API from auth. */
+const VENDOR_SHAPED_ISSUER = "https://1.1.1.1";
+/** The URL the vendor's own challenge names: suffix form, under the resource path. */
+const VENDOR_SHAPED_RESOURCE_METADATA_URL = `${VENDOR_SHAPED_MCP_URL}/.well-known/oauth-protected-resource`;
+/** The insertion form (RFC 9728 §3.1) the vendor *also* serves, and Paperclip probes. */
+const VENDOR_SHAPED_RESOURCE_METADATA_INSERTION_URL = `${MCP_ORIGIN}/.well-known/oauth-protected-resource/server/mcp`;
+const VENDOR_SHAPED_CHALLENGE =
+  `Bearer realm="mcp", resource_metadata="${VENDOR_SHAPED_RESOURCE_METADATA_URL}", scope="mcp:read mcp:write"`;
+
+/**
+ * The vendor's documented tools, in its documented order, with the three legacy
+ * aliases it still serves. No `annotations` are supplied because none have been
+ * observed — so these exercise Paperclip's name-only risk inference, which is
+ * exactly what an operator gets from a pasted URL.
+ */
+const VENDOR_SHAPED_TOOLS = [
+  { name: "get_organization_details", description: "Organization details" },
+  { name: "get_graph_schema", description: "Feedback graph schema" },
+  { name: "get_query_examples", description: "Example graph queries" },
+  { name: "search_graph_fields", description: "Search graph fields" },
+  { name: "search_graph_values", description: "Search graph values" },
+  { name: "run_graph_query", description: "Run a graph query" },
+  { name: "find_user_quote", description: "Find a customer quote" },
+  { name: "get_schema", description: "Legacy alias for get_graph_schema" },
+  { name: "execute_cypher_query", description: "Legacy alias for run_graph_query" },
+  { name: "search_knowledge_graph", description: "Legacy alias for search_graph_values" },
+];
+
+/**
+ * Authorization-server metadata copied verbatim from the vendor's RFC 8414
+ * document. `revocation_endpoint` is absent in the original and must stay
+ * absent here — scenario 8 of the runbook turns on it.
+ */
+const VENDOR_SHAPED_AUTHORIZATION_SERVER_METADATA = {
+  authorization_endpoint: `${VENDOR_SHAPED_ISSUER}/authorize`,
+  code_challenge_methods_supported: ["S256"],
+  grant_types_supported: ["authorization_code", "refresh_token"],
+  introspection_endpoint: `${VENDOR_SHAPED_ISSUER}/introspect`,
+  issuer: VENDOR_SHAPED_ISSUER,
+  jwks_uri: `${VENDOR_SHAPED_ISSUER}/jwks.json`,
+  registration_endpoint: `${VENDOR_SHAPED_ISSUER}/register`,
+  response_types_supported: ["code"],
+  scopes_supported: ["email", "mcp:read", "mcp:write"],
+  token_endpoint: `${VENDOR_SHAPED_ISSUER}/token`,
+  token_endpoint_auth_methods_supported: ["none"],
+  userinfo_endpoint: `${VENDOR_SHAPED_ISSUER}/userinfo`,
+} as const;
+
+/** Protected-resource metadata, verbatim. Note `email` alongside the mcp scopes. */
+const VENDOR_SHAPED_PROTECTED_RESOURCE_METADATA = {
+  resource: VENDOR_SHAPED_MCP_URL,
+  authorization_servers: [VENDOR_SHAPED_ISSUER],
+  scopes_supported: ["email", "mcp:read", "mcp:write"],
+} as const;
+
+function installVendorShapedFixture() {
+  const requests: FixtureRequest[] = [];
+  const issuedCodes = new Set<string>();
+  let accessToken: string | null = null;
+
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+    const href = String(url);
+    const method = (init?.method ?? "GET").toUpperCase();
+    const headers = headerRecord(init);
+    const bodyText = typeof init?.body === "string" ? init.body : init?.body?.toString?.() ?? null;
+    const parsedBody = bodyText
+      ? headers["content-type"]?.includes("json")
+        ? (JSON.parse(bodyText) as Record<string, unknown>)
+        : new URLSearchParams(bodyText)
+      : null;
+    requests.push({ method, url: href, headers, body: parsedBody });
+
+    if (href === VENDOR_SHAPED_MCP_URL) {
+      if (headers.authorization !== `Bearer ${accessToken}`) {
+        // The vendor's own challenge, byte for byte: realm first, the resource
+        // metadata URL second, an advertised scope last.
+        return {
+          ok: false,
+          status: 401,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "www-authenticate" ? VENDOR_SHAPED_CHALLENGE : null,
+          },
+          text: async () => "",
+          json: async () => ({}),
+        } as unknown as Response;
+      }
+      return jsonResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: { tools: VENDOR_SHAPED_TOOLS },
+      });
+    }
+
+    // The vendor answers both RFC 9728 forms with the same document.
+    if (
+      href === VENDOR_SHAPED_RESOURCE_METADATA_URL ||
+      href === VENDOR_SHAPED_RESOURCE_METADATA_INSERTION_URL
+    ) {
+      return jsonResponse(VENDOR_SHAPED_PROTECTED_RESOURCE_METADATA);
+    }
+
+    // A pathless issuer has exactly one well-known location per suffix, and the
+    // vendor serves both suffixes with the same document.
+    if (
+      href === `${VENDOR_SHAPED_ISSUER}/.well-known/oauth-authorization-server` ||
+      href === `${VENDOR_SHAPED_ISSUER}/.well-known/openid-configuration`
+    ) {
+      return jsonResponse(VENDOR_SHAPED_AUTHORIZATION_SERVER_METADATA);
+    }
+
+    if (href === `${VENDOR_SHAPED_ISSUER}/register` && method === "POST") {
+      const requested = parsedBody as Record<string, unknown>;
+      return jsonResponse({
+        client_id: "vendor-shaped-dcr-client",
+        redirect_uris: requested.redirect_uris,
+        grant_types: requested.grant_types,
+        response_types: requested.response_types,
+        token_endpoint_auth_method: requested.token_endpoint_auth_method,
+      });
+    }
+
+    if (href === `${VENDOR_SHAPED_ISSUER}/token` && method === "POST") {
+      const body = parsedBody as URLSearchParams;
+      if (body.get("grant_type") === "authorization_code" && !issuedCodes.has(body.get("code") ?? "")) {
+        return jsonResponse({ error: "invalid_grant" }, 400);
+      }
+      accessToken = `vendor-shaped-access-${randomUUID()}`;
+      return jsonResponse({
+        access_token: accessToken,
+        refresh_token: "vendor-shaped-refresh",
+        expires_in: 3600,
+        token_type: "Bearer",
+        scope: "mcp:read mcp:write",
+      });
+    }
+
+    return jsonResponse({ error: "not_found" }, 404);
+  });
+
+  return {
+    fetchMock,
+    requests,
+    issueAuthorizationCode(authorizationUrl: string) {
+      void new URL(authorizationUrl);
+      const code = `vendor-shaped-code-${randomUUID()}`;
+      issuedCodes.add(code);
+      return code;
+    },
+    requestsMatching(pattern: RegExp) {
+      return requests.filter((entry) => pattern.test(entry.url));
+    },
+    urlsFetched() {
+      return requests.map((entry) => `${entry.method} ${entry.url}`);
+    },
+  };
+}
+
 async function createCompany(db: ReturnType<typeof createDb>) {
   const company = await db
     .insert(companies)
@@ -2398,5 +2583,297 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     const response = await request(app).get("/api/tools/oauth/client-metadata").expect(200);
 
     expect(response.body.redirect_uris).toEqual([REDIRECT_URI]);
+  });
+
+  /**
+   * PAP-18519 — an acceptance test against a mirror of a real MCP-direct
+   * vendor's advertised metadata, standing in for the vendor itself because
+   * there is no authorized account and pointing a connect flow at the live
+   * endpoint would dynamically register a client we have no permission to
+   * create. See `installVendorShapedFixture` for what the mirror copies and
+   * where it was read from.
+   */
+  describe("a vendor-shaped MCP-direct provider (PAP-18519)", () => {
+    it("resolves the whole endpoint set from the 401 challenge alone", async () => {
+      const fixture = installVendorShapedFixture();
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+
+      // The operator supplies a URL and a name. No manifest, no endpoint pair,
+      // no issuer — exactly what a catalog definition that ships `serverUrl`
+      // only would hand the broker.
+      const connected = await service.connectGalleryApp(company.id, {
+        link: VENDOR_SHAPED_MCP_URL,
+        name: "Vendor shaped",
+      });
+
+      expect(connected.auth).toMatchObject({
+        kind: "oauth",
+        issuer: VENDOR_SHAPED_ISSUER,
+        resource: VENDOR_SHAPED_MCP_URL,
+      });
+
+      const [connection] = await db
+        .select()
+        .from(toolConnections)
+        .where(eq(toolConnections.id, connected.connectionId));
+      expect(connection!.config.oauth).toMatchObject({
+        authorizationUrl: `${VENDOR_SHAPED_ISSUER}/authorize`,
+        tokenUrl: `${VENDOR_SHAPED_ISSUER}/token`,
+        registrationUrl: `${VENDOR_SHAPED_ISSUER}/register`,
+        metadataUrl: VENDOR_SHAPED_RESOURCE_METADATA_URL,
+        issuer: VENDOR_SHAPED_ISSUER,
+        resource: VENDOR_SHAPED_MCP_URL,
+        codeChallengeMethodsSupported: ["S256"],
+        tokenEndpointAuthMethodsSupported: ["none"],
+        clientIdMetadataDocumentSupported: false,
+      });
+
+      // The challenge's own `scope` wins over the protected-resource document's
+      // `scopes_supported`, so the `email` scope the resource advertises is
+      // never requested. That narrowing is the provider's, not a reviewed
+      // Paperclip allowlist — a catalog entry is where a reviewed one would go.
+      expect(connection!.config.oauth).toMatchObject({ scopes: ["mcp:read", "mcp:write"] });
+
+      // Discovery followed the challenge to the document the vendor named, and
+      // from there to the pathless issuer's only well-known location. The
+      // insertion form the vendor also serves was never needed.
+      const discovery = fixture.urlsFetched();
+      expect(discovery).toEqual([
+        `POST ${VENDOR_SHAPED_MCP_URL}`,
+        `GET ${VENDOR_SHAPED_RESOURCE_METADATA_URL}`,
+        `GET ${VENDOR_SHAPED_ISSUER}/.well-known/oauth-authorization-server`,
+      ]);
+      expect(fixture.requestsMatching(/oauth-protected-resource\/server\/mcp$/)).toHaveLength(0);
+    });
+
+    it("falls through to dynamic registration whether or not the callback is public HTTPS", async () => {
+      const fixture = installVendorShapedFixture();
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+
+      const connected = await service.connectGalleryApp(company.id, {
+        link: VENDOR_SHAPED_MCP_URL,
+        name: "Vendor shaped ladder",
+      });
+
+      // A self-hosted instance with no public origin at all: the callback is
+      // loopback, so no authorization server could fetch a client metadata
+      // document even if one were advertised.
+      const loopbackStart = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "http://localhost:3100/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: "board-user" },
+      });
+      expect(loopbackStart.registrationSource).toBe("dcr");
+
+      const registration = fixture.requestsMatching(/\/register$/);
+      expect(registration).toHaveLength(1);
+      expect(registration[0]!.body).toMatchObject({
+        redirect_uris: ["http://localhost:3100/api/tools/oauth/callback"],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      });
+
+      const authorizationUrl = new URL(loopbackStart.authorizationUrl);
+      expect(authorizationUrl.origin + authorizationUrl.pathname).toBe(`${VENDOR_SHAPED_ISSUER}/authorize`);
+      expect(authorizationUrl.searchParams.get("client_id")).toBe("vendor-shaped-dcr-client");
+      expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
+      expect(authorizationUrl.searchParams.get("code_challenge")).toBeTruthy();
+      expect(authorizationUrl.searchParams.get("resource")).toBe(VENDOR_SHAPED_MCP_URL);
+      expect(authorizationUrl.searchParams.get("scope")).toBe("mcp:read mcp:write");
+
+      // The interesting half: a *public HTTPS* callback does not change the
+      // answer, because this authorization server never advertises CIMD. The
+      // playbook frames CIMD as gated on a public origin; for this vendor the
+      // rung is missing on the server side, so DCR is the only rung there is.
+      const publicCompany = await createCompany(db);
+      const publicService = toolAccessService(db, {
+        oauthClientMetadataLookup: async () => [{ address: "93.184.216.34", family: 4 }],
+      });
+      const publicConnected = await publicService.connectGalleryApp(publicCompany.id, {
+        link: VENDOR_SHAPED_MCP_URL,
+        name: "Vendor shaped public",
+      });
+      const publicStart = await publicService.startOAuth(publicCompany.id, publicConnected.connectionId, {
+        redirectUri: REDIRECT_URI,
+        actor: { actorType: "user", actorId: "board-user" },
+      });
+      expect(publicStart.registrationSource).toBe("dcr");
+      expect(new URL(publicStart.authorizationUrl).searchParams.get("client_id"))
+        .not.toBe(CLIENT_METADATA_DOCUMENT_URL);
+    });
+
+    it("completes the flow and enforces revoke locally, with no revocation endpoint to call", async () => {
+      const fixture = installVendorShapedFixture();
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const policy = toolAccessPolicyService(db);
+      const [agent] = await db
+        .insert(agents)
+        .values({
+          companyId: company.id,
+          name: `Vendor shaped agent ${randomUUID()}`,
+          role: "engineer",
+          status: "active",
+          adapterType: "process",
+          adapterConfig: {},
+          runtimeConfig: {},
+        })
+        .returning();
+
+      const connected = await service.connectGalleryApp(company.id, {
+        link: VENDOR_SHAPED_MCP_URL,
+        name: "Vendor shaped revoke",
+      });
+      const start = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: REDIRECT_URI,
+        actor: { actorType: "user", actorId: "board-user" },
+      });
+      const state = new URL(start.authorizationUrl).searchParams.get("state")!;
+      const completed = await service.completeOAuthCallback({
+        state,
+        code: fixture.issueAuthorizationCode(start.authorizationUrl),
+        iss: VENDOR_SHAPED_ISSUER,
+        redirectUri: REDIRECT_URI,
+        actor: { actorType: "user", actorId: "board-user" },
+      });
+
+      // The whole documented tool surface arrives through the generic path,
+      // with risk inferred from names alone because the server annotates
+      // nothing. `run_graph_query` and `execute_cypher_query` read as writes:
+      // correct to be cautious, and a reason a curated entry would be clearer.
+      const discovered = [
+        ...completed.actions.readOnly.map((action) => action.toolName),
+        ...completed.actions.canMakeChanges.map((action) => action.toolName),
+      ].sort();
+      expect(discovered).toEqual(VENDOR_SHAPED_TOOLS.map((tool) => tool.name).sort());
+      // Adverse, and the strongest single argument for a curated entry: with no
+      // `annotations` to go on, name inference puts *every* tool in the
+      // read-only column — including `run_graph_query` and its legacy alias
+      // `execute_cypher_query`, which execute operator-supplied queries against
+      // the vendor's customer-feedback graph. The provider itself advertises an
+      // `mcp:write` scope. An operator reviewing this wizard sees ten reads and
+      // no changes, which is not what the surface is.
+      expect(completed.actions.canMakeChanges).toEqual([]);
+      expect(completed.actions.readOnly.map((action) => action.toolName)).toEqual(
+        VENDOR_SHAPED_TOOLS.map((tool) => tool.name),
+      );
+      expect(
+        completed.catalog
+          .filter((entry) => ["run_graph_query", "execute_cypher_query"].includes(entry.toolName))
+          .map((entry) => [entry.toolName, entry.riskLevel, entry.isDestructive]),
+      ).toEqual([
+        ["run_graph_query", "read", false],
+        ["execute_cypher_query", "read", false],
+      ]);
+
+      const readEntry = completed.catalog.find((entry) => entry.toolName === "get_graph_schema")!;
+      await service.finishGalleryAppConnection(
+        company.id,
+        connected.connectionId,
+        {
+          enabledCatalogEntryIds: [readEntry.id],
+          askFirstCatalogEntryIds: [],
+          access: { agentIds: [agent!.id] },
+        },
+        { actorType: "user", actorId: "board-user" },
+      );
+
+      const decisionInput = {
+        companyId: company.id,
+        actor: { actorType: "agent" as const, actorId: agent!.id, agentId: agent!.id },
+        request: {
+          connectionId: connected.connectionId,
+          catalogEntryId: readEntry.id,
+          toolName: "get_graph_schema",
+        },
+      };
+      await expect(policy.decide(decisionInput)).resolves.toMatchObject({
+        allowed: true,
+        reasonCode: "allow_profile",
+      });
+
+      await service.archiveConnection(connected.connectionId, company.id);
+      await expect(policy.decide(decisionInput)).resolves.toMatchObject({ allowed: false });
+
+      // Revocation is enforced entirely on the Paperclip side. Nothing was sent
+      // to the authorization server — there is no advertised revocation
+      // endpoint, and Paperclip never looks for one, so the access token stays
+      // valid at the vendor until it expires on its own. That residual is an
+      // operator step at the vendor, not something this path can close.
+      expect(fixture.requestsMatching(/revo(ke|cation)|introspect/i)).toHaveLength(0);
+      expect(Object.keys(VENDOR_SHAPED_AUTHORIZATION_SERVER_METADATA))
+        .not.toContain("revocation_endpoint");
+    });
+
+    it("gives a pasted config the generic treatment, with none of a catalog entry's curation", async () => {
+      installVendorShapedFixture();
+      const company = await createCompany(db);
+      const app = createRouteApp(db);
+
+      // "Paste a config" — the JSON an operator copies out of a vendor's docs.
+      const preview = await request(app)
+        .post(`/api/companies/${company.id}/tools/mcp/import-json`)
+        .send({ mcpJson: { mcpServers: { enterpret: { url: VENDOR_SHAPED_MCP_URL } } } })
+        .expect(200);
+      expect(preview.body.drafts).toEqual([
+        expect.objectContaining({
+          name: "enterpret",
+          transport: "mcp_remote",
+          status: "draft",
+          config: { url: VENDOR_SHAPED_MCP_URL },
+        }),
+      ]);
+
+      // "Connect your own MCP server" — the same endpoint the wizard posts to.
+      const connect = await request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({ link: VENDOR_SHAPED_MCP_URL, name: "enterpret" })
+        .expect(201);
+      expect(connect.body.auth).toMatchObject({ kind: "oauth", issuer: VENDOR_SHAPED_ISSUER });
+
+      const [connection] = await db.select().from(toolConnections);
+      // What the operator gets with no code change, and what they do not get:
+      // the server is flagged unverified, and — the part that matters — new
+      // tools it advertises later are *not* quarantined for review.
+      expect(connection!.config).toMatchObject({
+        unverifiedServer: true,
+        quarantineNewEntries: false,
+      });
+      // An application row *is* created, so the connection is governed like any
+      // other. What it does not carry is the curation a catalog definition
+      // supplies — compare field for field against
+      // `packages/shared/src/app-definitions/notion.json`, which ships
+      // `branding.logoUrl`, `categories`, `featured`, `riskTier`,
+      // `requiredResourceFilters`, `ownershipModes`, `guidanceMd` and
+      // `redirectConstraints`. None of them has anywhere to come from here.
+      const [application] = await db
+        .select()
+        .from(toolApplications)
+        .where(eq(toolApplications.id, connection!.applicationId));
+      expect(application).toMatchObject({
+        // The operator's typed name is the only identity there is.
+        name: "enterpret",
+      });
+      // The key is synthesized per connection, not a reviewed gallery slug like
+      // notion.json's `"slug": "notion"`, so two operators pasting the same URL
+      // get two unrelated applications and nothing in the product knows they
+      // are the same vendor.
+      expect(application!.applicationKey).toMatch(/^app-gallery:link:[0-9a-f-]{36}$/);
+      for (const curatedField of [
+        "branding",
+        "categories",
+        "featured",
+        "riskTier",
+        "requiredResourceFilters",
+        "ownershipModes",
+        "guidanceMd",
+        "redirectConstraints",
+      ]) {
+        expect(application!.metadata).not.toHaveProperty(curatedField);
+        expect(connection!.config).not.toHaveProperty(curatedField);
+      }
+    });
   });
 });

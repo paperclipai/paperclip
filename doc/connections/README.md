@@ -179,6 +179,11 @@ not own durable tokens.
   Apps v2: research, connection-type selection, OAuth/API-key/generated-URL
   setup, encrypted credential handling, branding, implementation, browser and
   live-provider testing, verification, and PR submission.
+- [Enterpret acceptance test](./ENTERPRET-ACCEPTANCE.md) is the worked example
+  of applying the two documents above to one vendor with no authorized
+  credential: what a pasted URL resolves on its own, what a catalog entry would
+  add on top, and which of the nine production-validation scenarios can be
+  answered at all without the vendor's consent.
 - [Vercel Connect operator guide](./VERCEL-CONNECT.md) documents the optional
   external credential source, deployment flags, runtime resolution, recovery,
   and smoke requirements.
