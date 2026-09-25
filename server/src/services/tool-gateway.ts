@@ -2857,6 +2857,60 @@ export function createToolGatewayService(
     };
   }
 
+  // The virtual on-demand tools need one permitted target, not a decision for
+  // every target. A connection can expose hundreds of on-demand tools and each
+  // decision runs several queries, so deciding them all at once contended the
+  // connection pool and pushed tools/list past the one-second discovery timeout
+  // strict MCP clients apply during turn startup, which dropped the server.
+  //
+  // Targets are handed to a fixed number of workers, and the answer resolves on
+  // the first permitted target rather than waiting for the decisions already in
+  // flight beside it. Those stragglers are reads with no effect on the result.
+  // ponytail: fixed worker count, not an adaptive pool — revisit only if a
+  // catalog where every target is denied still misses the timeout.
+  const ON_DEMAND_DECISION_WORKERS = 8;
+
+  async function anyOnDemandTargetPermitted(
+    session: ToolGatewaySession,
+    targets: ToolGatewayDescriptor[],
+  ): Promise<boolean> {
+    let markPermitted: () => void = () => {};
+    const permitted = new Promise<true>((resolve) => {
+      markPermitted = () => resolve(true);
+    });
+    let nextIndex = 0;
+    let done = false;
+    async function decideUntilPermitted() {
+      try {
+        while (!done) {
+          const tool = targets[nextIndex];
+          nextIndex += 1;
+          if (!tool) return;
+          const decision = await policyService.decide(
+            policyInputForTool({ session, tool }),
+          );
+          if (decision.allowed || decision.decision === "require_approval") {
+            done = true;
+            markPermitted();
+            return;
+          }
+        }
+      } catch (error) {
+        // A failed decision fails discovery, so stop the other workers instead
+        // of leaving them to walk the rest of the catalog after the response.
+        done = true;
+        throw error;
+      }
+    }
+    const exhausted = Promise.all(
+      Array.from(
+        { length: Math.min(ON_DEMAND_DECISION_WORKERS, targets.length) },
+        decideUntilPermitted,
+      ),
+    ).then(() => false as const);
+    return Promise.race([permitted, exhausted]);
+  }
+
   async function listToolsForContext(
     session: ToolGatewaySession,
   ): Promise<ToolGatewayDescriptor[]> {
@@ -2905,23 +2959,11 @@ export function createToolGatewayService(
             }
           : tool,
       );
-    if (onDemandTargets.length > 0) {
-      const targetDecisions = await Promise.all(
-        onDemandTargets.map(async (tool) => {
-          const decision = await policyService.decide(
-            policyInputForTool({ session, tool }),
-          );
-          return { tool, decision };
-        }),
-      );
-      if (
-        targetDecisions.some(
-          ({ decision }) =>
-            decision.allowed || decision.decision === "require_approval",
-        )
-      ) {
-        visibleTools.push(...VIRTUAL_TOOLS);
-      }
+    if (
+      onDemandTargets.length > 0 &&
+      await anyOnDemandTargetPermitted(session, onDemandTargets)
+    ) {
+      visibleTools.push(...VIRTUAL_TOOLS);
     }
     return visibleTools;
   }

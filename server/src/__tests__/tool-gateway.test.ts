@@ -2833,6 +2833,71 @@ rl.on("line", (line) => {
     }
   });
 
+  // Discovery orders targets by connection name, so the connection names are
+  // numbered to make the evaluation order match the returned order.
+  async function createOnDemandTargets(companyId: string, toolNames: string[]) {
+    const names: string[] = [];
+    for (const [index, toolName] of toolNames.entries()) {
+      const remoteTool = await createRemoteMcpTool(db, companyId, {
+        toolName,
+        connectionName: `On-demand ${String(index).padStart(3, "0")}`,
+        connectionConfig: { onDemandTools: { enabled: true } },
+      });
+      names.push(expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      }));
+    }
+    return names;
+  }
+
+  it("exposes the virtual on-demand tools when a permitted target is not the first one checked", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    // More targets than discovery has workers, so a permitted target at the end
+    // is only found if the workers keep pulling until the catalog runs out.
+    const targets = await createOnDemandTargets(
+      company.id,
+      Array.from({ length: 18 }, (_, index) => `target_${String(index).padStart(2, "0")}_read`),
+    );
+    // Only the last target is permitted, so discovery has to keep going past
+    // the denied ones before it can add the virtual tools.
+    await allowToolsForAgent(db, company.id, agent.id, [targets.at(-1)!]);
+
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const visible = (await gateway.listToolsForSession(session.token)).map((tool) => tool.name);
+
+    expect(visible).toEqual(expect.arrayContaining(["search_tools", "run_tool"]));
+    for (const target of targets) {
+      expect(visible).not.toContain(target);
+    }
+  });
+
+  it("hides the virtual on-demand tools when every target is denied", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const targets = await createOnDemandTargets(company.id, [
+      "alpha_read",
+      "bravo_read",
+      "charlie_read",
+    ]);
+    await allowToolsForAgent(db, company.id, agent.id, []);
+
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const visible = (await gateway.listToolsForSession(session.token)).map((tool) => tool.name);
+
+    expect(visible).not.toContain("search_tools");
+    expect(visible).not.toContain("run_tool");
+    for (const target of targets) {
+      expect(visible).not.toContain(target);
+    }
+  });
+
   it("decodes an SSE-framed tools/call response from a spec-compliant Streamable HTTP server", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
