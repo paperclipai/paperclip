@@ -201,10 +201,25 @@ live run, not merely predicted. Local removal is testable and passes, and must
 be recorded as exactly that rather than as full revocation.
 
 **Operator instruction.** Disconnecting Enterpret in Paperclip is only half of
-revoking it. The issued token stays valid at Enterpret until it expires, so the
-operator must also revoke the authorization in the Enterpret dashboard as a
-deliberate second step. Any runbook or teardown that omits this leaves a live
-credential behind — and per the scope finding above, a write-capable one.
+revoking it — and for OAuth the other half is not a procedure this validation
+can hand you. The two methods differ, and they must not be described as one:
+
+- **OAuth.** Paperclip cannot revoke the token: no `revocation_endpoint` is
+  advertised and Paperclip ships no RFC 7009 client. Whether the Enterpret
+  dashboard offers any way to withdraw an authorized MCP client is
+  **unverified** — this validation neither found such a control nor confirmed
+  one exists, so no step here should be written as if it does. Until Enterpret
+  confirms a procedure, plan on the issued token staying valid **until it
+  expires**, treat expiry as the only assured end of access, and ask Enterpret
+  support for a revocation path rather than assuming the dashboard has one.
+- **Auth token.** This one is actionable, and it is a *different instrument*:
+  generating a replacement organization token in the Enterpret dashboard
+  supersedes the old value. That is rotation of a token, not revocation of an
+  OAuth grant.
+
+Any runbook or teardown that treats "disconnect in Paperclip" as revocation
+leaves a live credential at the provider — and per the scope finding above, a
+write-capable one.
 
 ## Administrator Setup (mandatory)
 
@@ -314,14 +329,22 @@ documented table:
   Allowed by default. That is the provider's claim, not a verified property, and
   it is exactly the case where a provider annotation should not be believed.
 
-| Tool | Risk | Default status | Filters | Approval default | Audit fields | Negative case |
+**Read the two status columns as the configuration used for the live validation
+run, not as what ships.** This entry ships **no per-tool policy**. Every
+discovered action — `run_graph_query` included — arrives **enabled and Allowed**
+under the central `recommendedDefaultsForApp`. The `deny` below was applied by
+hand on the test connection and has to be reapplied by hand on every new
+connection until a shipped policy exists. See
+[Governance Defaults](#governance-defaults).
+
+| Tool | Risk | Status in validation | Filters | Approval in validation | Audit fields | Negative case |
 | --- | --- | --- | --- | --- | --- | --- |
 | `get_organization_details` | read | active | credential org | allow | actor, run, connection, tool, outcome | ungranted actor is denied before dispatch |
 | `get_graph_schema` | read | active | credential org | allow | same | same |
 | `get_query_examples` | read | active | credential org | allow | same | same |
 | `search_graph_fields` | read | active | credential org | allow | same | same |
 | `search_graph_values` | read | active | credential org | allow | same | same |
-| `run_graph_query` | **unclassified** | **deny** | credential org | deny | same, plus redacted query shape | same |
+| `run_graph_query` | **unclassified** | **deny — set by hand; ships Allowed** | credential org | deny (set by hand) | same, plus redacted query shape | same |
 | `find_user_quote` | read | active | credential org | allow | same, plus quote redaction | same |
 
 Legacy aliases `get_schema` and `search_knowledge_graph` remain served for the
