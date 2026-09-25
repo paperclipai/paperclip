@@ -4904,13 +4904,15 @@ export function recoveryService(
           result.issueIds.push(issue.id);
         } else if (
           reviewOutcome.retryExhausted &&
-          !(await hasActiveExecutionPath(issue.companyId, issue.id, participantAgentId))
+          !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
         ) {
           // Same exhaustion as the other lanes: the reviewer run's bounded
           // retries are spent, so escalate as the review-recovery failure it
           // is instead of skipping on every sweep with no live path. The
           // live-path re-read guards the write against a run or wake that
-          // started after the loop's check.
+          // started after the loop's check — for ANY agent, not only the
+          // participant: `blocked` is issue-wide, so another agent still
+          // working the issue must never be blocked under.
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_review",

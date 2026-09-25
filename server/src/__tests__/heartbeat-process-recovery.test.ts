@@ -9060,6 +9060,86 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(again.escalated).toBe(0);
   });
 
+  it("does not block an issue whose review participant spent its retry budget while another agent is still working it", async () => {
+    // `blocked` is issue-wide. The exhausted participant is a dead end for
+    // the review stage, but another agent with a live run on the same issue
+    // must not be blocked under it: the escalation re-reads the live path
+    // for ANY agent and stands down.
+    const { companyId, issueId, runId, wakeupRequestId } =
+      await seedInReviewParticipantRunFixture();
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+        error: "Interrupted by graceful server shutdown (SIGTERM)",
+        scheduledRetryAttempt: 2,
+        scheduledRetryReason: "transient_failure",
+        resultJson: {
+          stopReason: "interrupted",
+          conversationContinuation: "continue_conversation_v1",
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "transient_failure_retry",
+        },
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "cancelled", finishedAt, updatedAt: finishedAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "CodexImplementor",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: otherAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_commented",
+      },
+      startedAt: new Date("2026-03-19T00:10:00.000Z"),
+      createdAt: new Date(Date.now() + 1_000),
+      updatedAt: new Date("2026-03-19T00:10:00.000Z"),
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.reviewParticipantRequeued).toBe(0);
+    const sourceIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("in_review");
+    expect(
+      await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+    ).toEqual([]);
+  });
+
   it("re-enqueues a stranded execution-review participant when another agent has the latest issue run", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId, stageId } =
       await seedInReviewParticipantRunFixture();
