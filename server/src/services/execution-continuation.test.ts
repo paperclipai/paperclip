@@ -15,7 +15,15 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
-import { buildExecutionContinuation, currentContinuationOrigins, projectHumanInteractionResponse } from "./execution-continuation.js";
+import { StaleExecutionContinuationError, buildExecutionContinuation, currentContinuationOrigins, projectHumanInteractionResponse } from "./execution-continuation.js";
+
+const expectStaleContinuation = async (
+  run: () => Promise<unknown>,
+  code: StaleExecutionContinuationError["code"],
+) => {
+  await expect(run()).rejects.toThrow(StaleExecutionContinuationError);
+  await expect(run()).rejects.toMatchObject({ code });
+};
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "authorized continuation context",
@@ -174,9 +182,11 @@ const support = await getEmbeddedPostgresTestSupport();
       const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
       try {
-        await expect(buildExecutionContinuation({ db, companyId, issueId, agentId,
-          context: { interruptedRunId: runId }, summary: null, exposeLowTrustRaw: false }))
-          .rejects.toThrow("continuation_source_context_missing");
+        await expectStaleContinuation(
+          () => buildExecutionContinuation({ db, companyId, issueId, agentId,
+            context: { interruptedRunId: runId }, summary: null, exposeLowTrustRaw: false }),
+          "continuation_source_context_missing",
+        );
       } finally {
         await db.update(heartbeatRuns).set({ contextSnapshot: source.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
       }
@@ -336,41 +346,47 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(freshPrompt).not.toContain('"resumeDelta"');
     });
     it("fails closed when required originating context is missing", async () => {
-      await expect(
-        buildExecutionContinuation({
-          db,
-          companyId,
-          issueId,
-          agentId,
-          context: { commentId: randomUUID() },
-          summary: null,
-          exposeLowTrustRaw: false,
-        }),
-      ).rejects.toThrow("continuation_source_context_missing");
+      await expectStaleContinuation(
+        () =>
+          buildExecutionContinuation({
+            db,
+            companyId,
+            issueId,
+            agentId,
+            context: { commentId: randomUUID() },
+            summary: null,
+            exposeLowTrustRaw: false,
+          }),
+        "continuation_source_context_missing",
+      );
     });
     it("rejects another company and an invalidated task owner", async () => {
-      await expect(
-        buildExecutionContinuation({
-          db,
-          companyId: randomUUID(),
-          issueId,
-          agentId,
-          context: {},
-          summary: null,
-          exposeLowTrustRaw: false,
-        }),
-      ).rejects.toThrow("continuation_task_ownership_changed");
-      await expect(
-        buildExecutionContinuation({
-          db,
-          companyId,
-          issueId,
-          agentId: randomUUID(),
-          context: {},
-          summary: null,
-          exposeLowTrustRaw: false,
-        }),
-      ).rejects.toThrow("continuation_task_ownership_changed");
+      await expectStaleContinuation(
+        () =>
+          buildExecutionContinuation({
+            db,
+            companyId: randomUUID(),
+            issueId,
+            agentId,
+            context: {},
+            summary: null,
+            exposeLowTrustRaw: false,
+          }),
+        "continuation_task_ownership_changed",
+      );
+      await expectStaleContinuation(
+        () =>
+          buildExecutionContinuation({
+            db,
+            companyId,
+            issueId,
+            agentId: randomUUID(),
+            context: {},
+            summary: null,
+            exposeLowTrustRaw: false,
+          }),
+        "continuation_task_ownership_changed",
+      );
     });
   },
 );

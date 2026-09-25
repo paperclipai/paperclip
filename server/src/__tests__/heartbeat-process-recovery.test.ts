@@ -1,3 +1,4 @@
+import * as executionContinuation from "../services/execution-continuation.js";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
@@ -1526,6 +1527,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ),
       );
     expect(missingCommentWakeups).toHaveLength(0);
+  });
+
+  it.each([
+    "continuation_task_ownership_changed",
+    "continuation_source_context_missing",
+  ] as const)("cancels obsolete continuation setup: %s", async (code) => {
+    const { agentId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const build = vi.spyOn(executionContinuation, "buildExecutionContinuation")
+      .mockRejectedValueOnce(new executionContinuation.StaleExecutionContinuationError(code));
+    try {
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      expect(build).toHaveBeenCalled();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: code });
+      const [wakeup] = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId));
+      expect(wakeup.status).toBe("cancelled");
+      const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      expect(agent.status).not.toBe("error");
+      expect(mockAdapterExecute.mock.calls.some(
+        ([input]) => (input as { runId?: string } | undefined)?.runId === runId,
+      )).toBe(false);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+    } finally {
+      build.mockRestore();
+    }
   });
 
   it("does not immediately continue a low-trust preflight setup failure", async () => {

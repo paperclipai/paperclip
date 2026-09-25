@@ -15,6 +15,15 @@ import { hasConversationContinuationPolicy } from "./conversation-continuation.j
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 
+export class StaleExecutionContinuationError extends Error {
+  constructor(readonly code:
+    | "continuation_task_ownership_changed"
+    | "continuation_source_context_missing") {
+    super(code);
+    this.name = "StaleExecutionContinuationError";
+  }
+}
+
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -127,7 +136,7 @@ export async function buildExecutionContinuation(input: {
     issue.assigneeAgentId !== input.agentId ||
     ["done", "cancelled"].includes(issue.status)
   )
-    throw new Error("continuation_task_ownership_changed");
+    throw new StaleExecutionContinuationError("continuation_task_ownership_changed");
   const rows = await db
     .select()
     .from(issueComments)
@@ -172,11 +181,13 @@ export async function buildExecutionContinuation(input: {
   // An interaction producer is provenance. Explicit resume history must still
   // belong to this task, and only task-scoped content can enter the envelope.
   const sourceRun = object(candidate?.context).issueId === issueId ? candidate : null;
-  if ((sourceRunId && !candidate) || (resumeSourceRunId && !sourceRun))
-    throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
+  if ((sourceRunId && !candidate) || (resumeSourceRunId && !sourceRun)) {
+    if (explicitUserSource) throw new Error("continuation_user_authorization_missing");
+    throw new StaleExecutionContinuationError("continuation_source_context_missing");
+  }
   const producer = producerRunId === sourceRunId ? candidate
     : producerRunId ? await loadRun(producerRunId) : null;
-  if (producerRunId && !producer) throw new Error("continuation_source_context_missing");
+  if (producerRunId && !producer) throw new StaleExecutionContinuationError("continuation_source_context_missing");
   const producerIssueId = string(object(producer?.context).issueId);
   const producerOrigins = new Set(continuationOriginCommentIds(producer?.context));
   const recordedOrigins = triggerInteraction?.originCommentIds ?? [];
@@ -205,7 +216,7 @@ export async function buildExecutionContinuation(input: {
   ];
   // Missing source rows cannot silently become a claim of complete context.
   if (originCommentIds.some((id) => !rows.some((row) => row.id === id)))
-    throw new Error("continuation_source_context_missing");
+    throw new StaleExecutionContinuationError("continuation_source_context_missing");
   const messages = rows.map((row) => {
     const safe = input.exposeLowTrustRaw
       ? row
