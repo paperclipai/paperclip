@@ -193,6 +193,17 @@ the successor to the original failed run. Repair does not reset the automatic
 retry budget. Transient failures retain the existing
 bounded retry policy. Archive confinement remains required.
 
+Sandbox restore tasks also write a `Workspace restore diagnostic` line to the
+run log on failure. `phase` is `workspace` or `asset`, so a failed staged-asset
+copy-back (such as credentials) can be distinguished from workspace restoration. The line
+contains only an allowlisted OS/transport `errorCode` (otherwise `unknown`), an
+optional numeric HTTP error status, and an optional bounded process exit code.
+Up to four nested causes are inspected. Messages, URLs, filesystem paths, asset
+names, credentials, and response bodies are excluded. Every failed outbound
+task emits its own diagnostic; the original error and restore safety policy are
+unchanged. These lines stay in the instance run log and its configured durable
+storage, and are not new first-party telemetry events.
+
 ## Codex resume usage snapshot
 
 The native runner retains a bounded local `harness.diagnostic` event with code

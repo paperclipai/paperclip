@@ -3862,6 +3862,34 @@ describe("sandbox managed runtime outbound coordinator", () => {
     ]);
   }
 
+  it("records each failed restore phase without changing stable failure ordering", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home", "private-asset"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+    const workspaceError = Object.assign(new Error("private workspace path"), { code: "EACCES" });
+    control.failWith("workspace", workspaceError);
+    control.failWith("home", Object.assign(new Error("private credential"), { status: 404 }));
+    control.failWith("private-asset", new Error("private asset error"));
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir), adapterKey: "codex", client, workspaceLocalDir: workspaceDir,
+      assets: [
+        makeControlledAsset("home", dirOf("home"), control, gate),
+        makeControlledAsset("private-asset", dirOf("private-asset"), control, gate),
+      ],
+    });
+    const lines: string[] = [];
+    await expect(prepared.restoreWorkspace((line) => { lines.push(line); })).rejects.toBe(workspaceError);
+    const diagnostics = lines.filter((line) => line.includes("Workspace restore diagnostic:"));
+    expect(diagnostics).toHaveLength(3);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      '[paperclip] Workspace restore diagnostic: {"phase":"workspace","errorCode":"EACCES"}\n',
+      '[paperclip] Workspace restore diagnostic: {"phase":"asset","errorCode":"unknown","httpStatus":404}\n',
+      '[paperclip] Workspace restore diagnostic: {"phase":"asset","errorCode":"unknown"}\n',
+    ]));
+    expect(diagnostics.join("")).not.toContain("private");
+    expect(control.settled).toEqual(expect.arrayContaining(["workspace", "home", "private-asset"]));
+  });
+
   it("with concurrency permitted, an asset restore starts while the workspace restore is held open", async () => {
     const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
     const { control, gate } = makeOutboundControl();
