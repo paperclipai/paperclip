@@ -19,8 +19,25 @@
 -- What it deliberately does NOT do: compare row counts against the source. A
 -- restore target has no way to know what the source held, so counts are printed
 -- for a human to compare, not asserted. See docs/deploy/backup-restore.md.
+--
+-- What it CANNOT do: open a run-log file. It runs inside the database, and the
+-- NDJSON transcripts live in the data directory. Run
+-- scripts/restore-verify-logs.sh afterwards — the last query below prints the
+-- sampling command — or a database-only restore passes here with every
+-- transcript dangling.
+--
+-- Escape hatch: `-v allow_empty=1` downgrades the two population gates to
+-- WARN. Use it only when the source deployment genuinely held no such rows —
+-- a brand-new instance, or one whose run logs live in S3 rather than locally.
+-- Restoring a deployment that had a board and passing allow_empty is how an
+-- empty restore gets waved through.
 
 \set ON_ERROR_STOP on
+
+\if :{?allow_empty}
+\else
+  \set allow_empty 0
+\endif
 
 create temporary table restore_verify_results (
   ord      int,
@@ -128,21 +145,64 @@ from (
     where r.id is null
 ) s;
 
+-- The two population gates below read these. Splitting them out keeps each
+-- gate's list in one place and lets the inventory print the same numbers the
+-- gate asserted, rather than a second query that could drift from it.
+create temporary view populated as
+  select 'companies' as entity, count(*) as n from companies
+  union all select 'agents', count(*) from agents
+  union all select 'projects', count(*) from projects
+  union all select 'issues', count(*) from issues
+  union all select 'issue_comments', count(*) from issue_comments;
+
+create temporary view run_history as
+  select 'heartbeat_runs' as entity, count(*) as n from heartbeat_runs
+  union all select 'heartbeat_run_events', count(*) from heartbeat_run_events;
+
 -- 5. The board is not empty. The most embarrassing restore outcome is a
 --    structurally perfect database with no data in it, which every other check
 --    above passes cleanly.
+--
+--    Every relation here is gated, not merely printed. Gating companies and
+--    agents alone lets a dump that carried only those two tables — a
+--    per-table filter, a COPY that aborted partway down the file — pass while
+--    the board it is supposed to restore is gone. Issues and their comments are
+--    the board.
 insert into restore_verify_results
 select
   5,
   'board is populated',
-  case when (select count(*) from companies) > 0
-        and (select count(*) from agents) > 0
-       then 'PASS' else 'FAIL' end,
-  format('%s company/companies, %s agent(s)',
-         (select count(*) from companies),
-         (select count(*) from agents));
+  case when empties is null then 'PASS'
+       when :'allow_empty' in ('1', 'true', 'yes', 'on') then 'WARN'
+       else 'FAIL' end,
+  case when empties is null then counts
+       else 'empty: ' || empties || ' (' || counts || ')' end
+from (
+  select
+    (select string_agg(entity, ', ' order by entity) from populated where n = 0) as empties,
+    (select string_agg(format('%s %s', n, entity), ', ' order by entity) from populated) as counts
+) s;
 
--- 6. Sequences are ahead of the data they hand out ids for. pg_dump restores
+-- 6. Run history came back. It is separate from check 5 because it fails for a
+--    different reason — heartbeat_runs and heartbeat_run_events are the largest
+--    tables in the dump, so a truncated artifact loses these first and
+--    everything else looks fine.
+insert into restore_verify_results
+select
+  6,
+  'run history present',
+  case when empties is null then 'PASS'
+       when :'allow_empty' in ('1', 'true', 'yes', 'on') then 'WARN'
+       else 'FAIL' end,
+  case when empties is null then counts
+       else 'empty: ' || empties || ' (' || counts || ')' end
+from (
+  select
+    (select string_agg(entity, ', ' order by entity) from run_history where n = 0) as empties,
+    (select string_agg(format('%s %s', n, entity), ', ' order by entity) from run_history) as counts
+) s;
+
+-- 7. Sequences are ahead of the data they hand out ids for. pg_dump restores
 --    sequence values via setval, but a dump assembled another way — or a
 --    partial reload — leaves a sequence behind its column's max, and the
 --    symptom is a duplicate-key error on the first insert after go-live, not
@@ -192,7 +252,7 @@ begin
 
   insert into restore_verify_results
   values (
-    6,
+    7,
     'sequences ahead of their data',
     case when array_length(behind, 1) is null then 'PASS' else 'FAIL' end,
     case when array_length(behind, 1) is null
@@ -210,13 +270,10 @@ order by ord;
 
 \echo ''
 \echo '=== board inventory — compare these against your pre-incident numbers ==='
-select 'companies' as entity, count(*) as rows from companies
-union all select 'agents', count(*) from agents
-union all select 'projects', count(*) from projects
-union all select 'issues', count(*) from issues
-union all select 'issue_comments', count(*) from issue_comments
-union all select 'heartbeat_runs', count(*) from heartbeat_runs
-union all select 'heartbeat_run_events', count(*) from heartbeat_run_events
+select entity, n as rows from (
+  select entity, n from populated
+  union all select entity, n from run_history
+) s
 order by entity;
 
 \echo ''
@@ -237,6 +294,17 @@ select
 from heartbeat_runs
 group by log_store
 order by runs desc;
+
+\echo ''
+\echo 'Nothing above opened one of those files — this script runs inside the'
+\echo 'database. A database-only restore passes every check here with every'
+\echo 'transcript dangling. Check them against the restored data directory:'
+\echo ''
+\echo '  scripts/restore-smoke.sh --db <dump.gz> --volume <volume.tar.gz>'
+\echo ''
+\echo 'or, against a deployment you have just restored in place, pipe the same'
+\echo 'sample into scripts/restore-verify-logs.sh — the command is in'
+\echo 'docs/deploy/backup-restore.md, step 4.'
 
 -- Fail the process if anything above failed, so a caller can gate on exit code.
 do $$
