@@ -14769,11 +14769,15 @@ export function issueRoutes(
           }
         }
 
+        // Entering `blocked` is not a blocker becoming done. It used to be enough to emit the blockers-resolved
+        // wake, so an agent that set its own task to `blocked` while every blocker link was already done was woken
+        // by its own transition, set it to `blocked` again, and was woken again. The wake belongs to the moment a
+        // blocker that was open *becomes* done, which the `blocker_done` path above already covers.
         const restoredBlockedReadyDependency =
           issue.status === "blocked" &&
           issue.assigneeAgentId &&
-          (existing.status !== "blocked" ||
-            Array.isArray(req.body.blockedByIssueIds) ||
+          existing.status === "blocked" &&
+          (Array.isArray(req.body.blockedByIssueIds) ||
             existing.assigneeAgentId !== issue.assigneeAgentId);
         if (
           restoredBlockedReadyDependency &&
