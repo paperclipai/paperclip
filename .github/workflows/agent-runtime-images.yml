@@ -27,13 +27,19 @@ permissions:
 concurrency:
   # Push-triggered runs on the same ref serialize/queue against each other so
   # :latest can't be published out of order (see build-and-sign's "Alias
-  # digests under a stable :latest tag" step). workflow_dispatch runs get
-  # their own unique group per run (github.run_id) so a manually requested
-  # version build can never be queued behind -- and then dropped by -- a
-  # push run sharing the ref's group (GitHub Actions keeps only one pending
-  # run per concurrency group, so a same-group queue collision silently
-  # discards whichever run doesn't win).
-  group: ${{ github.event_name == 'workflow_dispatch' && format('agent-runtime-images-dispatch-{0}', github.run_id) || format('agent-runtime-images-{0}', github.ref) }}
+  # digests under a stable :latest tag" step). workflow_dispatch runs are
+  # scoped per requested `version` (not per github.run_id): two manual runs
+  # for *different* versions must run independently, but two manual runs for
+  # the *same* version (e.g. both left at the "dev" default) push the same
+  # six image tags -- if they build different commits, their pushes can
+  # interleave and a tag can end up pointing at either build, with the six
+  # images not all from the same commit. Serializing same-version dispatch
+  # runs against each other prevents that race, while still keeping
+  # different versions and different push-vs-dispatch groups from
+  # cross-blocking (GitHub Actions keeps only one pending run per group, so
+  # a same-group queue collision silently discards whichever run doesn't
+  # win -- this only matters within one version's own group).
+  group: ${{ github.event_name == 'workflow_dispatch' && format('agent-runtime-images-dispatch-{0}', github.event.inputs.version) || format('agent-runtime-images-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
