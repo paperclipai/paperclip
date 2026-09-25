@@ -1537,6 +1537,14 @@ async function startServerWithDatabaseTeardown(
           );
         }
 
+        const quotaReleased = await heartbeat.promoteQuotaBlockedIssues();
+        if (quotaReleased.released > 0) {
+          logger.warn(
+            { ...quotaReleased },
+            "startup provider quota release returned blocked issues to work",
+          );
+        }
+
         const dependencyWakesReconciled = await heartbeat.reconcileResolvedDependencyWakes();
         if (dependencyWakesReconciled.healed > 0) {
           logger.warn(
@@ -1775,6 +1783,15 @@ async function startServerWithDatabaseTeardown(
                   { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
                   "periodic heartbeat recovery changed assigned issue state",
                 );
+              }
+            })
+            .then(async () => {
+              // A provider quota wall outlives every bounded retry, so the
+              // issues it stranded are returned to work here instead, once the
+              // adapter family demonstrably serves again.
+              const quotaReleased = await heartbeat.promoteQuotaBlockedIssues();
+              if (quotaReleased.released > 0) {
+                logger.warn({ ...quotaReleased }, "periodic provider quota release returned blocked issues to work");
               }
             })
             .then(async () => {
