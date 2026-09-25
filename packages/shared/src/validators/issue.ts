@@ -511,6 +511,7 @@ export const issueExecutionStateSchema = z.object({
   completedStageIds: z.array(z.string().guid()).default([]),
   lastDecisionId: z.string().guid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
+  dependencyHold: z.object({ heldAt: z.string().datetime(), unresolvedBlockerIssueIds: z.array(z.string().uuid()) }).optional().nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
 });

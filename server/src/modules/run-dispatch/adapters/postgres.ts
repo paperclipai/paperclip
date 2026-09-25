@@ -1,3 +1,5 @@
+import { automationWakeCommentsWereAnswered } from "../../../services/answered-wake-comments.js";
+import { isCurrentStageParticipant } from "../domain/stage-participant.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
@@ -44,6 +46,7 @@ import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
   allowsIssueInteractionWake,
   deriveCommentId,
+  extractWakeCommentIds,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
 } from "../domain/wake-context.js";
@@ -411,6 +414,7 @@ export function createPostgresRunDispatchAdapter(
 
     const dependencyReadiness = await issuesSvcForRead.listDependencyReadiness(input.companyId, [issueId]);
     const readiness = dependencyReadiness.get(issueId);
+    facts.isCurrentStageParticipant = isCurrentStageParticipant({ agentId: input.agentId, executionState: issue?.executionState });
     facts.dependenciesBlocked =
       readiness && !readiness.isDependencyReady
         ? {
@@ -576,6 +580,10 @@ export function createPostgresRunDispatchAdapter(
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
+      answeredAutomationCommentWake: !resumeIntent && !isResolvedInteractionContinuation &&
+        ["issue_commented", "issue_comment_mentioned"].includes(wakeReason ?? "") &&
+        await automationWakeCommentsWereAnswered(dbOrTx, { companyId: input.companyId, issueId, agentId: input.agentId,
+          commentIds: [...new Set([...extractWakeCommentIds(context), ...(wakeCommentId ? [wakeCommentId] : [])])] }),
       issueFound: issue !== null,
       issueStatus: issue?.status ?? null,
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
@@ -594,6 +602,7 @@ export function createPostgresRunDispatchAdapter(
       continuationSummaryBody,
       wakeReason,
       retryReason,
+      isCurrentStageParticipant: isCurrentStageParticipant({ agentId: input.agentId, executionState: issue?.executionState }),
       reviewParticipant: issue
         ? await readNativeReviewParticipantFacts(dbOrTx, {
             companyId: input.companyId, issueId, agentId: input.agentId,

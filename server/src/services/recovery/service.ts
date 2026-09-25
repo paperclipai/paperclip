@@ -1,3 +1,4 @@
+import { reconcileReviewDependencyHolds } from "../review-dependency-hold.js";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
@@ -5217,6 +5218,7 @@ export function recoveryService(
   async function reconcileResolvedDependencyWakeBackstop(
     opts?: ResolvedDependencyWakeBackstopOptions,
   ) {
+    await reconcileReviewDependencyHolds(db, { companyId: opts?.companyId, blockerIssueId: opts?.blockerIssueId });
     const result = {
       checked: 0,
       healed: 0,

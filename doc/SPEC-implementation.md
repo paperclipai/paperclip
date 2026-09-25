@@ -1691,3 +1691,20 @@ instance-level registry retains validated publication IDs, allowing offline
 dismissal retries after withdrawal while rejecting caller-invented IDs. It
 stores no announcement content, account data or interaction events.
 See [Announcements](ANNOUNCEMENTS.md) for API and publishing details.
+
+### Review approval with unresolved dependencies
+
+An unresolved issue dependency prevents builder execution and task completion,
+but does not prevent the currently selected pending review or approval participant
+from running. Final approval records the completed stages while preserving the
+issue's current status. Review attention names the blockers being awaited.
+Resolving the last dependency triggers completion after rechecking completed
+stages, execution holds, pending tool reviews, and dependency readiness.
+The dependency scheduler retries reconciliation after interruption.
+
+Execution-lock release gives the oldest deferred wake for the currently selected
+stage participant priority over other agents. Existing execution and replay holds
+still apply. An automation-comment wake may be superseded only with a later reply
+from that agent's run that received the exact comment; diagnostics record
+`issue_comment_already_answered`. Human feedback, edited comments, and independent
+continuations remain eligible for their normal admission checks.
