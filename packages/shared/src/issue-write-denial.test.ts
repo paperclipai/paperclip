@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CROSS_ISSUE_RUN_CONTEXT_REASONS,
   ISSUE_WRITE_DENIAL_CODES,
   describeIssueWriteDenial,
   isIssueWriteDenialCode,
   issueWriteDenialApiMessage,
   issueWriteDenialCodeForResponsibleUserDenial,
   issueWriteDenialResponse,
+  type CrossIssueRunContextReason,
 } from "./issue-write-denial.js";
 
 describe("describeIssueWriteDenial", () => {
@@ -180,5 +182,144 @@ describe("issueWriteDenialResponse", () => {
     expect(issueWriteDenialResponse("issue_write_assignee_run_lock").status).toBe(409);
     expect(issueWriteDenialResponse("issue_write_attribution_spoof_rejected").status).toBe(422);
     expect(issueWriteDenialResponse("issue_write_not_visible").status).toBe(403);
+  });
+});
+
+/**
+ * The run-context copy used to be emitted without knowing why the gate refused.
+ * The gate resolves the run, company and agent *before* it can report an
+ * unbound target, so a caller in that state is provably already carrying a
+ * valid run id — and the shipped remedy ("send `X-Paperclip-Run-Id` and
+ * retry") was a step that could not change the response. Measured: bare and
+ * header'd POSTs return byte-identical 403 bodies. Nothing tied the message to
+ * its effect, so nothing caught it, and an operator who followed the advice
+ * correctly concluded the write was impossible.
+ *
+ * The invariant below is the tie: for every reason, the sanctioned path must
+ * name the mechanism that reason actually requires, and must not offer the
+ * mechanism that reason has already ruled out.
+ */
+const HEADER_REMEDY = "X-Paperclip-Run-Id";
+
+/** Which mechanism each reason's condition is actually cleared by. */
+const REMEDY_FOR_REASON: Record<CrossIssueRunContextReason, "header" | "checkout"> = {
+  // The run id did not arrive at all, or not as a uuid: the header is the fix.
+  malformed_run_id: "header",
+  // The run does not exist, or is not this agent's: sending it is still the fix.
+  run_not_found: "header",
+  // The run is already found, company-matched and agent-matched. Only the
+  // target binding is missing, and only `checkout` establishes it.
+  no_context_source_and_target_unbound: "checkout",
+};
+
+describe("cross-issue run-context denial copy, per reason", () => {
+  it("declares a remedy for every reason the gate can report", () => {
+    expect([...CROSS_ISSUE_RUN_CONTEXT_REASONS].sort()).toEqual(
+      Object.keys(REMEDY_FOR_REASON).sort(),
+    );
+  });
+
+  it.each(CROSS_ISSUE_RUN_CONTEXT_REASONS)(
+    "names the mechanism %s actually requires, and not the other one",
+    (reason) => {
+      const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required", {
+        reason,
+        issueIdentifier: "TASK-482",
+      });
+      const { sanctionedPath } = body.details;
+
+      if (REMEDY_FOR_REASON[reason] === "checkout") {
+        expect(sanctionedPath).toContain("POST /api/issues/{issueId}/checkout");
+        expect(sanctionedPath).not.toContain(`Send the \`${HEADER_REMEDY}\``);
+      } else {
+        expect(sanctionedPath).toContain(HEADER_REMEDY);
+        expect(sanctionedPath).not.toContain("checkout");
+      }
+    },
+  );
+
+  it("does not tell an already-identified run that its run id is the problem", () => {
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required", {
+      reason: "no_context_source_and_target_unbound",
+      issueIdentifier: "TASK-482",
+    });
+
+    expect(copy.title).toMatch(/not bound/i);
+    expect(copy.description).not.toMatch(/valid run/i);
+    // Only the run-id reasons are allowed to claim the run is unknown.
+    for (const reason of ["malformed_run_id", "run_not_found"] as const) {
+      expect(
+        describeIssueWriteDenial("cross_issue_influence_run_context_required", { reason })
+          .description,
+      ).toMatch(/valid run/i);
+    }
+  });
+
+  it("leaves the run-id copy byte-identical, including the no-reason default", () => {
+    const before = describeIssueWriteDenial("cross_issue_influence_run_context_required");
+    for (const reason of ["malformed_run_id", "run_not_found"] as const) {
+      expect(
+        describeIssueWriteDenial("cross_issue_influence_run_context_required", { reason }),
+      ).toEqual(before);
+    }
+    expect(before.sanctionedPath).toContain(HEADER_REMEDY);
+  });
+
+  it("tells an owned task to check out rather than to resend the header", () => {
+    const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required", {
+      reason: "no_context_source_and_target_unbound",
+      issueIdentifier: "TASK-482",
+      targetOwnedByAnotherAgent: false,
+    });
+
+    expect(body.details.sanctionedPath).toContain("POST /api/issues/{issueId}/checkout");
+    expect(body.details.whoCanAct).toContain("TASK-482");
+    expect(body.error).toContain(HEADER_REMEDY);
+  });
+
+  it("routes another agent's task to a child issue or a reassignment, and names the 409", () => {
+    const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required", {
+      reason: "no_context_source_and_target_unbound",
+      issueIdentifier: "TASK-482",
+      assigneeLabel: "Hermes",
+      targetOwnedByAnotherAgent: true,
+    });
+
+    // One actionable message, not a 403 followed by an unannotated 409.
+    expect(body.error).toContain("TASK-482");
+    expect(body.error).toContain("Hermes");
+    expect(body.error).toContain("child issue");
+    expect(body.error).toContain("reassign");
+    expect(body.error).toContain("409");
+    expect(body.details.whoCanAct).toContain("Hermes");
+    // A target that is not the caller's is not reachable by checkout, so the
+    // sanctioned path must not send the operator down that door.
+    expect(body.details.sanctionedPath).not.toContain("POST /api/issues/{issueId}/checkout");
+  });
+
+  it("falls back to nouns rather than printing raw uids", () => {
+    const owned = issueWriteDenialResponse("cross_issue_influence_run_context_required", {
+      reason: "no_context_source_and_target_unbound",
+    });
+    expect(owned.body.error).toContain("this task");
+    expect(owned.body.details.whoCanAct).toContain("this agent");
+
+    const unowned = issueWriteDenialResponse("cross_issue_influence_run_context_required", {
+      reason: "no_context_source_and_target_unbound",
+      targetOwnedByAnotherAgent: true,
+    });
+    expect(unowned.body.error).toContain("this task");
+    expect(unowned.body.details.whoCanAct).toContain("the current assignee");
+  });
+
+  it("leaves the status and tone alone; only the prose varies by reason", () => {
+    // The gate's status and tone are contractual for the surface that renders
+    // them, so a reason may change the sentences and nothing else.
+    for (const reason of CROSS_ISSUE_RUN_CONTEXT_REASONS) {
+      const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required", { reason });
+      expect(copy.status).toBe(403);
+      expect(copy.tone).toBe("boundary");
+      expect(copy.code).toBe("cross_issue_influence_run_context_required");
+    }
   });
 });

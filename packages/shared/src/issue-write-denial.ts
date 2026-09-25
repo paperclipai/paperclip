@@ -37,6 +37,25 @@ export const ISSUE_WRITE_DENIAL_CODES = [
 export type IssueWriteDenialCode = (typeof ISSUE_WRITE_DENIAL_CODES)[number];
 
 /**
+ * Why the cross-issue run-context gate refused a write.
+ *
+ * The gate checks the run header *before* it ever looks at the target, so by
+ * the time it can report `no_context_source_and_target_unbound` the run has
+ * already been found, company-matched and agent-matched. Such a run is
+ * perfectly well identified; it is the *target* that is unbound. One prose
+ * string cannot serve all three conditions, because only the first two are
+ * cleared by sending a run id.
+ */
+export const CROSS_ISSUE_RUN_CONTEXT_REASONS = [
+  "malformed_run_id",
+  "run_not_found",
+  "no_context_source_and_target_unbound",
+] as const;
+
+export type CrossIssueRunContextReason =
+  (typeof CROSS_ISSUE_RUN_CONTEXT_REASONS)[number];
+
+/**
  * Why the write stopped, which drives icon + colour. `boundary` is an
  * authorization wall, `lock` is run-lifecycle machinery that will clear on its
  * own, `cap` is a rate backstop, and `attribution` is a rejected spoof.
@@ -75,6 +94,17 @@ export interface IssueWriteDenialContext {
   count?: number | null;
   /** ISO timestamp at which log-only rollout becomes enforcement. */
   enforceAt?: string | null;
+  /**
+   * Which condition the run-context gate refused for. Copy is keyed on this so
+   * a reason can never be told to do the thing its own condition rules out.
+   */
+  reason?: CrossIssueRunContextReason | null;
+  /**
+   * True when the target issue is assigned to an agent other than the caller.
+   * Checkout and run ownership are assignee-scoped, so for such a target the
+   * remedy is a child issue or a reassignment, never a direct checkout.
+   */
+  targetOwnedByAnotherAgent?: boolean | null;
 }
 
 export function isIssueWriteDenialCode(
@@ -122,6 +152,103 @@ function actorLabel(name: string | null | undefined): string {
 const CHILD_ISSUE_PATH =
   "create a child issue with the request in its description (issue creation is a " +
   "separate, open write path) and let its assignee act";
+
+/**
+ * The only binding the gate honours, and the only one it should: `checkout`
+ * writes the run onto the issue row, so the binding is auditable from the task
+ * itself. A header that silently bound would move the gate's strength without
+ * moving the gate.
+ */
+const CHECKOUT_PATH =
+  "check out the task with your own run (`POST /api/issues/{issueId}/checkout`) " +
+  "so the run owns it, then retry";
+
+/**
+ * Refusal for a run the gate could not identify at all. The run id genuinely
+ * did not arrive, or did not arrive as a run belonging to this agent, so the
+ * header advice below is the whole remedy and is true here.
+ */
+function unidentifiedRunContextCopy(
+  code: IssueWriteDenialCode,
+  issue: string,
+  actor: string,
+): IssueWriteDenialCopy {
+  return {
+    code,
+    status: 403,
+    tone: "boundary",
+    boundary: "Heartbeat run context",
+    title: "Cross-issue writes need a run to attribute them to",
+    description:
+      `Every agent comment and task update is attributed to a heartbeat run so the ` +
+      `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
+      `This request did not arrive under a valid run of ${actor}'s, so it could not be ` +
+      `contained.`,
+    whoCanAct: `${actor}, once the request carries its own run id.`,
+    sanctionedPath:
+      `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
+      `and retry.`,
+  };
+}
+
+/**
+ * Refusal for a run that *is* identified but is not bound to the target.
+ *
+ * This is the reason that used to ship the header advice above, and it made the
+ * error path unsatisfiable: the gate resolves the run, company and agent before
+ * it ever reaches this condition, so the caller is provably already carrying a
+ * valid run id and retrying the header returns a byte-identical 403 forever. The
+ * missing half is the target binding, and the binding has exactly one door.
+ */
+function unboundTargetRunContextCopy(
+  code: IssueWriteDenialCode,
+  issue: string,
+  actor: string,
+  assignee: string,
+  targetOwnedByAnotherAgent: boolean,
+): IssueWriteDenialCopy {
+  if (targetOwnedByAnotherAgent) {
+    return {
+      code,
+      status: 403,
+      tone: "boundary",
+      boundary: "Run binding",
+      title: "This run is not bound to the task, and the task is not yours",
+      description:
+        `Cross-issue writes are attributed to a heartbeat run and to the task that run ` +
+        `owns. This run is valid and already identified itself on this request, but it ` +
+        `holds no task and ${issue} is not bound to it — and ${issue} is assigned to ` +
+        `${assignee}, so this run cannot take that binding: checkout and run ownership ` +
+        `stay assignee-scoped. A direct checkout attempt returns 409 \`Issue checkout ` +
+        `conflict\`, which is the same wall one step later with no guidance attached.`,
+      whoCanAct:
+        `${assignee} on ${issue}, or the board if ${issue} should be reassigned to ${actor}.`,
+      sanctionedPath:
+        `Either ${CHILD_ISSUE_PATH}, or ask the board to reassign ${issue} to you and ` +
+        `retry on your next run. Re-sending \`X-Paperclip-Run-Id\` cannot help — this ` +
+        `request already carries it, which is how the server knew it was ${actor}.`,
+    };
+  }
+  return {
+    code,
+    status: 403,
+    tone: "boundary",
+    boundary: "Run binding",
+    title: "This run is not bound to the task it is writing to",
+    description:
+      `Cross-issue writes are attributed to a heartbeat run and to the task that run owns. ` +
+      `This run is valid and already identified itself on this request, so the run id is ` +
+      `not the problem — what is missing is a binding between the run and ${issue}. The ` +
+      `run holds no task, and ${issue} does not record the run as its owner, so the write ` +
+      `had nothing to count against the cross-issue cap or name in the audit trail.`,
+    whoCanAct: `${actor}, once it holds ${issue}.`,
+    sanctionedPath:
+      `To act on ${issue} directly, ${CHECKOUT_PATH}. Re-sending ` +
+      `\`X-Paperclip-Run-Id\` cannot help — this request already carries it, which is how ` +
+      `the server knew the write came from ${actor}. If ${issue} is not ${actor}'s to ` +
+      `take, ${CHILD_ISSUE_PATH} instead.`,
+  };
+}
 
 export function describeIssueWriteDenial(
   code: IssueWriteDenialCode,
@@ -244,23 +371,22 @@ export function describeIssueWriteDenial(
       };
     }
 
+    // Keyed on the reason, never on the code alone. The three conditions have
+    // three different remedies and only one of them is the run header; the copy
+    // used to be emitted for all three, which is what made an auditor's 403
+    // impossible to act on. The run-id reasons keep the header advice because
+    // for them it is the whole truth.
     case "cross_issue_influence_run_context_required":
-      return {
-        code,
-        status: 403,
-        tone: "boundary",
-        boundary: "Heartbeat run context",
-        title: "Cross-issue writes need a run to attribute them to",
-        description:
-          `Every agent comment and task update is attributed to a heartbeat run so the ` +
-          `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
-        whoCanAct: `${actor}, once the request carries its own run id.`,
-        sanctionedPath:
-          `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
-
-      };
+      if (context.reason === "no_context_source_and_target_unbound") {
+        return unboundTargetRunContextCopy(
+          code,
+          issue,
+          actor,
+          assignee,
+          context.targetOwnedByAnotherAgent === true,
+        );
+      }
+      return unidentifiedRunContextCopy(code, issue, actor);
 
     case "issue_write_attribution_spoof_rejected":
       return {

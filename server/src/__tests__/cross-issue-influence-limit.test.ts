@@ -10,33 +10,51 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  targetRow: Record<string, unknown> | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
+  /** A drizzle result is awaitable and also carries `.for()` / `.limit()`. */
+  const rows = (value: unknown[]) => {
+    const awaitable = { then: (resolve: (rows: unknown[]) => unknown) => resolve(value) };
+    return { ...awaitable, for: () => awaitable, limit: () => awaitable };
+  };
+  const runRow = runOverrides === null ? [] : [{
+    id: "11111111-1111-4111-8111-111111111111",
+    companyId: "22222222-2222-4222-8222-222222222222",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    responsibleUserId: "user-1",
+    contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
+    ...runOverrides,
+  }];
   const tx = {
-    select: (selection: Record<string, unknown>) => ({
-      from: () => ({
-        where: () => {
-          if (Object.keys(selection).includes("count")) {
-            return {
-              then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
+    select: (selection: Record<string, unknown>) => {
+      const keys = Object.keys(selection);
+      if (keys.includes("count")) {
+        return { from: () => ({ where: () => rows([{ count: observedCount }]) }) };
+      }
+      if (keys.includes("assigneeAgentId")) {
+        // The ownership probe the refusal path uses to say whose task it is.
+        return {
+          from: () => {
+            const builder = {
+              leftJoin: () => builder,
+              where: () => rows(targetRow === null ? [] : [targetRow]),
             };
-          }
-          return {
-            for: () => ({
-              then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
-                id: "11111111-1111-4111-8111-111111111111",
-                companyId: "22222222-2222-4222-8222-222222222222",
-                agentId: "33333333-3333-4333-8333-333333333333",
-                responsibleUserId: "user-1",
-                contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
-                ...runOverrides,
-              }]),
-            }),
+            return builder;
+          },
+        };
+      }
+      return {
+        from: () => {
+          const builder = {
+            where: () => builder,
+            for: () => rows(runRow),
           };
+          return builder;
         },
-      }),
-    }),
+      };
+    },
     insert: () => ({
       values: async (value: Record<string, unknown>) => {
         inserted.push(value);
@@ -177,7 +195,12 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: {
+        code: "cross_issue_influence_run_context_required",
+        // The run resolved as missing, wrong-agent or wrong-company, so the run
+        // header is the remedy for all three and the copy must keep saying so.
+        reason: "run_not_found",
+      },
     });
     expect(fake.inserted).toEqual([]);
   });
@@ -193,7 +216,10 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: {
+        code: "cross_issue_influence_run_context_required",
+        reason: "malformed_run_id",
+      },
     });
     expect(fake.inserted).toEqual([]);
   });
@@ -209,8 +235,103 @@ describe("cross-issue influence limit rollout", () => {
       kind: "update",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: {
+        code: "cross_issue_influence_run_context_required",
+        reason: "no_context_source_and_target_unbound",
+      },
     });
     expect(fake.inserted).toEqual([]);
+  });
+});
+
+/**
+ * The refusal copy has to survive the round trip through the service, not just
+ * the copy module: `observeCrossIssueInfluence` is what decides the reason, and
+ * it is the only place that knows which condition actually fired.
+ */
+describe("cross-issue run-context refusal copy", () => {
+  const unboundTarget = {
+    companyId: "22222222-2222-4222-8222-222222222222",
+    runId: "11111111-1111-4111-8111-111111111111",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    targetIssueId: "55555555-5555-4555-8555-555555555555",
+    kind: "comment" as const,
+  };
+
+  async function refusal(
+    runOverrides: Record<string, unknown>,
+    targetRow: Record<string, unknown> | null,
+    targetIssueIdentifier?: string | null,
+  ) {
+    const fake = counterDb(0, runOverrides, targetRow);
+    try {
+      await observeCrossIssueInfluence(fake.db as never, {
+        ...unboundTarget,
+        targetIssueIdentifier: targetIssueIdentifier ?? null,
+      });
+      throw new Error("expected the gate to refuse");
+    } catch (err) {
+      const http = err as { message?: string; details?: Record<string, unknown> };
+      return { error: http.message ?? "", details: http.details ?? {} };
+    }
+  }
+
+  async function refusalDetails(
+    runOverrides: Record<string, unknown>,
+    targetRow: Record<string, unknown> | null,
+    targetIssueIdentifier?: string | null,
+  ) {
+    return (await refusal(runOverrides, targetRow, targetIssueIdentifier)).details;
+  }
+
+  it("sends an auditor to checkout, not to a header it already sent", async () => {
+    // The run is present, belongs to this company and to this agent, and simply
+    // holds no task. That is the state the old copy described as "arrived
+    // without a valid run", which sent the caller in a circle.
+    const details = await refusalDetails(
+      { contextSnapshot: {} },
+      {
+        identifier: "TASK-482",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeName: "Athena",
+      },
+    );
+
+    expect(details.reason).toBe("no_context_source_and_target_unbound");
+    expect(details.sanctionedPath).toContain("POST /api/issues/{issueId}/checkout");
+    expect(details.sanctionedPath).not.toContain("Send the `X-Paperclip-Run-Id`");
+    expect(details.targetOwnedByAnotherAgent).toBe(false);
+  });
+
+  it("answers another agent's task in one message, naming both real routes", async () => {
+    const { error, details } = await refusal(
+      { contextSnapshot: {} },
+      {
+        identifier: "TASK-482",
+        assigneeAgentId: "99999999-9999-4999-8999-999999999999",
+        assigneeName: "Hermes",
+      },
+    );
+
+    expect(details.reason).toBe("no_context_source_and_target_unbound");
+    expect(details.targetOwnedByAnotherAgent).toBe(true);
+    expect(details.whoCanAct).toContain("Hermes");
+    expect(details.sanctionedPath).toContain("child issue");
+    expect(details.sanctionedPath).toContain("reassign");
+    expect(details.sanctionedPath).not.toContain("POST /api/issues/{issueId}/checkout");
+    // The 409 the operator would otherwise meet one step later, with no
+    // guidance attached, is named in the same message.
+    expect(error).toContain("409");
+    expect(error).toContain("Issue checkout conflict");
+    expect(error).toContain("TASK-482");
+    expect(error).toContain("Hermes");
+  });
+
+  it("falls back to the caller's identifier when the ownership probe finds nothing", async () => {
+    const details = await refusalDetails({ contextSnapshot: {} }, null, "TASK-482");
+
+    expect(details.reason).toBe("no_context_source_and_target_unbound");
+    expect(details.targetOwnedByAnotherAgent).toBe(false);
+    expect(details.whoCanAct).toContain("TASK-482");
   });
 });
