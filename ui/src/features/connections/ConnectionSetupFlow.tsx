@@ -3727,6 +3727,7 @@ function KeyStep({
                 placeholder={field.type === "text" && field.secret === false ? field.placeholder : "••••••••••••••••"}
                 className="mt-2 h-11 font-mono"
               />
+              {field.helperMd && <p className="mt-2 text-xs text-muted-foreground">{field.helperMd}</p>}
               {field.helpUrl && (
                 <a
                   href={field.helpUrl}
