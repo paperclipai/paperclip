@@ -1,6 +1,7 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 
 // Default alert threshold: the recovery rate that a regression like the 07-06
 // week (3.26% of runs) blew past while nobody noticed by feel. See the plan on
@@ -36,6 +37,8 @@ export type RecoveryRateAlert = {
 
 export type RecoveryCauseGroup = {
   cause: string;
+  /** Board-facing label; `usage_limit_deferred` for `provider_quota`, otherwise equal to `cause`. */
+  displayCause: string;
   latestRunErrorCode: string;
   count: number;
   activeCount: number;
@@ -71,6 +74,22 @@ export type RecoveryCauseRouting = {
   cancelled: number;
 };
 
+export type ProviderQuotaDeferrals = {
+  /** Issues with a provider-quota (usage-limit) monitor defer that has not elapsed yet. */
+  pending: number;
+  /** Earliest pending monitor `nextCheckAt` (ISO 8601, UTC); null when nothing is pending. */
+  earliestNextCheckAt: string | null;
+  /** Latest pending monitor `nextCheckAt` (ISO 8601, UTC); null when nothing is pending. */
+  latestNextCheckAt: string | null;
+};
+
+export type FleetQuotaBanner = {
+  /** When the last queued quota wake fires (ISO 8601, UTC); null when nothing is paused. */
+  pausedUntil: string | null;
+  /** Number of issues waiting on a provider-quota reset. */
+  queuedWakes: number;
+};
+
 export type RecoveryObservabilityReport = {
   companyId: string;
   generatedAt: string;
@@ -81,6 +100,8 @@ export type RecoveryObservabilityReport = {
   byCause: RecoveryCauseGroup[];
   handoff: RecoveryHandoffSummary;
   perCauseRouting: RecoveryCauseRouting[];
+  providerQuotaDeferrals: ProviderQuotaDeferrals;
+  fleetQuotaBanner: FleetQuotaBanner;
 };
 
 export type HandoffClass =
@@ -102,6 +123,17 @@ type RecoveryActionFacts = {
 
 const ACTIVE_STATUSES = new Set(["active", "escalated"]);
 const TERMINAL_ISSUE_STATUSES = new Set(["done"]);
+
+// The internal recovery cause enum says `provider_quota`; operators read the
+// dashboard in terms of usage limits. Alias at the read boundary so the board
+// gets the familiar label without renaming the stored enum.
+const CAUSE_DISPLAY_ALIASES: Record<string, string> = {
+  provider_quota: "usage_limit_deferred",
+};
+
+export function displayCauseFor(cause: string): string {
+  return CAUSE_DISPLAY_ALIASES[cause] ?? cause;
+}
 
 /**
  * Classify a recovery action by who ended up owning the deliverable work.
@@ -240,6 +272,7 @@ export function recoveryObservabilityService(db: Db) {
 
     const byCause: RecoveryCauseGroup[] = Array.from(causeRows).map((row) => ({
       cause: String(row.cause),
+      displayCause: displayCauseFor(String(row.cause)),
       latestRunErrorCode: String(row.error_code),
       count: Number(row.count),
       activeCount: Number(row.active_count),
@@ -356,6 +389,38 @@ export function recoveryObservabilityService(db: Db) {
 
     const perCauseRouting = Array.from(routingByCause.values()).sort((a, b) => b.total - a.total);
 
+    // Provider-quota defers taken through the issue-monitor path (the common
+    // case: the issue stays in_progress/in_review and a monitor is armed for the
+    // provider reset time) never write an issueRecoveryActions row, so the
+    // accounting above cannot see them. Read the pending defers straight off
+    // the denormalized monitor columns instead.
+    const quotaRows = (await db.execute(sql`
+      SELECT
+        count(*)::int AS pending,
+        to_char(min(${issues.monitorNextCheckAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS earliest,
+        to_char(max(${issues.monitorNextCheckAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS latest
+      FROM ${issues}
+      WHERE ${issues.companyId} = ${companyId}
+        AND ${issues.monitorNextCheckAt} IS NOT NULL
+        AND ${issues.monitorNextCheckAt} > ${now.toISOString()}::timestamptz
+        AND ${issues.executionPolicy} -> 'monitor' ->> 'serviceName' = ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+        AND ${issues.status} IN ('in_progress', 'in_review')
+    `)) as unknown as Iterable<{
+      pending: number | string | null;
+      earliest: string | null;
+      latest: string | null;
+    }>;
+    const quota = Array.from(quotaRows)[0];
+    const providerQuotaDeferrals: ProviderQuotaDeferrals = {
+      pending: Number(quota?.pending ?? 0),
+      earliestNextCheckAt: quota?.earliest ?? null,
+      latestNextCheckAt: quota?.latest ?? null,
+    };
+    const fleetQuotaBanner: FleetQuotaBanner = {
+      pausedUntil: providerQuotaDeferrals.latestNextCheckAt,
+      queuedWakes: providerQuotaDeferrals.pending,
+    };
+
     return {
       companyId,
       generatedAt: now.toISOString(),
@@ -366,6 +431,8 @@ export function recoveryObservabilityService(db: Db) {
       byCause,
       handoff,
       perCauseRouting,
+      providerQuotaDeferrals,
+      fleetQuotaBanner,
     };
   }
 
