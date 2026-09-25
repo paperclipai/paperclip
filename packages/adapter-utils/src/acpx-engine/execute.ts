@@ -3006,6 +3006,14 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = externalChatTurn ? "" : renderPaperclipEnvNote(env);
   const apiAccessNote = externalChatTurn ? "" : renderApiAccessNote(env);
+  const codexLongCommandNote = asString(config.agent, "") === "codex"
+    ? [
+        "Codex ACP terminal note:",
+        "For every command that can run for 30 seconds or longer, call exec_command with yield_time_ms=1000.",
+        "When exec_command returns a live session id, wait for that same session with write_stdin until it reaches a terminal state.",
+        "Do not leave a long command in the blocking exec_command request path.",
+      ].join("\n")
+    : "";
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
@@ -3014,6 +3022,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     taskContextNote,
     paperclipEnvNote,
     apiAccessNote,
+    codexLongCommandNote,
     renderedPrompt,
   ]);
 
