@@ -577,6 +577,7 @@ describe("runChildProcess", () => {
     );
     const harnessPath = path.join(tempDir, "stdin-epipe-harness.ts");
     const stdinClosedMarkerPath = path.join(tempDir, "stdin-closed");
+    const releaseChildMarkerPath = path.join(tempDir, "release-child");
     const serverUtilsUrl = pathToFileURL(
       path.join(import.meta.dirname, "server-utils.ts"),
     ).href;
@@ -592,14 +593,16 @@ describe("runChildProcess", () => {
           "import fs from 'node:fs/promises';",
           `import { runChildProcess } from ${JSON.stringify(serverUtilsUrl)};`,
           `const stdinClosedMarkerPath = ${JSON.stringify(stdinClosedMarkerPath)};`,
+          `const releaseChildMarkerPath = ${JSON.stringify(releaseChildMarkerPath)};`,
           "void (async () => {",
           "const result = await runChildProcess(",
           "  'stdin-epipe-regression',",
           "  process.execPath,",
           "  [",
           "    '-e',",
-          "    \"const fs = require('node:fs'); fs.closeSync(0); fs.writeFileSync(process.argv[1], 'closed'); setTimeout(() => process.exit(23), 1000);\",",
+          "    \"const fs = require('node:fs'); fs.closeSync(0); fs.writeFileSync(process.argv[1], 'closed'); const deadline = Date.now() + 3000; const timer = setInterval(() => { if (fs.existsSync(process.argv[2])) { clearInterval(timer); process.exit(23); } if (Date.now() >= deadline) { clearInterval(timer); process.exit(24); } }, 10);\",",
           "    stdinClosedMarkerPath,",
+          "    releaseChildMarkerPath,",
           "  ],",
           "  {",
           "    cwd: process.cwd(),",
@@ -613,6 +616,9 @@ describe("runChildProcess", () => {
           "      while (Date.now() < deadline) {",
           "        try {",
           "          await fs.access(stdinClosedMarkerPath);",
+          "          setTimeout(() => {",
+          "            void fs.writeFile(releaseChildMarkerPath, 'release');",
+          "          }, 100);",
           "          return;",
           "        } catch {",
           "          await new Promise((resolve) => setTimeout(resolve, 10));",
