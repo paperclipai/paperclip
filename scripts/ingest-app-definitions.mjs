@@ -920,6 +920,9 @@ const categoryBySlug = {
   make: "productivity",
   manufact: "productivity",
   mem0: "ai",
+  zep: "ai",
+  supermemory: "ai",
+  honcho: "ai",
   miro: "productivity",
   mixpanel: "analytics",
   netlify: "developer",
@@ -995,7 +998,7 @@ const apiKeySpec = {
     prefix: null,
     placeholder: "Paste your Kernel API key",
   },
-  mem0: { name: "Authorization", prefix: "Bearer ", placeholder: "m0sk_..." },
+  mem0: { name: "Authorization", prefix: "Bearer ", placeholder: "Paste your Mem0 API key" },
   oreilly: {
     name: "Authorization",
     prefix: "Bearer ",
@@ -1073,6 +1076,23 @@ const apiKeyMethodFor = (
   );
 };
 const specialMethodsFor = (entry) => {
+  if (entry.slug === "mem0" || entry.slug === "honcho") return [
+    apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+      guidanceMd: `Open the ${entry.name} dashboard, create an API key for the account agents should use, and paste it below.`,
+      consoleLinks: { keys: entry.slug === "mem0" ? "https://app.mem0.ai/dashboard/api-keys" : "https://app.honcho.dev", docs: entry.docsUrl },
+    }),
+  ];
+  if (entry.slug === "zep") return [oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+    grantKinds: ["user"],
+    defaults: { serverUrl: entry.serverUrl, scopesHint: ["graph:read", "graph:write"] },
+    guidanceMd: "Sign in with the work identity configured for your Zep project's Memory MCP server. Zep restricts access to that identity's memory and authorized shared graphs.",
+    consoleLinks: { settings: "https://app.getzep.com", docs: entry.docsUrl },
+  })];
+  if (entry.slug === "supermemory") return [oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+    grantKinds: ["user"],
+    defaults: { serverUrl: entry.serverUrl, scopesHint: ["openid", "profile", "email", "offline_access"] },
+    guidanceMd: "Sign in to Supermemory, then choose a workspace, read or write access, and optional tags. Use a separate space for unrelated work.",
+  })];
   if (entry.slug === "fireflies")
     return [
       oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
@@ -1379,6 +1399,31 @@ const specialMethodsFor = (entry) => {
   return null;
 };
 
+// Cognee Cloud publishes a local MCP client, not a hosted remote MCP endpoint.
+// This approved, pinned template uses the ordinary vault and stdio gateway.
+apps.push({
+  schemaVersion: 1, slug: "cognee", name: "Cognee",
+  description: "Build and recall shared graph memory from documents and conversations.",
+  categories: ["ai"], branding: brandingFor("cognee"),
+  urlPatterns: ["https://*.aws.cognee.ai/*"],
+  docsUrl: "https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp",
+  setupPrerequisite: {
+    title: "Cognee Cloud and a local runtime",
+    description: "Use your Cognee Cloud tenant API URL and key. Paperclip's runtime host needs uv installed to run the official Cognee MCP client. Public deployments require a trusted MCP runtime host.",
+    actionLabel: "Open Cognee API keys", actionUrl: "https://platform.cognee.ai/api-keys",
+  },
+  methods: [method("cloud-local", "local_stdio", "api_key", { templateKey: "paperclip.cognee-cloud" }, "S3",
+    "Copy the API Base URL and create an API key on Cognee's API Keys page. Use a Cloud workspace with an active subscription. Paperclip uses its bundled Cloud client; no extra runtime installation is required.", {
+      label: "Connect Cognee Cloud", whenToUse: "Connect your Cloud tenant through the official Cognee MCP client.",
+      credentialFields: [
+        { key: "COGNEE_BASE_URL", label: "API Base URL", type: "text", required: true, secret: false, placeholder: "https://your-tenant.aws.cognee.ai", validation: { pattern: "^https://[a-zA-Z0-9-]+\\.aws\\.cognee\\.ai/?$", maxLength: 255 }, helperMd: "Copy API Base URL from Cognee's API Keys page." },
+        { ...field("COGNEE_API_KEY", "Cognee API key", "Paste your Cognee API key"), helperMd: "Create a key in Cognee → API Keys. The key is shown once." },
+      ],
+      keyPlacement: { location: "env", name: "COGNEE_API_KEY" },
+      consoleLinks: { keys: "https://platform.cognee.ai/api-keys", docs: "https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp" },
+    })],
+});
+
 for (const entry of researchManifest.entries) {
   const existing = apps.find((app) => app.slug === entry.slug);
   if (entry.status === "blocked") {
@@ -1426,9 +1471,9 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: entry.slug === "fireflies"
+    description: ({ mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
-      : `Connect ${entry.name}'s provider-hosted MCP server.`,
+      : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],
     featured: entry.slug === "jira",
     branding: brandingFor(entry.slug),

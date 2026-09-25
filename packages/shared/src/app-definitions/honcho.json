@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "slug": "honcho",
+  "name": "Honcho",
+  "description": "Remember conversations and retrieve context about peers.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/honcho.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.honcho.dev/*"
+  ],
+  "docsUrl": "https://honcho.dev/docs/v3/guides/integrations/mcp",
+  "methods": [
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.honcho.dev"
+      },
+      "guidanceMd": "Open the Honcho dashboard, create an API key for the account agents should use, and paste it below.",
+      "riskTier": "S3",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Honcho API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Honcho API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://app.honcho.dev",
+        "docs": "https://honcho.dev/docs/v3/guides/integrations/mcp"
+      },
+      "warnings": [
+        "An API key from the Honcho dashboard. Memory is stored in your Honcho account; select workspace and peer identifiers when calling tools."
+      ]
+    }
+  ]
+}

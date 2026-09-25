@@ -6,6 +6,7 @@ import type { ToolConnectionOwnership } from "./types/tool-access.js";
 export const CONNECTABLE_APP_SLUGS = new Set([
   "anthropic", "openai", "openrouter", "xai",
   "agentmail",
+  "cognee",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "zapier",
   "arcade",
@@ -215,7 +216,8 @@ export function appAcceptsCustomerOAuthClient(app: AppDefinition | null | undefi
   return Boolean(app && getAvailableConnectionMethods(app).some(connectionMethodAcceptsCustomerOAuthClient));
 }
 
-export function credentialConfigPath(field: FieldDef): string {
+export function credentialConfigPath(field: FieldDef, method?: ConnectionMethodDef | null): string {
+  if (method?.transport === "local_stdio" && method.keyPlacement?.location === "env") return `env.${field.key}`;
   return `credentials.${field.key}`;
 }
 

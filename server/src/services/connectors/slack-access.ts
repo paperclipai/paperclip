@@ -11,7 +11,7 @@ import {
 
 type Api = ReturnType<typeof slackClient>;
 export async function authorizeSlackChannel(
-  authority: SlackTaskAuthority,
+  authority: Pick<SlackTaskAuthority, "endpoint" | "slackUserId">,
   api: Api,
   channelId: string,
 ) {
@@ -24,8 +24,13 @@ export async function authorizeSlackChannel(
     // Membership can disappear between listing and inspection. Slack also
     // hides inaccessible conversations with channel_not_found. Treat only
     // these definite access failures as denials; outages must still surface.
-    if (error instanceof HttpError && error.status === 422 &&
-      ["slack_channel_not_found", "slack_not_in_channel"].includes(String(object(error.details).code))) {
+    if (
+      error instanceof HttpError &&
+      error.status === 422 &&
+      ["slack_channel_not_found", "slack_not_in_channel"].includes(
+        String(object(error.details).code),
+      )
+    ) {
       throw forbidden("This Slack channel is no longer accessible to the bot");
     }
     throw error;
@@ -129,7 +134,7 @@ export async function authorizeSlackWrite(
       db,
       authority.endpoint.companyId,
       authority.endpoint.id,
-      authority.conversation.issueId,
+      authority.issueId,
       channelId,
       channel.is_im === true ? authority.slackUserId : null,
     ))
@@ -153,6 +158,7 @@ export async function recordSlackReadBoundary(
   )
     return;
   if (
+    authority.conversation &&
     !authority.conversation.isDirectMessage &&
     channel.id !==
       authority.conversation.externalConversationId.replace(/^slack:/, "")
@@ -165,16 +171,16 @@ export async function recordSlackReadBoundary(
     .values({
       companyId: authority.endpoint.companyId,
       endpointId: authority.endpoint.id,
-      conversationId: authority.conversation.id,
+      conversationId: authority.conversation?.id ?? null,
       principalId: authority.principalId,
       kind: "slack_private_source",
       status: "processed",
-      providerActionId: `slack-private:${authority.conversation.issueId}:${channel.id}:${authority.slackUserId}`,
+      providerActionId: `slack-private:${authority.issueId}:${channel.id}:${authority.slackUserId}`,
       payload: {
-        issueId: authority.conversation.issueId,
+        issueId: authority.issueId,
         channelId: channel.id,
         requesterId: authority.slackUserId,
-        allowedDmChannel: authority.conversation.isDirectMessage
+        allowedDmChannel: authority.conversation?.isDirectMessage
           ? authority.conversation.externalConversationId.replace(/^slack:/, "")
           : null,
       },
@@ -216,7 +222,7 @@ export async function recordSlackOriginBoundary(
   authority: SlackTaskAuthority,
   api: Api,
 ) {
-  if (authority.conversation.isDirectMessage) return;
+  if (!authority.conversation || authority.conversation.isDirectMessage) return;
   const origin = await authorizeSlackChannel(
     authority,
     api,

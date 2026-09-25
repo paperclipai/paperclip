@@ -15,7 +15,12 @@ const listIssuesMock = vi.hoisted(() => vi.fn());
 const mockUsePluginSlots = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const listInvitesMock = vi.hoisted(() => vi.fn());
+const listCloudStacksMock = vi.hoisted(() => vi.fn());
 const mockSearchParamsState = vi.hoisted(() => ({ current: new URLSearchParams() }));
+
+vi.mock("@/api/cloud", () => ({
+  cloudApi: { listStacks: listCloudStacksMock },
+}));
 
 vi.mock("@/api/access", () => ({
   accessApi: {
@@ -503,6 +508,7 @@ describe("CompanyAccess invites tab", () => {
     document.body.appendChild(container);
     mockSearchParamsState.current = new URLSearchParams();
     listInvitesMock.mockResolvedValue({ invites: [], nextOffset: null });
+    listCloudStacksMock.mockResolvedValue({ stacks: [] });
     listMembersMock.mockResolvedValue({
       members: [],
       access: { currentUserRole: "owner", canApproveJoinRequests: false },
@@ -541,6 +547,8 @@ describe("CompanyAccess invites tab", () => {
     expect(tabLabels).toEqual(["Members", "Invites"]);
     expect(container.textContent).toContain("Organization Members");
     expect(container.textContent).not.toContain("Invite a person");
+    expect(container.textContent).not.toContain("Invite people");
+    expect(listCloudStacksMock).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
@@ -573,5 +581,74 @@ describe("CompanyAccess invites tab", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  function cloudClient(cloudBaseUrl: string | null = "https://cloud.example.test") {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["health"], {
+      hiddenSettings: ["company.invites"],
+      cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl, stackSlug: "old-slug" },
+    });
+    return client;
+  }
+
+  function cloudStack(role: string, isCurrent = true) {
+    return { stackSlug: isCurrent ? "current-team" : "other-team", role, isCurrent,
+      displayName: "Team", primaryHost: null, lifecycleState: "active", sleepState: "awake" };
+  }
+
+  it.each(["owner", "admin"])("offers Cloud invitations to the current stack's %s even with local invites hidden", async (role) => {
+    listCloudStacksMock.mockResolvedValue({ stacks: [cloudStack("owner", false), cloudStack(role)] });
+    const root = await renderPage(cloudClient());
+
+    const invite = [...container.querySelectorAll("a")].find((link) => link.textContent === "Invite people");
+    expect(invite?.getAttribute("href")).toBe("https://cloud.example.test/workspaces/current-team/settings?section=people");
+    expect(invite?.getAttribute("target")).toBeNull();
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(0);
+    expect(listInvitesMock).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it.each(["member", "support", "unknown"])("does not expose Cloud invitations to a %s who owns another stack", async (role) => {
+    listCloudStacksMock.mockResolvedValue({ stacks: [cloudStack("owner", false), cloudStack(role)] });
+    const root = await renderPage(cloudClient());
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => root.unmount());
+  });
+
+  it("waits for the Cloud role before showing the invitation action", async () => {
+    let resolveStacks!: (value: { stacks: ReturnType<typeof cloudStack>[] }) => void;
+    listCloudStacksMock.mockReturnValue(new Promise((resolve) => { resolveStacks = resolve; }));
+    const root = await renderPage(cloudClient());
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => resolveStacks({ stacks: [cloudStack("admin")] }));
+    await flushReact();
+    expect(container.textContent).toContain("Invite people");
+    await act(async () => root.unmount());
+  });
+
+  it("hides a cached invitation action when the Cloud role refresh fails", async () => {
+    const client = cloudClient();
+    client.setQueryData(["cloud", "stacks"], { stacks: [cloudStack("owner")] });
+    const root = await renderPage(client);
+    expect(container.textContent).toContain("Invite people");
+    listCloudStacksMock.mockRejectedValue(new Error("Portfolio unavailable"));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["cloud", "stacks"] }); });
+    await flushReact();
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => root.unmount());
+  });
+
+  it("requires an identified current stack and a configured Cloud destination", async () => {
+    listCloudStacksMock.mockResolvedValue({ stacks: [cloudStack("owner", false)] });
+    const root = await renderPage(cloudClient());
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => root.unmount());
+
+    listCloudStacksMock.mockResolvedValue({ stacks: [cloudStack("owner")] });
+    const secondRoot = await renderPage(cloudClient(null));
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => secondRoot.unmount());
   });
 });

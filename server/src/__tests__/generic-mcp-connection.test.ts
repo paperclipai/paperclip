@@ -42,7 +42,6 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
-import { instanceSettingsService } from "../services/instance-settings.js";
 import { ComposioApiError, type ComposioClient } from "../services/composio.js";
 import { createComposioSessionManager } from "../services/composio-session-manager.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
@@ -565,7 +564,6 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
   });
 
   it("keeps a generated Zapier URL attached to the curated Zapier identity", async () => {
-    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
     const secretUrl = "https://mcp.zapier.com/api/v1/connect?token=zapier-secret";
     const publicUrl = "https://mcp.zapier.com/api/v1/connect";
     const company = await createCompany(db);

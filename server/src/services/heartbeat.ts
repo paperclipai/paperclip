@@ -24932,7 +24932,9 @@ export function heartbeatService(
               );
             const externalChatPresentationCandidate =
               isExternalChatPresentationContext(livenessRun.contextSnapshot) ||
-              parseObject(livenessRun.contextSnapshot).source === "tool_action_review";
+              parseObject(livenessRun.contextSnapshot).source === "tool_action_review" ||
+              String(parseObject(livenessRun.contextSnapshot).source ?? "").startsWith("issue.comment") ||
+              parseObject(livenessRun.contextSnapshot).source === "issue.update";
             const externalChatPresentationAuthorization =
               issueId && externalChatPresentationCandidate
                 ? await resolveChatRunPresentationAuthorizationReason(db, {

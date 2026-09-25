@@ -323,7 +323,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   }
 
   it.each(["zapier", "arcade", "composio", "executor"])("inline aggregator %s collects the endpoint and completes only for the requester", async (provider) => {
-    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
     const onComplete = vi.fn();
     const popup = vi.spyOn(window, "open").mockReturnValue(null);
     const connection = { id: "conn-inline", status: "draft", credentialPolicy: "per_user", authKind: "api_key" };
@@ -359,7 +358,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it.each(["arcade", "composio", "executor"])("inline aggregator %s binds OAuth to the task and retries the same draft", async (provider) => {
-    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
     const onComplete = vi.fn();
     const onPhaseChange = vi.fn();
     const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
@@ -394,7 +392,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("inline aggregator saves and resumes a draft without storing credentials in browser storage", async () => {
-    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
     const onCancel = vi.fn();
     const connection = { id: "conn-inline-draft", status: "draft", credentialPolicy: "per_user", authKind: "none", config: { url: "https://provider.example/mcp", sourceTemplateKey: "zapier", connectionMethodKey: "generated-url" } };
     connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [] });
@@ -419,7 +416,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("inline aggregator reuses an eligible account without changing its access", async () => {
-    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
     const onUseExisting = vi.fn().mockResolvedValue(undefined);
     await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="composio" requestedAgentId="agent-1" interactionId="intent-inline" existingConnections={[{ id: "existing", applicationId: "app", name: "Existing Composio", status: "active", enabled: true }]} onUseExisting={onUseExisting} />);
     await act(async () => buttonContaining("Existing Composio")!.click());
@@ -429,10 +425,28 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(finishAppMock).not.toHaveBeenCalled();
   });
 
-  it.each(["zapier", "arcade", "composio", "executor"])("blocks direct %s setup while MCP aggregators are off", async (provider) => {
+  it.each(["mem0", "zep", "supermemory", "cognee", "honcho"])("blocks direct %s setup while memory connectors are off", async (provider) => {
     mockSearch.value = `source=${provider}`;
     await render();
-    expect(container.textContent).toContain("Enable MCP aggregators");
+    expect(container.textContent).toContain("Enable memory connectors");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("allows an existing memory connection to reconnect while setup is hidden", async () => {
+    mockSearch.value = "source=mem0&reconnect=existing-memory";
+    getConnectionMock.mockResolvedValue({ id: "existing-memory", status: "active", config: { sourceTemplateKey: "mem0" } });
+    await render();
+    expect(getConnectionMock).toHaveBeenCalledWith("existing-memory");
+    expect(container.textContent).not.toContain("Enable memory connectors");
+  });
+
+  it.each(["zapier", "arcade", "composio", "executor"])("opens direct %s setup with default settings", async (provider) => {
+    mockSearch.value = `source=${provider}`;
+    await render();
+    expect(container.textContent).not.toContain("Enable MCP aggregators");
+    await passAccessStep();
+    expect(container.textContent).toContain("MCP server URL");
     expect(connectAppMock).not.toHaveBeenCalled();
     expect(startOAuthMock).not.toHaveBeenCalled();
   });
@@ -440,7 +454,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it.each(["arcade", "composio", "executor"])("explains a failed %s OAuth return and retries the same saved draft", async (provider) => {
     const draft = { id: "conn-oauth-draft", companyId: "company-1", status: "draft", authKind: "oauth", credentialPolicy: "shared", config: { sourceTemplateKey: provider, connectionMethodKey: "mcp", url: "https://example.com/mcp" } };
     mockSearch.value = `source=${provider}&resume=${draft.id}&oauth=failed&code=oauth_callback_failed&error_description=untrusted-provider-message`;
-    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
     getConnectionMock.mockResolvedValue(draft);
     connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
     await render();
@@ -455,7 +468,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("explains a declined Composio OAuth return without discarding the draft", async () => {
     mockSearch.value = "source=composio&resume=conn-oauth-draft&oauth=denied&code=oauth_authorization_denied";
-    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
     getConnectionMock.mockResolvedValue({ id: "conn-oauth-draft", status: "draft", authKind: "oauth", config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp", url: "https://connect.composio.dev/mcp" } });
     await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Connection cancelled. Your setup details are preserved"));
@@ -469,7 +481,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   ])("retains the %s identity when returning to Access after an OAuth return", async (credentialPolicy, identityLabel, asCurrentUser) => {
     const draft = { id: "conn-oauth-draft", status: "draft", authKind: "oauth", credentialPolicy, config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp", url: "https://connect.composio.dev/mcp" } };
     mockSearch.value = `source=composio&resume=${draft.id}&oauth=denied`;
-    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
     getConnectionMock.mockResolvedValue(draft);
     connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
     await render();
@@ -2814,7 +2825,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("gives Zapier the shared credential and agent access opener", async () => {
-    experimentalMock.mockResolvedValue({ enableMcpAggregators: true });
     mockSearch.value = "source=zapier";
     listGalleryMock.mockResolvedValueOnce({
       apps: [

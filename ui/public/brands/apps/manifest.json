@@ -491,6 +491,30 @@
       "provider": "Fireflies",
       "catalogVisible": true,
       "localAsset": "/brands/apps/fireflies.svg"
+    },
+    {
+      "slug": "cognee",
+      "provider": "Cognee",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/cognee.png"
+    },
+    {
+      "slug": "honcho",
+      "provider": "Honcho",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/honcho.svg"
+    },
+    {
+      "slug": "supermemory",
+      "provider": "Supermemory",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/supermemory.png"
+    },
+    {
+      "slug": "zep",
+      "provider": "Zep",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/zep.png"
     }
   ]
 }

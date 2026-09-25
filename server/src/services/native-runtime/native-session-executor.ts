@@ -122,6 +122,7 @@ import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { createAssignedMcpTools, getAssignedMcpGateway } from "./assigned-mcp-tools.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { NativeChatAttachmentReadScope } from "./chat-attachment-read.js";
 import {
@@ -10463,9 +10464,35 @@ async function createRunnerdBackendWithinSessionClaim(
   if (nativeReview && !await getNativeReviewAssignment(input.db, {
     ...input.execution.binding, contextSnapshot: nativeReview,
   })) throw new Error("native_review_assignment_no_longer_available");
+  // Remote Codex already sends dynamic tool calls over authenticated PRP. Keep
+  // the assigned gateway on the control plane instead of asking the sandbox to
+  // reach the host's HTTP origin (which may be private or loopback-only).
+  const relayAssignedMcp = remoteTarget !== null && input.execution.provider.kind === "codex";
+  const assignedMcpUrl = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_URL;
+  const assignedMcpToken = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_TOKEN;
+  const assignedMcpName = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_NAME;
+  const hasAssignedMcp = Boolean(assignedMcpName || assignedMcpUrl || assignedMcpToken);
+  if (relayAssignedMcp && hasAssignedMcp && (!assignedMcpName?.trim() || !assignedMcpUrl?.trim() || !assignedMcpToken?.trim())) {
+    throw new Error("assigned native MCP launch binding is incomplete");
+  }
+  const assignedGatewayPublicId = relayAssignedMcp && assignedMcpUrl
+    ? new URL(assignedMcpUrl).pathname.match(/^\/mcp\/gateways\/([a-zA-Z0-9_-]+)$/)?.[1]
+    : undefined;
+  if (relayAssignedMcp && hasAssignedMcp && !assignedGatewayPublicId) {
+    throw new Error("assigned native MCP gateway path is invalid");
+  }
+  const assignedMcpTools = relayAssignedMcp && !nativeReview && assignedMcpUrl && assignedMcpToken
+    ? await createAssignedMcpTools({
+        gateway: getAssignedMcpGateway(input.db),
+        gatewayPublicId: assignedGatewayPublicId!,
+        bearerToken: assignedMcpToken,
+        workMode: input.execution.task.workMode,
+      })
+    : undefined;
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     ...(nativeReview ? { nativeReview } : {}),
     connectorAssignments: connectorAssignments.filter((assignment) => pinnedSkills.has(assignment.skillKey)),
+    assignedMcpTools,
     companyId: input.execution.binding.companyId,
     issueId: input.execution.binding.issueId,
     runId: input.execution.binding.runId,
@@ -12024,6 +12051,13 @@ async function createRunnerdBackendWithinSessionClaim(
   const effectiveRunnerEnvironmentBase: NodeJS.ProcessEnv = {
     ...(input.runnerEnvironment ?? process.env),
   };
+  if (relayAssignedMcp) {
+    // The server-held tool authority owns this credential. Do not deliver a
+    // duplicate HTTP MCP server or its bearer token to the remote provider.
+    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_NAME;
+    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_URL;
+    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_TOKEN;
+  }
   // This authority bit is derived only from the selected execution target.
   // Never let an agent, environment binding, or host variable disable the
   // Codex sandbox for a local runner by supplying the same key.

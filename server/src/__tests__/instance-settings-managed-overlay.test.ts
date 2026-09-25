@@ -82,6 +82,15 @@ describe("applyManagedExperimentalOverlay", () => {
 });
 
 describe("instanceSettingsService managed overlay", () => {
+  it.each([{}, { enableMcpAggregators: false }])("keeps aggregators on with legacy stored and managed values: %j", async (stored) => {
+    const { db } = stubDb(settingsRow({ ...stored, enableChatConnectors: true }));
+    const service = instanceSettingsService(db, { runtimeEnv: managedEnv(JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "legacy", features: { enableMcpAggregators: false }, plugins: { autoInstall: [] },
+    })) });
+    expect(await service.getExperimental()).toMatchObject({ enableMcpAggregators: true, enableChatConnectors: true, managedKeys: {} });
+    expect(await service.updateExperimental({ enableMcpAggregators: false })).toMatchObject({ experimental: { enableMcpAggregators: true, enableChatConnectors: true } });
+  });
+
   it("persists chat connector opt-in and reads it back after service reconstruction", async () => {
     const row = settingsRow({});
     const { db, persistedSets } = stubDb(row);

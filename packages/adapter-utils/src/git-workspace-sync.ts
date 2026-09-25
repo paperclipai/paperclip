@@ -593,7 +593,13 @@ export async function withShallowGitWorkspaceClone<T>(
         localDir: path.join(input.localDir, repository.path),
         snapshot: repository.snapshot,
       }, async (nestedClone) => {
-        await fs.cp(nestedClone, path.join(cloneDir, repository.path), { recursive: true });
+        // Preserve repository-relative links. fs.cp otherwise rewrites them to
+        // absolute paths into nestedClone, which is deleted after this callback
+        // and is outside the workspace when the sandbox restores its files.
+        await fs.cp(nestedClone, path.join(cloneDir, repository.path), {
+          recursive: true,
+          verbatimSymlinks: true,
+        });
       });
     }
     if (input.snapshot.repositories?.length) {

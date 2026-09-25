@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "slug": "mem0",
   "name": "Mem0",
-  "description": "Connect Mem0's provider-hosted MCP server.",
+  "description": "Remember preferences, conversations, events, and agent state.",
   "categories": [
     "ai"
   ],
@@ -26,7 +26,7 @@
       "defaults": {
         "serverUrl": "https://mcp.mem0.ai/mcp/"
       },
-      "guidanceMd": "Use a customer-created Mem0 key. A Mem0 API key; the live server currently requires the slash-normalized endpoint.",
+      "guidanceMd": "Open the Mem0 dashboard, create an API key for the account agents should use, and paste it below.",
       "riskTier": "S3",
       "label": "Use an API key",
       "credentialFields": [
@@ -35,7 +35,7 @@
           "label": "Mem0 API key",
           "type": "password",
           "required": true,
-          "placeholder": "m0sk_...",
+          "placeholder": "Paste your Mem0 API key",
           "secret": true
         }
       ],
@@ -45,7 +45,7 @@
         "prefix": "Bearer "
       },
       "consoleLinks": {
-        "keys": "https://docs.mem0.ai/platform/mem0-mcp",
+        "keys": "https://app.mem0.ai/dashboard/api-keys",
         "docs": "https://docs.mem0.ai/platform/mem0-mcp"
       },
       "warnings": [
