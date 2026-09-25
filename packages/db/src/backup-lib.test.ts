@@ -1,10 +1,16 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { gunzipSync } from "node:zlib";
+import { createGzip, gzipSync, gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedTextFileWriter,
+  MIN_DATABASE_BACKUP_GZIP_BYTES,
+  runDatabaseBackup,
+  runDatabaseRestore,
+  validateDatabaseBackupArtifact,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -45,12 +51,6 @@ afterEach(async () => {
   }
 }, 60_000);
 
-if (!embeddedPostgresSupport.supported) {
-  console.warn(
-    `Skipping embedded Postgres backup tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
-  );
-}
-
 describe("createBufferedTextFileWriter", () => {
   it("preserves line boundaries across buffered flushes", async () => {
     const tempDir = createTempDir("paperclip-buffered-writer-");
@@ -71,6 +71,64 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+});
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres backup tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describe("validateDatabaseBackupArtifact", () => {
+  it("rejects near-empty gzip artifacts", async () => {
+    const tempDir = createTempDir("paperclip-backup-artifact-empty-");
+    const emptyGzipPath = path.join(tempDir, "paperclip-empty.sql.gz");
+    fs.writeFileSync(emptyGzipPath, gzipSync(""));
+
+    await expect(validateDatabaseBackupArtifact(emptyGzipPath)).rejects.toThrow(/too small|no SQL payload/i);
+  });
+
+  it("accepts a valid gzip backup payload", async () => {
+    const tempDir = createTempDir("paperclip-backup-artifact-valid-");
+    const backupPath = path.join(tempDir, "paperclip-valid.sql.gz");
+    let sql = "-- Paperclip database backup\n";
+    let gz = gzipSync(sql);
+    while (gz.length < MIN_DATABASE_BACKUP_GZIP_BYTES) {
+      sql += `SELECT ${gz.length};\n`;
+      gz = gzipSync(sql);
+    }
+    fs.writeFileSync(backupPath, gz);
+
+    await expect(validateDatabaseBackupArtifact(backupPath)).resolves.toBeUndefined();
+    expect(fs.statSync(backupPath).size).toBeGreaterThanOrEqual(MIN_DATABASE_BACKUP_GZIP_BYTES);
+  });
+
+  it("rejects gzip artifacts with corrupted tails after a valid prefix", async () => {
+    const tempDir = createTempDir("paperclip-backup-artifact-corrupt-tail-");
+    const backupPath = path.join(tempDir, "paperclip-corrupt.sql.gz");
+    let sql = "-- Paperclip database backup\nSELECT 1;\n";
+    let gz = gzipSync(sql);
+    while (gz.length < MIN_DATABASE_BACKUP_GZIP_BYTES) {
+      sql += `SELECT ${gz.length};\n`;
+      gz = gzipSync(sql);
+    }
+    const corrupted = Buffer.concat([gz.subarray(0, gz.length - 8), Buffer.from("00000000", "ascii")]);
+    fs.writeFileSync(backupPath, corrupted);
+
+    await expect(validateDatabaseBackupArtifact(backupPath)).rejects.toThrow(/not readable gzip/i);
+  });
+
+  it("validates large gzip backups without retaining the full decompressed payload", async () => {
+    const tempDir = createTempDir("paperclip-backup-artifact-large-");
+    const backupPath = path.join(tempDir, "paperclip-large.sql.gz");
+    const padding = "-- padding\n".repeat(32_000);
+    const sql = `-- Paperclip database backup\nSELECT 1;\n${padding}`;
+    const gz = gzipSync(sql);
+    expect(gz.length).toBeGreaterThanOrEqual(MIN_DATABASE_BACKUP_GZIP_BYTES);
+    fs.writeFileSync(backupPath, gz);
+
+    await expect(validateDatabaseBackupArtifact(backupPath)).resolves.toBeUndefined();
   });
 });
 
@@ -599,6 +657,61 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       } finally {
         await restoreSql.end();
       }
+    },
+    20_000,
+  );
+
+  it(
+    "does not leave a final empty .sql.gz when pg_dump fails in auto mode",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-pgdump-fail-");
+      const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = "/bin/false";
+
+      try {
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-pgdump-fail-test",
+          backupEngine: "auto",
+        });
+
+        const gzipFiles = fs.readdirSync(backupDir).filter((name) => name.endsWith(".sql.gz"));
+        expect(gzipFiles).toHaveLength(1);
+        expect(result.backupFile).toMatch(/paperclip-pgdump-fail-test-.*\.sql\.gz$/);
+        for (const name of gzipFiles) {
+          const fullPath = path.join(backupDir, name);
+          expect(fs.statSync(fullPath).size).toBeGreaterThan(MIN_DATABASE_BACKUP_GZIP_BYTES);
+          await validateDatabaseBackupArtifact(fullPath);
+        }
+        expect(fs.existsSync(`${result.backupFile}.partial`)).toBe(false);
+      } finally {
+        if (originalPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "fails closed when restore input is an empty gzip artifact",
+    async () => {
+      const restoreConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-restore-empty-gz-");
+      const backupFile = path.join(backupDir, "empty.sql.gz");
+      fs.writeFileSync(backupFile, gzipSync(""));
+
+      await expect(
+        runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile,
+        }),
+      ).rejects.toThrow(/too small|no SQL payload/i);
     },
     20_000,
   );
