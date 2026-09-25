@@ -4563,6 +4563,15 @@ export function agentRoutes(
     // lock per company + run, so two overlapping retries cannot both miss.
     const requestFingerprint = hireFingerprint(req.body);
     const runId = req.actor.runId && isUuidLike(req.actor.runId) ? req.actor.runId : null;
+    const presentApproval = <T extends { payload: unknown } | null>(stored: T): T => {
+      if (!stored || typeof stored.payload !== "object" || stored.payload === null || Array.isArray(stored.payload)) {
+        return stored;
+      }
+      return {
+        ...stored,
+        payload: redactEventPayload(stored.payload as Record<string, unknown>) ?? {},
+      };
+    };
     const performHire = async (): Promise<{ status: 200 | 201; body: Record<string, unknown> }> => {
       if (runId) {
         const priorHires = await db
@@ -4585,7 +4594,7 @@ export function agentRoutes(
             const priorApprovalId = (match.details as Record<string, unknown> | null)?.approvalId;
             const existingApproval =
               typeof priorApprovalId === "string" ? await approvalsSvc.getById(priorApprovalId) : null;
-            return { status: 200, body: { agent: existingAgent, approval: existingApproval, idempotent: true } };
+            return { status: 200, body: { agent: existingAgent, approval: presentApproval(existingApproval), idempotent: true } };
           }
         }
       }
@@ -4640,18 +4649,15 @@ export function agentRoutes(
 
       if (requiresApproval) {
         const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
+        // This row is applied onto the agent when the hire is approved.
+        // Mask it only in the response. A stored mask overwrites real settings,
+        // including numeric limits whose names contain "token".
         const requestedAdapterConfig =
-          redactEventPayload(
-            (agent.adapterConfig ?? normalizedHireInput.adapterConfig) as Record<string, unknown>,
-          ) ?? {};
+          (agent.adapterConfig ?? normalizedHireInput.adapterConfig ?? {}) as Record<string, unknown>;
         const requestedRuntimeConfig =
-          redactEventPayload(
-            (normalizedHireInput.runtimeConfig ?? agent.runtimeConfig) as Record<string, unknown>,
-          ) ?? {};
+          (normalizedHireInput.runtimeConfig ?? agent.runtimeConfig ?? {}) as Record<string, unknown>;
         const requestedMetadata =
-          redactEventPayload(
-            ((normalizedHireInput.metadata ?? agent.metadata ?? {}) as Record<string, unknown>),
-          ) ?? {};
+          (normalizedHireInput.metadata ?? agent.metadata ?? {}) as Record<string, unknown>;
         approval = await approvalsSvc.create(companyId, {
           type: "hire_agent",
           requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
@@ -4743,7 +4749,7 @@ export function agentRoutes(
         });
       }
 
-      return { status: 201, body: { agent, approval } };
+      return { status: 201, body: { agent, approval: presentApproval(approval) } };
     };
 
     const outcome = runId
