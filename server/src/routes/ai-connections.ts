@@ -143,7 +143,17 @@ export async function validateAiApiKey(
     openai: "https://api.openai.com/v1/models",
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
+    ollama_cloud: "https://ollama.com/api/tags",
   };
+  // Self-hosted gateway providers are verified by the gateway itself, not a vendor
+  // endpoint. There is nothing to call here; a non-empty token is the credential.
+  if (provider === "greenchclaw") {
+    if (!key || key.trim().length < 8)
+      throw unprocessable("Enter the GreenchClaw gateway token.");
+    return;
+  }
+  // Local model servers (Ollama) take no credential; nothing to verify.
+  if (provider === "ollama") return;
   let response: Response;
   try {
     response = await request(endpoints[provider], {
@@ -276,7 +286,8 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         companyId,
         input,
       );
-      if (input.method !== "api_key")
+      // Gateway connections do not use a local subscription sign-in flow.
+      if (input.method !== "api_key" && input.method !== "gateway" && input.method !== "local")
         throw unprocessable(
           "Use the existing provider sign-in flow to connect a subscription",
         );

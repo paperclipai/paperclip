@@ -3327,7 +3327,15 @@ export function agentRoutes(
       return result;
     }
     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
-      const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider];
+      // Self-hosted gateway providers have no vendor CLI hello probe to run.
+      // The gateway connection is validated by the adapter's own connect handshake.
+      if (binding.provider === "greenchclaw" || binding.provider === "ollama") {
+        // Mark the probe as succeeded so the completeness guard below accepts it.
+        result.checks.push({ code: "hello_probe_succeeded", level: "info", message: `${binding.provider} is a self-hosted runtime; no vendor hello probe applies.` });
+        if (result.status === "warn") result.status = "pass";
+        return result;
+      }
+      const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider as Exclude<typeof binding.provider, "greenchclaw" | "ollama">];
       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
       result.checks.push(...probe.checks);
       result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";

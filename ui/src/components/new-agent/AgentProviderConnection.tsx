@@ -57,10 +57,10 @@ export function AgentProviderConnection({
   /** Connections supplies its access intent; presentation and login controllers stay shared. */
   managedAccount?: {
     intent: AiConnectionLoginIntent;
-    initialMethod?: "subscription" | "api_key";
+    initialMethod?: "subscription" | "api_key" | "gateway" | "local";
     fixedMethod?: boolean;
     disabled?: boolean;
-    onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" }) => void;
+    onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" | "gateway" | "local" }) => void;
   };
 }) {
   const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });

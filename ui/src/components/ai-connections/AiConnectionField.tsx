@@ -30,6 +30,8 @@ export function aiProviderForAdapter(
       codex_local: "openai",
       opencode_local: "openrouter",
       grok_local: "xai",
+      openclaw_gateway: "greenchclaw",
+      ollama_local: "ollama",
     } as Record<string, AiProvider>
   )[adapterType];
 }
