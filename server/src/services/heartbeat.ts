@@ -17296,6 +17296,69 @@ export function heartbeatService(
         responsibleUserId: null,
       },
     });
+    // All ordinary and comment claims use the same company-scoped issue
+    // lock. A batch may claim several runs before executeRun tracks any owner.
+    async function lockIssueExecutionClaim(tx: Db) {
+      const [owner] = issueId ? await tx.select({
+        assigneeAgentId: issues.assigneeAgentId,
+        executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
+      }).from(issues).where(and(
+        eq(issues.id, issueId), eq(issues.companyId, run.companyId),
+      )).for("update") : [];
+      const ownsIssue = owner?.assigneeAgentId === run.agentId &&
+        context.wakeReason !== "source_scoped_recovery_action";
+      if (ownsIssue && run.scheduledRetryReason === "native_safe_replacement" &&
+          owner.checkoutRunId && owner.checkoutRunId !== run.id) {
+        return { ownsIssue, blocked: true };
+      }
+      if (ownsIssue && owner.executionRunId && owner.executionRunId !== run.id) {
+        const [previous] = await tx.select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, owner.executionRunId),
+            eq(heartbeatRuns.companyId, run.companyId),
+          ));
+        // A terminal result can precede workspace/lease cleanup on this or
+        // another controller. Local absence alone is not a release receipt.
+        if (!isHeartbeatRunTerminalStatus(previous?.status) ||
+            liveRunExecutions.has(owner.executionRunId)) {
+          return { ownsIssue, blocked: true };
+        }
+        const [pendingLease] = await tx.select({ id: environmentLeases.id })
+          .from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, run.companyId),
+            eq(environmentLeases.heartbeatRunId, owner.executionRunId),
+            or(and(isNull(environmentLeases.releasedAt),
+                // Warm release deliberately retains the sandbox. Its successful
+                // receipt settles the old run without destroying the resource.
+                sql`not coalesce(${environmentLeases.status} = 'retained'
+                  and ${environmentLeases.leasePolicy} = 'reuse_by_environment'
+                  and ${environmentLeases.cleanupStatus} = 'success', false)`),
+              eq(environmentLeases.status, "pending_cleanup"),
+              eq(environmentLeases.cleanupStatus, "failed")),
+          )).limit(1);
+        const [finalization] = await tx.select({
+          phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner,
+        }).from(nativeRunFinalizations).where(and(
+          eq(nativeRunFinalizations.companyId, run.companyId),
+          eq(nativeRunFinalizations.runId, owner.executionRunId),
+        ));
+        if (pendingLease || (finalization && (finalization.leaseOwner ||
+            !["committed", "applied", "terminal_failure"].includes(finalization.phase)))) {
+          return { ownsIssue, blocked: true };
+        }
+      }
+      return { ownsIssue, blocked: false };
+    }
+    async function bindClaimedIssueExecution(tx: Db, ownsIssue: boolean, claimedRun: typeof heartbeatRuns.$inferSelect | null | undefined) {
+      if (!claimedRun || !issueId || !ownsIssue) return;
+      await tx.update(issues).set({
+        executionRunId: claimedRun.id,
+        executionAgentNameKey: normalizeAgentNameKey(agent.name),
+        executionLockedAt: claimedAt,
+        updatedAt: claimedAt,
+      }).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+    }
     const nativeReviewContext = readNativeReviewAssignmentContext(context);
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
     if (
@@ -17316,16 +17379,8 @@ export function heartbeatService(
               // run becomes running, a concurrent discard must observe the
               // claimed wake and return an explicit conflict; if discard wins,
               // this claim observes the cancelled queue and does no work.
-              await tx
-                .select({ id: issues.id })
-                .from(issues)
-                .where(
-                  and(
-                    eq(issues.id, issueId),
-                    eq(issues.companyId, run.companyId),
-                  ),
-                )
-                .for("update");
+              const issueClaim = await lockIssueExecutionClaim(tx as unknown as Db);
+              if (issueClaim.blocked) return { kind: "stale" as const, run: null };
               const wake = await tx
                 .select()
                 .from(agentWakeupRequests)
@@ -17476,6 +17531,7 @@ export function heartbeatService(
                     ),
                   )
                   .returning();
+                await bindClaimedIssueExecution(tx as unknown as Db, issueClaim.ownsIssue, claimedRun);
                 return claimedRun
                   ? { kind: "claimed" as const, run: claimedRun }
                   : { kind: "stale" as const, run: null };
@@ -17578,6 +17634,7 @@ export function heartbeatService(
                   ),
                 )
                 .returning();
+              await bindClaimedIssueExecution(tx as unknown as Db, issueClaim.ownsIssue, claimedRun);
               return claimedRun
                 ? { kind: "claimed" as const, run: claimedRun }
                 : { kind: "stale" as const, run: null };
@@ -17639,9 +17696,15 @@ export function heartbeatService(
               agentNameKey: normalizeAgentNameKey(agent.name),
             });
           }
-          return tx.update(heartbeatRuns).set(claimValues).where(and(
-            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
-          )).returning().then((rows) => rows[0] ?? null);
+          return tx.transaction(async (claimTx) => {
+            const issueClaim = await lockIssueExecutionClaim(claimTx as unknown as Db);
+            if (issueClaim.blocked) return null;
+            const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
+              eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
+            )).returning().then((rows) => rows[0] ?? null);
+            await bindClaimedIssueExecution(claimTx as unknown as Db, issueClaim.ownsIssue, claimedRun);
+            return claimedRun;
+          });
         });
     if (!claimed) return null;
 

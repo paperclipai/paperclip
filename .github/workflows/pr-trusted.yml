@@ -1158,6 +1158,10 @@ jobs:
               commit --no-verify -m "ci(canary): stage regenerated lockfile"
           fi
           ./scripts/release.sh canary --skip-verify --dry-run
+      - name: Verify built-in Grok from a clean public npm install
+        if: ${{ hashFiles('scripts/verify-grok-npm-install.mjs') != '' }}
+        run: node scripts/verify-grok-npm-install.mjs
+
 
   e2e_shards:
     name: e2e shard (${{ matrix.shard_label }})

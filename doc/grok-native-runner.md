@@ -3,6 +3,8 @@
 Select **Grok Build** in the native runner provider selector. The stored contract is
 `adapterType: "paperclip_runner"` with `provider: "acpx"`, `acpxAgent: "grok"`,
 and `model: "grok-4.7"`. Existing `grok_local` agents keep their legacy adapter.
+On Cloud, an operator must enable `enableNativeRunner` for the instance before
+the new-agent picker or direct setup page offers the native runner.
 
 Grok Build speaks [ACP over stdio](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md).
 The runner owns `grok agent --no-leader stdio` through ACPX, including session
@@ -14,12 +16,31 @@ locked off. Compatible hook/MCP discovery and shell login capture are disabled.
 
 ## Installation and identity
 
-Run `pnpm --filter @paperclipai/paperclip-runner install:grok` after installing
-workspace dependencies. This explicitly downloads Grok Build 1.0.13, verifies
-the native executable digest in `packages/grok-acp/platforms.json`, and installs
-it privately. Only macOS arm64 and Linux x64 are admitted. Provider packs install
-the same verified binary. No ambient `grok` from PATH is used by the native runner.
-ACP must report the requested exact model; absent or mismatched identities fail.
+Grok support ships inside the native runner and the public Paperclip server npm
+artifact. There is no separate Grok npm package, binary payload, or npm lifecycle
+download. The built-in launcher is identified as `builtin:grok-acp` version 1;
+its native runtime identity is `native:grok` version 1.0.13. The historical
+`agentServerPackage`/`agentRuntimePackage` wire fields carry these identities,
+not npm dependencies. Existing npm-backed ACP bridges retain their package pins.
+
+Provision Grok Build 1.0.13 at
+`/opt/paperclip/providers/grok/1.0.13/grok` in the selected execution environment.
+The sandbox provisioning helper is explicit and is never run by npm:
+
+```sh
+sudo node packages/paperclip-runner/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok
+```
+
+The standard Daytona image provisions it separately from the provider pack.
+Custom images and local execution hosts must provide the same prerequisite.
+The runner verifies the native executable checksum before credential refresh or
+ACP startup; a missing prerequisite reports the required path and version.
+Only macOS arm64 and Linux x64 are qualified. No ambient `grok` from PATH is used.
+ACP must report the requested exact model; mismatches fail closed.
+
+The distribution identity change deliberately rejects resume bindings from the
+former private-package profile. Start a fresh session after upgrading that
+unreleased profile; do not silently reinterpret its saved identity.
 
 Instructions use Grok ACP session rules. Assigned skills live in the isolated
 Grok home. Steering and goals are unsupported. Token and cost values remain
@@ -83,3 +104,13 @@ Do not run Docker on a developer laptop when using remote verification. The
 builds and broad source checks without provider credentials. It records the
 source revision, resolved lock digest and immutable image reference. Paid
 Product E2E remains behind the protected default-branch workflow and environment.
+
+
+The Cloud application image also carries the controller-owned provider pack and
+sets `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH`. Remote ACPX execution verifies
+the sandbox against that pack before using it, or stages the matching pack when
+needed. The Cloud controller image does not install the native Grok executable;
+the selected sandbox image must provide the prerequisite above.
+Cloud builds must supply the full source SHA through `PAPERCLIP_BUILD_COMMIT`
+to produce that verified pack. Unstamped local Cloud builds still work for other
+features, but omit the pack and cannot start remote ACPX sessions.

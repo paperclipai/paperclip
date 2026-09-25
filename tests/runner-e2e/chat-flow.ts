@@ -7,6 +7,7 @@ import type {
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 import { isBlockedUnstartedWake } from "./non-execution-wake.js";
+import { collectRunEvents } from "./run-observations.js";
 import { chatMarker } from "./chat-cases.js";
 import { assertChatRememberedAfterRestart, assertChatStartupStopped, isChatStopReady, runChatHardeningFlow } from "./chat-hardening.js";
 import { enableChatThroughSettings, runChatInterruption, runChatSettingsLifecycle } from "./chat-stories.js";
@@ -239,7 +240,9 @@ export async function collectChatRunEvidence(
     log: isResetRun(run) || isBlockedUnstartedWake({ ...run })
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
-    events: await api.get(`/api/heartbeat-runs/${run.id}/events?limit=1000`),
+    events: await collectRunEvents((afterSeq, limit) =>
+      api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
+    ),
   };
 }
 

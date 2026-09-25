@@ -29,7 +29,7 @@ const previewWorkflow = readFileSync(path.join(repoRoot, ".github", "workflows",
  */
 function stageBody(source: string, stageName: string): string {
   const froms = [...source.matchAll(/^FROM .*$/gm)];
-  const startIdx = froms.findIndex((m) => new RegExp(`\\bAS ${stageName}\\b`).test(m[0]));
+  const startIdx = froms.findIndex((m) => new RegExp(`\\bAS ${stageName}\\s*$`).test(m[0]));
   expect(startIdx, `Dockerfile must declare a '${stageName}' stage`).toBeGreaterThanOrEqual(0);
   const start = froms[startIdx].index ?? 0;
   const end = froms[startIdx + 1]?.index ?? source.length;
@@ -102,5 +102,21 @@ describe("Docker Rust dependency cache", () => {
     }
     expect(native).toContain("cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd");
     expect(stageBody(dockerfile, "build")).toContain("FROM runner-build AS build");
+  });
+});
+
+
+describe("Cloud remote provider pack", () => {
+  it("ships a build-owned pack without provisioning Grok on the controller", () => {
+    const pack = stageBody(dockerfile, "cloud-provider-pack");
+    const cloud = stageBody(dockerfile, "cloud");
+    expect(pack).toContain('PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}"');
+    expect(pack).toContain("build-provider-pack.mjs /provider-pack");
+    expect(pack).toContain('if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then');
+    expect(pack).toContain("mkdir -p /provider-pack");
+    expect(pack).toContain("Skipping remote provider pack");
+    expect(cloud).toContain("--from=cloud-provider-pack /provider-pack /opt/paperclip-runner/provider-pack");
+    expect(cloud).toContain("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack");
+    expect(dockerfile).not.toContain("provision-grok.mjs");
   });
 });

@@ -381,6 +381,12 @@ published with permanent campaign dashboards; fixture authors must therefore
 keep credentials and other private data out of every captured UI state. SVG is
 active content and is rejected from the packaged evidence entirely.
 
+The standard task and chat evidence collectors read durable run events through the paginated
+public API, including completion events beyond the first 1,000 rows. It rejects
+missing, repeated, or out-of-order sequence numbers and fails capture after
+100 full pages instead of grading a truncated stream. Original incomplete
+captures remain failed evidence; qualifying a fix requires a new live attempt.
+
 Every completed local campaign also writes
 `tests/runner-e2e/results/<campaign>/dashboard.html`. The self-contained page
 shows the complete profile/environment grid with screenshot thumbnails.

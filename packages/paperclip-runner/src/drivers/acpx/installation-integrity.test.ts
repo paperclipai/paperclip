@@ -24,6 +24,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
+  verifyProvisionedGrokExecutable,
+  builtinGrokLauncherPath,
   awaitVerifiedAcpxProviderExit,
   awaitVerifiedAcpxProviderOwnership,
   createAcpxPackageJsonResolver,
@@ -607,18 +609,38 @@ describe("ACPX installation integrity", () => {
     },
   );
 
+  it("resolves the shipped builtin launcher without an npm package", async () => {
+    const launcher = builtinGrokLauncherPath();
+    expect(launcher).toContain("/providers/grok/launcher.cjs");
+    expect(`sha256:${createHash("sha256").update(await readFile(launcher)).digest("hex")}`)
+      .toBe(resolveQualifiedAcpxProfile("grok", "grok-4.7").commandDigest);
+    expect(resolveQualifiedAcpxProfile("grok", "grok-4.7").agentServerPackage).toBe("builtin:grok-acp");
+  });
+
+  it("reports a missing environment prerequisite before launching Grok", async () => {
+    const fixture = await installationFixture();
+    await expect(verifyProvisionedGrokExecutable(join(fixture.commandDirectory, "missing")))
+      .rejects.toThrow(/Grok Build 1.0.13 prerequisite missing/);
+  });
+
+  it("resolves a controller-owned builtin root for descriptor-loaded sidecars and rejects relative roots", () => {
+    vi.stubEnv("PAPERCLIP_ACPX_BUILTIN_ROOT", "/verified/dist/providers");
+    try { expect(builtinGrokLauncherPath("file:///proc/self/fd/9")).toBe("/verified/dist/providers/grok/launcher.cjs"); }
+    finally { vi.unstubAllEnvs(); }
+    vi.stubEnv("PAPERCLIP_ACPX_BUILTIN_ROOT", "../untrusted");
+    try { expect(() => builtinGrokLauncherPath()).toThrow("Invalid builtin provider root"); }
+    finally { vi.unstubAllEnvs(); }
+  });
+
   it("rejects a tampered native Grok executable and symlink substitution", async () => {
     const fixture = await installationFixture();
-    const base = resolveQualifiedAcpxProfile("grok", "grok-4.7");
-    const profile = { ...base, commandDigest: fixture.profile.commandDigest };
-    await writeFile(fixture.serverPackageJsonPath, JSON.stringify({ version: "1.0.13", bin: "bin/server.js" }));
+
     const native = join(fixture.commandDirectory, "grok");
     await writeFile(native, "tampered native binary", { mode: 0o700 });
-    const resolvePackage = () => fixture.serverPackageJsonPath;
-    await expect(verifyQualifiedAcpxInstallation(profile, resolvePackage)).rejects.toThrow(/digest mismatch/);
+    await expect(verifyProvisionedGrokExecutable(native)).rejects.toThrow(/digest mismatch/);
     await rm(native);
     await symlink(fixture.commandPath, native);
-    await expect(verifyQualifiedAcpxInstallation(profile, resolvePackage)).rejects.toThrow(/regular file|symlink|no-follow/);
+    await expect(verifyProvisionedGrokExecutable(native)).rejects.toThrow(/regular file|symlink|no-follow/);
   });
 
   it("rejects package version and executable digest drift", async () => {
@@ -2119,7 +2141,7 @@ async function installationFixture() {
 
 describe("Grok launcher subscription refresh", () => {
   it("keeps the Grok launcher digest synchronized across TypeScript, Rust, server, and provider pack", async () => {
-    const launcher = await readFile(new URL("../../../../grok-acp/launcher.cjs", import.meta.url));
+    const launcher = await readFile(new URL("../../providers/grok/launcher.cjs", import.meta.url));
     const digest = `sha256:${createHash("sha256").update(launcher).digest("hex")}`;
     expect(resolveQualifiedAcpxProfile("grok", "grok-4.7").commandDigest).toBe(digest);
     const [server, pack, rust] = await Promise.all([
@@ -2137,7 +2159,7 @@ describe("Grok launcher subscription refresh", () => {
     refresh?: { status: number | null; signal?: string | null; error?: Error };
     mode?: number; fileError?: string; growingFile?: boolean;
   } = {}) {
-    const script = await readFile(new URL("../../../../grok-acp/launcher.cjs", import.meta.url), "utf8");
+    const script = await readFile(new URL("../../providers/grok/launcher.cjs", import.meta.url), "utf8");
     const payload = Buffer.from(JSON.stringify({ account: {
       key: "PRIVATE-CREDENTIAL-SENTINEL", refresh_token: "PRIVATE-REFRESH-SENTINEL",
       expires_at: "rawExpiry" in input ? input.rawExpiry : new Date(input.expiry ?? Date.now() - 60_000).toISOString(),

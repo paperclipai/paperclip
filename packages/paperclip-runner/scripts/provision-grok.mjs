@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { dirname, isAbsolute } from "node:path";
 import { gunzipSync } from "node:zlib";
-const manifest = JSON.parse(await readFile(new URL("./platforms.json", import.meta.url), "utf8"));
+const manifest = JSON.parse(await readFile(new URL("../src/providers/grok/platforms.json", import.meta.url), "utf8"));
 const platform = manifest.platforms[`${process.platform}-${process.arch}`];
 if (!platform) throw new Error(`Unqualified Grok platform: ${process.platform}-${process.arch}`);
-const destination = fileURLToPath(new URL("./bin/grok", import.meta.url));
+const destination = process.argv[2];
+if (!destination || !isAbsolute(destination)) throw new Error("Provisioning requires an explicit absolute destination; this script is never an npm lifecycle hook");
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const installed = await readFile(destination).catch(() => null);
 if (!installed || digest(installed) !== platform.sha256) {
@@ -14,12 +15,12 @@ if (!installed || digest(installed) !== platform.sha256) {
   if (!response.ok) throw new Error(`Grok download failed: HTTP ${response.status}`);
   const bytes = gunzipSync(Buffer.from(await response.arrayBuffer()), { maxOutputLength: 384 * 1024 * 1024 });
   if (digest(bytes) !== platform.sha256) throw new Error("Grok binary digest mismatch");
-  await mkdir(new URL("./bin/", import.meta.url), { recursive: true });
+  await mkdir(dirname(destination), { recursive: true });
   const temporary = `${destination}.${process.pid}.tmp`;
   try {
-    await writeFile(temporary, bytes, { flag: "wx", mode: 0o700 });
+    await writeFile(temporary, bytes, { flag: "wx", mode: 0o755 });
     await rename(temporary, destination);
   } finally { await rm(temporary, { force: true }); }
 }
-await chmod(destination, 0o700);
+await chmod(destination, 0o755);
 console.log(`Verified Grok ${manifest.version} (${process.platform}-${process.arch})`);

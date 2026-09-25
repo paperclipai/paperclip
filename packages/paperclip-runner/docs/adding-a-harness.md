@@ -5,13 +5,39 @@ the provider contract. A driver is not complete until its permission modes,
 maximum non-interactive default, durable request translation, recovery
 identity, isolation behavior, and conformance coverage are defined.
 
+## Distribution
+
+First-party harness glue belongs in the runner, not in a new npm package for
+each provider. Keep built-in launchers and metadata under
+`src/providers/<provider>/`; include them in the compiled runner and the public
+server's vendored runtime. Grok is the reference implementation. This keeps a
+public Paperclip npm install self-contained as more harnesses are added.
+
+Native provider binaries remain execution-environment prerequisites. Provision
+them explicitly in sandbox images or on local execution hosts, independently
+of npm installation and the controller provider pack. Admission must verify
+the qualified version and executable checksum before credentials are delivered.
+Missing prerequisites should produce an actionable error, never a silent
+download or an unverified fallback to PATH.
+
+Use a distinct built-in launcher identity and native runtime identity in the
+qualified profile, recovery binding, provider-pack manifest, and eval config.
+Existing upstream npm-backed ACP bridges retain their package pins; this does
+not require replacing those bridges or republishing them under Paperclip names.
+
+Verify public release tarballs in a clean consumer outside the checkout with
+npm lifecycle scripts enabled. Prove that the launcher ships, npm does not
+install the native prerequisite, missing prerequisites fail closed, and
+explicit provisioning permits verified execution. See
+`scripts/verify-grok-npm-install.mjs` at the repository root.
+
 ## Current permission catalog
 
 | Provider | Agent configuration key | Supported values | Default |
 |---|---|---|---|
 | Codex | `codexPermissionMode` | `never`, `on-request`, `untrusted` | `never` |
 | OpenCode | `opencodePermissionMode` | `allow`, `ask`, `deny` | `allow` |
-| ACPX (Claude, Codex) | `acpxPermissionMode` | `approve-all`, `approve-paperclip`, `approve-reads`, `deny-all` | `approve-all` |
+| ACPX (Claude, Grok) | `acpxPermissionMode` | `approve-all`, `approve-paperclip`, `approve-reads`, `deny-all` | `approve-all` |
 
 The browser-safe source of truth for labels, defaults, and configuration
 validation is `PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES` in

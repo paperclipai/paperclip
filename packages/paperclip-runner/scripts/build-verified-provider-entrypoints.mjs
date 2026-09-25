@@ -1,4 +1,4 @@
-import { chmod } from "node:fs/promises";
+import { chmod, cp, mkdir } from "node:fs/promises";
 import { builtinModules } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -50,6 +50,10 @@ function assertSelfContainedBundle(entrypoint, result) {
 }
 
 export async function bundleVerifiedProviderEntrypoints({ write = true } = {}) {
+  if (write) {
+    await mkdir(resolve(packageRoot, "dist/providers"), { recursive: true });
+    await cp(resolve(packageRoot, "src/providers"), resolve(packageRoot, "dist/providers"), { recursive: true });
+  }
   const results = [];
   for (const entrypoint of verifiedProviderEntrypoints) {
     const buildBundle = async (outfile, format) => {

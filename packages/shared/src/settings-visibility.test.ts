@@ -49,6 +49,48 @@ describe("hideable setting keys", () => {
 });
 
 describe("parseHiddenSettingsList", () => {
+  it("expands the experimental wildcard into concrete keys without hiding the page", () => {
+    const parsed = parseHiddenSettingsList("instance.experimental.*");
+    expect(parsed).toEqual({ hidden: INSTANCE_FEATURE_KEYS.map(experimentalSettingKey), unknown: [] });
+    expect(parsed.hidden).not.toContain("instance.experimental");
+  });
+
+  it("allows only named exceptions, independent of order or duplicates", () => {
+    const exception = "!instance.experimental.enableEnvironments";
+    for (const raw of [`instance.experimental.*, ${exception}, ${exception}`, `${exception},instance.experimental.*`]) {
+      const parsed = parseHiddenSettingsList(raw);
+      expect(parsed).toEqual({
+        hidden: INSTANCE_FEATURE_KEYS.filter((key) => key !== "enableEnvironments").map(experimentalSettingKey),
+        unknown: [],
+      });
+    }
+  });
+
+  it("keeps explicit hides and parent page restrictions stronger than exceptions", () => {
+    for (const restriction of ["instance.experimental.enableEnvironments", "instance.experimental"]) {
+      for (const raw of [
+        `instance.experimental.*,!instance.experimental.enableEnvironments,${restriction}`,
+        `${restriction},!instance.experimental.enableEnvironments,instance.experimental.*`,
+      ]) {
+        const { hidden } = parseHiddenSettingsList(raw);
+        expect(hidesExperimentalSetting(new Set(hidden), "enableEnvironments")).toBe(true);
+        expect(new Set(hidden).size).toBe(hidden.length);
+      }
+    }
+  });
+
+  it("ignores unknown or out-of-scope exceptions without opening any controls", () => {
+    const parsed = parseHiddenSettingsList("instance.experimental.*,!instance.experimental.enableTypo,!instance.plugins,!instance.experimental,!instance.experimental.*");
+    expect(parsed.hidden).toEqual(INSTANCE_FEATURE_KEYS.map(experimentalSettingKey));
+    expect(parsed.unknown).toEqual(["!instance.experimental.enableTypo", "!instance.plugins", "!instance.experimental", "!instance.experimental.*"]);
+  });
+
+  it("does not use exceptions to override individual restrictions without a wildcard", () => {
+    expect(parseHiddenSettingsList("!instance.experimental.enableEnvironments").hidden).toEqual([]);
+    expect(parseHiddenSettingsList("instance.experimental.enableEnvironments,!instance.experimental.enableEnvironments").hidden)
+      .toEqual(["instance.experimental.enableEnvironments"]);
+  });
+
   it("accepts workspace controls independently of experimental flags", () => {
     expect(parseHiddenSettingsList("workspaces.isolation")).toEqual({ hidden: ["workspaces.isolation"], unknown: [] });
     expect(hidesExperimentalSetting(new Set(["workspaces.isolation"]), "enableIsolatedWorkspaces")).toBe(false);

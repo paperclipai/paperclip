@@ -1041,9 +1041,9 @@ describe("remote provider pack manifest", () => {
     const lockfile = "lockfileVersion: '9.0'\n";
     const opencodeCommand = "#!/bin/sh\n";
     const opencodeExecutable = "opencode-binary\n";
-    const grokExecutable = "grok-binary\n";
-    await mkdir(join(root, "node_modules/@paperclipai/grok-acp/bin"), { recursive: true });
-    await writeFile(join(root, "node_modules/@paperclipai/grok-acp/bin/grok"), grokExecutable);
+    const grokLauncher = "grok-binary\n";
+    await mkdir(join(root, "dist/providers/grok"), { recursive: true });
+    await writeFile(join(root, "dist/providers/grok/launcher.cjs"), grokLauncher);
     await writeFile(
       join(root, "dist", "cli", "opencode-app-server-proxy.cjs"),
       proxy,
@@ -1088,7 +1088,7 @@ describe("remote provider pack manifest", () => {
           "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
       },
       artifacts: {
-        grokExecutable: { path: "node_modules/@paperclipai/grok-acp/bin/grok", sha256: digest(grokExecutable) },
+        grokLauncher: { path: "dist/providers/grok/launcher.cjs", sha256: digest(grokLauncher) },
         nodeCommand: {
           path: "node_modules/node/bin/node",
           sha256: digest(node),

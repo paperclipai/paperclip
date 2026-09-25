@@ -2874,6 +2874,15 @@ function acpxProviderPackageAuthority(
   manifest: string;
 } {
   const cliDirectory = dirname(sidecarScript);
+  // Public server packages vendor runner dist directly, without a nested dist
+  // directory or a separately published runner package.
+  if (basename(sidecarScript) === "acpx-runtime-sidecar.cjs" &&
+      basename(cliDirectory) === "cli" && basename(dirname(cliDirectory)) === "paperclip-runner" &&
+      basename(resolve(cliDirectory, "../..")) === "vendor" &&
+      basename(resolve(cliDirectory, "../../..")) === "dist") {
+    const serverRoot = resolve(cliDirectory, "../../../..");
+    return { root: serverRoot, manifest: resolve(serverRoot, "package.json") };
+  }
   if (
     basename(sidecarScript) !== "acpx-runtime-sidecar.cjs" ||
     basename(cliDirectory) !== "cli" ||
@@ -3133,6 +3142,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
       // The verified sidecar bundle cannot use import.meta.url while Node
       // executes it through /proc/self/fd. Anchor its closed provider package
       // lookups at the package that owns the already-authenticated bundle.
+      PAPERCLIP_ACPX_BUILTIN_ROOT: resolve(dirname(sidecarPath), "../providers"),
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: providerPackageAuthority.root,
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
         providerPackageAuthority.manifest,

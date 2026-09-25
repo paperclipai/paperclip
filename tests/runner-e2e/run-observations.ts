@@ -1,3 +1,28 @@
+/** Read the complete durable stream; never grade a silently truncated page. */
+export async function collectRunEvents<T extends { seq?: number }>(
+  loadPage: (afterSeq: number, limit: number) => Promise<unknown>,
+): Promise<T[]> {
+  const pageSize = 1000;
+  const events: T[] = [];
+  let afterSeq = 0;
+  for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+    const page = await loadPage(afterSeq, pageSize);
+    if (!Array.isArray(page) || page.length > pageSize) {
+      throw new Error("Run event evidence returned an invalid page");
+    }
+    for (const event of page) {
+      const seq = event?.seq;
+      if (!Number.isSafeInteger(seq) || seq <= afterSeq) {
+        throw new Error("Run event evidence has a missing or non-increasing sequence");
+      }
+      afterSeq = seq;
+      events.push(event as T);
+    }
+    if (page.length < pageSize) return events;
+  }
+  throw new Error("Run event evidence exceeded 100 pages; refusing incomplete evidence");
+}
+
 export interface ObservableRunState {
   status?: string | null;
   errorCode?: string | null;

@@ -22,7 +22,6 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/google-sheets-mcp-server/package.json packages/google-sheets-mcp-server/
-COPY packages/grok-acp/package.json packages/grok-acp/
 COPY packages/kv-demo-mcp-server/package.json packages/kv-demo-mcp-server/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/paperclip-eval-kernel/package.json packages/paperclip-eval-kernel/
@@ -294,7 +293,22 @@ RUN set -eu; \
   test -n "$specifiers" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS names no package" >&2; exit 1; }; \
   pnpm add --ignore-workspace --no-lockfile $specifiers
 
+# ACPX remote runs require a controller-owned provider pack to verify the
+# sandbox installation or stage matching assets. Grok's native executable stays
+# an external sandbox prerequisite; this pack contains only its launcher.
+FROM build AS cloud-provider-pack
+# Unstamped local builds remain usable, but cannot qualify a remote pack.
+# Never invent a source revision to make an unqualified pack look verified.
+RUN mkdir -p /provider-pack \
+  && if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then \
+    PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack; \
+  else \
+    echo "Skipping remote provider pack: supply a full PAPERCLIP_BUILD_COMMIT to enable remote ACPX execution"; \
+  fi
+
 FROM production AS cloud
+COPY --chown=node:node --from=cloud-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
+ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
 # Land the isolated install inside the server's own `node_modules`, the
 # directory Node's module resolution walks up to from `/app/server` for
