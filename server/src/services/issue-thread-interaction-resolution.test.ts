@@ -178,4 +178,30 @@ describe("issue-thread interaction resolver audience", () => {
       interaction: interaction({ effectiveResolverPolicy: "human_only" }),
     })).toBe(false);
   });
+
+  // GUL-2524: permanent gate — non-Board actors cannot resolve human_only
+  // confirmations; denials are 403 interaction_human_only (never 409).
+  it.each([
+    ["creator agent", { type: "agent", agentId: "agent-1", runId: "run-1" } as const],
+    ["unrelated agent", { type: "agent", agentId: "agent-other", runId: "run-other" } as const],
+    ["assignee-only agent", { type: "agent", agentId: "agent-assignee", runId: "run-assignee" } as const],
+  ])("denies %s against human_only with status 403", (_name, actor) => {
+    const decision = evaluateIssueThreadInteractionResolverAudience({
+      actor,
+      interaction: interaction({ effectiveResolverPolicy: "human_only" }),
+    });
+    expect(decision).toMatchObject({
+      allowed: false,
+      status: 403,
+      code: "interaction_human_only",
+    });
+    expect(decision).not.toMatchObject({ status: 409 });
+  });
+
+  it("allows a Board user against human_only", () => {
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: { type: "user", userId: "local-board" },
+      interaction: interaction({ effectiveResolverPolicy: "human_only" }),
+    })).toMatchObject({ allowed: true, reason: "allow_human" });
+  });
 });

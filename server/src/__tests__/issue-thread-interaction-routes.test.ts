@@ -3357,4 +3357,127 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockDbTransaction).not.toHaveBeenCalled();
     expect(mockCrossIssueInfluence.inserted).toEqual([]);
   });
+
+  // GUL-2524 / QUALITY-GATES: Board-only confirmation accept/reject must fail
+  // closed with an explicit auth denial (403 interaction_human_only), never a
+  // coincidental workspace-sync 409. Covers creator, unrelated, and assignee-only
+  // agents for both accept and reject; board path remains allowed.
+  describe("GUL-2524 human_only accept/reject auth negatives", () => {
+    const HUMAN_ONLY_CONFIRMATION = {
+      id: "interaction-gul-2524-human-only",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1,
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Board confirmation — agents must not resolve." },
+    } as const;
+
+    const AGENT_ACTORS = [
+      {
+        name: "creator agent",
+        agentId: CREATED_AGENT_ID,
+        runId: RUN_1,
+      },
+      {
+        name: "unrelated agent",
+        agentId: UNRELATED_AGENT_ID,
+        runId: RUN_3,
+      },
+      {
+        name: "assignee-only agent",
+        agentId: ASSIGNEE_AGENT_ID,
+        runId: RUN_2,
+      },
+    ] as const;
+
+    it.each(
+      AGENT_ACTORS.flatMap((actor) => ([
+        { ...actor, action: "accept" as const, body: {} },
+        { ...actor, action: "reject" as const, body: { reason: "QA auth negative" } },
+      ])),
+    )(
+      "returns 403 interaction_human_only (not 409) when $name $action",
+      async ({ agentId, runId, action, body }) => {
+        mockIssueService.getById.mockResolvedValueOnce(createIssue({
+          status: "todo",
+          reviewPolicy: null,
+          assigneeAgentId: ASSIGNEE_AGENT_ID,
+        }));
+        mockInteractionService.getForIssue.mockResolvedValueOnce({ ...HUMAN_ONLY_CONFIRMATION });
+
+        const app = await createApp({
+          type: "agent",
+          agentId,
+          companyId: "company-1",
+          runId,
+        });
+
+        const res = await request(app)
+          .post(`/api/issues/${ISSUE_ID}/interactions/${HUMAN_ONLY_CONFIRMATION.id}/${action}`)
+          .send(body);
+
+        expect(res.status).toBe(403);
+        expect(res.status).not.toBe(409);
+        expect(res.body).toMatchObject({
+          error: "This issue-thread interaction is human-only",
+          code: "interaction_human_only",
+        });
+        expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+        expect(mockInteractionService.rejectInteraction).not.toHaveBeenCalled();
+      },
+    );
+
+    it("still allows the Board path for accept", async () => {
+      mockIssueService.getById.mockResolvedValueOnce(createIssue({
+        status: "todo",
+        reviewPolicy: null,
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+      }));
+      mockInteractionService.getForIssue.mockResolvedValueOnce({ ...HUMAN_ONLY_CONFIRMATION });
+      mockInteractionService.acceptInteraction.mockImplementationOnce(async (...args: unknown[]) => ({
+        interaction: await resolveMockInteraction(args, {
+          ...HUMAN_ONLY_CONFIRMATION,
+          status: "accepted",
+          result: { version: 1, outcome: "accepted" },
+          resolvedByUserId: "local-board",
+        }),
+        createdIssues: [],
+      }));
+
+      const app = await createApp();
+      const res = await request(app)
+        .post(`/api/issues/${ISSUE_ID}/interactions/${HUMAN_ONLY_CONFIRMATION.id}/accept`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(mockInteractionService.acceptInteraction).toHaveBeenCalledTimes(1);
+    });
+
+    it("still allows the Board path for reject", async () => {
+      mockIssueService.getById.mockResolvedValueOnce(createIssue({
+        status: "todo",
+        reviewPolicy: null,
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+      }));
+      mockInteractionService.getForIssue.mockResolvedValueOnce({ ...HUMAN_ONLY_CONFIRMATION });
+      mockInteractionService.rejectInteraction.mockImplementationOnce(async (...args: unknown[]) =>
+        resolveMockInteraction(args, {
+          ...HUMAN_ONLY_CONFIRMATION,
+          status: "rejected",
+          result: { version: 1, outcome: "rejected", reason: "Board declined" },
+          resolvedByUserId: "local-board",
+        }),
+      );
+
+      const app = await createApp();
+      const res = await request(app)
+        .post(`/api/issues/${ISSUE_ID}/interactions/${HUMAN_ONLY_CONFIRMATION.id}/reject`)
+        .send({ reason: "Board declined" });
+
+      expect(res.status).toBe(200);
+      expect(mockInteractionService.rejectInteraction).toHaveBeenCalledTimes(1);
+    });
+  });
 });
