@@ -227,6 +227,7 @@ import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import {
   assertBoard,
   assertCompanyAccess,
+  assertSecretDefinitionAdmin,
   getAccessibleResource,
   getActorInfo,
 } from "./authz.js";
@@ -16126,12 +16127,20 @@ export function issueRoutes(
             }
             await secretProposals.approve(issue.companyId, proposal.id, {
               resolvedByUserId,
+              // A binding that still points at a pending secret proposal
+              // returns HTTP 409 unless approve cascades. Bindings that
+              // already have a secretId leave this false.
+              cascade:
+                typeof proposal.secretProposalId === "string" &&
+                proposal.secretProposalId.length > 0,
               assertCanResolve: (lockedProposal, txDb) =>
                 assertCanResolveProposal({
                   db: txDb,
                   actor: req.actor,
                   companyId: issue.companyId,
                   proposal: lockedProposal,
+                  assertSecretDefinitionAdmin: () =>
+                    assertSecretDefinitionAdmin(req, issue.companyId),
                 }),
             });
             await notifySecretProposalResolution({

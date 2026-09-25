@@ -14,12 +14,14 @@ import {
   companySecretProposals,
   companySecretProviderConfigs,
   companySecretVersions,
+  companyMemberships,
   companySecrets,
   createDb,
   heartbeatRuns,
   issueComments,
   issueThreadInteractions,
   issues,
+  principalPermissionGrants,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
@@ -57,6 +59,8 @@ describeEmbeddedPostgres("secret proposal routes", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(companySecretProposals);
@@ -473,6 +477,55 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         body: expect.stringContaining("GET /api/agents/me/secrets"),
       }),
     ]);
+  });
+
+  it("refuses cascade approval when the reviewer can change the agent but cannot administer secrets", async () => {
+    const fixture = await seedRun();
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: "board-user",
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: "board-user",
+      permissionKey: "agents:configure",
+    });
+
+    const secretResponse = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/member/token",
+        value: "member-secret",
+        justification: "Needed by task",
+      });
+    expect(secretResponse.status).toBe(201);
+    const bindingResponse = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretProposalId: secretResponse.body.id,
+        configPath: "env.MEMBER_TOKEN",
+        justification: "Inject for the task",
+      });
+    expect(bindingResponse.status).toBe(201);
+
+    const approved = await request(createBoardApp(fixture, { admin: false }))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${bindingResponse.body.id}/approve`)
+      .send({ cascade: true });
+
+    expect(approved.status).toBe(403);
+    expect(approved.body.error).toBe("Company admin access required");
+    expect(await db.select().from(companySecrets)).toHaveLength(0);
+    const proposalRows = await db.select().from(companySecretProposals);
+    expect(proposalRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: secretResponse.body.id, status: "pending" }),
+      expect.objectContaining({ id: bindingResponse.body.id, status: "pending" }),
+    ]));
   });
 
   it("approves a binding without cascade after its secret proposal was approved separately", async () => {
