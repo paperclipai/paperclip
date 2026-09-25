@@ -94,6 +94,8 @@ import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { cn } from "@/lib/utils";
+import { RELATIVE_TIMESTAMP_MAX_AGE_MS } from "@/lib/relative-time";
+import { useSecondTick } from "@/hooks/useSecondTick";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
@@ -814,6 +816,40 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [comments, interactions, linkedRunMetaById],
   );
 
+  // Item timestamps are baked into the model as already-formatted strings, and
+  // relative labels go stale in place: on a quiet thread a message would read
+  // "just now" until the comment list next changed identity. Re-project once a
+  // minute while the newest message is still young enough for its label to move
+  // — past a week every label is a fixed date and nothing needs refreshing.
+  //
+  // Comments are not the only thing on screen with a moving label. A run that
+  // just failed renders a marker off its own finish time, so a thread whose
+  // newest comment is a month old can still be showing "just now" — gate on
+  // the newest item, not the newest comment, or that one freezes.
+  const newestItemMs = useMemo(() => {
+    let newest = projectedComments.reduce(
+      (max, comment) => Math.max(max, new Date(comment.createdAt).getTime()),
+      0,
+    );
+    for (const run of linkedRuns ?? []) {
+      const finished = run.finishedAt ? new Date(run.finishedAt).getTime() : 0;
+      if (finished > newest) newest = finished;
+    }
+    return newest;
+  }, [projectedComments, linkedRuns]);
+  // A run in flight keeps producing fresh labels no matter how old the thread
+  // is, so it holds the clock open on its own.
+  const withinRelativeWindow =
+    Boolean(activeRun) ||
+    (liveRuns?.length ?? 0) > 0 ||
+    Date.now() - newestItemMs < RELATIVE_TIMESTAMP_MAX_AGE_MS;
+  const tick = useSecondTick(withinRelativeWindow);
+  // Re-project once a minute, and once more the moment the newest label ages
+  // out of the relative window. Without that second trigger the thread stops
+  // ticking still holding "6 days ago" — the crossing is exactly the render
+  // that has to convert it to a fixed date.
+  const freshness = `${Math.floor(tick / 60)}:${withinRelativeWindow}`;
+
   const commentItems = useMemo(
     () =>
       commentsToTaskChatItems(projectedComments, {
@@ -830,6 +866,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       currentUserId,
       issueAssigneeAgentId,
       verificationCaveatsByRunId,
+      // Not read by the projection — it re-runs the formatters on a fresh clock.
+      freshness,
     ],
   );
 

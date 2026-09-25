@@ -57,7 +57,7 @@ describe("TaskChatMarker", () => {
       '[data-testid="task-chat-collapsible-marker"] button[aria-expanded]',
     )!;
     expect(toggle.textContent).toContain("Run failed");
-    expect(toggle.textContent).toContain("5m ago");
+    expect(toggle.textContent).toContain("5 minutes ago");
     expect(
       container
         .querySelector('[data-testid="task-chat-collapsible-marker"]')

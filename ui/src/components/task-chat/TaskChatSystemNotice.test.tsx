@@ -62,7 +62,7 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     const button = toggleButton();
     expect(button.getAttribute("aria-expanded")).toBe("false");
     expect(button.textContent).toContain("Task paused — a secret/config binding is missing");
-    expect(button.textContent).toContain("5m ago");
+    expect(button.textContent).toContain("5 minutes ago");
     expect(container.textContent).not.toContain("source-scoped recovery action");
     expect(
       container.querySelector('[data-testid="task-chat-system-notice-details"]'),
