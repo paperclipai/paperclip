@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyRunLiveness } from "../services/run-liveness.ts";
+import { classifyRunLiveness } from "../services/run-liveness.js";
 
 const baseInput = {
   runStatus: "succeeded",
@@ -227,5 +227,57 @@ describe("run liveness classifier", () => {
     expect(classification.livenessState).toBe("needs_followup");
     expect(classification.actionability).toBe("unknown");
     expect(classification.nextAction).toBeNull();
+  });
+
+  // Regression test for #14034:
+  // A hermes_gateway (final-output) run completes successfully and writes its
+  // reply as an issue comment with created_by_run_id matching that run. If
+  // classifyAndPersistRunLiveness is called BEFORE the final comment is
+  // persisted it sees issueCommentsCreated = 0 and mis-classifies the run as
+  // "no concrete action evidence". After the fix, liveness is re-evaluated
+  // AFTER the comment is committed, so the attributed comment is visible.
+  // This test verifies that when the comment IS present in the evidence the
+  // classifier correctly returns "advanced" rather than "needs_followup".
+  it("classifies a final-output run as advanced when its attributed issue comment is visible (#14034)", () => {
+    const latestEvidenceAt = new Date("2026-09-25T12:00:00Z");
+    // Simulate the state seen by the SECOND liveness call (post-comment write).
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "I investigated the repository and here is my findings report.",
+      },
+      evidence: {
+        // The final reply comment is now committed with created_by_run_id = run.id.
+        issueCommentsCreated: 1,
+        latestEvidenceAt,
+      },
+    });
+
+    expect(classification.livenessState).toBe("advanced");
+    expect(classification.lastUsefulActionAt).toBe(latestEvidenceAt);
+  });
+
+  // Complementary to #14034: verify the FIRST (pre-comment) liveness call
+  // behaviour is unchanged — the run would have been mis-classified before the
+  // fix because the comment hadn't been persisted yet.
+  it("classifies a final-output run before its comment is persisted as needs_followup (#14034 pre-fix state)", () => {
+    // Simulate the state seen by the FIRST liveness call (before comment write).
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "I investigated the repository and here is my findings report.",
+      },
+      evidence: {
+        // No comment yet — this is the stale snapshot the old code left as the
+        // final persisted result.
+        issueCommentsCreated: 0,
+        latestEvidenceAt: null,
+      },
+    });
+
+    // Without the fix this was the permanently persisted (stale) result.
+    // With the fix, the second classification (post-comment) overwrites this.
+    expect(classification.livenessState).toBe("needs_followup");
+    expect(classification.lastUsefulActionAt).toBeNull();
   });
 });
