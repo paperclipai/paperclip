@@ -415,9 +415,15 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
     defaultAdapterType: "claude_local",
     defaultAdapterConfig: {
+      engine: "cli",
       model: "claude-haiku-4-5",
     },
     defaultBudgetMonthlyCents: 0,
+    defaultRuntimeConfig: {
+      heartbeat: {
+        maxConcurrentRuns: 1,
+      },
+    },
     bundle: {
       stockVersion: "2026-08-02",
       instructions: {
