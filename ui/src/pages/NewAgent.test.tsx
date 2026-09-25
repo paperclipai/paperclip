@@ -198,7 +198,8 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
-  it("selects the Grok sandbox before connecting without changing the instance default", async () => {
+  it.each([false, true])("selects the Grok sandbox before connecting (managed-only=%s)", async (managedOnly) => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableManagedSandboxOnly: managedOnly });
     envApi.list.mockResolvedValue([
       { id: "local-1", name: "Local", status: "active", driver: "local", config: {} },
       { id: "grok-sandbox", name: "Grok sandbox", status: "active", driver: "sandbox", config: { provider: "daytona" } },
@@ -210,6 +211,7 @@ describe("New agent setup", () => {
     await render("paperclip_runner", "grok");
     const select = container.querySelector('select[aria-label="Environment"]') as HTMLSelectElement;
     expect(select.disabled).toBe(false);
+    expect([...select.options].some((option) => option.value === "local-1")).toBe(!managedOnly);
     await act(async () => {
       select.value = "grok-sandbox";
       select.dispatchEvent(new Event("change", { bubbles: true }));
