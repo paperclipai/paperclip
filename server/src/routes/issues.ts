@@ -2375,6 +2375,22 @@ function isAssigneeSelfCommentOnTerminalIssue(input: {
   return input.actorId === input.assigneeAgentId;
 }
 
+function shouldClaimResumeCheckoutForActorRun(input: {
+  resumeRequested: boolean;
+  actorType: "agent" | "user";
+  actorAgentId: string | null | undefined;
+  actorRunId: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+}) {
+  if (!input.resumeRequested) return false;
+  if (input.actorType !== "agent") return false;
+  const actorRunId = typeof input.actorRunId === "string" ? input.actorRunId.trim() : "";
+  const actorAgentId = typeof input.actorAgentId === "string" ? input.actorAgentId.trim() : "";
+  const assigneeAgentId = typeof input.assigneeAgentId === "string" ? input.assigneeAgentId.trim() : "";
+  if (!actorRunId || !actorAgentId || !assigneeAgentId) return false;
+  return actorAgentId === assigneeAgentId;
+}
+
 function readToolActionExecutionStatus(value: unknown) {
   return value === "approved" ||
     value === "executing" ||
@@ -3853,6 +3869,29 @@ export function issueRoutes(
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
 
+  async function claimAssigneeResumeCheckout(input: {
+    resumeRequested: boolean;
+    reopened: boolean;
+    actor: ReturnType<typeof getActorInfo>;
+    issueId: string;
+    assigneeAgentId: string | null | undefined;
+  }) {
+    if (!input.reopened) return null;
+    if (!shouldClaimResumeCheckoutForActorRun({
+      resumeRequested: input.resumeRequested,
+      actorType: input.actor.actorType,
+      actorAgentId: input.actor.agentId,
+      actorRunId: input.actor.runId,
+      assigneeAgentId: input.assigneeAgentId,
+    })) {
+      return null;
+    }
+    const agentId = input.actor.agentId;
+    const runId = input.actor.runId?.trim();
+    if (!agentId || !runId) return null;
+    return svc.checkout(input.issueId, agentId, ["todo", "in_progress"], runId);
+  }
+
   async function queueTaskWatchdogEvaluation(
     issue: { id: string; companyId: string },
     runId?: string | null,
@@ -3884,22 +3923,48 @@ export function issueRoutes(
   async function assertCrossIssueInfluenceWithinRunCap(
     req: Request,
     res: Response,
-    issue: { id: string; identifier?: string | null; companyId: string },
+    issue: {
+      id: string;
+      identifier?: string | null;
+      companyId: string;
+      assigneeAgentId?: string | null;
+      checkoutRunId?: string | null;
+    },
     kind: CrossIssueInfluenceKind,
   ) {
     if (req.actor.type !== "agent") return true;
     if (!req.actor.agentId || !req.actor.runId)
       throw crossIssueInfluenceRunContextError();
 
+    let target = issue;
+    if (
+      issue.assigneeAgentId === req.actor.agentId &&
+      issue.checkoutRunId &&
+      issue.checkoutRunId !== req.actor.runId
+    ) {
+      const latest = await svc.getById(issue.id);
+      if (latest) {
+        target = {
+          id: latest.id,
+          identifier: latest.identifier ?? issue.identifier,
+          companyId: latest.companyId,
+          assigneeAgentId: latest.assigneeAgentId,
+          checkoutRunId: latest.checkoutRunId,
+        };
+      }
+    }
+
     // The counter transaction locks and validates the persisted run before it
     // derives the source issue. Never trust the API-key run header by itself.
     const decision = await observeCrossIssueInfluence(db, {
-      companyId: issue.companyId,
+      companyId: target.companyId,
       runId: req.actor.runId,
       agentId: req.actor.agentId,
       responsibleUserId: req.actor.onBehalfOfUserId ?? null,
-      targetIssueId: issue.id,
-      targetIssueIdentifier: issue.identifier ?? null,
+      targetIssueId: target.id,
+      targetIssueIdentifier: target.identifier ?? null,
+      targetCheckoutRunId: target.checkoutRunId ?? null,
+      targetAssigneeAgentId: target.assigneeAgentId ?? null,
       kind,
     });
     if (!decision || decision.allowed) return true;
@@ -5279,7 +5344,7 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: { allowVisibleIssueWrite?: boolean; skipCheckoutOwnership?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -5381,6 +5446,9 @@ export function issueRoutes(
       return true;
     }
     if (issue.status !== "in_progress") {
+      return true;
+    }
+    if (options.skipCheckoutOwnership) {
       return true;
     }
     const runId = requireAgentRunId(req, res);
@@ -13916,6 +13984,23 @@ export function issueRoutes(
         previous.status !== undefined &&
         issue.status === "todo";
       const reopenFromStatus = reopened ? existing.status : null;
+    const claimedResumeCheckout = await claimAssigneeResumeCheckout({
+      resumeRequested: resumeRequested === true,
+      reopened,
+      actor,
+      issueId: issue.id,
+      assigneeAgentId: issue.assigneeAgentId,
+    });
+    if (claimedResumeCheckout) {
+      issueResponse = {
+        ...issueResponse,
+        status: claimedResumeCheckout.status,
+        checkoutRunId: claimedResumeCheckout.checkoutRunId,
+        executionRunId: claimedResumeCheckout.executionRunId,
+        executionLockedAt: claimedResumeCheckout.executionLockedAt,
+        startedAt: claimedResumeCheckout.startedAt,
+      };
+    }
       const scheduledRetrySupersededByComment =
         shouldResumeInProgressScheduledRetry &&
         previous.status !== undefined &&
@@ -14599,6 +14684,7 @@ export function issueRoutes(
         }
 
         if (
+        !claimedResumeCheckout &&
           !assigneeChanged &&
           (statusChangedFromBacklog ||
             statusChangedFromBlockedToTodo ||
@@ -14654,6 +14740,7 @@ export function issueRoutes(
 
           if (
             assigneeId &&
+            !claimedResumeCheckout &&
             !assigneeChanged &&
             !goalCommentSteered &&
             shouldWakeAssigneeForComment
@@ -15171,7 +15258,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!existing) return;
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { skipCheckoutOwnership: true }))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
@@ -17453,6 +17540,7 @@ export function issueRoutes(
       let reopened = false;
       let reopenFromStatus: string | null = null;
       let interruptedRunId: string | null = null;
+    let claimedResumeCheckout = false;
       let currentIssue = issue;
       // Clear the reopen-pending flag if this comment leaves the issue terminal, so
       // the rebuilt worktree does not leak. A comment reopens the workspace but only
@@ -17501,6 +17589,24 @@ export function issueRoutes(
         reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
         reopenFromStatus = reopened ? issue.status : null;
         currentIssue = reopenedIssue;
+      const claimed = await claimAssigneeResumeCheckout({
+        resumeRequested: resumeRequested === true,
+        reopened,
+        actor,
+        issueId: id,
+        assigneeAgentId: currentIssue.assigneeAgentId,
+      });
+      if (claimed) {
+        claimedResumeCheckout = true;
+        currentIssue = {
+          ...currentIssue,
+          status: claimed.status,
+          checkoutRunId: claimed.checkoutRunId,
+          executionRunId: claimed.executionRunId,
+          executionLockedAt: claimed.executionLockedAt,
+          startedAt: claimed.startedAt,
+        };
+      }
 
         await logActivity(db, {
           companyId: currentIssue.companyId,
@@ -18064,7 +18170,7 @@ export function issueRoutes(
           reopened,
           currentStatus: wakeIssueSnapshot.status,
         });
-        if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
+        if (assigneeId && !claimedResumeCheckout && !goalCommentSteered && shouldWakeAssigneeForComment) {
           if (reopened) {
             addWakeup(assigneeId, {
               source: "automation",
