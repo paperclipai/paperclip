@@ -7,6 +7,7 @@ import {
   canonicalProviderEventsFromCodex,
   canonicalProviderEventsFromOpenCodePart,
   createAcpxToolEventNormalizer,
+  createGrokMessageNormalizer,
   providerFamilyCapabilities,
 } from "./provider-events.js";
 import { validatePrpEvent } from "./protocol/replay-contract.js";
@@ -793,5 +794,28 @@ describe("provider-neutral events", () => {
         }),
       ),
     ).toMatchObject({ ok: false });
+  });
+});
+
+
+describe("Grok output message boundaries", () => {
+  it("keeps streamed chunks together and separates commentary from the post-tool answer", () => {
+    const normalize = createGrokMessageNormalizer();
+    expect(normalize({ type: "text_delta", text: "I will " }).messageId).toBe("grok-output-0");
+    expect(normalize({ type: "text_delta", text: "check." }).messageId).toBe("grok-output-0");
+    normalize({ type: "tool_call", toolCallId: "tool", status: "pending" });
+    normalize({ type: "tool_call", toolCallId: "tool", status: "completed" });
+    const thought = { type: "text_delta", stream: "thought", text: "private" };
+    expect(normalize(thought)).toBe(thought);
+    expect(normalize({ type: "text_delta", text: "Final" }).messageId).toBe("grok-output-1");
+    expect(normalize({ type: "text_delta", text: " answer" }).messageId).toBe("grok-output-1");
+  });
+  it("preserves native IDs and does not invent boundaries for status updates", () => {
+    const normalize = createGrokMessageNormalizer();
+    expect(normalize({ type: "text_delta", messageId: "native-id", text: "hi" }).messageId).toBe("native-id");
+    normalize({ type: "status", text: "working" });
+    expect(normalize({ type: "text_delta", messageId: "native-id", text: " there" }).messageId).toBe("native-id");
+    const reasoning = { type: "text_delta", tag: "agent_thought_chunk", text: "private" };
+    expect(normalize(reasoning)).toBe(reasoning);
   });
 });

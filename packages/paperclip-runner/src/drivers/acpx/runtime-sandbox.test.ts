@@ -34,6 +34,24 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime sandbox", () => {
+  it("restores Grok permission controls on recovery without importing compatible hooks or credentials", async () => {
+    const fixture = await sandboxFixture("grok");
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "grok" });
+    const configPath = join(sandbox.agentHomeDirectory, "config.toml");
+    const requirementsPath = join(sandbox.agentHomeDirectory, "requirements.toml");
+    await writeFile(configPath, '[permission]\nallow = ["Bash"]\n');
+    await writeFile(requirementsPath, '[ui]\ndisable_bypass_permissions_mode = false\n');
+    await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "grok" });
+    const config = await readFile(configPath, "utf8");
+    expect(config).toContain('ask = ["Bash", "Read", "Edit", "Grep", "MCPTool", "WebFetch", "WebSearch"]');
+    expect(config).not.toContain('allow =');
+    expect(config).toContain('login_shell_capture = false');
+    expect(config).toContain('exclude = ["XAI_API_KEY"]');
+    expect(config).toContain('[compat.claude]\nhooks = false\nmcps = false');
+    expect(await readFile(requirementsPath, "utf8")).toContain('disable_bypass_permissions_mode = true');
+    expect((await stat(requirementsPath)).mode & 0o777).toBe(0o600);
+  });
+
   it.each(["claude-sonnet-5", "sonnet", "custom-deployment-id"])(
     "preserves the requested Claude model %s in its isolated settings",
     async (model) => {
@@ -318,13 +336,14 @@ describe("ACPX runtime sandbox", () => {
   );
 });
 
-async function sandboxFixture(agent: "pi" | "claude" | "codex") {
+async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok") {
   const root = await mkdtemp(join(tmpdir(), "paperclip-acpx-sandbox-"));
   temporaryDirectories.push(root);
   const workspace = join(root, "workspace");
   const runtimeDirectory = join(root, "runtime");
   await Promise.all([mkdir(workspace), mkdir(runtimeDirectory)]);
   const models = {
+    grok: "grok-4.7",
     pi: "openrouter/deepseek/deepseek-v4-flash-0731",
     claude: "claude-sonnet-5",
     codex: "gpt-5.6-sol",

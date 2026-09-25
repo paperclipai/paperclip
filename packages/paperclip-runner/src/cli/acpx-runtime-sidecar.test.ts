@@ -545,7 +545,7 @@ describe("qualified ACPX runtime sidecar", () => {
       ok: false,
       error: {
         code: "acpx_sidecar_command_failed",
-        message: "ACPX agent must be claude or codex",
+        message: "ACPX agent must be claude, codex, or grok",
         retryable: false,
       },
     });

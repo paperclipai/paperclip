@@ -120,6 +120,8 @@ export function isAiConnectionCompatible(
       runnerProvider === "claude" ||
       (runnerProvider === "acpx" && acpxAgent === "claude")
         ? "claude_local"
+        : runnerProvider === "acpx" && acpxAgent === "grok"
+          ? "grok_local"
         : runnerProvider === "codex"
           ? "codex_local"
           : runnerProvider === "opencode"

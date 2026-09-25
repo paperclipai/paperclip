@@ -77,7 +77,7 @@ export interface NativeAwsAgentCoreProfileSnapshot {
   eventExpiryDays: 90;
 }
 
-export type NativeAcpxAgent = "pi" | "claude" | "codex";
+export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok";
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
 export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
@@ -532,8 +532,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
-    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex") {
-      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, or codex");
+    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok") {
+      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, or grok");
     }
     if (isV4) {
       if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {

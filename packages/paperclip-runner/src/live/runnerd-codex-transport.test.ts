@@ -1089,6 +1089,30 @@ it("quiesces the control route before checkpoint and containment regardless of p
   expect(failedCheckpointSteps).toEqual(["release", "checkpoint", "kill"]);
 });
 
+it("does not release a session before asynchronous process containment settles", async () => {
+  let finishKill!: () => void;
+  const killed = new Promise<void>((resolve) => { finishKill = resolve; });
+  const steps: string[] = [];
+  const released = runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: false,
+    release: () => { steps.push("route-closed"); },
+    checkpoint: () => { steps.push("checkpoint"); },
+    forceKill: async () => { steps.push("kill-dispatched"); await killed; steps.push("process-exited"); },
+  }).then(() => { steps.push("session-reusable"); });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(steps).toEqual(["route-closed", "checkpoint", "kill-dispatched"]);
+  finishKill();
+  await released;
+  expect(steps).toEqual(["route-closed", "checkpoint", "kill-dispatched", "process-exited", "session-reusable"]);
+});
+
+it("refuses session reuse when asynchronous process containment fails", async () => {
+  await expect(runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: true, release: null, checkpoint: null,
+    forceKill: async () => { throw new Error("remote process still alive"); },
+  })).rejects.toThrow("remote process still alive");
+});
+
 it("waits for the exact durable suspension command behind prior close work", async () => {
   const commands = [
     {
@@ -2118,6 +2142,33 @@ it("routes canonical session goals back through the Codex notification facade", 
   expect(runnerdCanonicalNotificationMethod("session.goal.cleared", {})).toBe(
     "thread/goal/cleared",
   );
+});
+
+it("keeps canonical ACPX reasoning out of assistant deltas", () => {
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "reasoning", channel: "summary", text: "Private reasoning",
+  })).toBe("item/reasoning/summaryTextDelta");
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "reasoning", channel: "detail", text: "Private reasoning",
+  })).toBe("item/reasoning/textDelta");
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "agentMessage", text: "Visible answer",
+  })).toBe("item/agentMessage/delta");
+});
+
+it("preserves reasoning kinds and order inside coalesced canonical deltas", () => {
+  const events = [
+    { kind: "reasoning", channel: "summary", text: "Private reasoning", itemId: "thought-1" },
+    { kind: "agentMessage", text: "Visible answer", itemId: "answer-1" },
+    { kind: "reasoning", channel: "detail", text: "Private detail", itemId: "thought-2" },
+  ];
+  expect(expandRunnerdCanonicalNotifications("item/agentMessage/delta", {
+    coalescedCount: events.length, events,
+  }, "item.delta")).toEqual([
+    { method: "item/reasoning/summaryTextDelta", params: events[0] },
+    { method: "item/agentMessage/delta", params: events[1] },
+    { method: "item/reasoning/textDelta", params: events[2] },
+  ]);
 });
 
 it("continues consuming after the durable committed-event window rolls", () => {

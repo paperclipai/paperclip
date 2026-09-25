@@ -25,7 +25,7 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI|GROK)(?:_|$)/;
 
 export function runnerE2EServerControlPaths(temporaryRoot: string) {
   const controlDirectory = path.join(temporaryRoot, "control");
@@ -129,7 +129,8 @@ export function buildRunnerE2EProcessEnvironment(
 /**
  * Build the environment inherited by the Paperclip server. Paid credentials
  * deliberately stay in the launcher/Playwright process and cross the server
- * boundary only once, in the encrypted company-secrets API request.
+ * boundary through encrypted company secrets. Explicit subscription fixtures
+ * stage their login in the disposable company's private credential home.
  */
 export function buildPaperclipServerEnvironment(
   source: NodeJS.ProcessEnv,

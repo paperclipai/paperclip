@@ -1,0 +1,24 @@
+{
+  "name": "@paperclipai/grok-acp",
+  "version": "1.0.13",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "paperclip-grok-acp": "launcher.cjs"
+  },
+  "files": [
+    "launcher.cjs",
+    "bin",
+    "install.mjs",
+    "platforms.json"
+  ],
+  "scripts": {
+    "install:binary": "node install.mjs"
+  },
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}

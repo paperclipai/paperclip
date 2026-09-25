@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import {
@@ -16,7 +18,7 @@ import {
 } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -604,6 +606,20 @@ describe("ACPX installation integrity", () => {
       await command.close();
     },
   );
+
+  it("rejects a tampered native Grok executable and symlink substitution", async () => {
+    const fixture = await installationFixture();
+    const base = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    const profile = { ...base, commandDigest: fixture.profile.commandDigest };
+    await writeFile(fixture.serverPackageJsonPath, JSON.stringify({ version: "1.0.13", bin: "bin/server.js" }));
+    const native = join(fixture.commandDirectory, "grok");
+    await writeFile(native, "tampered native binary", { mode: 0o700 });
+    const resolvePackage = () => fixture.serverPackageJsonPath;
+    await expect(verifyQualifiedAcpxInstallation(profile, resolvePackage)).rejects.toThrow(/digest mismatch/);
+    await rm(native);
+    await symlink(fixture.commandPath, native);
+    await expect(verifyQualifiedAcpxInstallation(profile, resolvePackage)).rejects.toThrow(/regular file|symlink|no-follow/);
+  });
 
   it("rejects package version and executable digest drift", async () => {
     const fixture = await installationFixture();
@@ -2099,3 +2115,96 @@ async function installationFixture() {
     },
   };
 }
+
+
+describe("Grok launcher subscription refresh", () => {
+  it("keeps the Grok launcher digest synchronized across TypeScript, Rust, server, and provider pack", async () => {
+    const launcher = await readFile(new URL("../../../../grok-acp/launcher.cjs", import.meta.url));
+    const digest = `sha256:${createHash("sha256").update(launcher).digest("hex")}`;
+    expect(resolveQualifiedAcpxProfile("grok", "grok-4.7").commandDigest).toBe(digest);
+    const [server, pack, rust] = await Promise.all([
+      readFile(new URL("../../../../../server/src/services/native-runtime/native-session-executor.ts", import.meta.url), "utf8"),
+      readFile(new URL("../../../scripts/build-provider-pack.mjs", import.meta.url), "utf8"),
+      readFile(new URL("../../../runner/crates/runner-core/src/acpx_provider_backend.rs", import.meta.url), "utf8"),
+    ]);
+    expect(server).toContain(`grok: "${digest}"`);
+    expect(pack).toContain(`grok: "${digest}"`);
+    expect(rust.split('"grok" =>')[1]?.slice(0, 600)).toContain(`"${digest}"`);
+  });
+
+  async function fixture(input: {
+    expiry?: number; rawExpiry?: unknown; apiKey?: string; executable?: string;
+    refresh?: { status: number | null; signal?: string | null; error?: Error };
+    mode?: number; fileError?: string; growingFile?: boolean;
+  } = {}) {
+    const script = await readFile(new URL("../../../../grok-acp/launcher.cjs", import.meta.url), "utf8");
+    const payload = Buffer.from(JSON.stringify({ account: {
+      key: "PRIVATE-CREDENTIAL-SENTINEL", refresh_token: "PRIVATE-REFRESH-SENTINEL",
+      expires_at: "rawExpiry" in input ? input.rawExpiry : new Date(input.expiry ?? Date.now() - 60_000).toISOString(),
+    } }));
+    const fs = {
+      constants,
+      openSync: vi.fn(() => { if (input.fileError) throw Object.assign(new Error("PRIVATE-CREDENTIAL-SENTINEL"), { code: input.fileError }); return 42; }),
+      fstatSync: vi.fn(() => ({ isFile: () => true, uid: 1000, mode: input.mode ?? 0o600, size: payload.length })),
+      readSync: vi.fn((_fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
+        if (input.growingFile) { buffer.fill(65, offset, offset + length); return length; }
+        return payload.copy(buffer, offset, position, position + length);
+      }),
+      closeSync: vi.fn(),
+    };
+    const spawnSync = vi.fn((_file: string, _args: string[], _options: { env: Record<string, string>; stdio: Array<string | number>; timeout: number; killSignal: string }) => input.refresh ?? { status: 0, signal: null });
+    const execve = vi.fn();
+    const executable = input.executable ?? "/private/verified/grok";
+    return { fs, spawnSync, execve, executable, run: () => runInNewContext(script, {
+      Buffer, Date,
+      process: { env: { PAPERCLIP_GROK_VERIFIED_EXECUTABLE: executable, GROK_HOME: "/isolated/grok", ...(input.apiKey ? { XAI_API_KEY: input.apiKey } : {}) }, getuid: () => 1000, execve },
+      require: (name: string) => name === "node:path" ? { isAbsolute, join } : name === "node:fs" ? fs : name === "node:child_process" ? { spawnSync } : undefined,
+    }) };
+  }
+
+  it("refreshes an expired subscription without inference or ACP output before native startup", async () => {
+    const test = await fixture(); test.run();
+    expect(test.spawnSync).toHaveBeenCalledExactlyOnceWith(test.executable, ["models"], {
+      env: { GROK_HOME: "/isolated/grok" }, stdio: ["ignore", "ignore", "ignore"], timeout: 15_000, killSignal: "SIGKILL",
+    });
+    expect(test.execve).toHaveBeenCalledExactlyOnceWith(test.executable, [test.executable, "agent", "--no-leader", "stdio"], { GROK_HOME: "/isolated/grok" });
+    expect(test.spawnSync.mock.invocationCallOrder[0]).toBeLessThan(test.execve.mock.invocationCallOrder[0]!);
+    expect(test.fs.openSync).toHaveBeenCalledWith("/isolated/grok/auth.json", constants.O_RDONLY | constants.O_NOFOLLOW);
+    expect(test.fs.closeSync).toHaveBeenCalledWith(42);
+  });
+  it.each(["/proc/self/fd/8", "/dev/fd/8"])("retains only the verified executable descriptor for %s", async executable => {
+    const test = await fixture({ executable }); test.run();
+    expect(test.spawnSync.mock.calls[0]![2].stdio).toEqual(["ignore", "ignore", "ignore", "ignore", "ignore", "ignore", "ignore", "ignore", 8]);
+  });
+  it("does not refresh a fresh subscription", async () => {
+    const test = await fixture({ expiry: Date.now() + 600_000 }); test.run();
+    expect(test.spawnSync).not.toHaveBeenCalled(); expect(test.execve).toHaveBeenCalledOnce();
+  });
+  it.each(["seconds", "milliseconds"])("refreshes expired and near-expiry numeric %s but skips fresh credentials", async encoding => {
+    for (const [offset, expected] of [[-60_000, true], [30_000, true], [600_000, false]] as const) {
+      const ms = Date.now() + offset;
+      const test = await fixture({ rawExpiry: encoding === "seconds" ? ms / 1000 : ms });
+      test.run();
+      expect(test.spawnSync).toHaveBeenCalledTimes(expected ? 1 : 0);
+      expect(test.execve).toHaveBeenCalledOnce();
+    }
+  });
+  it.each([null, "1760000000", "2020-01-01", true, {}, []])("does not coerce unsupported expiry encodings: %j", async rawExpiry => {
+    const test = await fixture({ rawExpiry }); test.run();
+    expect(test.spawnSync).not.toHaveBeenCalled();
+    expect(test.execve).toHaveBeenCalledOnce();
+  });
+  it("never discovers subscription credentials for an explicit API key", async () => {
+    const test = await fixture({ apiKey: "explicit-api-key" }); test.run();
+    expect(test.fs.openSync).not.toHaveBeenCalled(); expect(test.spawnSync).not.toHaveBeenCalled(); expect(test.execve).toHaveBeenCalledOnce();
+  });
+  it.each([{ status: 1 }, { status: null, signal: "SIGKILL" }, { status: null, error: new Error("PRIVATE-CREDENTIAL-SENTINEL") }])("fails closed on refresh failure without exposing provider output: %j", async refresh => {
+    const test = await fixture({ refresh });
+    expect(test.run).toThrow("Grok subscription refresh failed; reconnect Grok Build");
+    expect(test.execve).not.toHaveBeenCalled();
+  });
+  it.each([{ mode: 0o644 }, { fileError: "ELOOP" }, { growingFile: true }])("rejects unsafe or growing credential files: %j", async input => {
+    const test = await fixture(input); expect(test.run).toThrow("Grok subscription credential is invalid");
+    expect(test.spawnSync).not.toHaveBeenCalled(); expect(test.execve).not.toHaveBeenCalled();
+  });
+});

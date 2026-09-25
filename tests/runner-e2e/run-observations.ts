@@ -81,6 +81,19 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+export function reasoningProjectionFailures(events: readonly ObservableRunEvent[]): string[] {
+  const misclassified = events.filter((event) => {
+    const envelope = record(record(event.payload).prpEvent);
+    const payload = record(envelope.payload);
+    return envelope.eventType === "item.delta" &&
+      payload.kind === "agentMessage" &&
+      record(payload.update).kind === "reasoning";
+  });
+  return misclassified.length === 0 ? [] : [
+    `provider reasoning was projected as assistant text in ${misclassified.length} durable events`,
+  ];
+}
+
 export function isNonExecutingReviewFenceRun(run: ObservableRunState) {
   return (
     run.status === "cancelled" &&

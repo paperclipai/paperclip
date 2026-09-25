@@ -853,6 +853,25 @@ describe("ACPX runtime host", () => {
     expect(openRuntime).not.toHaveBeenCalled();
   });
 
+  it.each(["expired credential", "provider process died"])("cleans Grok credentials after failed initialization: %s", async (failure) => {
+    const fixture = await hostFixture();
+    let home = "";
+    await expect(AcpxRuntimeHost.open({
+      ...fixture.options, agent: "grok", model: "grok-4.7", permissionMode: "approve-reads",
+      environment: { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: JSON.stringify({ "https://accounts.x.ai::11111111-1111-4111-8111-111111111111": { key: "test-expired", refresh_token: "test-refresh" } }) },
+    }, fixture.dependencies({ openRuntime: async (options) => {
+      home = options.launchEnvironment.GROK_HOME!;
+      expect(options.permissionMode).toBe("approve-reads");
+      expect(options.launchEnvironment).not.toHaveProperty("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET");
+      expect(await readFile(join(home, "auth.json"), "utf8")).toContain("test-expired");
+      throw new Error(failure);
+    } }))).rejects.toThrow(failure);
+    for (const filename of ["auth.json", "auth-refresh.json"]) {
+      await expect(readFile(join(home, filename))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
+  });
+
   it("cleans credentials and command leases when provider open fails", async () => {
     const fixture = await hostFixture();
     let authPath = "";

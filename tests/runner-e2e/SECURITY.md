@@ -63,6 +63,14 @@ rejects mutable tag or branch references.
 
 ## Secrets and protected environments
 
+Explicit Grok subscription campaigns may select `GROK_AUTH_JSON` from the same
+protected paid environment. Deliver it only to that subscription profile's paid
+test step. Prefer a dedicated test-account login and refresh it before a campaign.
+The fixture stores only the selected login in its disposable company home, rejects
+ambient/redirected homes, and removes the login during teardown. Token fragments
+and account identifiers inside its JSON join the evidence redaction set. The
+subscription suite remains manual-only and never falls back to `XAI_API_KEY`.
+
 Create `runner-e2e-paid`, restrict deployments to the default branch, and put
 only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY`, and
 `DAYTONA_API_KEY` in it. Do not duplicate these credentials as repository- or

@@ -342,7 +342,13 @@ export function createAcpxPackageJsonResolver(
     const packageJsonPath = realpathSync(
       resolvePackageJsonFromIssuer(packageName, canonicalIssuer),
     );
-    if (!pathIsInside(canonicalNodeModules, packageJsonPath)) {
+    // The native Grok launcher is a source-owned workspace package. Admit
+    // only its exact source location when the issuer is the source Runner;
+    // installed packs still resolve exclusively below their node_modules.
+    const sourceGrokPackage = packageName === "@paperclipai/grok-acp" &&
+      canonicalManifest === resolve(canonicalRoot, "packages/paperclip-runner/package.json") &&
+      packageJsonPath === resolve(canonicalRoot, "packages/grok-acp/package.json");
+    if (!pathIsInside(canonicalNodeModules, packageJsonPath) && !sourceGrokPackage) {
       throw new Error(
         `ACPX provider package ${packageName} resolves outside the selected provider root`,
       );
@@ -490,7 +496,7 @@ interface VerifiedAcpxRuntimeExecutable {
   path: string;
   digest: string;
   identity: VerifiedAcpxCommandIdentity;
-  environmentVariable: "CLAUDE_CODE_EXECUTABLE" | "CODEX_PATH";
+  environmentVariable: "CLAUDE_CODE_EXECUTABLE" | "CODEX_PATH" | "PAPERCLIP_GROK_VERIFIED_EXECUTABLE";
 }
 
 interface AcpxPackageMetadata {
@@ -838,6 +844,19 @@ async function verifyQualifiedRuntimeExecutable(input: {
   runtimePackageJsonPath: string;
   resolvePackageJson: AcpxPackageJsonResolver;
 }): Promise<VerifiedAcpxRuntimeExecutable | null> {
+  if (input.profile.agent === "grok") {
+    const digests: Record<string, string> = {
+      "darwin-arm64": "8669e0fdadceec25b8c159c355f427ffbd82583525d774b6ab1522197ea83b80",
+      "linux-x64": "edf79521581bb5e6b95abef848491a6a742e860da3e237ebe86a280d30dce4c1",
+    };
+    const digest = digests[`${process.platform}-${process.arch}`];
+    if (!digest) throw new Error(`Grok verified runtime unavailable for ${process.platform}-${process.arch}`);
+    const executablePath = resolve(dirname(input.runtimePackageJsonPath), "bin/grok");
+    const verified = await openVerifiedRuntimeExecutable(executablePath, `sha256:${digest}`, "grok");
+    await verified.handle.close();
+    return { path: executablePath, digest: `sha256:${digest}`, identity: verified.identity,
+      environmentVariable: "PAPERCLIP_GROK_VERIFIED_EXECUTABLE" };
+  }
   const qualification =
     input.profile.agent === "claude"
       ? process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")
@@ -1689,7 +1708,7 @@ function snapshotBootstrap(format: AcpxCommandFormat, guarded = false): string {
     'if ((serverPackageFormat !== "module" && serverPackageFormat !== "commonjs") || !Array.isArray(dependencyAncestorFormats) || dependencyAncestorFormats.length !== dependencyAncestorCount || dependencyAncestorFormats.some((value) => value !== "module" && value !== "commonjs")) throw new Error("ACPX provider package formats are invalid");',
     'if (providerRuntimeExecutableCount !== 0 && providerRuntimeExecutableCount !== 1) throw new Error("ACPX provider runtime executable count is invalid");',
     `const providerRuntimeExecutableFd = ${DEPENDENCY_ANCESTOR_FD_START} + dependencyAncestorCount;`,
-    'if (providerRuntimeExecutableCount === 1) { if (providerRuntimeEnvironmentVariable !== "CODEX_PATH" && providerRuntimeEnvironmentVariable !== "CLAUDE_CODE_EXECUTABLE") throw new Error("ACPX provider runtime environment target is invalid"); fs.fstatSync(providerRuntimeExecutableFd); process.env[providerRuntimeEnvironmentVariable] = privateSnapshot ? privateSnapshot.executable : "/proc/" + process.pid + "/fd/" + providerRuntimeExecutableFd; } else if (providerRuntimeEnvironmentVariable !== undefined) throw new Error("ACPX provider runtime environment target is unexpected");',
+    'if (providerRuntimeExecutableCount === 1) { if (providerRuntimeEnvironmentVariable !== "CODEX_PATH" && providerRuntimeEnvironmentVariable !== "CLAUDE_CODE_EXECUTABLE" && providerRuntimeEnvironmentVariable !== "PAPERCLIP_GROK_VERIFIED_EXECUTABLE") throw new Error("ACPX provider runtime environment target is invalid"); fs.fstatSync(providerRuntimeExecutableFd); process.env[providerRuntimeEnvironmentVariable] = privateSnapshot ? privateSnapshot.executable : "/proc/" + process.pid + "/fd/" + providerRuntimeExecutableFd; } else if (providerRuntimeEnvironmentVariable !== undefined) throw new Error("ACPX provider runtime environment target is unexpected");',
     ...(guarded
       ? [
           `const guardianFd = ${DEPENDENCY_ANCESTOR_FD_START} + dependencyAncestorCount + providerRuntimeExecutableCount;`,
@@ -2018,4 +2037,8 @@ export async function probeAcpxClaudeInstallation(model: string): Promise<void> 
   const installation = await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("claude", model));
   const lease = await installation.openCommand();
   await lease.close();
+}
+
+export async function probeAcpxGrokInstallation(model: string): Promise<void> {
+  await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("grok", model));
 }

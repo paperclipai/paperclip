@@ -91,7 +91,7 @@ function transportDriverIdentity(input: NativeExecutionInput): {
       }
       return {
         kind: "acpx_runtime",
-        displayName: `${input.provider.agent === "claude" ? "Claude" : "Codex"} via ACPX`,
+        displayName: `${input.provider.agent === "grok" ? "Grok Build" : input.provider.agent === "claude" ? "Claude" : "Codex"} via ACPX`,
         version: "0.13.1",
       };
     default:

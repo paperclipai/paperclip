@@ -46,6 +46,14 @@ Agent `adapterConfig.env` values must be `{type:"secret_ref", secretId,
 version:"latest"}` objects supplied to the factory. A fixture source containing
 a raw secret-looking value is rejected by catalog validation.
 
+The manual Grok subscription profile uses `GROK_AUTH_JSON` as an explicit login
+fixture. It does not put this credential in agent configuration or substitute an
+API key. Setup seeds a new company-scoped Grok home inside the disposable instance
+with mode 0700 and an exclusive mode-0600 auth file. Setup rejects redirected,
+occupied, or nonisolated homes. Production runner discovery and refresh operate on
+that company login; teardown destroys it after the remote environment is removed.
+This fixture tests subscription execution, not the interactive browser login flow.
+
 ## Environments
 
 An `EnvironmentFixture` declares driver/provider, credential requirements,

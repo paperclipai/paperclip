@@ -17,7 +17,10 @@ import {
   setOverridePaused,
 } from "../adapters/registry.js";
 
-vi.mock("@paperclipai/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: vi.fn(async () => undefined) }));
+vi.mock("@paperclipai/paperclip-runner/live", () => ({
+  probeAcpxClaudeInstallation: vi.fn(async () => undefined),
+  probeAcpxGrokInstallation: vi.fn(async () => undefined),
+}));
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",

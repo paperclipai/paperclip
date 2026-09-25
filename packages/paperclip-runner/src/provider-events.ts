@@ -246,6 +246,23 @@ function boundedAcpxLifecycleLocations(value: unknown): unknown[] | undefined {
  * title as the literal `tool call`, so consumers must restore lifecycle
  * identity before translating the event into a durable protocol record.
  */
+/** Grok omits message IDs. A tool boundary ends its preceding output segment.
+ * Thoughts never become output and tool progress cannot fragment output chunks.
+ * Create one normalizer per turn; native IDs, when present, remain authoritative.
+ */
+export function createGrokMessageNormalizer<T extends AcpRuntimeEventShape>(): (event: T) => T {
+  let segment = 0;
+  let hasOutput = false;
+  let boundary = false;
+  return (event) => {
+    if (event.type === "tool_call" && hasOutput) boundary = true;
+    if (event.type !== "text_delta" || event.stream === "thought" || event.tag === "agent_thought_chunk") return event;
+    if (boundary) { segment += 1; boundary = false; }
+    hasOutput = true;
+    return { ...event, messageId: event.messageId || `grok-output-${segment}` };
+  };
+}
+
 export function createAcpxToolEventNormalizer<
   T extends AcpRuntimeEventShape,
 >(): (event: T) => T {

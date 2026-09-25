@@ -42,3 +42,5 @@ packages/paperclip-runner/scripts/*-smoke.mjs
 # they must survive the *.test.ts rule above.
 !packages/paperclip-runner/src/**/*.test.ts
 !packages/paperclip-runner/src/**/*.test.tsx
+
+packages/grok-acp/bin

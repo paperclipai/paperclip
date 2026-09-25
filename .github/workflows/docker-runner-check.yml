@@ -1,6 +1,24 @@
 name: Docker Runner check
 
 on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Branch in this repository to build; resolved to one immutable commit before checkout"
+        type: string
+        required: false
+      publish_eval_image:
+        description: "Publish an immutable Daytona qualification image on the EC2 fleet (no provider credentials)"
+        type: boolean
+        default: false
+      verify_source:
+        description: "Run broad source checks on EC2"
+        type: boolean
+        default: false
+      build_eval_viewer:
+        description: "Build the canonical eval report viewer on EC2"
+        type: boolean
+        default: false
   pull_request:
     paths:
       - .github/workflows/docker-runner-check.yml
@@ -14,11 +32,13 @@ on:
 permissions: {}
 
 concurrency:
-  group: docker-runner-check-${{ github.event.pull_request.number }}
+  # Publishing a newer image must not discard an earlier verification's evidence.
+  group: docker-runner-check-${{ github.event.pull_request.number || github.ref }}-${{ inputs.verify_source && 'verification' || inputs.build_eval_viewer && 'viewer' || 'image' }}
   cancel-in-progress: true
 
 jobs:
   runner:
+    if: github.event_name == 'pull_request'
     name: Compile isolated native Runner
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -39,3 +59,142 @@ jobs:
       # No registry credentials or image publication.
       - name: Verify native build and dependency cache reuse
         run: bash scripts/check-docker-runner-cache.sh
+
+
+  authorize_manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      target_sha: ${{ steps.authorize.outputs.target_sha }}
+    steps:
+      - name: Authorize an explicit maintainer image build
+        id: authorize
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_IDS: ${{ vars.AWS_CI_TRUSTED_USER_IDS }}
+          TARGET_BRANCH: ${{ inputs.target_branch || github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY" = paperclipai/paperclip
+          test "$REPOSITORY_ID" = 1170821064
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "number")' <<< "$ALLOWED_IDS" >/dev/null
+          triggering_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          for id in "$ACTOR_ID" "$triggering_id"; do
+            jq -e --argjson id "$id" 'index($id) != null' <<< "$ALLOWED_IDS" >/dev/null
+          done
+          target_sha="$(gh api "repos/$REPOSITORY/git/ref/heads/$TARGET_BRANCH" --jq '.object.sha')"
+          [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
+
+  manual_image:
+    name: Build and verify on EC2
+    needs: authorize_manual
+    runs-on: runs-on/fleet=paperclip-public-pr-x64/env=public-ci
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Authorize an explicit maintainer image build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_IDS: ${{ vars.AWS_CI_TRUSTED_USER_IDS }}
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY" = paperclipai/paperclip
+          test "$REPOSITORY_ID" = 1170821064
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "number")' <<< "$ALLOWED_IDS" >/dev/null
+          triggering_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          for id in "$ACTOR_ID" "$triggering_id"; do
+            jq -e --argjson id "$id" 'index($id) != null' <<< "$ALLOWED_IDS" >/dev/null
+          done
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize_manual.outputs.target_sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Resolve source dependencies without lifecycle scripts
+        run: |
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+          mkdir -p remote-verification
+          sha256sum pnpm-lock.yaml > remote-verification/lock.sha256
+          git rev-parse HEAD > remote-verification/source.txt
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - if: inputs.publish_eval_image
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build checksum-verified Grok provider image
+        if: inputs.publish_eval_image
+        env:
+          SOURCE_SHA: ${{ needs.authorize_manual.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/paperclipai/paperclip-daytona-runner:qualification-${SOURCE_SHA}-${GITHUB_RUN_ID}"
+          lock_sha="$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)"
+          docker buildx build --platform linux/amd64 \
+            --file docker/daytona-runner/Dockerfile \
+            --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=$SOURCE_SHA" \
+            --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=qualification-$SOURCE_SHA" \
+            --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=$lock_sha" \
+            --cache-from type=registry,ref=ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64 \
+            --tag "$image" --metadata-file remote-verification/image.json --push .
+          digest="$(jq -r '."containerimage.digest"' remote-verification/image.json)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          immutable="${image%:*}@$digest"
+          docker logout ghcr.io
+          docker buildx imagetools inspect "$immutable" >/dev/null
+          echo "$immutable" > remote-verification/image.txt
+          echo "Image: $immutable" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify repository on EC2
+        if: inputs.verify_source
+        # Leave time for artifact retention before the fleet's one-hour lifetime.
+        timeout-minutes: 38
+        run: |
+          set -uo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts
+          status=0
+          for check in 'pnpm -r typecheck' 'pnpm test:run' 'pnpm check:token-gates' 'pnpm test:e2e:runner:typecheck' 'pnpm test:e2e:runner:unit' 'pnpm build'; do
+            label="$(echo "$check" | tr -cs 'a-zA-Z0-9' '-')"
+            echo "Starting $check"
+            check_status=0
+            timeout --signal=TERM --kill-after=15s 15m bash -c "$check" > "remote-verification/$label.log" 2>&1 || check_status=$?
+            printf '%s\t%s\n' "$check_status" "$check" >> remote-verification/check-status.tsv
+            if [ "$check_status" -ne 0 ]; then status=1; fi
+            echo "Finished $check (exit $check_status)"
+          done
+          exit "$status"
+      - name: Build canonical eval report viewer
+        if: always() && (inputs.verify_source || inputs.build_eval_viewer)
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts --filter '@paperclipai/paperclip-runner...'
+          pnpm --filter @paperclipai/paperclip-runner build:issue-thread > remote-verification/viewer-build.log 2>&1
+          tar -czf remote-verification/eval-viewer.tar.gz -C packages/paperclip-runner dist-issue-thread
+          sha256sum remote-verification/eval-viewer.tar.gz > remote-verification/eval-viewer.sha256
+      - name: Retain source, image and verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: grok-remote-verification-${{ github.run_id }}
+          path: remote-verification/
+          retention-days: 7

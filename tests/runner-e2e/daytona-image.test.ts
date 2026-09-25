@@ -13,6 +13,19 @@ import {
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 describe("runner E2E Daytona image contract", () => {
+  it("keeps the qualified native Grok binary separate from the legacy command", async () => {
+    const [dockerfile, packBuilder, nativePackage] = await Promise.all([
+      readFile(path.join(repositoryRoot, "docker/daytona-runner/Dockerfile"), "utf8"),
+      readFile(path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-provider-pack.mjs"), "utf8"),
+      readFile(path.join(repositoryRoot, "packages/grok-acp/package.json"), "utf8"),
+    ]);
+    expect(dockerfile).toMatch(/@xai-official\/grok@\d+\.\d+\.\d+/);
+    expect(dockerfile).not.toMatch(/for cli in[^;]*\bgrok\b/);
+    expect(packBuilder).not.toMatch(/writePortable\w+Shim\("grok"/);
+    expect(JSON.parse(nativePackage).bin).not.toHaveProperty("grok");
+    expect(packBuilder).toContain('path: "node_modules/@paperclipai/grok-acp/bin/grok"');
+  });
+
   it("builds runnerd and the provider pack and verifies every required transport", async () => {
     const [dockerfile, dockerignore, workflow] = await Promise.all([
       readFile(

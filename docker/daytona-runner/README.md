@@ -95,8 +95,9 @@ Do not bake provider credentials, Paperclip bootstrap tickets, or Daytona
 preview tokens into this image. They remain per-run secret material.
 
 Provider CLI updates are manifest-only changes: repository CI owns the root
-lockfile. The image build resolves the complete workspace manifest graph before
-its frozen install, matching CI when a source commit precedes the lockfile bot.
+lockfile. Resolve the complete workspace manifest graph in the build context
+before invoking Docker, matching CI when a source commit precedes the lockfile
+bot. The trusted workflow supplies this resolved lockfile as an immutable artifact.
 The complete resolved lockfile must match `PAPERCLIP_RUNNER_LOCK_SHA256` before
 package installation or lifecycle execution. Review and refresh that digest
 with source dependency changes; registry-time resolution drift fails closed.
@@ -105,6 +106,7 @@ verifies the downloaded artifact, then passes that artifact's SHA-256 as the
 `PAPERCLIP_RUNNER_LOCK_SHA256` build argument. The Dockerfile checks the resolved
 lock against this value before installation. The fixed Dockerfile default is
 for standalone builds; it must not replace a campaign's verified lock digest.
-Keep one latest stable CLI installation per provider; refresh exact runtime
-versions and qualification digests together, never install a private older copy
-or download dependencies when a task starts.
+Refresh exact runtime versions and qualification digests together; never download
+dependencies when a task starts. Grok's additive native ACP profile keeps its
+qualified 1.0.13 executable at a verified package path. It does not replace the
+legacy adapter's `grok` command on PATH.

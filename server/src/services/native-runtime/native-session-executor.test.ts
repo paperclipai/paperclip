@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   access,
+  cp,
   lstat,
   mkdir,
   mkdtemp,
   readdir,
+  realpath,
   readFile,
   rename,
   rm,
@@ -25,6 +27,7 @@ import {
 } from "@paperclipai/db";
 import {
   acpxRuntimeSessionDirectoryName,
+  resolveAcpxRuntimeRoot,
   createPrpSemanticToolInputEnvelope,
   createPrpSemanticToolResultEnvelope,
   validatePrpStructuredRunResult,
@@ -82,6 +85,7 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
+  acpxRuntimeDirectory?: string;
   adoptExistingRunner?: { pid: number; isAlive: () => Promise<boolean> | boolean };
   stateDirectory?: string;
   runnerBinary?: string;
@@ -177,6 +181,12 @@ const state = vi.hoisted(() => ({
   assertCurrentWakeCommentsRead: vi.fn(async () => undefined),
   resolveRunnerBinary: vi.fn(() => "/tmp/paperclip-runnerd"),
   release: null as null | (() => void),
+}));
+
+const grokCopyBack = vi.hoisted(() => vi.fn(async (_input: { readSandboxAuth: () => Promise<Buffer>; hostHomeDir: string }) => undefined));
+vi.mock("@paperclipai/adapter-grok-local/server", async importOriginal => ({
+  ...await importOriginal<typeof import("@paperclipai/adapter-grok-local/server")>(),
+  copyBackGrokAuth: grokCopyBack,
 }));
 
 vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => {
@@ -1031,6 +1041,9 @@ describe("remote provider pack manifest", () => {
     const lockfile = "lockfileVersion: '9.0'\n";
     const opencodeCommand = "#!/bin/sh\n";
     const opencodeExecutable = "opencode-binary\n";
+    const grokExecutable = "grok-binary\n";
+    await mkdir(join(root, "node_modules/@paperclipai/grok-acp/bin"), { recursive: true });
+    await writeFile(join(root, "node_modules/@paperclipai/grok-acp/bin/grok"), grokExecutable);
     await writeFile(
       join(root, "dist", "cli", "opencode-app-server-proxy.cjs"),
       proxy,
@@ -1061,18 +1074,21 @@ describe("remote provider pack manifest", () => {
         acpx: "0.13.1",
         claudeAcp: "0.73.0",
         codexAcp: "1.6.2",
+        grok: "1.0.13",
       },
       target: { platform: "linux", architecture: "x64" },
       runnerSourceRevision: "1".repeat(40),
       distDigest: sha256DirectoryTree(join(root, "dist")),
       bridgeDigest: "",
       acpxProfileDigests: {
+        grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
         claude:
           "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
         codex:
           "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
       },
       artifacts: {
+        grokExecutable: { path: "node_modules/@paperclipai/grok-acp/bin/grok", sha256: digest(grokExecutable) },
         nodeCommand: {
           path: "node_modules/node/bin/node",
           sha256: digest(node),
@@ -1801,6 +1817,40 @@ describe("split durable provider checkpoint identity", () => {
 });
 
 describe("remote provider checkpoint snapshots", () => {
+  it("excludes Grok credentials and diagnostic logs from real checkpoint copies while retaining sessions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "grok-checkpoint-"));
+    try {
+      const source = join(root, "source");
+      const target = join(root, "backup");
+      const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
+      const relativeHome = join("acpx", sessionDirectory, "grok-home");
+      const home = join(source, relativeHome);
+      await mkdir(join(home, "logs"), { recursive: true });
+      await mkdir(join(home, "sessions"));
+      await writeFile(join(home, "logs", "unified.jsonl"), "AUTH_SENTINEL");
+      await writeFile(join(home, "auth.json"), "AUTH_SENTINEL");
+      await writeFile(join(home, "auth-refresh.json"), "AUTH_SENTINEL");
+      await writeFile(join(home, "sessions", "session.json"), "resume-state");
+      const profile = resolveNativeHarnessPersistenceProfile({
+        provider: { kind: "acpx", agent: "grok" },
+        session: { normalizedSessionId: "session", driverKind: "acpx_runtime" },
+      } as unknown as NativeExecutionInputV1);
+      const execute = async ({ command, args }: { command: string; args: string[] }) => ({
+        exitCode: 0, timedOut: false, stdout: execFileSync(command, args, { encoding: "utf8" }), stderr: "",
+      });
+      const syncOut = async (operations: Array<{ files: Array<{ sourcePath: string; targetPath: string }> }>) => {
+        for (const operation of operations) for (const file of operation.files)
+          await cp(file.sourcePath, file.targetPath, { recursive: true });
+      };
+      await syncRemoteRunnerDirectoryOut({ runner: { execute, syncOut } as never,
+        sourcePath: source, targetPath: target, mode: 0o700,
+        excludeEntries: profile.directories.find(directory => directory.name === "acpx")!.excludeEntries });
+      for (const entry of ["auth.json", "auth-refresh.json", "logs"])
+        await expect(access(join(target, relativeHome, entry))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(join(target, relativeHome, "sessions", "session.json"), "utf8")).toBe("resume-state");
+      expect(await readFile(join(home, "logs", "unified.jsonl"), "utf8")).toBe("AUTH_SENTINEL");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("excludes Codex scratch and credential state without mutating the live provider home", async () => {
     const execute = vi
       .fn()
@@ -5730,6 +5780,110 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  describe("warm session identity transitions", () => {
+    let previousHome: string | undefined;
+    let isolatedHome: string;
+    beforeEach(async () => {
+      previousHome = process.env.PAPERCLIP_HOME;
+      isolatedHome = await mkdtemp(join(tmpdir(), "native-identity-transition-"));
+      process.env.PAPERCLIP_HOME = isolatedHome;
+    });
+    afterEach(async () => {
+      await closeIdleWarmNativeSessionsForRestart();
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      await rm(isolatedHome, { recursive: true, force: true });
+    });
+    const result = {
+      result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+      turnId: "turn", normalizedSessionId: "old", providerSessionId: "provider",
+      driverKind: "test", driverVersion: "1", nativeEventCount: 1,
+      highestContiguousSourceSeq: 1, usage: null,
+    };
+    function fixture(name: string) {
+      const base = {
+        ...execution,
+        binding: { ...execution.binding, runId: `${name}-first`, executionWorkspaceId: name },
+        session: { ...execution.session, normalizedSessionId: `${name}-old`,
+          lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+      } as NativeExecutionInputV1;
+      const next = { ...base, binding: { ...base.binding, runId: `${name}-second` },
+        session: { ...base.session, normalizedSessionId: `${name}-new` } };
+      const run = (input: NativeExecutionInputV1) => executePaperclipNativeSession({
+        db: leaseDb(input), execution: input, runnerInstanceId: "runner",
+      });
+      return { base, next, run };
+    }
+
+    it("awaits prior idle ownership retirement before launching the accepted-plan session", async () => {
+      const { base, next, run } = fixture("identity-handoff");
+      let finishClose!: () => void;
+      const close = vi.fn(() => new Promise<void>(resolve => { finishClose = resolve; }));
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close }); return result;
+      }).mockImplementationOnce(async options => {
+        expect(close).toHaveBeenCalledOnce();
+        expect(options.existingSession).toBeUndefined();
+        return result;
+      });
+      await run(base);
+      const replacement = run(next);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(state.execute).toHaveBeenCalledTimes(1);
+      await expect(run({ ...next, binding: { ...next.binding, runId: "racing-new-session" } }))
+        .rejects.toThrow("native_session_supervisor_busy");
+      finishClose();
+      await replacement;
+      expect(close).toHaveBeenCalledWith({ reason: "warm native session identity changed" });
+      expect(state.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retire an active turn when a new session identity arrives", async () => {
+      const { base, next, run } = fixture("identity-active");
+      let finish!: () => void;
+      const close = vi.fn(async () => undefined);
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close });
+        await new Promise<void>(resolve => { finish = resolve; });
+        return result;
+      });
+      const active = run(base);
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+      await expect(run(next)).rejects.toThrow("native_session_supervisor_busy");
+      expect(close).not.toHaveBeenCalled();
+      finish(); await active;
+      await closeIdleWarmNativeSessionsForRestart();
+    });
+
+    it("retains failed retirement for retry and never launches over an uncontained owner", async () => {
+      const { base, next, run } = fixture("identity-close-failure");
+      const close = vi.fn().mockRejectedValueOnce(new Error("containment unavailable")).mockResolvedValue(undefined);
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close }); return result;
+      }).mockResolvedValue(result);
+      await run(base);
+      await expect(run(next)).rejects.toThrow("containment unavailable");
+      expect(state.execute).toHaveBeenCalledTimes(1);
+      await run(next);
+      expect(close).toHaveBeenCalledTimes(2);
+      expect(state.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(["companyId", "agentId", "issueId", "executionWorkspaceId"] as const)(
+      "does not retire an unrelated %s owner", async field => {
+        const { base, next, run } = fixture(`identity-isolation-${field}`);
+        const close = vi.fn(async () => undefined);
+        state.execute.mockReset().mockImplementationOnce(async options => {
+          options.onSession?.({ close }); return result;
+        }).mockResolvedValue(result);
+        await run(base);
+        await run({ ...next, binding: { ...next.binding, [field]: `different-${field}` } });
+        expect(close).not.toHaveBeenCalled();
+        await closeIdleWarmNativeSessionsForRestart();
+      },
+    );
+  });
+
   it.each([true, false])(
     "uses provider turn completion without a semantic-result cutoff: chat=%s",
     async (conversationMode) => {
@@ -7658,6 +7812,49 @@ describe("runnerd provider runtime wiring", () => {
     await expect(readFile(authPath, "utf8")).resolves.toBe(auth);
   });
 
+  it("copies back and removes Grok credentials from the exact ACPX launch home", async () => {
+    const priorHome = process.env.PAPERCLIP_HOME;
+    const privateRoot = await realpath(isolatedStateDirectory);
+    process.env.PAPERCLIP_HOME = privateRoot;
+    const managedHome = join(privateRoot, "company-login");
+    await mkdir(managedHome, { mode: 0o700 });
+    await writeFile(join(managedHome, "auth.json"), "fixture-old-login", { mode: 0o600 });
+    const grokExecution = { ...execution,
+      provider: { kind: "acpx", agent: "grok", model: "grok-4.7", permissionMode: "deny-all" },
+      session: { ...execution.session, driverKind: "acpx_runtime" },
+    } as unknown as NativeExecutionInputV1;
+    state.createBackend.mockReturnValueOnce({
+      kind: "test", openSession: async () => ({ close: vi.fn(async () => undefined) }),
+    } as never);
+    try {
+      const backend = await createRunnerdBackend({ db: leaseDb(grokExecution), execution: grokExecution,
+        runnerInstanceId: "grok-cleanup", managedAiCredentialHome: managedHome });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const runtimeDirectory = state.createTransport.mock.calls.at(-1)![0].acpxRuntimeDirectory!;
+      await mkdir(runtimeDirectory, { recursive: true });
+      // Use the runtime's real resolver, so this test cannot reproduce a
+      // controller-side guess that omits the nested ACPX namespace.
+      const agentHome = join(await resolveAcpxRuntimeRoot(runtimeDirectory, execution.session.normalizedSessionId!), "grok-home");
+      await mkdir(agentHome, { recursive: true, mode: 0o700 });
+      for (const name of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp"]) {
+        await writeFile(join(agentHome, name), "fixture-refreshed-login", { mode: 0o600 });
+      }
+      grokCopyBack.mockReset().mockImplementationOnce(async input => {
+        expect(input.hostHomeDir).toBe(managedHome);
+        expect((await input.readSandboxAuth()).toString()).toBe("fixture-refreshed-login");
+      });
+      const session = await backend.openSession({} as never);
+      await session.close({ reason: "completed" });
+      expect(grokCopyBack).toHaveBeenCalledOnce();
+      for (const name of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp"]) {
+        await expect(access(join(agentHome, name))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = priorHome;
+    }
+  });
+
   it("still cleans up managed Codex credentials after an owned session closes", async () => {
     const close = vi.fn(async () => undefined);
     state.copyBackCodexAuth.mockClear();
@@ -8341,7 +8538,7 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
-  it("migrates a suspended prior-run authority only when its persisted execution has the same full session scope", async () => {
+  it.each([0, 2048])("migrates a suspended prior-run authority in the same full session scope with %i retained events", async (eventCount) => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-prior-run-session-state-"),
     );
@@ -8399,16 +8596,45 @@ describe("runnerd provider runtime wiring", () => {
     try {
       await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
       await mkdir(join(legacyRoot, "runner"), { recursive: true });
+      const identity = {
+        runId: priorExecution.binding.runId,
+        normalizedSessionId: priorExecution.session.normalizedSessionId,
+        runnerInstanceId: "runner-prior-run-scope",
+        environmentLeaseId: "lease-prior-run-scope",
+      };
+      const controlPlaneBytes = JSON.stringify({
+        ...durableControlPlaneState(identity),
+        // The identity shares a file with the retained PRP event window. A
+        // verbose valid turn can exceed the old 2 MiB identity-read limit.
+        committedEvents: Array.from({ length: eventCount }, (_, index) => ({
+          sourceSeq: index + 1,
+          sourceEventId: `event-${index + 1}`,
+          eventType: "item.delta",
+          priority: 1,
+          envelope: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            sourceKind: "runner",
+            sourceInstanceId: identity.runnerInstanceId,
+            sourceEventId: `event-${index + 1}`,
+            sourceSeq: index + 1,
+            normalizedSessionId: identity.normalizedSessionId,
+            runId: identity.runId,
+            turnId: "turn-prior-run-scope",
+            itemId: "item-prior-run-scope",
+            eventType: "item.delta",
+            priority: 1,
+            emittedAt: "2026-09-24T00:00:00.000Z",
+            payload: { delta: "x".repeat(1024) },
+          },
+          deliveryCount: 1,
+          logicalEffectCount: 1,
+        })),
+      });
+      if (eventCount > 0) expect(Buffer.byteLength(controlPlaneBytes)).toBeGreaterThan(2 * 1024 * 1024);
       await writeFile(
         join(legacyRoot, "control-plane", "control-plane-state.json"),
-        JSON.stringify(
-          durableControlPlaneState({
-            runId: priorExecution.binding.runId,
-            normalizedSessionId: priorExecution.session.normalizedSessionId,
-            runnerInstanceId: "runner-prior-run-scope",
-            environmentLeaseId: "lease-prior-run-scope",
-          }),
-        ),
+        controlPlaneBytes,
       );
       await writeFile(
         join(legacyRoot, "runner", "runner-state.json"),
@@ -8437,6 +8663,17 @@ describe("runnerd provider runtime wiring", () => {
         state.createTransport.mock.calls[0]![0].stateDirectory!;
       expect(migratedRoot).not.toBe(legacyRoot);
       await expect(access(legacyRoot)).rejects.toThrow();
+      // Re-enter through the canonical scoped root as ordinary continuation
+      // does, not only through the legacy migration path above.
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({
+        db: priorRunDb,
+        execution: currentExecution,
+        runnerInstanceId: "runner-current-run-scope",
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      expect(state.createTransport.mock.calls[0]![0].stateDirectory).toBe(migratedRoot);
       expect(state.createTransport.mock.calls[0]![0].prpIdentity).toEqual(
         expect.objectContaining({
           runId: currentExecution.binding.runId,
@@ -8863,6 +9100,7 @@ describe("runnerd provider runtime wiring", () => {
 
   it.each([
     "quarantined",
+    "large control plane",
     "empty retry shell",
     "unsuspended current",
     "live runner",
@@ -9061,6 +9299,12 @@ describe("runnerd provider runtime wiring", () => {
                 },
               ],
               committedEvents: [
+                ...(scenario === "large control plane"
+                  ? Array.from({ length: 2048 }, () => ({
+                      eventType: "item.delta",
+                      envelope: { ...identity, payload: { delta: "x".repeat(8192) } },
+                    }))
+                  : []),
                 { eventType: "run.terminal", envelope: identity },
               ],
             }),
@@ -9100,6 +9344,7 @@ describe("runnerd provider runtime wiring", () => {
         state.createTransport.mockClear();
         const shouldRecover = [
           "quarantined",
+          "large control plane",
           "empty retry shell",
           "unsuspended current",
           "active goal",
@@ -9607,7 +9852,7 @@ describe("runnerd provider runtime wiring", () => {
     },
   );
 
-  it.each(["missing", "malformed", "unknown_schema", "mismatched"] as const)(
+  it.each(["missing", "malformed", "unknown_schema", "mismatched", "oversized"] as const)(
     "fails closed on %s durable identity in an existing scoped root",
     async (caseName) => {
       const stateBase = await mkdtemp(
@@ -9666,6 +9911,25 @@ describe("runnerd provider runtime wiring", () => {
                       environmentLeaseId: "lease-owned-by-another-scope",
                     }),
                   ),
+          );
+        }
+        if (caseName === "oversized") {
+          const identity = {
+            runId: scopedExecution.binding.runId,
+            normalizedSessionId: scopedExecution.session.normalizedSessionId,
+            runnerInstanceId: `runner-${caseName}-scoped-state`,
+            environmentLeaseId: scopedExecution.binding.executionWorkspaceId,
+          };
+          // Valid JSON and valid ready authority: only the byte bound rejects
+          // this file. Malformed sparse padding would not test that boundary.
+          await writeFile(
+            join(scopedRoot, "control-plane", "control-plane-state.json"),
+            JSON.stringify(durableControlPlaneState(identity)).padEnd(64 * 1024 * 1024 + 1, " "),
+          );
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+          await writeFile(
+            join(scopedRoot, "runner", "runner-state.json"),
+            JSON.stringify(durableRunnerState(identity, "ready")),
           );
         }
         state.createBackend.mockClear();

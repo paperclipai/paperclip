@@ -235,7 +235,8 @@ export function boundedEvalSessionUsage(
   request: EvalSessionRequest,
   turn: CapabilityLiveTurnResult,
 ): EvalSessionUsage | null {
-  if (turn.status !== "completed") {
+  if (turn.status !== "completed" ||
+      (request.provider === "acpx" && request.acpxAgent === "grok" && !turn.snapshot.usageLedger?.length)) {
     return usageIfAvailable(request, turn.snapshot);
   }
   const usage = evalSessionUsage(request.model, turn.snapshot);

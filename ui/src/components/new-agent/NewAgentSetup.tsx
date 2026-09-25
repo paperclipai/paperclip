@@ -111,7 +111,9 @@ function Setup({
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
   const isRunner = adapterType === "paperclip_runner";
   const brandType = isRunner
-    ? runnerProvider === "claude"
+    ? runnerProvider === "grok"
+      ? "grok_local"
+      : runnerProvider === "claude"
       ? "claude_local"
       : runnerProvider === "opencode"
         ? "opencode_local"
@@ -340,8 +342,8 @@ function Setup({
       ...(isRunner
         ? {
             adapterSchemaValues: {
-              provider: runnerProvider === "claude" ? "acpx" : runnerProvider,
-              ...(runnerProvider === "claude" ? { acpxAgent: "claude" } : {}),
+              provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
+              ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
             },
           }
         : {}),
@@ -349,8 +351,8 @@ function Setup({
     const config = getUIAdapter(adapterType).buildAdapterConfig(values);
     if (isRunner)
       Object.assign(config, {
-        provider: runnerProvider === "claude" ? "acpx" : runnerProvider,
-        ...(runnerProvider === "claude" ? { acpxAgent: "claude" } : {}),
+        provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
+        ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
         ...(model ? { model } : {}),
       });
     if (!aiBinding && !nextConnection?.aiConnection && hasCredentialField && binding) {

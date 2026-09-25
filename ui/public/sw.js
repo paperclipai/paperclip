@@ -65,6 +65,15 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // Vite development modules use the browser's conditional-response cache.
+  // Passing their requests through fetch/respondWith can return a bodyless 304
+  // to the module loader on reload and leave the app root empty. They are not
+  // build assets and have no offline contract, so leave them to the browser.
+  if (url.origin === self.location.origin &&
+      /^\/(?:@fs|@vite|@id|src|node_modules)\//.test(url.pathname)) {
+    return;
+  }
+
   // Network-first; only public build assets can use an offline fallback.
   event.respondWith(
     fetch(request)

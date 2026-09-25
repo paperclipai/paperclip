@@ -25,7 +25,9 @@ export function createSanitizedAcpxSpawnInput(
   const source = environment ?? process.env;
   const result: NodeJS.ProcessEnv = {};
   const credentialNames =
-    agent === "pi"
+    agent === "grok"
+      ? ["XAI_API_KEY"]
+      : agent === "pi"
       ? ["OPENROUTER_API_KEY"]
       : agent === "claude"
         ? ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]

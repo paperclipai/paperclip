@@ -273,9 +273,9 @@ export async function openQualifiedAcpxRuntime(
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the
       // spawn callback below always launches the verified command lease.
-      overrides: { [options.profile.agent]: [options.profile.agent === "claude"
-        ? "/paperclip-verified/claude-agent-acp"
-        : VERIFIED_COMMAND_SENTINEL] },
+      overrides: { [options.profile.agent]: options.profile.agent === "grok"
+        ? ["/paperclip-verified/grok", "agent", "stdio"]
+        : [options.profile.agent === "claude" ? "/paperclip-verified/claude-agent-acp" : VERIFIED_COMMAND_SENTINEL] },
     }),
     // ACPX does not know the Paperclip-specific mode. Exact SDK rules allow
     // admitted actions; all remaining requests keep its closed read policy.
@@ -1230,7 +1230,15 @@ function runtimePort(
       }
       const guarded = turnWithVerifiedLifetimeOwnership(turn, finishOwnershipAdmission);
       const result = guarded.result.then(
-        (value) => { approval.signal.throwIfAborted(); return value; },
+        (value) => {
+          approval.signal.throwIfAborted();
+          // ACPX may resolve its own permission policy before invoking the
+          // host callback. Keep that typed denial on the same runner outcome.
+          if (value.status === "failed" && value.error?.code === "PERMISSION_PROMPT_UNAVAILABLE") {
+            throw new AcpxApprovalRequiredError();
+          }
+          return value;
+        },
         (error: unknown) => { approval.signal.throwIfAborted(); throw error; },
       ).finally(() => {
         if (permissionBoundary.active === approval) permissionBoundary.active = null;
