@@ -76,7 +76,12 @@ export type AdapterExecutionErrorFamily =
 
 export interface AdapterExecutionResult {
   /** Positive evidence for retrying bootstrap; absent evidence never authorizes replay. */
-  executionRecovery?: { kind: "bootstrap"; providerWorkStarted: false } | {
+  executionRecovery?: {
+    kind: "bootstrap";
+    providerWorkStarted: false;
+    /** Set only after validating the per-attempt launcher contract and no provider activity. */
+    launcher?: { version: 1; outcome: "capacity_unavailable" };
+  } | {
     kind: "interrupted";
     providerStopped: true;
     sessionPreserved: true;

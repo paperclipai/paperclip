@@ -33,6 +33,7 @@ import {
   waitForAdapterStop,
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { isLauncherCapacityFailure } from "@paperclipai/adapter-utils/launcher-capacity";
 import { deferQueuedRunAfterStartupFailure } from "./agent-startup-backoff.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
@@ -25158,7 +25159,7 @@ export function heartbeatService(
             }
           } else if (
             outcome === "failed" &&
-            readTransientRecoveryContractFromRun(livenessRun)
+            (readTransientRecoveryContractFromRun(livenessRun) || isLauncherCapacityFailure(livenessRun))
           ) {
             await scheduleBoundedRetryForRun(livenessRun, agent);
           } else if (
@@ -25305,7 +25306,8 @@ export function heartbeatService(
             ((finalizedRun
               ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
               : runErrorCode === "provider_quota") ||
-              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+              isWorkspaceSyncConflictFailure(adapterResult.errorMessage) ||
+              (finalizedRun && isLauncherCapacityFailure(finalizedRun))),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
       } catch (err) {

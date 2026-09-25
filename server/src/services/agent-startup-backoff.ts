@@ -1,5 +1,6 @@
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { and, desc, eq, sql } from "drizzle-orm";
+import { isLauncherCapacityFailure } from "@paperclipai/adapter-utils/launcher-capacity";
 
 const BASE_DELAY_MS = 5_000;
 const MAX_DELAY_MS = 5 * 60_000;
@@ -36,6 +37,9 @@ export async function deferQueuedRunAfterStartupFailure(
     const recent = await tx.select({
       id: heartbeatRuns.id,
       status: heartbeatRuns.status,
+      errorCode: heartbeatRuns.errorCode,
+      exitCode: heartbeatRuns.exitCode,
+      signal: heartbeatRuns.signal,
       finishedAt: heartbeatRuns.finishedAt,
       // Preserve database timestamp precision at page boundaries.
       finishedAtCursor: sql<string>`${heartbeatRuns.finishedAt}::text`,
@@ -58,7 +62,7 @@ export async function deferQueuedRunAfterStartupFailure(
       const usage = previous.usageJson ?? {};
       if (!["failed", "timed_out"].includes(previous.status) || !previous.finishedAt ||
           evidence?.kind !== "bootstrap" || evidence.providerWorkStarted !== false ||
-          previous.stdoutExcerpt?.trim() ||
+          (previous.stdoutExcerpt?.trim() && !isLauncherCapacityFailure(previous)) ||
           [usage.inputTokens, usage.outputTokens, usage.cachedInputTokens,
             usage.input_tokens, usage.output_tokens, usage.cached_input_tokens]
             .some((value) => typeof value === "number" && value > 0)) return false;

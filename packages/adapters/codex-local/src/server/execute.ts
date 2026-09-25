@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { hasLauncherCapacityRecord, LAUNCHER_NONCE_ENV } from "@paperclipai/adapter-utils/launcher-capacity";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -1320,9 +1322,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
 
       try {
+        const launcherNonce = config.launcherCapacityRecovery === true ? randomBytes(16).toString("hex") : null;
+        const launchEnv = { ...env };
+        delete launchEnv[LAUNCHER_NONCE_ENV];
+        if (launcherNonce) launchEnv[LAUNCHER_NONCE_ENV] = launcherNonce;
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
           cwd,
-          env,
+          env: launchEnv,
           stdin: prompt,
           timeoutSec,
           graceSec,
@@ -1349,6 +1355,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             stderr: cleanedStderr,
           },
           rawStderr: proc.stderr,
+          launcherNonce,
           parsed: parseCodexJsonl(proc.stdout),
           monitor: monitorFired
             ? {
@@ -1377,6 +1384,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
+        launcherNonce: string | null;
         parsed: ReturnType<typeof parseCodexJsonl>;
         monitor?:
           | { fired: false }
@@ -1497,8 +1505,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const errorFamily =
         authRefreshFailure ??
         (providerQuota ? "provider_quota" : transientUpstream || harnessCrash ? "transient_upstream" : null);
+      const launcherCapacity =
+        // An internal unknown-session fallback cannot attest that the earlier
+        // process in this same invocation never started provider work.
+        !isRetry && attempt.launcherNonce !== null && hasLauncherCapacityRecord(attempt.rawStderr, attempt.launcherNonce) &&
+        attempt.proc.exitCode === 5 && !attempt.proc.signal && !attempt.proc.errorCode &&
+        attempt.proc.stdout === "" && !attempt.parsed.sawProtocolEvent &&
+        !attempt.parsed.sessionId && !attempt.parsed.summary && !attempt.parsed.errorMessage &&
+        !parseCodexJsonl(attempt.rawStderr).sawProtocolEvent &&
+        Object.values(attempt.parsed.usage).every((value) => value === 0) && !errorFamily;
 
       return {
+        ...(launcherCapacity ? { executionRecovery: {
+          kind: "bootstrap" as const, providerWorkStarted: false as const,
+          launcher: { version: 1 as const, outcome: "capacity_unavailable" as const },
+        } } : {}),
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
@@ -1512,6 +1533,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // `duplex_channel_lost` code before any provider classification.
           attempt.proc.errorCode
             ? attempt.proc.errorCode
+            : launcherCapacity
+            ? "launcher_capacity_unavailable"
             : authRefreshFailure
             ? authRefreshFailure
             : providerQuota
