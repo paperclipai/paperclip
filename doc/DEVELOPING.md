@@ -696,6 +696,13 @@ If a repository is detached or its source configuration changes, its previous ta
 
 ## Config Freshness
 
+Agent config responses and new config revision snapshots preserve region-qualified
+Bedrock Claude model IDs in the top-level `adapterConfig.model` field. Credential
+fields and plaintext environment bindings remain redacted. This does not repair
+model IDs that were already saved as `***REDACTED***`; those agents need their
+original model ID set again. Revisions with redacted secret values still cannot
+be rolled back.
+
 Agent, project, environment, secret, skill, and workspace config edits are sampled at the next run boundary. A heartbeat that is already running finishes with the config it started with.
 
 When effective run config changes, Paperclip may intentionally skip a saved adapter session, refresh persisted workspace runtime config, replace a reused execution workspace, or avoid reusing a sandbox/environment lease. Fresh execution can lose adapter-specific session, workspace, or sandbox state; correctness of the next run's config takes priority over continuity. Plain environment values affect freshness through value hashes; run result JSON and workspace operation logs expose only the non-sensitive freshness decision categories, without storing secret values, full env maps, provider credentials, or private path details.
