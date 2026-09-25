@@ -518,6 +518,16 @@ const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
+// Minimum age a "running" run must reach before the issue-terminal authority may
+// treat it as orphaned. That authority infers orphanhood from the issue status
+// alone, and a run that is only seconds old cannot have been orphaned yet: a
+// healthy run finalizes its own row within milliseconds of its issue reaching a
+// terminal status, so it is the *lasting* "running" row that proves orphanhood.
+// What does fit inside this window is a healthy reassignment hand-off, where one
+// request sets status=done and reassigns, starting the next agent's run while the
+// issue is momentarily terminal and still holds the lock columns.
+export const ISSUE_TERMINAL_MIN_RUN_AGE_MS = 60_000;
+
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
@@ -5663,7 +5673,11 @@ export function recoveryService(
   //   orphaned. This authority does not depend on process death. It is the only
   //   authority that catches the reuse-lease path: the release stops the sandbox
   //   but keeps the server process alive, so the in-memory handle and the
-  //   recorded pid can both persist.
+  //   recorded pid can both persist. Because its evidence is inferred from the
+  //   issue status rather than observed, it applies only once the run row has
+  //   stayed "running" for ISSUE_TERMINAL_MIN_RUN_AGE_MS, which keeps it off the
+  //   fresh run that a reassignment hand-off starts under a momentarily terminal
+  //   issue.
   // - Process-death authority: the run has no in-memory handle and its recorded
   //   process and process group are both gone. This catches a hard server crash
   //   that skipped the graceful teardown, even when the issue is not terminal.
@@ -5732,6 +5746,40 @@ export function recoveryService(
         .then((rows) => rows[0]?.status ?? null);
       if (issueStatus === "done") issueTerminalStatus = "succeeded";
       else if (issueStatus === "cancelled") issueTerminalStatus = "cancelled";
+    }
+
+    // Grace period for the issue-terminal authority. Its evidence is inferred
+    // rather than observed, so it needs the run row to have *stayed* "running"
+    // to conclude orphanhood. A run only seconds old has not had the chance to
+    // finalize itself yet, and the reassignment hand-off above lands squarely in
+    // that window: terminalizing there kills a healthy run, releases the
+    // checkout it just acquired, and turns every later write from the receiving
+    // agent into an ownership conflict even though its checkout returned 200.
+    // A live in-memory execution is the stronger signal, but it cannot cover
+    // this window: the run row is already "running" before the execution
+    // registers itself, and that registry is per server process. The
+    // process-death authority is deliberately left alone, because there the
+    // evidence is positive — the recorded pid and process group are gone — and
+    // it already skips runs that have not recorded process metadata. The cost
+    // for a genuinely orphaned run is bounded by the grace period plus one sweep
+    // tick: every sweep before the run reaches that age skips cleanup. Fail open
+    // when the row carries no usable timestamp, so an unexpected shape can never
+    // strand a lock forever.
+    if (issueTerminalStatus) {
+      const startedMs = (run.startedAt ?? run.createdAt).getTime();
+      const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : null;
+      if (ageMs !== null && ageMs < ISSUE_TERMINAL_MIN_RUN_AGE_MS) {
+        logger.warn(
+          {
+            runId: run.id,
+            issueId,
+            ageMs,
+            minAgeMs: ISSUE_TERMINAL_MIN_RUN_AGE_MS,
+          },
+          "skipped issue-terminal terminalization: run is younger than the grace period and is most likely a fresh reassignment hand-off",
+        );
+        issueTerminalStatus = null;
+      }
     }
 
     // Process-death authority. The run is live while either its adapter process

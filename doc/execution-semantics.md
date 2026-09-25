@@ -704,6 +704,8 @@ On startup and on the periodic recovery loop, Paperclip performs the following r
 3. reconcile stranded assigned work
 4. scan silent active runs only for source-aware terminal folding and legacy cleanup; API reads classify ordinary output silence for the board UI
 
+Reaping an orphaned `running` run requires evidence that the run is really gone. A recorded process and process group that are both dead is direct evidence and applies immediately. A terminal issue above a still-`running` row is indirect evidence, so it applies only once the row has stayed `running` past a short grace period. Without that grace period a reassignment that sets an issue terminal and hands the work to the next agent in the same request is reaped as an orphan: it starts the receiving agent's run while the issue is momentarily terminal and still holds the lock columns, so the reap kills a healthy run and releases the checkout it just acquired.
+
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
