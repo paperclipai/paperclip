@@ -116,6 +116,27 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
       await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
     }
   });
+  it("reuses a managed checkout when repo URLs differ only by .git and slash", async () => {
+    const sourceRepo = await createLocalSourceRepo();
+    try {
+      const first = await ensureManagedProjectWorkspace({
+        companyId: "company-url-identity",
+        projectId: "project-url-identity",
+        repoUrl: sourceRepo,
+      });
+      await execFile("git", ["remote", "set-url", "origin", `${sourceRepo}/.git`], { cwd: first.cwd });
+      const reused = await ensureManagedProjectWorkspace({
+        companyId: "company-url-identity",
+        projectId: "project-url-identity",
+        repoUrl: `${sourceRepo}/`,
+      });
+      expect(reused.cwd).toBe(first.cwd);
+      expect(reused.warning).toBeNull();
+    } finally {
+      await fs.rm(sourceRepo, { recursive: true, force: true });
+    }
+  });
+
   it("rechecks the repository when another process wins the checkout rename", async () => {
     const first = await createLocalSourceRepo();
     const second = await createLocalSourceRepo();
