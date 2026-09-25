@@ -25,7 +25,15 @@ permissions:
 # `cancel-in-progress: false` queues the newer run instead of killing the
 # older one mid-push, so a run is never left half-published.
 concurrency:
-  group: agent-runtime-images-${{ github.ref }}
+  # Push-triggered runs on the same ref serialize/queue against each other so
+  # :latest can't be published out of order (see build-and-sign's "Alias
+  # digests under a stable :latest tag" step). workflow_dispatch runs get
+  # their own unique group per run (github.run_id) so a manually requested
+  # version build can never be queued behind -- and then dropped by -- a
+  # push run sharing the ref's group (GitHub Actions keeps only one pending
+  # run per concurrency group, so a same-group queue collision silently
+  # discards whichever run doesn't win).
+  group: ${{ github.event_name == 'workflow_dispatch' && format('agent-runtime-images-dispatch-{0}', github.run_id) || format('agent-runtime-images-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:

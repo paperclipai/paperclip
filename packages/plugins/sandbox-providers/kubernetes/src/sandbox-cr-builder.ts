@@ -16,7 +16,7 @@
  * release path is explicit delete via sandboxCrOrchestrator.release().
  */
 
-import { imagePullPolicyFor } from "./image-allowlist.js";
+import { resolveImagePullPolicy } from "./image-allowlist.js";
 
 export interface BuildSandboxCrManifestInput {
   namespace: string;
@@ -32,6 +32,12 @@ export interface BuildSandboxCrManifestInput {
   };
   runtimeClassName?: string;
   imagePullSecrets?: string[];
+  /**
+   * When true, always use `IfNotPresent` regardless of tag shape — for
+   * air-gapped/offline clusters that preload runtime images onto nodes
+   * out-of-band and have no registry path at pod-start time.
+   */
+  preloadedImages?: boolean;
 }
 
 export function buildSandboxCrManifest(
@@ -87,7 +93,7 @@ export function buildSandboxCrManifest(
             {
               name: "agent",
               image: input.image,
-              imagePullPolicy: imagePullPolicyFor(input.image),
+              imagePullPolicy: resolveImagePullPolicy(input.image, input.preloadedImages),
               // sleep infinity keeps the pod running; paperclip-server execs
               // commands into it via Kubernetes exec API. Tini as PID 1 for
               // proper signal forwarding and zombie reaping.

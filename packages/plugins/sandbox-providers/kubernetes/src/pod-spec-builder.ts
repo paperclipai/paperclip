@@ -1,4 +1,4 @@
-import { imagePullPolicyFor } from "./image-allowlist.js";
+import { resolveImagePullPolicy } from "./image-allowlist.js";
 
 export interface BuildJobManifestInput {
   namespace: string;
@@ -16,6 +16,12 @@ export interface BuildJobManifestInput {
   activeDeadlineSec: number;
   ttlSecondsAfterFinished: number;
   imagePullSecrets?: string[];
+  /**
+   * When true, always use `IfNotPresent` regardless of tag shape — for
+   * air-gapped/offline clusters that preload runtime images onto nodes
+   * out-of-band and have no registry path at pod-start time.
+   */
+  preloadedImages?: boolean;
 }
 
 export function buildJobManifest(input: BuildJobManifestInput): Record<string, unknown> {
@@ -60,7 +66,7 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
             {
               name: "agent",
               image: input.image,
-              imagePullPolicy: imagePullPolicyFor(input.image),
+              imagePullPolicy: resolveImagePullPolicy(input.image, input.preloadedImages),
               command: ["/usr/bin/tini", "--", "/usr/local/bin/paperclip-agent-shim"],
               // HOME must point at a writable mount; the image's default
               // HOME is inside the readOnly root filesystem. Agent runtimes

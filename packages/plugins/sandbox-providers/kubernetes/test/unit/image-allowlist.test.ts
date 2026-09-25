@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { globMatch, resolveImage, imagePullPolicyFor } from "../../src/image-allowlist.js";
+import { globMatch, resolveImage, imagePullPolicyFor, resolveImagePullPolicy } from "../../src/image-allowlist.js";
 
 describe("globMatch", () => {
   it("matches exact image", () => {
@@ -89,5 +89,31 @@ describe("imagePullPolicyFor", () => {
         "ghcr.io/paperclipai/agent-runtime-claude@sha256:" + "a".repeat(64),
       ),
     ).toBe("IfNotPresent");
+  });
+});
+
+describe("resolveImagePullPolicy", () => {
+  it("defers to imagePullPolicyFor when preloadedImages is not set", () => {
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude:latest", undefined)).toBe(
+      "Always",
+    );
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude:v1", undefined)).toBe(
+      "IfNotPresent",
+    );
+  });
+
+  it("defers to imagePullPolicyFor when preloadedImages is false", () => {
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude:latest", false)).toBe(
+      "Always",
+    );
+  });
+
+  it("forces IfNotPresent for a floating tag when preloadedImages is true (air-gapped clusters)", () => {
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude:latest", true)).toBe(
+      "IfNotPresent",
+    );
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude", true)).toBe(
+      "IfNotPresent",
+    );
   });
 });

@@ -109,4 +109,13 @@ describe("buildJobManifest", () => {
     });
     expect(job.spec.template.spec.containers[0].imagePullPolicy).toBe("Always");
   });
+
+  it("uses IfNotPresent for a floating :latest image when preloadedImages is set (air-gapped clusters)", () => {
+    const job = buildJobManifest({
+      ...baseInput,
+      image: "ghcr.io/paperclipai/agent-runtime-claude:latest",
+      preloadedImages: true,
+    });
+    expect(job.spec.template.spec.containers[0].imagePullPolicy).toBe("IfNotPresent");
+  });
 });

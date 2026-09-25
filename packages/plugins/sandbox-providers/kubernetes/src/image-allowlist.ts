@@ -86,3 +86,26 @@ export function imagePullPolicyFor(image: string): "Always" | "IfNotPresent" {
   const tag = colonIdx >= 0 ? lastSegment.slice(colonIdx + 1) : "latest";
   return FLOATING_TAGS.has(tag) ? "Always" : "IfNotPresent";
 }
+
+/**
+ * Same as {@link imagePullPolicyFor}, but lets an operator force
+ * `IfNotPresent` for every image regardless of tag shape.
+ *
+ * An air-gapped/offline cluster may preload runtime images onto its nodes
+ * out-of-band (e.g. via `ctr images import` or a node image baked with the
+ * image already present) and has no path to the registry at pod-start time.
+ * Forcing `Always` for floating tags in that setup turns every pod start
+ * into an `ImagePullBackOff`, even though the correct bytes are already
+ * sitting on the node. Setting `preloadedImages: true` in the provider
+ * config opts back into the old `IfNotPresent`-always behavior for that
+ * deployment style.
+ */
+export function resolveImagePullPolicy(
+  image: string,
+  preloadedImages: boolean | undefined,
+): "Always" | "IfNotPresent" {
+  if (preloadedImages) {
+    return "IfNotPresent";
+  }
+  return imagePullPolicyFor(image);
+}
