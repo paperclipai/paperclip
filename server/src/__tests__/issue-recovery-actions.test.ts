@@ -667,6 +667,83 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
+  it("returns a stranded legacy takeover to its named owner and keeps a live recovery action", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } =
+      await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: managerId })
+      .where(eq(issues.id, sourceIssueId));
+    const [legacyAction] = await db
+      .insert(issueRecoveryActions)
+      .values({
+        companyId,
+        sourceIssueId,
+        kind: "stranded_assigned_issue",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: managerId,
+        previousOwnerAgentId: coderId,
+        returnOwnerAgentId: coderId,
+        cause: "stranded_assigned_issue",
+        fingerprint: `legacy-takeover:${sourceIssueId}`,
+        evidence: { latestRunErrorCode: "acpx_session_init_failed" },
+        nextAction: "Restore the issue to the named decision owner.",
+        wakePolicy: { type: "bounded_recovery_owner", retryAgentId: managerId },
+        maxAttempts: 3,
+      })
+      .returning();
+    const enqueueWakeup = vi.fn(async () => null);
+
+    const result = await recoveryService(db, {
+      enqueueWakeup,
+    }).reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ escalated: 1 });
+    const [sourceAfter] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId));
+    expect(sourceAfter).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: coderId,
+      assigneeUserId: null,
+    });
+    expect(
+      await db
+        .select()
+        .from(issueRelations)
+        .where(eq(issueRelations.relatedIssueId, sourceIssueId)),
+    ).toHaveLength(0);
+    const [actionAfter] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, legacyAction!.id));
+    expect(actionAfter).toMatchObject({
+      status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      maxAttempts: null,
+      outcome: null,
+      resolutionNote: null,
+      resolvedAt: null,
+      evidence: expect.objectContaining({
+        routingPolicy: "board_escalation_no_takeover_v1",
+        legacyTakeoverReturnOwnerRepair: expect.objectContaining({
+          recoveryOwnerAgentId: managerId,
+          returnOwnerAgentId: coderId,
+        }),
+      }),
+      wakePolicy: expect.objectContaining({
+        type: "board_escalation",
+        preservesSourceAssignee: true,
+      }),
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({

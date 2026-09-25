@@ -3332,6 +3332,133 @@ export function recoveryService(
     return Boolean(run || wake);
   }
 
+  // Older stranded recovery moved the source issue to a temporary recovery
+  // owner. Repair only that historical takeover shape; current recovery keeps
+  // source ownership separate from the board-owned recovery action.
+  async function restoreLegacyRecoveryReturnOwner(
+    action: typeof issueRecoveryActions.$inferSelect,
+    issue: typeof issues.$inferSelect,
+  ) {
+    if (
+      action.kind !== "stranded_assigned_issue" ||
+      action.ownerType !== "agent" ||
+      !action.ownerAgentId ||
+      !action.returnOwnerAgentId ||
+      action.ownerAgentId === action.returnOwnerAgentId ||
+      issue.status !== "blocked" ||
+      issue.assigneeAgentId !== action.ownerAgentId ||
+      issue.assigneeUserId !== null ||
+      issue.executionRunId !== null ||
+      issue.checkoutRunId !== null
+    ) {
+      return false;
+    }
+
+    return db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, issue.companyId),
+            eq(issues.id, issue.id),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      const lockedAction = await tx
+        .select()
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, action.companyId),
+            eq(issueRecoveryActions.id, action.id),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+
+      if (
+        !lockedIssue ||
+        !lockedAction ||
+        !["active", "escalated"].includes(lockedAction.status) ||
+        lockedAction.kind !== "stranded_assigned_issue" ||
+        lockedAction.ownerType !== "agent" ||
+        !lockedAction.ownerAgentId ||
+        !lockedAction.returnOwnerAgentId ||
+        lockedAction.ownerAgentId === lockedAction.returnOwnerAgentId ||
+        lockedIssue.status !== "blocked" ||
+        lockedIssue.assigneeAgentId !== lockedAction.ownerAgentId ||
+        lockedIssue.assigneeUserId !== null ||
+        lockedIssue.executionRunId !== null ||
+        lockedIssue.checkoutRunId !== null
+      ) {
+        return false;
+      }
+
+      const now = new Date();
+      const recoveryOwnerAgentId = lockedAction.ownerAgentId;
+      const returnOwnerAgentId = lockedAction.returnOwnerAgentId;
+      await tx
+        .update(issues)
+        .set({
+          assigneeAgentId: returnOwnerAgentId,
+          updatedAt: now,
+        })
+        .where(eq(issues.id, lockedIssue.id));
+      await tx
+        .update(issueRecoveryActions)
+        .set({
+          status: "active",
+          ownerType: "board",
+          ownerAgentId: null,
+          ownerUserId: null,
+          wakePolicy: {
+            type: "board_escalation",
+            reason: "legacy_takeover_return_owner_restored",
+            preservesSourceAssignee: true,
+          },
+          maxAttempts: null,
+          timeoutAt: null,
+          outcome: null,
+          resolutionNote: null,
+          resolvedAt: null,
+          evidence: {
+            ...lockedAction.evidence,
+            routingPolicy: STRANDED_BOARD_ESCALATION_POLICY,
+            legacyTakeoverReturnOwnerRepair: {
+              recoveryOwnerAgentId,
+              returnOwnerAgentId,
+              restoredAt: now.toISOString(),
+            },
+          },
+          updatedAt: now,
+        })
+        .where(eq(issueRecoveryActions.id, lockedAction.id));
+      await logActivity(tx as unknown as Db, {
+        companyId: lockedIssue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: lockedIssue.id,
+        details: {
+          identifier: lockedIssue.identifier,
+          source: "recovery.restore_legacy_return_owner",
+          status: lockedIssue.status,
+          recoveryActionId: lockedAction.id,
+          changes: {
+            assigneeAgentId: {
+              from: recoveryOwnerAgentId,
+              to: returnOwnerAgentId,
+            },
+          },
+        },
+      });
+      return true;
+    });
+  }
+
   async function reconcileActiveRecoveryActions() {
     const rows = await db
       .select({ action: issueRecoveryActions, issue: issues })
@@ -3355,6 +3482,11 @@ export function recoveryService(
     for (const { action, issue } of rows) {
       const wakePolicy = parseObject(action.wakePolicy);
       const wakePolicyType = readNonEmptyString(wakePolicy.type);
+      if (await restoreLegacyRecoveryReturnOwner(action, issue)) {
+        result.escalated += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
       if (
         wakePolicyType !== "bounded_recovery_owner" &&
         wakePolicyType !== "bounded_owner_disposition_repair" &&
