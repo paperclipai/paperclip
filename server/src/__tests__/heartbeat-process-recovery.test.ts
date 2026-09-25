@@ -15055,4 +15055,106 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("does not block an accepted-plan parent on its active delivery child", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const childId = randomUUID();
+    const blockerId = randomUUID();
+    const childRunId = randomUUID();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: childId,
+        companyId,
+        parentId: issueId,
+        title: "Deliver the accepted plan",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 30,
+        identifier: `${issuePrefix}-30`,
+      },
+      {
+        id: blockerId,
+        companyId,
+        title: "Required prerequisite",
+        status: "in_progress",
+        priority: "high",
+        issueNumber: 31,
+        identifier: `${issuePrefix}-31`,
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      },
+      {
+        companyId,
+        issueId: childId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      },
+    ]);
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Accepted plan",
+      latestBody: "Deliver the accepted plan.",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: agentId,
+      updatedByAgentId: agentId,
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Accepted plan",
+      format: "markdown",
+      body: "Deliver the accepted plan.",
+      createdByAgentId: agentId,
+    });
+    await db.insert(issuePlanDecompositions).values({
+      companyId,
+      sourceIssueId: issueId,
+      acceptedPlanRevisionId: revisionId,
+      status: "completed",
+      requestFingerprint: "accepted-plan-delivery-child",
+      requestedChildCount: 1,
+      childIssueIds: [childId],
+      ownerAgentId: agentId,
+      completedAt: new Date(),
+    });
+    await db.insert(heartbeatRuns).values({ id: childRunId, companyId, agentId, status: "running", contextSnapshot: { issueId: childId } });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.waitingOnReviewResolved).toBe(1);
+    expect(result.escalated).toBe(0);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([
+      blockerId,
+    ]);
+    await expect(
+      db.select().from(issues).where(eq(issues.id, issueId)),
+    ).resolves.toEqual([expect.objectContaining({ status: "blocked" })]);
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain(`${issuePrefix}-31`);
+    expect(comments[0]?.body).not.toContain(`${issuePrefix}-30`);
+  });
 });
