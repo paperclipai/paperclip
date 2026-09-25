@@ -397,7 +397,23 @@ curl -sS -X PATCH "$PAPERCLIP_API_URL/api/issues/{issueId}" \
 curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/{issueId}/comments" \
   -H "Content-Type: application/json" \
   -d '{"body": "Comment text in markdown"}'
+```
 
+> 🔴 **Board comments expire pending confirmation gates — silently and irreversibly.**
+> Both calls above create a real comment as the board user. The server then supersedes
+> **every pending `request_confirmation` on that issue** unless the interaction was created
+> with `payload.supersedeOnUserComment: false`. On build 2026.609.0 this cannot be undone:
+> there is no `/withdraw` route, `/cancel` only accepts `ask_user_questions`, and the
+> `idempotencyKey` is burned afterwards — the same question can never be asked on that
+> issue again.
+>
+> **Before commenting on an issue, read its pending gates:**
+> `curl -sS "$PAPERCLIP_API_URL/api/issues/{issueId}/interactions"` — if any
+> `request_confirmation` is `pending`, answer it through the UI or the
+> `/interactions/{id}/accept` route instead of commenting. To change only the status,
+> drop the `comment` field from the PATCH.
+
+```bash
 # Search issues
 curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues?q=search+term"
 ```
