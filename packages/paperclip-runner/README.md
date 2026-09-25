@@ -56,6 +56,20 @@ stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
 validates the exact model, session identity, tool catalog, structured input,
 and terminal settlement at the process boundary. Pi remains unavailable.
 
+ACPX Codex subscription logins use the selected run credential, staged in the
+Runner's private `codex-home/auth.json`. The trusted launch environment carries
+its derived path to the sidecar; arbitrary caller paths and ambient homes are
+not inherited. The sidecar stages that file in its isolated Codex home and uses
+file credential storage. It checkpoints the credential to
+`codex-home/auth.json.returned` before publishing each turn's terminal result,
+so the tenant can flush refreshes into that invocation's credential home while
+the provider stays warm. It exports once more after the provider stops, before
+removing its private copy. Failed export
+retains the credential and lease for retry. The tenant merges the returned file
+using its existing subscription identity and freshness checks. Both files are
+excluded from backups and removed after a successful tenant merge. API-key
+launches continue to use their explicit key environment.
+
 Native Claude skill assignments travel in the runtime-context snapshot through
 runnerd to the ACPX sidecar. After acquiring the provider lifetime lease, the
 host materializes the assigned bundles under the isolated Claude home's

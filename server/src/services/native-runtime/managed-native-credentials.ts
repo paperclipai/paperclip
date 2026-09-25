@@ -49,15 +49,12 @@ export function bindManagedNativeCredentialTurn(
     if (owner) owner.closing = true;
     await close(input);
     if (!owner || owner.detached || credentialTurns.get(session) !== owner) return;
-    try {
-      await completeCredentialTurn(owner);
-    } finally {
-      // Idle expiry removes the provider credential, but never writes back to
-      // the already-deleted temporary home of a completed invocation.
-      if (!owner.detached && !owner.removed && credentialTurns.get(session) === owner) {
-        owner.removed = true;
-        await owner.remove();
-      }
+    await completeCredentialTurn(owner);
+    // Failed copy-back retains credentials for retry. Idle expiry never writes
+    // back to the already-deleted temporary home of a completed invocation.
+    if (!owner.detached && !owner.removed && credentialTurns.get(session) === owner) {
+      await owner.remove();
+      owner.removed = true;
     }
   };
   return session;
@@ -65,7 +62,10 @@ export function bindManagedNativeCredentialTurn(
 
 async function completeCredentialTurn(turn: CredentialTurn) {
   if (turn.detached || turn.completed) return;
-  turn.completion ??= turn.copyBack().finally(() => { turn.completed = true; });
+  turn.completion ??= turn.copyBack().then(
+    () => { turn.completed = true; },
+    (error: unknown) => { turn.completion = undefined; throw error; },
+  );
   await turn.completion;
 }
 

@@ -117,7 +117,7 @@ describe("ACPX runtime sandbox", () => {
           join(sandbox.agentHomeDirectory, "config.toml"),
           "utf8",
         );
-        expect(config).toBe("[features]\nshell_snapshot = false\n");
+        expect(config).toBe('cli_auth_credentials_store = "file"\n[features]\nshell_snapshot = false\n');
         expect(config).not.toContain("provider-secret");
       }
       expect(await readFile(sandbox.workspaceRecordPath, "utf8")).toBe(

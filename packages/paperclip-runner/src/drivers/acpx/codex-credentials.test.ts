@@ -696,6 +696,30 @@ describe("managed Codex credentials", () => {
     await expect(readFile(source, "utf8")).resolves.toContain("managed-canary");
   });
 
+  it("returns refreshed credentials privately and retains them on export failure", async () => {
+    const fixture = await credentialFixture();
+    const source = join(fixture.root, "auth.json");
+    const returnPath = `${source}.returned`;
+    await writeFile(source, '{"tokens":{"access_token":"original"}}', { mode: 0o600 });
+    const lease = await stageManagedCodexCredential({ agentHomeDirectory: fixture.home, sourcePath: source, returnPath });
+    await writeFile(lease.path, '{"tokens":{"access_token":"refreshed"}}', { mode: 0o600 });
+    await lease.checkpoint!();
+    await expect(readFile(returnPath, "utf8")).resolves.toContain("refreshed");
+    await expect(readFile(lease.path, "utf8")).resolves.toContain("refreshed");
+    await rm(returnPath);
+    await mkdir(returnPath);
+    await expect(lease.close()).rejects.toThrow();
+    await expect(readFile(lease.path, "utf8")).resolves.toContain("refreshed");
+    await expect(stageManagedCodexCredential({ agentHomeDirectory: fixture.home, sourcePath: source })).rejects.toThrow("active lease");
+    await rm(returnPath, { recursive: true });
+    await lease.close();
+    await lease.close();
+    expect((await stat(returnPath)).mode & 0o777).toBe(0o600);
+    await expect(readFile(returnPath, "utf8")).resolves.toContain("refreshed");
+    await expect(readFile(source, "utf8")).resolves.toContain("original");
+    await expect(readFile(lease.path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("replaces a stale regular auth destination in JSON modes", async () => {
     const fixture = await credentialFixture();
     const destination = join(fixture.home, "auth.json");

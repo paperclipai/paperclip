@@ -1191,7 +1191,7 @@ describe("native harness persistence profiles", () => {
       "acpx codex",
       { kind: "acpx", agent: "codex" },
       "acpx_runtime",
-      ["runner", "acpx"],
+      ["runner", "acpx", "codex-home"],
     ],
   ])(
     "declares the complete %s recovery state",
@@ -1210,7 +1210,7 @@ describe("native harness persistence profiles", () => {
     expect(
       codex.directories.find((directory) => directory.name === "codex-home"),
     ).toMatchObject({
-      excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      excludeEntries: ["tmp", ".tmp", "auth.json", "auth.json.returned", "auth.json.returned.staging", "config.toml"],
     });
   });
 
@@ -1224,6 +1224,8 @@ describe("native harness persistence profiles", () => {
         `acpx/${sessionDirectory}/codex-home/tmp`,
         `acpx/${sessionDirectory}/codex-home/.tmp`,
         `acpx/${sessionDirectory}/codex-home/auth.json`,
+        `acpx/${sessionDirectory}/codex-home/auth.json.returned`,
+        `acpx/${sessionDirectory}/codex-home/auth.json.returned.staging`,
         `acpx/${sessionDirectory}/codex-home/config.toml`,
       ],
     });
@@ -1840,7 +1842,7 @@ describe("remote provider checkpoint snapshots", () => {
       sourcePath: "/remote/session/filesystem/codex-home",
       targetPath: "/tmp/paperclip-checkpoint-test-codex-home",
       mode: 0o700,
-      excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      excludeEntries: ["tmp", ".tmp", "auth.json", "auth.json.returned", "auth.json.returned.staging", "config.toml"],
     });
 
     expect(execute).toHaveBeenNthCalledWith(
@@ -2022,7 +2024,7 @@ describe("remote provider checkpoint restores", () => {
         sourcePath,
         targetPath: "/remote/codex-home",
         mode: 0o700,
-        excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+        excludeEntries: ["tmp", ".tmp", "auth.json", "auth.json.returned", "auth.json.returned.staging", "config.toml"],
       });
 
       expect(syncIn).toHaveBeenCalledOnce();
@@ -7686,6 +7688,34 @@ describe("runnerd provider runtime wiring", () => {
       expect.objectContaining({ hostAuthPath: join(managedHome, "auth.json") }),
     );
     await expect(access(authPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("merges ACPX returned auth and retains it when the tenant merge fails", async () => {
+    const acpxExecution = { ...execution, provider: { kind: "acpx", agent: "codex", model: "gpt-5.6-sol" }, session: { ...execution.session, driverKind: "acpx_runtime" } } as unknown as NativeExecutionInputV1;
+    const close = vi.fn(async () => undefined);
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession: async () => ({ close }) } as never);
+    const managedHome = join(isolatedStateDirectory, "managed-home");
+    const backend = await createRunnerdBackend({ db: leaseDb(acpxExecution), execution: acpxExecution, runnerInstanceId: "runner-acpx-credential-close", managedAiCredentialHome: managedHome, runnerEnvironment: { OPENAI_API_KEY: "", CODEX_API_KEY: "" } });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+    const source = join(root, "codex-home", "auth.json");
+    const returned = `${source}.returned`;
+    await mkdir(join(root, "codex-home"), { recursive: true });
+    await writeFile(source, "original-fixture");
+    await writeFile(returned, "refreshed-fixture");
+    const session = await backend.openSession({} as never);
+    state.copyBackCodexAuth.mockRejectedValueOnce(new Error("merge unavailable"));
+    await expect(session.close({ reason: "completed" })).rejects.toThrow("merge unavailable");
+    await expect(readFile(returned, "utf8")).resolves.toBe("refreshed-fixture");
+    state.copyBackCodexAuth.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = args[0] as { readSandboxAuth: () => Promise<Buffer>; hostAuthPath: string };
+      expect(input.hostAuthPath).toBe(join(managedHome, "auth.json"));
+      expect((await input.readSandboxAuth()).toString()).toBe("refreshed-fixture");
+      return "copied";
+    });
+    await session.close({ reason: "retry" });
+    await expect(access(source)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(returned)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("stages from the authenticated run snapshot and cleans up after the provider turn", async () => {
