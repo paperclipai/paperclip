@@ -9,8 +9,30 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { execute as executeCodex } from "../../../packages/adapters/codex-local/src/server/execute.js";
+import { isLauncherCapacityFailure } from "@paperclipai/adapter-utils/launcher-capacity";
 
-// Only setup is synthetic. The launcher process, adapter parsing, persistence,
+const remoteRestore = vi.hoisted(() => ({ error: null as Error | null, calls: 0 }));
+vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/execution-target")>();
+  return { ...actual,
+    ensureAdapterExecutionTargetCommandResolvable: async () => {},
+    ensureAdapterExecutionTargetRuntimeCommandInstalled: async () => {},
+    resolveAdapterExecutionTargetCommandForLogs: async (command: string) => command,
+    startAdapterExecutionTargetPaperclipBridge: async () => null,
+    prepareAdapterExecutionTargetRuntime: async () => ({
+      target: { kind: "remote", transport: "ssh" }, workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: "/remote/runtime", assetDirs: { home: "/remote/runtime/home" },
+      restoreWorkspace: async () => { remoteRestore.calls += 1; if (remoteRestore.error) throw remoteRestore.error; },
+    }),
+    // Execute only the local synthetic launcher; never contact an SSH/provider endpoint.
+    runAdapterExecutionTargetProcess: (...args: Parameters<typeof actual.runAdapterExecutionTargetProcess>) => {
+      args[1] = null;
+      return actual.runAdapterExecutionTargetProcess(...args);
+    },
+  };
+});
+
+// Setup and remote transport are synthetic. Launcher, adapter teardown, persistence,
 // scheduler, issue ownership and admission transactions run their real code.
 vi.mock("../../../packages/adapters/codex-local/src/server/runtime-config.js", () => ({
   prepareCodexRuntimeConfig: async () => ({ cleanup: async () => {}, notes: ["Managed MCP setup complete."] }),
@@ -49,7 +71,12 @@ process.exit(5);
         const [issue] = await db.select().from(issues).where(and(eq(issues.companyId, context.agent.companyId),
           eq(issues.id, String(context.context.issueId))));
         issueOwnersAtLaunch.push(issue?.executionRunId ?? null);
-        return executeCodex({ ...context, config: { engine: "cli", launcherCapacityRecovery: true,
+        return executeCodex({ ...context,
+          ...(remoteRestore.error ? { executionTarget: undefined, executionTransport: { remoteExecution: {
+            host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/remote/workspace",
+            remoteCwd: "/remote/workspace", privateKey: "fixture", knownHosts: "fixture", strictHostKeyChecking: true,
+          } } } : {}),
+          config: { engine: "cli", launcherCapacityRecovery: true,
           command: path.join(scratch, "launcher"), cwd: scratch, outputInactivityTimeoutMs: null,
           env: { CODEX_HOME: path.join(scratch, "codex-home"), OPENAI_API_KEY: "test-only" } } });
       },
@@ -125,5 +152,45 @@ process.exit(5);
     expect(recovery[0]).toMatchObject({ status: "active", ownerType: "board", cause: "legacy_execution_requires_reconciliation",
       evidence: { runId: run!.id, originalFailureCode: "launcher_capacity_unavailable", attempt: 3 } });
     expect(recovery[0]?.nextAction).toBeTruthy();
+  }, 30_000);
+
+  it.each([
+    ["restore_unsafe_archive", "Daytona syncOut refusing tarball link whose target escapes the extraction dir: artifact -> /outside"],
+    ["restore_unsafe_archive", "Kubernetes syncOut refusing tarball link whose target escapes the extraction dir: artifact -> /outside"],
+    ["restore_failed", "workspace copy-back failed"],
+  ])("does not create a capacity successor after the real adapter reports %s", async (classification, message) => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Restore test", issuePrefix: `R${companyId.slice(0, 6)}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "test-user" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Restore test", role: "engineer", status: "idle",
+      adapterType, adapterConfig: {}, permissions: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Restore failure", status: "todo",
+      assigneeAgentId: agentId, responsibleUserId: "test-user" });
+    remoteRestore.error = new Error(message);
+    remoteRestore.calls = 0;
+    try {
+      const run = await heartbeat.invoke(agentId, "on_demand", { issueId, wakeReason: "issue_assigned" }, "manual");
+      await heartbeat.drainActiveRunExecutions();
+      const failed = await heartbeat.getRun(run!.id);
+      expect(remoteRestore.calls, JSON.stringify(failed)).toBe(1);
+      expect(failed).toMatchObject({ status: "failed", errorCode: "workspace_restore_failed", resultJson: {
+        stdout: "", workspaceRestoreFailure: classification,
+        executionBeforeRestore: { errorCode: "launcher_capacity_unavailable", exitCode: 5 },
+      } });
+      expect(failed?.resultJson?.stderr).toContain("launcher: no free slot");
+      expect(isLauncherCapacityFailure(failed!)).toBe(false);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))).toHaveLength(0);
+      if (classification === "restore_unsafe_archive") {
+        expect(await heartbeat.scheduleBoundedRetry(run!.id))
+          .toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
+        const recovery = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+        expect(recovery).toHaveLength(1);
+        expect(recovery[0]).toMatchObject({ status: "active", ownerType: "board",
+          evidence: { runId: run!.id, workspaceRestoreFailure: classification } });
+      }
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      remoteRestore.error = null;
+    }
   }, 30_000);
 });

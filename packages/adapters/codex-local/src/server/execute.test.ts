@@ -136,6 +136,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     process.env.CODEX_HOME = sharedHostHome;
     sandboxAuthFixture.bytes = Buffer.from(input.sandboxAuth, "utf8");
 
+    const logs: string[] = [];
     const executionResult = await execute({
       runId: "run-copyback-e2e",
       agent: {
@@ -149,6 +150,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       config: {
         command: "codex",
         engine: "cli",
+        launcherCapacityRecovery: true,
         // External CODEX_HOME (outside the managed company tree) so no managed
         // seeding rewrites auth.json before teardown; equals the shared host home.
         env: { CODEX_HOME: sharedHostHome },
@@ -171,13 +173,14 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
           strictHostKeyChecking: true,
         },
       },
-      onLog: async () => {},
+      onLog: async (_stream, chunk) => { logs.push(chunk); },
     });
 
     return {
       finalHostAuth: await readFile(hostAuthPath, "utf8"),
       finalHostMode: (await lstat(hostAuthPath)).mode & 0o777,
       executionResult,
+      logs,
     };
   }
 
@@ -243,12 +246,14 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       },
     });
 
-    await expect(
-      runTeardown({
-        sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
-        hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
-      }),
-    ).rejects.toThrow("workspace copy-back failed");
+    const result = await runTeardown({
+      sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
+      hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
+    });
+    expect(result.executionResult).toMatchObject({
+      errorCode: "workspace_restore_failed",
+      resultJson: { workspaceRestoreFailure: "restore_failed", executionBeforeRestore: { exitCode: 0 } },
+    });
   });
 
   it("preserves a provider failure when workspace restore also fails", async () => {
@@ -275,6 +280,42 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
       hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
     });
-    expect(result.executionResult.errorMessage).toBe("provider failed first");
+    expect(result.executionResult.errorMessage).toContain("provider failed first");
+    expect(result.executionResult).toMatchObject({
+      errorCode: "workspace_restore_failed",
+      resultJson: {
+        stderr: "provider failed first", workspaceRestoreFailure: "restore_failed",
+        executionBeforeRestore: { exitCode: 1 },
+      },
+    });
+  });
+
+  it.each([
+    ["restore_unsafe_archive", "Daytona syncOut refusing tarball link whose target escapes the extraction dir: artifact -> /outside"],
+    ["restore_unsafe_archive", "Kubernetes syncOut refusing tarball link whose target escapes the extraction dir: artifact -> /outside"],
+    ["restore_failed", "workspace copy-back failed"],
+  ])("makes %s authoritative after an actual launcher refusal and restore failure", async (classification, message) => {
+    runChildProcess.mockImplementationOnce(async (...args: unknown[]) => {
+      const nonce = (args[3] as { env: Record<string, string> }).env.PAPERCLIP_LAUNCHER_NONCE;
+      expect(nonce).toMatch(/^[a-f0-9]{32}$/);
+      return { exitCode: 5, signal: null, timedOut: false, stdout: "",
+        stderr: `launcher: no free slot\npaperclip-launcher:v1:capacity_unavailable:${nonce}\n`,
+        pid: 321, startedAt: new Date().toISOString() };
+    });
+    const restoreWorkspace = vi.fn(async () => { throw new Error(message); });
+    prepareAdapterExecutionTargetRuntime.mockResolvedValueOnce({
+      target: { kind: "remote", transport: "ssh" }, workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: REMOTE_RUNTIME_ROOT, assetDirs: { home: `${REMOTE_RUNTIME_ROOT}/home` }, restoreWorkspace,
+    });
+    const result = await runTeardown({ sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
+      hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }) });
+    expect(restoreWorkspace).toHaveBeenCalledTimes(1);
+    expect(result.executionResult).toMatchObject({ errorCode: "workspace_restore_failed",
+      resultJson: { stdout: "", workspaceRestoreFailure: classification,
+        executionBeforeRestore: { errorCode: "launcher_capacity_unavailable", exitCode: 5 } } });
+    expect(result.executionResult.errorMessage).toContain("launcher: no free slot");
+    expect(result.executionResult.resultJson?.stderr).toContain("paperclip-launcher:v1:capacity_unavailable:");
+    expect(JSON.stringify({ result: result.executionResult, logs: result.logs })).not.toContain("/outside");
+    expect(result.logs.join("")).toContain("[paperclip] Failed to restore workspace changes");
   });
 });
