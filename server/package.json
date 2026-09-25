@@ -89,7 +89,7 @@
     "multer": "^2.2.0",
     "nice-grpc": "2.1.17",
     "nice-grpc-common": "2.0.4",
-    "open": "^11.0.1",
+    "open": "^11.0.4",
     "pino": "^10.0.0",
     "pino-http": "^11.0.0",
     "pino-pretty": "^13.1.3",
