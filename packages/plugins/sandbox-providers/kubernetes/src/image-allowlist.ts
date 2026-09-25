@@ -57,3 +57,32 @@ function rewriteRegistry(image: string, registry: string): string {
   const imageName = segments.slice(2).join("/") || segments[segments.length - 1];
   return `${cleanRegistry}/${imageName}${tag}`;
 }
+
+/**
+ * Picks the Kubernetes `imagePullPolicy` for a resolved image reference.
+ *
+ * Digest-pinned references (`...@sha256:...`) and explicit immutable-looking
+ * version tags (anything other than a floating alias) are safe to cache
+ * across pods with `IfNotPresent` — the reference can only ever resolve to
+ * one set of bytes.
+ *
+ * Floating tags (`:latest`, `:dev`, `:main`, `:stable`, or no tag at all,
+ * which Docker treats as `:latest`) can be re-pointed at a new digest by a
+ * later publish without the reference itself changing. With
+ * `IfNotPresent`, a node that already cached an old `:latest` pull keeps
+ * serving stale bytes to every pod scheduled there until something evicts
+ * the cached layer, so different nodes can silently run different
+ * versions of "the same" image. Force `Always` for those so every pod
+ * start re-checks the registry for the current digest.
+ */
+const FLOATING_TAGS = new Set(["latest", "dev", "main", "stable"]);
+
+export function imagePullPolicyFor(image: string): "Always" | "IfNotPresent" {
+  if (image.includes("@sha256:")) {
+    return "IfNotPresent";
+  }
+  const lastSegment = image.split("/").pop() ?? image;
+  const colonIdx = lastSegment.lastIndexOf(":");
+  const tag = colonIdx >= 0 ? lastSegment.slice(colonIdx + 1) : "latest";
+  return FLOATING_TAGS.has(tag) ? "Always" : "IfNotPresent";
+}

@@ -19,6 +19,15 @@ permissions:
   packages: write
   id-token: write   # cosign keyless OIDC
 
+# Serialize runs so two overlapping `push`-triggered builds can't race to
+# publish the floating :latest alias out of order (an older build finishing
+# after a newer one would otherwise silently move :latest backwards).
+# `cancel-in-progress: false` queues the newer run instead of killing the
+# older one mid-push, so a run is never left half-published.
+concurrency:
+  group: agent-runtime-images-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io/paperclipai
   VERSION: ${{ github.event.inputs.version || format('git-{0}', github.sha) }}
@@ -99,16 +108,16 @@ jobs:
 
       - name: Alias digests under a stable :latest tag
         # The bake step above only ever pushes the VERSION tag (a git-sha on
-        # push/schedule, or an arbitrary string on manual dispatch). Self-hosters
+        # push, or an arbitrary string on manual dispatch). Self-hosters
         # configuring the kubernetes-sandbox plugin have no way to discover or
         # pin the newest git-sha tag, and the plugin's built-in adapter-defaults
         # point at a ":v1" tag that has never been published (#8757, #13544
         # blocker 2), so every unconfigured self-host install gets
         # ImagePullBackOff. `imagetools create` re-tags the already-pushed
         # digest without rebuilding, so this is push-cost only. Skip on manual
-        # dispatch with a custom version — only automated (push/schedule) runs
-        # move the floating tag, so a one-off `workflow_dispatch` test build
-        # can never clobber :latest for real deployments.
+        # dispatch with a custom version — only automated `push` runs move
+        # the floating tag, so a one-off `workflow_dispatch` test build can
+        # never clobber :latest for real deployments.
         if: github.event_name != 'workflow_dispatch'
         run: |
           docker buildx imagetools create -t "${{ env.REGISTRY }}/agent-runtime-base:latest"     "${{ env.REGISTRY }}/agent-runtime-base@${{ steps.bake.outputs.base_digest }}"

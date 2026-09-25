@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { globMatch, resolveImage } from "../../src/image-allowlist.js";
+import { globMatch, resolveImage, imagePullPolicyFor } from "../../src/image-allowlist.js";
 
 describe("globMatch", () => {
   it("matches exact image", () => {
@@ -58,5 +58,36 @@ describe("resolveImage", () => {
         { imageAllowList: ["registry.example.com/*"], imageRegistry: undefined },
       ),
     ).toThrow(/not in allowlist/);
+  });
+});
+
+describe("imagePullPolicyFor", () => {
+  it("uses Always for :latest so nodes can't cache a stale floating tag", () => {
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:latest")).toBe("Always");
+  });
+
+  it("uses Always for other known floating aliases (dev/main/stable)", () => {
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:dev")).toBe("Always");
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:main")).toBe("Always");
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:stable")).toBe("Always");
+  });
+
+  it("uses Always when no tag is given (Docker defaults to :latest)", () => {
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude")).toBe("Always");
+  });
+
+  it("uses IfNotPresent for an immutable-looking version tag", () => {
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:v1")).toBe("IfNotPresent");
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:git-38d8f37")).toBe(
+      "IfNotPresent",
+    );
+  });
+
+  it("uses IfNotPresent for a digest-pinned reference even if it happens to say latest", () => {
+    expect(
+      imagePullPolicyFor(
+        "ghcr.io/paperclipai/agent-runtime-claude@sha256:" + "a".repeat(64),
+      ),
+    ).toBe("IfNotPresent");
   });
 });

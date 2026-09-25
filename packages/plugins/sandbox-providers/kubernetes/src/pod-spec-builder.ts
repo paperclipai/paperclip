@@ -1,3 +1,5 @@
+import { imagePullPolicyFor } from "./image-allowlist.js";
+
 export interface BuildJobManifestInput {
   namespace: string;
   jobName: string;
@@ -58,7 +60,7 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
             {
               name: "agent",
               image: input.image,
-              imagePullPolicy: "IfNotPresent",
+              imagePullPolicy: imagePullPolicyFor(input.image),
               command: ["/usr/bin/tini", "--", "/usr/local/bin/paperclip-agent-shim"],
               // HOME must point at a writable mount; the image's default
               // HOME is inside the readOnly root filesystem. Agent runtimes
