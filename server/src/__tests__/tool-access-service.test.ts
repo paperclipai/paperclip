@@ -10262,6 +10262,135 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  // A generic MCP connection can request less than discovery advertised. If the connection
+  // records discovery's universe as its scope set, a later refresh compares the provider's
+  // response against the wider list and an asserted extra scope stops looking unrequested.
+  it("keeps the narrowed request as the refresh baseline for a generic MCP connection", async () => {
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_NARROW_EXAMPLE_TEST_CLIENT_ID",
+      "narrow-client-id",
+    );
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_NARROW_EXAMPLE_TEST_CLIENT_SECRET",
+      "narrow-client-secret",
+    );
+    const company = await createCompany(db);
+    const userId = `narrow-scope-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const service = createTestToolAccessService(db);
+    let refreshScope: string | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://narrow.example.test/mcp") {
+        const authorization = (init?.headers as Record<string, string>)?.[
+          "Authorization"
+        ];
+        if (!authorization) {
+          return {
+            ok: false,
+            status: 401,
+            headers: {
+              get: (name: string) =>
+                name.toLowerCase() === "www-authenticate"
+                  ? 'Bearer resource_metadata="https://narrow.example.test/.well-known/oauth-protected-resource"'
+                  : null,
+            },
+            text: async () => "",
+            json: async () => ({}),
+          } as Response;
+        }
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [] },
+        });
+      }
+      if (
+        href ===
+        "https://narrow.example.test/.well-known/oauth-protected-resource"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            authorization_endpoint: "https://narrow.example.test/oauth/authorize",
+            token_endpoint: "https://narrow.example.test/oauth/token",
+            // Discovery advertises both; Paperclip will ask for only one.
+            scopes_supported: ["tools.read", "tools.write"],
+          }),
+        } as Response;
+      }
+      if (href === "https://narrow.example.test/oauth/token") {
+        const body = init?.body as URLSearchParams;
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: `access-${randomUUID()}`,
+            refresh_token: `refresh-${randomUUID()}`,
+            expires_in: 3600,
+            token_type: "Bearer",
+            ...(body.get("grant_type") === "refresh_token" && refreshScope
+              ? { scope: refreshScope }
+              : {}),
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const connection = await service.createConnection(company.id, {
+      name: `Narrow generic ${randomUUID()}`,
+      transport: "mcp_remote",
+      config: { url: "https://narrow.example.test/mcp" },
+      enabled: true,
+      status: "active",
+    });
+    const started = await service.startOAuth(company.id, connection.id, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: userId },
+      scopes: ["tools.read"],
+    });
+    expect(new URL(started.authorizationUrl).searchParams.get("scope")).toBe(
+      "tools.read",
+    );
+    await service.completeOAuthCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!,
+      code: "narrow-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: userId },
+    });
+
+    const [afterCallback] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connection.id));
+    // Not ["tools.read", "tools.write"] — the connection records what was asked for.
+    expect(
+      (afterCallback.config.oauth as { scopes?: string[] } | undefined)?.scopes,
+    ).toEqual(["tools.read"]);
+
+    refreshScope = "tools.read tools.write";
+    const [grant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connection.id));
+    await service.refreshOAuthGrantCredentials({
+      companyId: company.id,
+      connectionId: connection.id,
+      grantId: grant.id,
+      forceRefresh: true,
+      actor: { actorType: "user", actorId: userId },
+    });
+
+    const [refreshed] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.id, grant.id));
+    expect(refreshed.providerTenant?.oauth).toMatchObject({
+      scopeSource: "provider",
+      unrequestedScopes: ["tools.write"],
+    });
+  });
+
   // PAP-18538: an over-grant recorded at authorization has to survive the ordinary life of the
   // connection. A refresh is the routine event, and the shared organization identity is the
   // shape the grants API and the Permissions UI read from.

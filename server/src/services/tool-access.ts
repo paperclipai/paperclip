@@ -15947,6 +15947,19 @@ export function toolAccessService(
           tokenScope: token.scope,
           requestedScopes: stateRow.requestedScopes,
         });
+        // The scopes the authorization URL actually sent. The state row records them for
+        // curated and generic connections alike, so it — not discovery's advertised
+        // universe — is the baseline a later refresh judges the provider against. A
+        // curated app keeps its reviewed set even when that set is empty; a generic
+        // connection with nothing recorded falls back to discovery, which is what it
+        // would have sent.
+        const recordedRequestScopes = normalizeOauthScopes(
+          stateRow.requestedScopes,
+        );
+        const authorizedScopes =
+          galleryEntry || recordedRequestScopes.length > 0
+            ? recordedRequestScopes
+            : endpoints.scopes;
         const grantValues = {
           providerTenant: {
             ...(existingUserGrant?.providerTenant ?? {}),
@@ -15993,9 +16006,7 @@ export function toolAccessService(
             authorizationUrl: endpoints.authorizationUrl,
             tokenUrl: endpoints.tokenUrl,
             metadataUrl: endpoints.metadataUrl ?? null,
-            scopes: galleryEntry
-              ? normalizeOauthScopes(stateRow.requestedScopes)
-              : endpoints.scopes,
+            scopes: authorizedScopes,
             clientIdEnv: client.clientIdEnv,
             clientSecretEnv: client.clientSecret
               ? client.clientSecretEnv
@@ -16255,6 +16266,16 @@ export function toolAccessService(
         tokenScope: token.scope,
         requestedScopes: stateRow.requestedScopes,
       });
+      // See the matching note on the personal-grant path: record what the authorization
+      // URL actually asked for, so refresh has the real request as its baseline rather
+      // than discovery's advertised universe.
+      const organizationRequestScopes = normalizeOauthScopes(
+        stateRow.requestedScopes,
+      );
+      const organizationAuthorizedScopes =
+        galleryEntry || organizationRequestScopes.length > 0
+          ? organizationRequestScopes
+          : endpoints.scopes;
       const nextConfig = {
         ...connection.config,
         oauth: {
@@ -16263,9 +16284,7 @@ export function toolAccessService(
           authorizationUrl: endpoints.authorizationUrl,
           tokenUrl: endpoints.tokenUrl,
           metadataUrl: endpoints.metadataUrl ?? null,
-          scopes: galleryEntry
-            ? normalizeOauthScopes(stateRow.requestedScopes)
-            : endpoints.scopes,
+          scopes: organizationAuthorizedScopes,
           clientIdEnv: client.clientIdEnv,
           clientSecretEnv: client.clientSecret ? client.clientSecretEnv : null,
           credentialScope: credentialScope(connection, input.actor),
