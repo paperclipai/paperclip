@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -75,7 +75,19 @@ const support = await getEmbeddedPostgresTestSupport();
     await expire(run.id);
     const attempts = await Promise.all([revokeExpiredLegacyController(db, run), revokeExpiredLegacyController(db, run)]);
     expect(attempts.filter(Boolean)).toHaveLength(1);
-    expect(await renewLegacyControllerLease(db, run)).toBe(false);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(saved.controllerBootId).toBe(run.controllerBootId);
+  });
+  it("a revoked run stays fenced to the boot that lost it", async () => {
+    const run = await seed();
+    await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, run.id));
+    const [foreign] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    await expire(run.id);
+    expect(await revokeExpiredLegacyController(db, foreign)).toBe(true);
+    // Ownership still names the boot that lost the run, so no deployment can renew this
+    // into a live execution on the strength of the reaper's write. Revoking no longer
+    // needs to destroy identity to achieve this.
+    expect(await renewLegacyControllerLease(db, foreign)).toBe(false);
   });
   it("a crash after revocation permits a later recovery claim", async () => {
     const run = await seed();
@@ -87,6 +99,36 @@ const support = await getEmbeddedPostgresTestSupport();
     await expire(run.id);
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
     expect(await revokeExpiredLegacyController(db, saved)).toBe(true);
+  });
+  it("revocation preserves boot identity and latches in a separate token", async () => {
+    const run = await seed();
+    await expire(run.id);
+    expect(await revokeExpiredLegacyController(db, run)).toBe(true);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(saved.controllerBootId).toBe(legacyControllerBootId);
+    expect(saved.controllerRevokeToken).toEqual(expect.any(String));
+    expect(saved.controllerRevokeToken).not.toBe(saved.controllerBootId);
+  });
+  it("a reaped batch stays attributable to the boot that claimed each run", async () => {
+    const runs = await Promise.all([seed(), seed()]);
+    for (const run of runs) await expire(run.id);
+    for (const run of runs) expect(await revokeExpiredLegacyController(db, run)).toBe(true);
+    const saved = await db.select().from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, runs.map(row => row.id)));
+    expect(saved.map(row => row.controllerBootId)).toEqual([legacyControllerBootId, legacyControllerBootId]);
+    expect(new Set(saved.map(row => row.controllerRevokeToken)).size).toBe(2);
+  });
+  it("a recovery snapshot taken before revocation still matches the run afterwards", async () => {
+    const run = await seed();
+    await expire(run.id);
+    expect(await revokeExpiredLegacyController(db, run)).toBe(true);
+    // The recovery backstop ends a run only when the boot id it observed is still the one
+    // on the row. Revocation used to rewrite that value and defeat the compare-and-set.
+    const [ended] = await db.update(heartbeatRuns).set({ status: "interrupted" })
+      .where(and(eq(heartbeatRuns.id, run.id),
+        eq(heartbeatRuns.controllerBootId, run.controllerBootId!)))
+      .returning({ id: heartbeatRuns.id });
+    expect(ended?.id).toBe(run.id);
   });
   it("rejects foreign company renewal and revocation", async () => {
     const run = await seed();

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, gt, lte, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 
 // A boot UUID has meaning across containers; a numeric PID does not.
@@ -47,16 +47,39 @@ export async function hasLiveLegacyController(db: Db, run: Run): Promise<boolean
 }
 
 /** Atomically revoke an expired controller. Renewal and revocation serialize on
- * the run row. Expiry permits cleanup, never dispatch of a replacement agent. */
+ * the run row. Expiry permits cleanup, never dispatch of a replacement agent.
+ *
+ * The latch lives in `controllerRevokeToken`, not `controllerBootId`. Revoking used to
+ * overwrite the boot id with a fresh UUID, which served two incompatible purposes at
+ * once: `controllerBootId` is boot *identity* (the process singleton that claimed the
+ * run, read by every ownership guard), while the random write was really a per-revoke
+ * *CAS token*. Because the token replaced the identity, a run reaped by the current
+ * boot stopped matching that boot, and the 15009/20120/23595 guards could no longer
+ * tell "owned by me" from "owned by a dead predecessor".
+ *
+ * The token is scoped to a lease generation rather than being a permanent flag: a
+ * revoker only matches a NULL token (first revoke of this lease) or the exact token it
+ * read, so two competitors holding the same snapshot still produce exactly one winner,
+ * and a reaper that re-reads an already-revoked row can still revoke it again once the
+ * lease expires a second time. `controllerBootId` is now read-only here. */
 export async function revokeExpiredLegacyController(db: Db, run: Run): Promise<boolean> {
   if (run.runtimeMode === "native" || !run.controllerBootId) return true;
+  // A revoker that observed no token may only take a row nobody has revoked yet. A
+  // revoker that observed one may only re-take that exact lease generation.
+  const observedToken = run.controllerRevokeToken;
   const [revoked] = await db.update(heartbeatRuns).set({
-    controllerBootId: randomUUID(),
+    controllerRevokeToken: randomUUID(),
     controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
   }).where(and(
     eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
     eq(heartbeatRuns.status, "running"),
     eq(heartbeatRuns.controllerBootId, run.controllerBootId),
+    observedToken
+      ? or(
+          isNull(heartbeatRuns.controllerRevokeToken),
+          eq(heartbeatRuns.controllerRevokeToken, observedToken),
+        )
+      : isNull(heartbeatRuns.controllerRevokeToken),
     lte(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
   )).returning({ id: heartbeatRuns.id });
   return Boolean(revoked);

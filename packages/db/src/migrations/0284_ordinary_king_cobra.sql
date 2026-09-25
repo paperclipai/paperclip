@@ -1,0 +1,1 @@
+ALTER TABLE "heartbeat_runs" ADD COLUMN "controller_revoke_token" uuid;

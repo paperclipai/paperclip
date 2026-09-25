@@ -68,8 +68,13 @@ export const heartbeatRuns = pgTable(
     errorCode: text("error_code"),
     externalRunId: text("external_run_id"),
     // Legacy controller lease. A PID alone is not an identity across containers.
+    // controllerBootId is boot IDENTITY: the process singleton that claimed the run.
+    // controllerRevokeToken is the separate per-revocation CAS token. Keeping them in
+    // one column destroyed the identity, because a revoke overwrote it with a fresh
+    // UUID and every later comparison against the real boot id stopped matching.
     controllerBootId: uuid("controller_boot_id"),
     controllerLeaseExpiresAt: timestamp("controller_lease_expires_at", { withTimezone: true }),
+    controllerRevokeToken: uuid("controller_revoke_token"),
     executionStage: text("execution_stage"),
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
