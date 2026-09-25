@@ -168,7 +168,7 @@ describe("SidebarCompanyMenu", () => {
     vi.clearAllMocks();
   });
 
-  function renderMenu(options: { cloud?: boolean; health?: unknown } = {}) {
+  function renderMenu(options: { cloud?: boolean; health?: unknown; production?: boolean } = {}) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -178,10 +178,11 @@ describe("SidebarCompanyMenu", () => {
       queryClient.setQueryData(queryKeys.health, options.health ?? CLOUD_HEALTH);
     }
     const root = createRoot(container);
+    const Menu = options.production ? SidebarCompanyMenuProduction : SidebarCompanyMenu;
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarCompanyMenu />
+          <Menu />
         </QueryClientProvider>,
       );
     });
@@ -629,13 +630,15 @@ describe("SidebarCompanyMenu", () => {
       });
     });
 
-    it("uses the built-in company menu when a managed host has no switcher plugin", async () => {
-      const { root } = renderMenu({ cloud: true });
+    it.each([false, true])("keeps company navigation without local creation when a managed host has no switcher plugin (production=%s)", async (production) => {
+      const { root } = renderMenu({ cloud: true, production });
       await flushReact();
       await flushReact();
-      await openMenu("Open Acme Labs organization switcher");
+      await openMenu(`Open Acme Labs ${production ? "company" : "organization"} switcher`);
       expect(document.body.textContent).toContain("Anachronist Wiki");
       expect(document.body.textContent).toContain("ANA");
+      expect(document.body.textContent).not.toContain("Create organization");
+      expect(mockOpenOnboarding).not.toHaveBeenCalled();
       const row = [...document.querySelectorAll('[data-slot="dropdown-menu-item"]')]
         .find(element => element.textContent?.includes("Anachronist Wiki"));
       act(() => row?.dispatchEvent(new MouseEvent("click", { bubbles: true })));

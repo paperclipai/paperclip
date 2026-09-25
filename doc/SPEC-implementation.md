@@ -1000,7 +1000,9 @@ routes remain the only company-creation paths there.
 Core's built-in organization switcher lists this instance's companies. An
 installed plugin can replace it through the generic `organizationSwitcher`
 slot. The built-in menu remains available when no unique usable contribution
-exists. Core does not fetch or render Cloud portfolios in its switcher.
+exists. Core does not fetch or render Cloud portfolios in its switcher. Managed
+hosts do not expose local company creation in that built-in menu; their extension
+owns the creation action.
 
 The Cloud Members-page invitation action still uses the following route:
 

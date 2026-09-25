@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { useSignOut } from "@/hooks/useSignOut";
@@ -194,6 +195,8 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
     !hidesCompanyPage(hiddenSettings, "company.invites");
   const switcherNoun = "organization";
   const currentName = selectedCompany?.name ?? null;
+  // Managed hosts forbid local company creation. Their extension owns that action.
+  const companyCreationManaged = Boolean(useCloudInstance());
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
@@ -225,6 +228,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
   }
 
   function addCompany() {
+    if (companyCreationManaged) return;
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
     // Skip the front-door "how would you like to get started?" choice and land
@@ -354,16 +358,18 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
           ) : null}
         </div>
         <div className="flex flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
-          <DropdownMenuItem
-            onClick={addCompany}
-            className={ORGANIZATION_ACTION_CLASS}
-            disabled={isEditingOrder}
-          >
-            <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
-              <Plus className="size-4" />
-            </span>
-            <span className="min-w-0 flex-1 truncate">Create organization</span>
-          </DropdownMenuItem>
+          {!companyCreationManaged && (
+            <DropdownMenuItem
+              onClick={addCompany}
+              className={ORGANIZATION_ACTION_CLASS}
+              disabled={isEditingOrder}
+            >
+              <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                <Plus className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1 truncate">Create organization</span>
+            </DropdownMenuItem>
+          )}
           {showInvitePeople ? (
             <DropdownMenuItem asChild disabled={isEditingOrder} className={ORGANIZATION_ACTION_CLASS}>
               <Link
