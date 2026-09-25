@@ -159,6 +159,24 @@ describe("parseIssueExecutionState", () => {
     expect(state).not.toBeNull();
     expect(state!.status).toBe("pending");
   });
+
+  it("parses a server-owned confirmation binding without review instructions", () => {
+    const interactionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const state = parseIssueExecutionState({
+      status: "pending",
+      currentStageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+      returnAssignee: { type: "agent", agentId: coderAgentId },
+      reviewRequest: { id: interactionId },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    });
+
+    expect(state?.reviewRequest).toEqual({ id: interactionId });
+  });
 });
 
 describe("issue execution policy transitions", () => {
