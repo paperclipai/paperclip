@@ -1,5 +1,10 @@
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
+import {
+  HEARTBEAT_RUN_LIST_DEFAULT_LIMIT,
+  HEARTBEAT_RUN_LIST_MAX_LIMIT,
+  readRunQueryInt,
+} from "./run-query-limits.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
@@ -285,13 +290,6 @@ function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
   if (!Number.isFinite(parsed)) return RUN_LOG_DEFAULT_LIMIT_BYTES;
   return Math.max(1, Math.min(RUN_LOG_MAX_LIMIT_BYTES, Math.trunc(parsed)));
-}
-
-function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  if (parsed <= 0) return fallback;
-  return Math.min(max, Math.trunc(parsed));
 }
 
 function readRunIssueId(context: Record<string, unknown> | null) {
@@ -6645,8 +6643,14 @@ export function agentRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
-    const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    // An omitted `limit` used to mean "every run this company ever recorded".
+    // For a long-lived agent that is tens of thousands of rows with per-row
+    // jsonb projections, and the page it backs never opens. Default instead.
+    const limit = readRunQueryInt(
+      req.query.limit,
+      HEARTBEAT_RUN_LIST_MAX_LIMIT,
+      HEARTBEAT_RUN_LIST_DEFAULT_LIMIT,
+    );
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
     res.json(await runRedactions.redactForRuns(companyId, runs));
@@ -6691,8 +6695,8 @@ export function agentRoutes(
     // callers asking for "live runs" get only actually-live runs — otherwise
     // every caller with no minCount param gets up to 50 historical runs
     // padded in and renders bogus "live" counts.
-    const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 0);
-    const limit = readLiveRunsQueryInt(req.query.limit, 50, 50);
+    const minCount = readRunQueryInt(req.query.minCount, 50, 0);
+    const limit = readRunQueryInt(req.query.limit, 50, 50);
 
     const columns = {
       id: heartbeatRuns.id,
