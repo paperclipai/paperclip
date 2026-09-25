@@ -20,7 +20,7 @@ import type {
   InstanceSettings,
 } from "@paperclipai/shared";
 import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
-import { AdapterLoginPanel } from "./AgentConfigForm";
+import { AdapterLoginPanel, ModelDropdown } from "./AgentConfigForm";
 import {
   CONNECT_SOURCE_NAMES,
   OnboardingCardField,
@@ -84,10 +84,6 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
-import {
-  extractModelName,
-  extractProviderIdWithFallback
-} from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
 import { listUIAdapters } from "../adapters";
 import { isVisualAdapterChoice } from "../adapters/metadata";
@@ -108,7 +104,7 @@ import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/a
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+import { isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
   canGoBackFromOnboardingStep,
   canJumpToOnboardingStep,
@@ -139,7 +135,6 @@ import {
   ArrowRight,
   Check,
   Loader2,
-  ChevronDown,
 } from "lucide-react";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -568,7 +563,6 @@ function OnboardingWizardInner({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
-  const [modelSearch, setModelSearch] = useState("");
 
   // Step 1
   const [companyName, setCompanyName] = useState((saved?.companyName as string) ?? "");
@@ -1497,10 +1491,7 @@ function OnboardingWizardInner({
     // unofferable, so the question is open again.
     setSourcePicked(false);
     if (next === "codex_local") return;
-    if (next === "opencode_local") {
-      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-      return;
-    }
+    if (next === "opencode_local") return;
     if (next === "gemini_local") {
       setModel(DEFAULT_GEMINI_LOCAL_MODEL);
       return;
@@ -1567,7 +1558,6 @@ function OnboardingWizardInner({
     setConnectCredentialStored(false);
   }, [step]);
 
-  const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
     adapterEnvResult?.checks.some(
       (check) =>
@@ -1577,42 +1567,6 @@ function OnboardingWizardInner({
     adapterType === "claude_local" &&
     adapterEnvResult?.status === "fail" &&
     hasAnthropicApiKeyOverrideCheck;
-  const filteredModels = useMemo(() => {
-    const query = modelSearch.trim().toLowerCase();
-    return (adapterModels ?? []).filter((entry) => {
-      if (!query) return true;
-      const provider = extractProviderIdWithFallback(entry.id, "");
-      return (
-        entry.id.toLowerCase().includes(query) ||
-        entry.label.toLowerCase().includes(query) ||
-        provider.toLowerCase().includes(query)
-      );
-    });
-  }, [adapterModels, modelSearch]);
-  const groupedModels = useMemo(() => {
-    if (adapterType !== "opencode_local") {
-      return [
-        {
-          provider: "models",
-          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id))
-        }
-      ];
-    }
-    const groups = new Map<string, Array<{ id: string; label: string }>>();
-    for (const entry of filteredModels) {
-      const provider = extractProviderIdWithFallback(entry.id);
-      const bucket = groups.get(provider) ?? [];
-      bucket.push(entry);
-      groups.set(provider, bucket);
-    }
-    return Array.from(groups.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([provider, entries]) => ({
-        provider,
-        entries: [...entries].sort((a, b) => a.id.localeCompare(b.id))
-      }));
-  }, [filteredModels, adapterType]);
-
   function reset() {
     onboardingDraftStorage.clear();
     // Back to the first step — "Name your organization". There is no front
@@ -1827,9 +1781,7 @@ function OnboardingWizardInner({
             ? model || DEFAULT_KIMI_LOCAL_MODEL
           : adapterType === "cursor"
             ? model || DEFAULT_CURSOR_LOCAL_MODEL
-            : adapterType === "opencode_local"
-              ? model || DEFAULT_OPENCODE_LOCAL_MODEL
-              : model,
+          : model,
       command,
       args,
       url,
@@ -2691,8 +2643,7 @@ function OnboardingWizardInner({
                         autoConnectStartedRef.current = false;
                         setSourcePicked(true);
                         setAdapterType(id);
-                        if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                        else if (id !== "codex_local") setModel("");
+                        if (id !== "codex_local") setModel("");
                         setConnectPhase("collapsing");
                       }}
                     />
@@ -2895,12 +2846,29 @@ function OnboardingWizardInner({
                     ) : null}
                   </motion.div>
 
-                  {/* Conditional adapter fields */}
-                  {/* No model picker. Every adapter this step offers resolves
-                      its own default (see buildAdapterConfig), so the picker
-                      asked the customer to choose a model before they had any
-                      way to judge one — and the agent's model is changeable
-                      later, where its work gives the choice meaning. */}
+                  {adapterType === "opencode_local" && (
+                    <div className="space-y-2">
+                      <ModelDropdown
+                        models={adapterModels ?? []}
+                        value={model}
+                        onChange={setModel}
+                        open={modelOpen}
+                        onOpenChange={setModelOpen}
+                        allowDefault={false}
+                        required
+                        groupByProvider
+                        creatable
+                        emptyDetectHint="No model discovered. Enter a provider/model value manually."
+                      />
+                      {adapterModelsError && (
+                        <p className="text-xs text-destructive">
+                          {adapterModelsError instanceof Error
+                            ? adapterModelsError.message
+                            : "Failed to load OpenCode models."}
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                   {/* Progress is shown above; failed checks remain actionable here. */}
                   {/* Not while the hire is in flight. The probe's result lands
