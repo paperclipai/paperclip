@@ -241,6 +241,52 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(checked).toBe(true);
   });
 
+  it("skips malformed queued comment ids instead of failing the whole liveness batch", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    const [comment] = await db.insert(issueComments).values({
+      companyId, issueId, authorAgentId: agentId, createdByRunId: null, body: "Mentioned follow-up",
+    }).returning();
+    const missingCommentId = randomUUID();
+    // An 8-char short form, like the id observed in a live wake payload. It is
+    // not a uuid, so it can never match a comment row, but it used to abort the
+    // whole `inArray` statement and block every queued wake for the issue.
+    const malformedCommentId = "0422d095";
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let result: { liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean } | null = null;
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
+      result = await ports.transaction.getQueuedCommentLiveness({
+        companyId, issueId, wakeAgentId: agentId, finishingRunId: runId, finishingRunAgentId: agentId,
+        queuedCommentIds: [comment.id, malformedCommentId, missingCommentId],
+      });
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    expect(result).not.toBeNull();
+    expect(result!.liveNonSelfCommentIds).toEqual([comment.id]);
+    expect(result!.containedSelfAuthoredComment).toBe(false);
+  });
+
+  it("treats an all-malformed queued comment id list as nothing live", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let result: { liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean } | null = null;
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
+      result = await ports.transaction.getQueuedCommentLiveness({
+        companyId, issueId, wakeAgentId: agentId, finishingRunId: runId, finishingRunAgentId: agentId,
+        queuedCommentIds: ["0422d095"],
+      });
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    expect(result).not.toBeNull();
+    expect(result!.liveNonSelfCommentIds).toEqual([]);
+    expect(result!.containedSelfAuthoredComment).toBe(false);
+  });
+
   it.each([false, true])("rechecks disabled chat mode before interrupted queue promotion (conversation=%s)", async (conversation) => {
     const settings = instanceSettingsService(db);
     const original = (await settings.getExperimental()).enableAgentChat;
