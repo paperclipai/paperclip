@@ -9044,6 +9044,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
           blockedTransitionAt: issues.blockedTransitionAt,
+          unblockDescriptor: issues.unblockDescriptor,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -9091,6 +9092,7 @@ export function issueService(db: Db) {
           assigneeAgentId: candidate.assigneeAgentId!,
           blockerIssueIds: readiness.blockerIssueIds,
           blockedTransitionAt: candidate.blockedTransitionAt,
+          unblockDescriptor: candidate.unblockDescriptor,
         }));
     },
 
