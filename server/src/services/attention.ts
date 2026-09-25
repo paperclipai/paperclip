@@ -25,6 +25,8 @@ import {
   documents,
   projects,
   projectWorkspaces,
+  routines,
+  routineRuns,
 } from "@paperclipai/db";
 import { deriveProjectUrlKey } from "@paperclipai/shared";
 import type {
@@ -78,6 +80,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "failed_run",
   "budget_alert",
   "agent_error_alert",
+  "routine_dispatch_failed",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -93,12 +96,13 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   blocker_attention: 2,
   budget_alert: 3,
   agent_error_alert: 4,
-  approval: 5,
-  decision: 6,
-  issue_thread_interaction: 7,
-  review: 8,
-  productivity_review: 9,
-  join_request: 10,
+  routine_dispatch_failed: 5,
+  approval: 6,
+  decision: 7,
+  issue_thread_interaction: 8,
+  review: 9,
+  productivity_review: 10,
+  join_request: 11,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -1857,6 +1861,62 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             kind: "agent_error",
             agentName: agent.name,
             failureReasonExcerpt: excerpt(agent.errorReason),
+            images: [],
+          },
+        }));
+      }
+
+      // A routine whose dispatch keeps being refused (e.g. its assignee is
+      // paused) has no heartbeatRuns row to drive the failed_run source above
+      // — the refusal only ever reaches routineRuns. Surface it here instead,
+      // scoped to each routine's latest firing so a later success clears it.
+      const latestRoutineRunRows = await db
+        .selectDistinctOn([routineRuns.routineId], {
+          routineId: routineRuns.routineId,
+          status: routineRuns.status,
+          failureReason: routineRuns.failureReason,
+          triggeredAt: routineRuns.triggeredAt,
+          updatedAt: routineRuns.updatedAt,
+          routineTitle: routines.title,
+          routineStatus: routines.status,
+        })
+        .from(routineRuns)
+        .innerJoin(routines, eq(routineRuns.routineId, routines.id))
+        .where(and(eq(routines.companyId, companyId), eq(routines.status, "active")))
+        .orderBy(routineRuns.routineId, desc(routineRuns.createdAt), desc(routineRuns.id));
+
+      for (const run of latestRoutineRunRows) {
+        if (run.status !== "failed") continue;
+        const dedupKey = `routine_dispatch_failed:${run.routineId}`;
+        add(createItem({
+          companyId,
+          sourceKind: "routine_dispatch_failed",
+          subject: {
+            kind: "routine",
+            id: run.routineId,
+            companyId,
+            title: run.routineTitle,
+            identifier: null,
+            status: run.routineStatus,
+            href: `/${prefix}/routines/${run.routineId}`,
+          },
+          whyNow: "The routine's most recent firing was refused and no later firing has succeeded.",
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the routine's run history." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "routines.status = 'active' AND its latest routine_runs.status = 'failed'",
+          exitRule: "The routine's latest run succeeds or the row is dismissed.",
+          dedupKey,
+          severity: "high",
+          activityAt: toIso(run.updatedAt),
+          createdAt: toIso(run.triggeredAt),
+          updatedAt: toIso(run.updatedAt),
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(run.failureReason),
             images: [],
           },
         }));

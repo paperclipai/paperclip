@@ -234,6 +234,13 @@ export interface RoutineTriggerSecretMaterial {
   webhookSecret: string;
 }
 
+export interface RoutineHealth {
+  state: "ok" | "failing" | "unknown";
+  reason: string | null;
+  since: Date | null;
+  consecutiveFailures: number;
+}
+
 export interface RoutineDetail extends Routine {
   project: RoutineProjectSummary | null;
   assignee: RoutineAgentSummary | null;
@@ -242,6 +249,7 @@ export interface RoutineDetail extends Routine {
   triggers: RoutineTrigger[];
   recentRuns: RoutineRunSummary[];
   activeIssue: RoutineIssueSummary | null;
+  health: RoutineHealth;
 }
 
 export interface RoutineRunSummary extends RoutineRun {
@@ -267,4 +275,5 @@ export interface RoutineListItem extends Routine {
   triggers: Pick<RoutineTrigger, "id" | "kind" | "label" | "enabled" | "cronExpression" | "timezone" | "nextRunAt" | "lastFiredAt" | "lastResult">[];
   lastRun: RoutineRunSummary | null;
   activeIssue: RoutineIssueSummary | null;
+  health: RoutineHealth;
 }
