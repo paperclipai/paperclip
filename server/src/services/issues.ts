@@ -1,5 +1,10 @@
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
+import {
+  ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+  findLatestWatchdogDecisionState,
+  silenceStartedAt,
+} from "../modules/active-run-watchdog/index.js";
 import { documentService } from "./documents.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
@@ -2048,6 +2053,47 @@ export type ChildIssueCompletionSummary = {
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
   return checkoutRunId == null;
+}
+
+type HeartbeatRunSilenceRow = {
+  status: string;
+  lastOutputAt: Date | null;
+  processStartedAt: Date | null;
+  startedAt: Date | null;
+  createdAt: Date | null;
+};
+
+/**
+ * Silence age of a still-running heartbeat run, computed the same way the
+ * active-run watchdog computes it (`lastOutputAt ?? processStartedAt ??
+ * startedAt ?? createdAt`). Returns null for a run that is not `running`.
+ */
+export function criticallySilentRunAgeMs(
+  run: HeartbeatRunSilenceRow,
+  now: Date,
+): number | null {
+  if (run.status !== "running") return null;
+  const silenceStart = silenceStartedAt(run);
+  return silenceStart
+    ? Math.max(0, now.getTime() - silenceStart.getTime())
+    : null;
+}
+
+/**
+ * A holding run counts as critically silent when it still reports `running`
+ * but has produced no output for at least the platform's critical active-run
+ * output threshold. Such a run keeps its process alive but can no longer make
+ * progress, so it may be superseded from issue run bindings — but only by the
+ * issue's own assignee agent (see the call sites gating on the assignee).
+ */
+export function isCriticallySilentRunningRun(
+  run: HeartbeatRunSilenceRow,
+  now: Date,
+): boolean {
+  const silenceAgeMs = criticallySilentRunAgeMs(run, now);
+  return (
+    silenceAgeMs !== null && silenceAgeMs >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
+  );
 }
 
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
@@ -7424,6 +7470,32 @@ export function issueService(db: Db) {
     return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
 
+  // A critically-silent holding run is only supersede-eligible when the
+  // watchdog has not explicitly protected it. An active snooze/continue
+  // decision (snoozedUntil in the future) or a durable dismissed-false-positive
+  // decision means the silence signal was deliberately overruled, so the
+  // binding supersede must wait until that protection lapses. Decisions are
+  // read with the same semantics the recovery scanner uses, through the
+  // caller's active transaction handle so the read never re-enters the outer
+  // pool from inside a transaction.
+  async function holdingRunIsWatchdogProtected(
+    dbOrTx: DbReader,
+    companyId: string,
+    runId: string,
+    now: Date,
+  ): Promise<boolean> {
+    const decisionState = await findLatestWatchdogDecisionState(
+      dbOrTx,
+      companyId,
+      runId,
+      now,
+    );
+    return (
+      decisionState.dismissedFalsePositive ||
+      decisionState.quietUntilDecision !== null
+    );
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -7434,6 +7506,7 @@ export function issueService(db: Db) {
       const lockedIssue = await tx
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
@@ -7465,7 +7538,13 @@ export function issueService(db: Db) {
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({
+            status: heartbeatRuns.status,
+            lastOutputAt: heartbeatRuns.lastOutputAt,
+            processStartedAt: heartbeatRuns.processStartedAt,
+            startedAt: heartbeatRuns.startedAt,
+            createdAt: heartbeatRuns.createdAt,
+          })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
           .then((rows) => rows[0] ?? null),
@@ -7475,15 +7554,29 @@ export function issueService(db: Db) {
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
+      const now = new Date();
+      const criticalSilenceAgeMs = existingRun
+        ? criticallySilentRunAgeMs(existingRun, now)
+        : null;
+      const criticallySilentForSupersede =
+        criticalSilenceAgeMs !== null &&
+        criticalSilenceAgeMs >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS &&
+        !(await holdingRunIsWatchdogProtected(
+          tx,
+          lockedIssue.companyId,
+          input.expectedCheckoutRunId,
+          now,
+        ));
       const stale =
-        !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
+        !existingRun ||
+        TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status) ||
+        criticallySilentForSupersede;
       const actorLive =
         actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
       }
 
-      const now = new Date();
       const adopted = await tx
         .update(issues)
         .set({
@@ -7509,6 +7602,31 @@ export function issueService(db: Db) {
         })
         .then((rows) => rows[0] ?? null);
       if (adopted) {
+        if (criticalSilenceAgeMs !== null) {
+          // The superseded run still claimed to be running; adoption happened
+          // through the critically-silent supersede authority, so leave an
+          // audit trail. Terminal-run adoption keeps its silent, pre-existing
+          // behavior.
+          await logActivity(tx as unknown as Db, {
+            companyId: lockedIssue.companyId,
+            actorType: "agent",
+            actorId: input.actorAgentId,
+            agentId: input.actorAgentId,
+            runId: input.actorRunId,
+            action: "issue.checkout_lock_superseded",
+            entityType: "issue",
+            entityId: input.issueId,
+            details: {
+              source: "issues.adoptStaleCheckoutRun",
+              supersededRunId: input.expectedCheckoutRunId,
+              supersededRunStatus: existingRun?.status ?? null,
+              actorAgentId: input.actorAgentId,
+              actorRunId: input.actorRunId,
+              silenceAgeMs: criticalSilenceAgeMs,
+              criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+            },
+          });
+        }
         return { adopted, latest: adopted };
       }
 
@@ -11743,11 +11861,65 @@ export function issueService(db: Db) {
             tx,
           );
           if (!stale) {
-            throw conflict("Only checkout run can release issue", {
-              issueId: existing.id,
-              assigneeAgentId: existing.assigneeAgentId,
-              checkoutRunId: existing.checkoutRunId,
-              actorRunId: actorRunId ?? null,
+            // Same-assignee supersede: a holding run that still claims to be
+            // running but has been critically silent can no longer make
+            // progress, so the issue's own assignee may release past it. The
+            // enclosing branch already guarantees
+            // existing.assigneeAgentId === actorAgentId, so cross-agent
+            // attempts never reach this path.
+            const holdingRun = await tx
+              .select({
+                status: heartbeatRuns.status,
+                lastOutputAt: heartbeatRuns.lastOutputAt,
+                processStartedAt: heartbeatRuns.processStartedAt,
+                startedAt: heartbeatRuns.startedAt,
+                createdAt: heartbeatRuns.createdAt,
+              })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, existing.checkoutRunId))
+              .then((rows) => rows[0] ?? null);
+            const silenceAgeMs = holdingRun
+              ? criticallySilentRunAgeMs(holdingRun, new Date())
+              : null;
+            const watchdogProtected = holdingRun
+              ? await holdingRunIsWatchdogProtected(
+                  tx,
+                  existing.companyId,
+                  existing.checkoutRunId,
+                  new Date(),
+                )
+              : false;
+            const supersedeAllowed =
+              holdingRun != null &&
+              silenceAgeMs !== null &&
+              silenceAgeMs >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS &&
+              !watchdogProtected;
+            if (!supersedeAllowed) {
+              throw conflict("Only checkout run can release issue", {
+                issueId: existing.id,
+                assigneeAgentId: existing.assigneeAgentId,
+                checkoutRunId: existing.checkoutRunId,
+                actorRunId: actorRunId ?? null,
+              });
+            }
+            await logActivity(tx as unknown as Db, {
+              companyId: existing.companyId,
+              actorType: "agent",
+              actorId: actorAgentId,
+              agentId: actorAgentId,
+              runId: actorRunId ?? null,
+              action: "issue.checkout_lock_superseded",
+              entityType: "issue",
+              entityId: existing.id,
+              details: {
+                source: "issues.release",
+                supersededRunId: existing.checkoutRunId,
+                supersededRunStatus: holdingRun.status,
+                actorAgentId,
+                actorRunId: actorRunId ?? null,
+                silenceAgeMs,
+                criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+              },
             });
           }
         }

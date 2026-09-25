@@ -541,4 +541,221 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionRunId: currentRunId,
     });
   });
+
+  it("lets the assignee PATCH a status transition past a critically-silent checkout owner", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const silentRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: silentRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      processStartedAt: new Date(Date.now() - 5 * 60 * 60 * 1000),
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Critically silent checkout lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: silentRunId,
+      executionRunId: silentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+      // A scheduled issue monitor is a real review path, so the agent in_review
+      // disposition guard is satisfied — this isolates the test to the
+      // critically-silent supersede path.
+      monitorNextCheckAt: new Date(Date.now() + 60_000),
+    });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("in_review");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    // Leaving in_progress for in_review hands the issue to review, so the run
+    // bindings are cleared after the transition; the supersede is what let the
+    // assignee's fresh run past the critically-silent owner in the first place.
+    expect(row).toEqual({
+      status: "in_review",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const supersedeAudit = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.checkout_lock_superseded"));
+    expect(supersedeAudit).toHaveLength(1);
+    expect(supersedeAudit[0]?.details).toMatchObject({
+      source: "issues.adoptStaleCheckoutRun",
+      supersededRunId: silentRunId,
+      supersededRunStatus: "running",
+      actorAgentId: agentId,
+      actorRunId: currentRunId,
+      criticalThresholdMs: expect.any(Number),
+    });
+  });
+
+  it("lets the rightful assignee release past a critically-silent checkout owner and audits it", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const silentRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: silentRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      processStartedAt: new Date(Date.now() - 5 * 60 * 60 * 1000),
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Critically silent release",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: silentRunId,
+      executionRunId: silentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/release`)
+      .send();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const supersedeAudit = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.checkout_lock_superseded"));
+    expect(supersedeAudit).toHaveLength(1);
+    // The release route's assertAgentIssueMutationAllowed pre-flight adopts the
+    // superseded checkout ownership before svc.release runs, so the audit entry
+    // names the adoption source. The direct release supersede is covered at the
+    // service level in issues-service.test.ts.
+    expect(supersedeAudit[0]?.details).toMatchObject({
+      source: "issues.adoptStaleCheckoutRun",
+      supersededRunId: silentRunId,
+      supersededRunStatus: "running",
+      actorAgentId: agentId,
+      actorRunId: currentRunId,
+      silenceAgeMs: expect.any(Number),
+    });
+  });
+
+  it("still returns 409 for a different agent against a critically-silent checkout owner", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const otherAgentId = randomUUID();
+    const otherRunId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    const silentRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: silentRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      processStartedAt: new Date(Date.now() - 5 * 60 * 60 * 1000),
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Silent lock resists cross-agent takeover",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: silentRunId,
+      executionRunId: silentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const patchRes = await request(createApp(agentActor(companyId, otherAgentId, otherRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Should fail" });
+    expect(patchRes.status, JSON.stringify(patchRes.body)).toBe(409);
+
+    const releaseRes = await request(createApp(agentActor(companyId, otherAgentId, otherRunId)))
+      .post(`/api/issues/${issueId}/release`)
+      .send();
+    expect(releaseRes.status, JSON.stringify(releaseRes.body)).toBe(409);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      checkoutRunId: silentRunId,
+      executionRunId: silentRunId,
+    });
+
+    const supersedeAudit = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.checkout_lock_superseded"));
+    expect(supersedeAudit).toHaveLength(0);
+  });
 });

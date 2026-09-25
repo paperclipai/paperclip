@@ -1110,6 +1110,40 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("allows a PATCH status transition after superseded checkout ownership and audits the adoption", async () => {
+    const supersededRunId = "99999999-9999-4999-8999-999999999999";
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({
+      ...makeIssue(),
+      adoptedFromRunId: supersededRunId,
+    });
+    // A pending interaction is a valid review path, so the agent in_review guard
+    // is satisfied — this isolates the test to the superseded-ownership path.
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{ status: "pending" }] as never);
+
+    const app = await createApp(ownerActor());
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        action: "issue.checkout_lock_adopted",
+        entityType: "issue",
+        entityId: issueId,
+        details: expect.objectContaining({
+          previousCheckoutRunId: supersededRunId,
+          checkoutRunId: ownerRunId,
+          reason: "stale_checkout_run",
+        }),
+      }),
+    );
+  });
+
   it("stores the authenticated agent run id when creating work products", async () => {
     const app = await createApp(ownerActor());
 

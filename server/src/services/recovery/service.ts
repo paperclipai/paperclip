@@ -140,7 +140,16 @@ import {
   WatchdogDecisionApplicationError,
   type RunOutputSilenceSummary,
   type WatchdogDecisionActor,
+  ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
+  ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+  ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
 } from "../../modules/active-run-watchdog/index.js";
+
+export {
+  ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
+  ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+  ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+};
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -153,9 +162,6 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
   "cancelled",
   "timed_out",
 ] as const;
-export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
-export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
-export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND =
   RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
