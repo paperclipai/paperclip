@@ -82,8 +82,27 @@ describe("describeIssueWriteDenial", () => {
 
   it("gives the run-context denial a copy-pasteable fix", () => {
     const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
+    expect(copy.status).toBe(403);
     expect(copy.sanctionedPath).toContain("X-Paperclip-Run-Id");
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+  });
+
+  it("directs a valid run without a persisted source issue to a new issue-scoped run", () => {
+    const code = "cross_issue_influence_source_issue_required";
+    expect(ISSUE_WRITE_DENIAL_CODES).toContain(code);
+    expect(isIssueWriteDenialCode(code)).toBe(true);
+    const copy = describeIssueWriteDenial(code);
+
+    expect(copy).toMatchObject({
+      code: "cross_issue_influence_source_issue_required",
+      status: 403,
+      tone: "boundary",
+      title: "This run has no source issue",
+    });
+    expect(copy.description).toContain("persisted source issue");
+    expect(copy.sanctionedPath).toContain("new issue-scoped run");
+    expect(copy.sanctionedPath).toContain("persisted source issue");
+    expect(copy.sanctionedPath).not.toMatch(/X-Paperclip-Run-Id|PAPERCLIP_RUN_ID/);
   });
 
   it("tells a spoof attempt that the write itself was fine", () => {
@@ -180,5 +199,17 @@ describe("issueWriteDenialResponse", () => {
     expect(issueWriteDenialResponse("issue_write_assignee_run_lock").status).toBe(409);
     expect(issueWriteDenialResponse("issue_write_attribution_spoof_rejected").status).toBe(422);
     expect(issueWriteDenialResponse("issue_write_not_visible").status).toBe(403);
+  });
+
+  it("exposes the missing-source diagnostic in structured and flattened API errors", () => {
+    const { status, body } = issueWriteDenialResponse("cross_issue_influence_source_issue_required");
+
+    expect(status).toBe(403);
+    expect(body.details.code).toBe("cross_issue_influence_source_issue_required");
+    expect(body.details.sanctionedPath).toContain("new issue-scoped run");
+    expect(body.details.sanctionedPath).toContain("persisted source issue");
+    expect(body.error).toContain("new issue-scoped run");
+    expect(body.error).toContain("persisted source issue");
+    expect(body.error).not.toMatch(/X-Paperclip-Run-Id|PAPERCLIP_RUN_ID/);
   });
 });

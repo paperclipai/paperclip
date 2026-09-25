@@ -620,6 +620,12 @@ rollout mode, and fails closed with the cap in the error once enforcement is
 active. Writes to the run's own source issue are not counted. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
 
+A validated run without a persisted source issue also fails closed with
+`cross_issue_influence_source_issue_required`. Its diagnostic directs the agent
+to a new issue-scoped run; checkout or resending the current run header does not
+populate that source context. Missing, invalid, or mismatched runs retain the
+generic `cross_issue_influence_run_context_required` denial.
+
 Agent-authored issue comments persist the responsible user derived from the
 authenticated actor; clients cannot choose that attribution. Each comment also
 records the write-policy reason, and spoof attempts fail with an audited 422.
