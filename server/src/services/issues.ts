@@ -7424,6 +7424,50 @@ export function issueService(db: Db) {
     return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
 
+  async function withActiveCheckoutRun<T>(input: {
+    issueId: string;
+    companyId: string;
+    agentId: string;
+    checkoutRunId: string;
+    operation: (tx: DbTransaction) => Promise<T>;
+  }): Promise<T> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${input.issueId} for update`,
+      );
+      await tx.execute(
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.checkoutRunId} for update`,
+      );
+      const checkoutRun = await tx
+        .select({
+          status: heartbeatRuns.status,
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.checkoutRunId))
+        .then((rows) => rows[0] ?? null);
+      const isOwnedRun = checkoutRun
+        && checkoutRun.companyId === input.companyId
+        && checkoutRun.agentId === input.agentId;
+      if (!isOwnedRun) {
+        throw conflict("Issue checkout requires an active heartbeat run", {
+          code: "checkout_run_not_active",
+          checkoutRunId: input.checkoutRunId,
+          runStatus: "missing",
+        });
+      }
+      if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(checkoutRun.status)) {
+        throw conflict("Issue checkout requires an active heartbeat run", {
+          code: "checkout_run_not_active",
+          checkoutRunId: input.checkoutRunId,
+          runStatus: checkoutRun.status,
+        });
+      }
+      return input.operation(tx);
+    });
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -7533,6 +7577,10 @@ export function issueService(db: Db) {
     actorRunId: string;
   }) {
     return db.transaction(async (tx) => {
+      // Keep the issue -> heartbeat lock order aligned with checkout and stale-lock cleanup.
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${input.issueId} for update`,
+      );
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
@@ -7565,16 +7613,108 @@ export function issueService(db: Db) {
             ),
           ),
         )
-        .returning({
-          id: issues.id,
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          checkoutRunId: issues.checkoutRunId,
-          executionRunId: issues.executionRunId,
-        })
+        .returning()
         .then((rows) => rows[0] ?? null);
 
       return adopted;
+    });
+  }
+
+  async function adoptStaleExecutionRun(input: {
+    issueId: string;
+    companyId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    expectedExecutionRunId: string;
+    expectedStatuses: string[];
+  }) {
+    return db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (
+        !lockedIssue ||
+        !input.expectedStatuses.includes(lockedIssue.status) ||
+        lockedIssue.executionRunId !== input.expectedExecutionRunId ||
+        (lockedIssue.assigneeAgentId !== null &&
+          lockedIssue.assigneeAgentId !== input.actorAgentId)
+      ) {
+        return null;
+      }
+
+      // Lock run rows in a deterministic order after the issue row. The actor
+      // run must remain live until the adoption update commits.
+      for (const runId of [
+        input.expectedExecutionRunId,
+        input.actorRunId,
+      ].sort()) {
+        await tx.execute(
+          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId} for update`,
+        );
+      }
+      const [existingRun, actorRun] = await Promise.all([
+        tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, input.expectedExecutionRunId))
+          .then((rows) => rows[0] ?? null),
+        tx
+          .select({
+            status: heartbeatRuns.status,
+            companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, input.actorRunId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      const stale =
+        !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
+      const actorLive =
+        actorRun &&
+        actorRun.companyId === input.companyId &&
+        actorRun.agentId === input.actorAgentId &&
+        !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
+      if (!stale || !actorLive) return null;
+
+      const now = new Date();
+      const adoptionSet: Record<string, unknown> = {
+        assigneeAgentId: input.actorAgentId,
+        checkoutRunId: input.actorRunId,
+        executionRunId: input.actorRunId,
+        executionAgentNameKey: null,
+        executionLockedAt: now,
+        status: "in_progress",
+        updatedAt: now,
+      };
+      if (lockedIssue.status !== "in_progress") {
+        adoptionSet.startedAt = now;
+      }
+
+      return tx
+        .update(issues)
+        .set(adoptionSet)
+        .where(
+          and(
+            eq(issues.id, input.issueId),
+            inArray(issues.status, input.expectedStatuses),
+            eq(issues.executionRunId, input.expectedExecutionRunId),
+            or(
+              isNull(issues.assigneeAgentId),
+              eq(issues.assigneeAgentId, input.actorAgentId),
+            ),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
     });
   }
 
@@ -11305,6 +11445,16 @@ export function issueService(db: Db) {
       expectedStatuses: string[],
       checkoutRunId: string | null,
     ) => {
+      const terminalExpectedStatuses = expectedStatuses.filter(
+        (status) => status === "done" || status === "cancelled",
+      );
+      if (terminalExpectedStatuses.length > 0) {
+        throw unprocessable(
+          "Issue checkout cannot expect terminal issue statuses",
+          { terminalExpectedStatuses },
+        );
+      }
+
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -11338,6 +11488,16 @@ export function issueService(db: Db) {
             "Fail Securely",
             "Secure Defaults",
           ],
+        });
+      }
+
+      if (checkoutRunId) {
+        await withActiveCheckoutRun({
+          issueId: id,
+          companyId: issueCompany.companyId,
+          agentId,
+          checkoutRunId,
+          operation: async () => undefined,
         });
       }
 
@@ -11383,7 +11543,7 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const updated = await db
+      const updateIssue = (dbOrTx: Db | DbTransaction) => dbOrTx
         .update(issues)
         .set({
           assigneeAgentId: agentId,
@@ -11404,6 +11564,15 @@ export function issueService(db: Db) {
         )
         .returning()
         .then((rows) => rows[0] ?? null);
+      const updated = checkoutRunId
+        ? await withActiveCheckoutRun({
+            issueId: id,
+            companyId: issueCompany.companyId,
+            agentId,
+            checkoutRunId,
+            operation: updateIssue,
+          })
+        : await updateIssue(db);
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
@@ -11432,27 +11601,11 @@ export function issueService(db: Db) {
           current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
-        const adopted = await db
-          .update(issues)
-          .set({
-            checkoutRunId,
-            executionRunId: checkoutRunId,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.id, id),
-              eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.checkoutRunId),
-              or(
-                isNull(issues.executionRunId),
-                eq(issues.executionRunId, checkoutRunId),
-              ),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        const adopted = await adoptUnownedCheckoutRun({
+          issueId: id,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+        });
         if (adopted) return adopted;
       }
 
@@ -11490,43 +11643,17 @@ export function issueService(db: Db) {
         current.executionRunId !== checkoutRunId &&
         (current.assigneeAgentId === agentId || current.assigneeAgentId == null)
       ) {
-        const stale = await isTerminalOrMissingHeartbeatRun(
-          current.executionRunId,
-        );
-        if (stale) {
-          const now = new Date();
-          const adoptionSet: Record<string, unknown> = {
-            assigneeAgentId: agentId,
-            checkoutRunId,
-            executionRunId: checkoutRunId,
-            executionAgentNameKey: null,
-            executionLockedAt: now,
-            status: "in_progress",
-            updatedAt: now,
-          };
-          if (current.status !== "in_progress") {
-            adoptionSet.startedAt = now;
-          }
-          const adopted = await db
-            .update(issues)
-            .set(adoptionSet)
-            .where(
-              and(
-                eq(issues.id, id),
-                inArray(issues.status, expectedStatuses),
-                eq(issues.executionRunId, current.executionRunId),
-                or(
-                  isNull(issues.assigneeAgentId),
-                  eq(issues.assigneeAgentId, agentId),
-                ),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
-          if (adopted) {
-            const [enriched] = await withIssueLabels(db, [adopted]);
-            return enriched;
-          }
+        const adopted = await adoptStaleExecutionRun({
+          issueId: id,
+          companyId: issueCompany.companyId,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+          expectedExecutionRunId: current.executionRunId,
+          expectedStatuses,
+        });
+        if (adopted) {
+          const [enriched] = await withIssueLabels(db, [adopted]);
+          return enriched;
         }
       }
 

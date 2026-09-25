@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -6076,6 +6084,430 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
+  it("rejects the exact late checkout from a succeeded run without reopening the done issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const succeededRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: succeededRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "manual",
+      finishedAt: new Date("2026-08-26T11:16:18.729Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Completed issue with a late tool call",
+      status: "done",
+      priority: "critical",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      completedAt: new Date("2026-08-26T11:16:18.000Z"),
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["done"], succeededRunId))
+      .rejects.toMatchObject({ status: 422 });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it.each([
+    ["succeeded", "succeeded"],
+    [null, "missing"],
+  ])("rejects a %s checkout run before acquiring an active issue lock", async (runStatus, expectedRunStatus) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    if (runStatus) {
+      await db.insert(heartbeatRuns).values({
+        id: checkoutRunId,
+        companyId,
+        agentId,
+        status: runStatus,
+        invocationSource: "manual",
+        finishedAt: new Date("2026-08-26T11:16:18.729Z"),
+      });
+    }
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Active issue with an invalid checkout run",
+      status: "todo",
+      priority: "critical",
+      assigneeAgentId: agentId,
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo"], checkoutRunId))
+      .rejects.toMatchObject({
+        status: 409,
+        details: {
+          code: "checkout_run_not_active",
+          checkoutRunId,
+          runStatus: expectedRunStatus,
+        },
+      });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("rejects checkout when the run becomes terminal before the issue mutation", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date("2026-08-26T11:16:18.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout racing run completion",
+      status: "todo",
+      priority: "critical",
+      assigneeAgentId: agentId,
+    });
+
+    const terminalWriteReady = deferred<void>();
+    const allowTerminalCommit = deferred<void>();
+    const terminalWrite = db.transaction(async (tx) => {
+      await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "succeeded",
+          finishedAt: new Date("2026-08-26T11:16:19.000Z"),
+        })
+        .where(eq(heartbeatRuns.id, checkoutRunId));
+      terminalWriteReady.resolve();
+      await allowTerminalCommit.promise;
+    });
+    await terminalWriteReady.promise;
+
+    const checkout = svc.checkout(issueId, agentId, ["todo"], checkoutRunId);
+    const checkoutAssertion = expect(checkout).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "checkout_run_not_active",
+        checkoutRunId,
+        runStatus: "succeeded",
+      },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    allowTerminalCommit.resolve();
+    await terminalWrite;
+    await checkoutAssertion;
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("rejects unowned fallback adoption when the actor run terminalizes after the primary update", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const actorRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: actorRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date("2026-09-24T16:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Unowned fallback race",
+      status: "in_progress",
+      priority: "critical",
+      assigneeAgentId: agentId,
+    });
+
+    const originalTransaction = db.transaction.bind(db);
+    let transactionCount = 0;
+    let terminalized = false;
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementation(
+        (async (...args: Parameters<typeof originalTransaction>) => {
+          const result = await originalTransaction(...args);
+          transactionCount += 1;
+          // The fourth transaction is the guarded primary update. Force the run
+          // terminal before checkout enters its unowned fallback mutation.
+          if (transactionCount === 4) {
+            terminalized = true;
+            await db
+              .update(heartbeatRuns)
+              .set({
+                status: "succeeded",
+                finishedAt: new Date("2026-09-24T16:01:00.000Z"),
+              })
+              .where(eq(heartbeatRuns.id, actorRunId));
+          }
+          return result;
+        }) as typeof db.transaction,
+      );
+
+    try {
+      await expect(
+        svc.checkout(issueId, agentId, ["todo"], actorRunId),
+      ).rejects.toMatchObject({ status: 409 });
+    } finally {
+      transactionSpy.mockRestore();
+    }
+    expect(terminalized).toBe(true);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("rejects stale-execution fallback adoption when the actor run terminalizes after the primary update", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const previousRunId = randomUUID();
+    const actorRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: previousRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-09-24T15:59:00.000Z"),
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-09-24T16:00:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale execution fallback race",
+      status: "todo",
+      priority: "critical",
+      assigneeAgentId: agentId,
+      executionRunId: previousRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-09-24T15:59:00.000Z"),
+    });
+
+    const originalTransaction = db.transaction.bind(db);
+    let transactionCount = 0;
+    let terminalized = false;
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementation(
+        (async (...args: Parameters<typeof originalTransaction>) => {
+          const result = await originalTransaction(...args);
+          transactionCount += 1;
+          // Keep the previous execution run live through stale-lock cleanup and
+          // terminalize both rows only after the guarded primary update misses.
+          if (transactionCount === 4) {
+            terminalized = true;
+            await db
+              .update(heartbeatRuns)
+              .set({
+                status: "failed",
+                finishedAt: new Date("2026-09-24T16:01:00.000Z"),
+              })
+              .where(eq(heartbeatRuns.id, previousRunId));
+            await db
+              .update(heartbeatRuns)
+              .set({
+                status: "succeeded",
+                finishedAt: new Date("2026-09-24T16:01:00.000Z"),
+              })
+              .where(eq(heartbeatRuns.id, actorRunId));
+          }
+          return result;
+        }) as typeof db.transaction,
+      );
+
+    try {
+      await expect(
+        svc.checkout(issueId, agentId, ["todo"], actorRunId),
+      ).rejects.toMatchObject({ status: 409 });
+    } finally {
+      transactionSpy.mockRestore();
+    }
+    expect(terminalized).toBe(true);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: previousRunId,
+    });
+  });
+
   it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
     // Regression for PR #2482 checkout-adoption review finding: any adoption
     // helper that re-locks an existing in_progress issue (e.g. when the prior
@@ -7079,6 +7511,42 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
     expect(ownership.executionRunId).toBe(seeded.actorRunId);
     expect(ownership.adoptedFromRunId).toBeNull();
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      checkoutRunId: seeded.actorRunId,
+      executionRunId: seeded.actorRunId,
+    });
+  });
+
+  it("serializes concurrent checkout and unowned ownership assertion without a deadlock", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: null,
+        executionRunId: null,
+        executionLockedAt: null,
+        executionAgentNameKey: null,
+      })
+      .where(eq(issues.id, seeded.issueId));
+
+    const [checkedOut, ownership] = await Promise.all([
+      svc.checkout(seeded.issueId, seeded.actorAgentId, ["in_progress"], seeded.actorRunId),
+      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
+    ]);
+
+    expect(checkedOut.checkoutRunId).toBe(seeded.actorRunId);
+    expect(checkedOut.executionRunId).toBe(seeded.actorRunId);
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+    expect(ownership.executionRunId).toBe(seeded.actorRunId);
 
     const row = await db
       .select({
