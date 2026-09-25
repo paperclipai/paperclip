@@ -689,6 +689,35 @@ function deriveCanonicalSkillKey(
   return `company/${companyId}/${slug}`;
 }
 
+/**
+ * Collect a skill's file inventory from a list of candidate paths.
+ *
+ * `skillPath` is the discovered SKILL.md; every sibling and descendant of its
+ * directory belongs to the skill. When SKILL.md sits at the root of the scanned
+ * scope (an import URL pointing straight at the skill directory, or a local
+ * directory that *is* the skill) `path.posix.dirname` yields ".", so the naive
+ * prefix test `entry.startsWith("./")` matches nothing and the inventory
+ * collapses to SKILL.md alone. Normalising that root case to an empty prefix
+ * keeps the sibling files.
+ */
+export function buildSkillFileInventory(
+  candidatePaths: readonly string[],
+  skillPath: string,
+): CompanySkillFileInventoryEntry[] {
+  const dir = path.posix.dirname(skillPath);
+  const prefix = dir === "." || dir === "" ? "" : `${dir}/`;
+  return candidatePaths
+    .filter((entry) => entry === skillPath || (prefix ? entry.startsWith(prefix) : true))
+    .map((entry) => {
+      const relative = entry === skillPath ? "SKILL.md" : entry.slice(prefix.length);
+      return {
+        path: normalizePortablePath(relative),
+        kind: classifyInventoryKind(relative),
+      };
+    })
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
 function classifyInventoryKind(relativePath: string): CompanySkillFileInventoryEntry["kind"] {
   const normalized = normalizePortablePath(relativePath).toLowerCase();
   if (normalized.endsWith("/skill.md") || normalized === "skill.md") return "skill";
@@ -1076,16 +1105,7 @@ function readInlineSkillImports(companyId: string, files: Record<string, string>
     const parsed = parseFrontmatterMarkdown(markdown);
     const slug = deriveImportedSkillSlug(parsed.frontmatter, slugFallback);
     const source = deriveImportedSkillSource(parsed.frontmatter, slug);
-    const inventory = Object.keys(normalizedFiles)
-      .filter((entry) => entry === skillPath || (skillDir ? entry.startsWith(`${skillDir}/`) : false))
-      .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
-        return {
-          path: normalizePortablePath(relative),
-          kind: classifyInventoryKind(relative),
-        };
-      })
-      .sort((left, right) => left.path.localeCompare(right.path));
+    const inventory = buildSkillFileInventory(Object.keys(normalizedFiles), skillPath);
 
     imports.push({
       key: "",
@@ -1585,16 +1605,7 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
   const imports: ImportedSkill[] = [];
   for (const skillPath of skillPaths) {
     const skillDir = path.posix.dirname(skillPath);
-    const inventory = allFiles
-      .filter((entry) => entry === skillPath || entry.startsWith(`${skillDir}/`))
-      .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
-        return {
-          path: normalizePortablePath(relative),
-          kind: classifyInventoryKind(relative),
-        };
-      })
-      .sort((left, right) => left.path.localeCompare(right.path));
+    const inventory = buildSkillFileInventory(allFiles, skillPath);
     const imported = await readLocalSkillImportFromDirectory(companyId, path.join(root, skillDir));
     imported.fileInventory = inventory;
     imported.trustLevel = deriveTrustLevel(inventory);
@@ -1669,13 +1680,7 @@ async function readUrlSkillImports(
           slug,
         ),
       };
-      const inventory = filteredPaths
-        .filter((entry) => entry === relativeSkillPath || entry.startsWith(`${skillDir}/`))
-        .map((entry) => ({
-          path: entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1),
-          kind: classifyInventoryKind(entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1)),
-        }))
-        .sort((left, right) => left.path.localeCompare(right.path));
+      const inventory = buildSkillFileInventory(filteredPaths, relativeSkillPath);
       skills.push({
         key: deriveCanonicalSkillKey(companyId, {
           slug,
