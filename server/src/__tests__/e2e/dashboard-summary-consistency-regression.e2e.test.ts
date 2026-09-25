@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, gte, sql } from "drizzle-orm";
 import {
   agents,
@@ -45,9 +45,10 @@ describeEmbeddedPostgres("dashboard summary consistency regression (issue #123)"
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-dashboard-consistency-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 90_000);
 
   afterEach(async () => {
+    vi.useRealTimers();
     await db.delete(costEvents);
     await db.delete(approvals);
     await db.delete(heartbeatRuns);
@@ -73,6 +74,12 @@ describeEmbeddedPostgres("dashboard summary consistency regression (issue #123)"
   }
 
   it("keeps dashboard summary internally consistent with agents, issues, approvals, and cost events", async () => {
+    // Pin the clock mid-month so a UTC month rollover during the run cannot
+    // split the expected spend and the service's month window. Only Date is
+    // faked, so the database and HTTP timers still run normally.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-15T12:00:00.000Z"));
+
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();
     const budgetMonthlyCents = 100_000;
@@ -361,6 +368,7 @@ describeEmbeddedPostgres("dashboard summary consistency regression (issue #123)"
     expect(res.body.tasks).toEqual(summary.tasks);
     expect(res.body.costs).toEqual(summary.costs);
     expect(res.body.pendingApprovals).toBe(summary.pendingApprovals);
+    expect(res.body.budgets).toEqual(summary.budgets);
     expect(res.body.companyId).toBe(companyId);
   });
 });
