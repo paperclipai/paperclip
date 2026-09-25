@@ -18,6 +18,7 @@ const mockWorkProductService = vi.hoisted(() => ({
   createForIssue: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
+  listForIssue: vi.fn(async () => []),
 }));
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(async () => ({

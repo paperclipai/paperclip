@@ -86,4 +86,10 @@ export interface CommitWorkProductMetadata {
   additions: number;
   deletions: number;
   changedFiles: number;
+  /**
+   * File paths the commit claims to touch, relative to the repo root. Required
+   * for the CIR-39 shipped gate to verify the claim against the real commit
+   * diff before an issue can transition to "done".
+   */
+  files?: string[];
 }

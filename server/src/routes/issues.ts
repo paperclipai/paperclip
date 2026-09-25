@@ -176,6 +176,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { assertShippedGate } from "../services/shipped-gate.js";
 import {
   runnerGoalService,
   RunnerGoalActionError,
@@ -9418,6 +9419,9 @@ export function issueRoutes(
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
+          if (updateFields.status === "done" && lockedIssue.status !== "done") {
+            await assertShippedGate({ workProducts: await workProductsSvc.listForIssue(lockedIssue.id) });
+          }
             if (transition.decision) {
               const decisionId = randomUUID();
               const nextExecutionState = updateFields.executionState;
@@ -13661,6 +13665,15 @@ export function issueRoutes(
               !(await assertLockedReviewPolicyAllowsMutation(tx))
             )
               return null;
+            // Runs after the lock-scoped review-policy reauthorization above,
+            // not before it: authorization to move an issue to "done" is a
+            // separate question from whether the claimed commit checks out,
+            // and an unauthorized actor must still get a 403 rather than
+            // whatever the shipped gate happens to say about work products
+            // it was never entitled to look at.
+            if (nextStatus === "done" && existing.status !== "done") {
+              await assertShippedGate({ workProducts: await workProductsSvc.listForIssue(existing.id) });
+            }
             const updated = await updateIssue(tx);
             if (!updated) return null;
             if (commentAttachmentIds?.length) {
@@ -17633,6 +17646,9 @@ export function issueRoutes(
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
+      if (updatePatch.status === "done" && currentIssue.status !== "done") {
+        await assertShippedGate({ workProducts: await workProductsSvc.listForIssue(currentIssue.id) });
+      }
 
         const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
         const commentOptions = {

@@ -73,6 +73,7 @@ const mockWorkProductService = vi.hoisted(() => ({
   resolveCommitDiffSummary: vi.fn(),
   remove: vi.fn(),
   update: vi.fn(),
+  listForIssue: vi.fn(async () => []),
 }));
 
 const mockStorageService = vi.hoisted(() => ({

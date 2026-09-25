@@ -95,6 +95,8 @@ import {
 } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { getNativeReviewAssignment } from "./native-runtime/native-review-participant.js";
+import { assertShippedGate } from "./shipped-gate.js";
+import { workProductService } from "./work-products.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
@@ -2233,7 +2235,17 @@ export function issueThreadInteractionService(
           )).limit(1);
         // Each explicit reviewer must be able to answer independently. Completing
         // on the first answer would cancel the other pending decisions.
-        const completedIssue = otherPending.length > 0 || issueContext.status !== "in_review" ? null : await issueService(db).update(
+        const willComplete = otherPending.length === 0 && issueContext.status === "in_review";
+        // This acceptance path sets status "done" directly through
+        // issueService, bypassing routes/issues.ts's status-transition call
+        // sites entirely -- the CIR-39 shipped gate has to be asserted here
+        // too, or accepting a completion review becomes a way around it.
+        if (willComplete) {
+          await assertShippedGate({
+            workProducts: await workProductService(db).listForIssue(args.issue.id),
+          });
+        }
+        const completedIssue = !willComplete ? null : await issueService(db).update(
           args.issue.id,
           {
             status: "done",
