@@ -187,6 +187,21 @@ export const connectionGrants = pgTable(
         strategy?: string;
         accessTokenExpiresAt?: string | null;
         scopes?: string[];
+        /**
+         * Whether `scopes` is what the provider asserted, or only what we requested.
+         * A provider may omit `scope` from the token response, and RFC 6749 §5.1 reads that
+         * omission as "the grant matches the request" — but a provider that over-grants and
+         * omits it turns our own request into a false record of the grant.
+         */
+        scopeSource?: "provider" | "requested_fallback";
+        /** Scopes the provider asserted that we never asked for. Empty unless it over-granted. */
+        unrequestedScopes?: string[];
+        /**
+         * The scopes the authorization URL sent for *this* grant. A refresh carries no fresh
+         * request, so this is the baseline it judges the provider's response against. It is
+         * per-grant because two users can authorize the same connection with different scopes.
+         */
+        requestedScopes?: string[];
         tokenType?: string;
         refreshedAt?: string;
         refreshTokenExpiresAt?: string;
