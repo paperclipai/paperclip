@@ -4793,10 +4793,35 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
-          void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
+          let stdinFailureHandled = false;
+          const handleStdinFailure = (err: unknown) => {
+            if (!err || stdinFailureHandled) return;
+            stdinFailureHandled = true;
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") return;
+            onLogError(err, runId, "failed to write child process stdin");
+          };
+
+          // A child may stay alive after closing fd 0. In that window neither
+          // child.killed nor stdin.destroyed reflects the closed pipe, and a
+          // write emits EPIPE asynchronously. Keep the handler local to this
+          // child stream so the process result still comes from the child's
+          // close event, while unexpected stream failures remain observable.
+          stdin.on("error", handleStdinFailure);
+          void spawnPersistPromise.then(() => {
+            if (
+              child.exitCode !== null ||
+              child.signalCode !== null ||
+              child.killed ||
+              stdin.destroyed
+            )
+              return;
+            try {
+              stdin.write(opts.stdin as string, handleStdinFailure);
+              stdin.end();
+            } catch (err) {
+              handleStdinFailure(err);
+            }
           });
         }
 
