@@ -7424,6 +7424,42 @@ export function issueService(db: Db) {
     return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
 
+  /**
+   * Canonical lock order for the execution-lock path.
+   *
+   * Every transaction that touches both `issues` and `heartbeat_runs` takes the
+   * `issues` row first and the `heartbeat_runs` rows second, and — when it needs
+   * more than one run row — takes them in ascending id order. Two transactions
+   * that reach the same rows in different orders deadlock; Postgres resolves the
+   * deadlock by aborting one of them, and on this path the aborted transaction
+   * is an agent execution that is then lost.
+   *
+   * The second half of that invariant lives in the schema: `secret_access_events`
+   * deliberately carries no foreign keys into `issues` or `heartbeat_runs`, so an
+   * audit append takes no lock on either table and cannot join this ordering at
+   * all. See `packages/db/src/schema/secret_access_events.ts`.
+   *
+   * Locking all the run rows a transaction will need in one sorted statement is
+   * what makes the ordering total rather than merely per-call-site: taking them
+   * one at a time in role order (checkout run, then execution run) still lets two
+   * transactions that disagree about which row plays which role cross.
+   */
+  async function lockHeartbeatRunsInCanonicalOrder(
+    tx: DbTransaction,
+    runIds: readonly (string | null | undefined)[],
+  ): Promise<void> {
+    const ids = [
+      ...new Set(runIds.filter((id): id is string => Boolean(id))),
+    ].sort();
+    if (ids.length === 0) return;
+    await tx.execute(
+      sql`select ${heartbeatRuns.id} from ${heartbeatRuns}
+          where ${inArray(heartbeatRuns.id, ids)}
+          order by ${heartbeatRuns.id}
+          for update`,
+    );
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -7455,13 +7491,12 @@ export function issueService(db: Db) {
         return { adopted: null, latest: lockedIssue };
       }
 
-      await Promise.all([
-        tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.expectedCheckoutRunId} for update`,
-        ),
-        tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
-        ),
+      // Both run rows in one sorted statement. Taking them concurrently (the
+      // previous `Promise.all` of two single-row locks) let two adoptions of the
+      // same pair cross in opposite orders.
+      await lockHeartbeatRunsInCanonicalOrder(tx, [
+        input.expectedCheckoutRunId,
+        input.actorRunId,
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
@@ -7533,9 +7568,14 @@ export function issueService(db: Db) {
     actorRunId: string;
   }) {
     return db.transaction(async (tx) => {
+      // The UPDATE below locks the `issues` row, so this transaction touches
+      // both tables and must take them in the canonical order. It used to lock
+      // the run row first and reach `issues` only at the UPDATE — the inversion
+      // that let it deadlock against clearExecutionRunIfTerminal and its peers.
       await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${input.issueId} for update`,
       );
+      await lockHeartbeatRunsInCanonicalOrder(tx, [input.actorRunId]);
       const actorRun = await tx
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -7592,9 +7632,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issue?.executionRunId) return false;
 
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
-      );
+      await lockHeartbeatRunsInCanonicalOrder(tx, [issue.executionRunId]);
       const run = await tx
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -7643,9 +7681,13 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issue?.checkoutRunId) return false;
 
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
-      );
+      // Both run rows up front, sorted by id. Locking the checkout run and then
+      // the execution run in *role* order would still cross with a transaction
+      // that assigns the two rows the opposite roles.
+      await lockHeartbeatRunsInCanonicalOrder(tx, [
+        issue.checkoutRunId,
+        issue.executionRunId,
+      ]);
       const run = await tx
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -7657,9 +7699,6 @@ export function issueService(db: Db) {
         issue.executionRunId &&
         issue.executionRunId !== issue.checkoutRunId
       ) {
-        await tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
-        );
         const executionRun = await tx
           .select({ status: heartbeatRuns.status })
           .from(heartbeatRuns)
