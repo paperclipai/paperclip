@@ -187,6 +187,15 @@ export const connectionGrants = pgTable(
         strategy?: string;
         accessTokenExpiresAt?: string | null;
         scopes?: string[];
+        /**
+         * Whether `scopes` is what the provider asserted, or only what we requested.
+         * A provider may omit `scope` from the token response, and RFC 6749 §5.1 reads that
+         * omission as "the grant matches the request" — but a provider that over-grants and
+         * omits it turns our own request into a false record of the grant.
+         */
+        scopeSource?: "provider" | "requested_fallback";
+        /** Scopes the provider asserted that we never asked for. Empty unless it over-granted. */
+        unrequestedScopes?: string[];
         tokenType?: string;
         refreshedAt?: string;
         refreshTokenExpiresAt?: string;

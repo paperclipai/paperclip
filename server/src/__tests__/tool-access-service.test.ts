@@ -9038,6 +9038,125 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(gatewayAuthorization).toBe("Bearer shared-access-token");
   });
 
+  // PAP-18538: Enterpret answers an `mcp:read` request with a token that carries
+  // `mcp:read mcp:write` but omits `scope` from the token response. Recording the request as
+  // the grant made the connection read back a read-only scope the provider never asserted.
+  describe("granted OAuth scope recording", () => {
+    async function connectSlackWithTokenScope(
+      tokenScope: string | null,
+      requestedScopes?: string[],
+    ) {
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+      vi.stubEnv(
+        "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
+        "slack-client-secret",
+      );
+      const company = await createCompany(db);
+      const userId = `oauth-owner-${randomUUID()}`;
+      await grantBoardUser(db, company.id, userId, [
+        "tools:use",
+        "tools:manage_connections",
+      ]);
+      const service = createTestToolAccessService(db);
+      const connected = await service.connectGalleryApp(
+        company.id,
+        { galleryKey: "slack", name: `Scope recording ${randomUUID()}` },
+        { actorType: "user", actorId: userId },
+      );
+      const started = await service.startOAuth(
+        company.id,
+        connected.connectionId,
+        {
+          redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+          actor: { actorType: "user", actorId: userId },
+          ...(requestedScopes ? { scopes: requestedScopes } : {}),
+        },
+      );
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+        const href = String(url);
+        if (href === "https://slack.com/api/oauth.v2.access") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              access_token: "shared-access-token",
+              refresh_token: "shared-refresh-token",
+              expires_in: 3600,
+              // A provider that omits `scope` is telling us, per RFC 6749 §5.1, that the
+              // grant equals the request. Not every provider honours that.
+              ...(tokenScope === null ? {} : { scope: tokenScope }),
+            }),
+          } as Response;
+        }
+        if (href === "https://mcp.slack.com/mcp") {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: "paperclip-catalog-refresh",
+            result: { tools: [] },
+          });
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+      await service.completeOAuthCallback({
+        state: new URL(started.authorizationUrl).searchParams.get("state")!,
+        code: "shared-authorization-code",
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: userId },
+      });
+      const [connection] = await db
+        .select()
+        .from(toolConnections)
+        .where(eq(toolConnections.id, connected.connectionId));
+      return {
+        authorizationScope: new URL(started.authorizationUrl).searchParams.get(
+          "scope",
+        ),
+        recordedOAuth: (
+          connection.config.providerMetadata as
+            | { oauth?: Record<string, unknown> }
+            | undefined
+        )?.oauth,
+      };
+    }
+
+    it("marks a scope inferred from the request when the provider omits one", async () => {
+      const { authorizationScope, recordedOAuth } =
+        await connectSlackWithTokenScope(null, ["channels:read"]);
+
+      expect(authorizationScope).toBe("channels:read");
+      expect(recordedOAuth).toMatchObject({
+        scope: null,
+        scopeSource: "requested_fallback",
+        unrequestedScopes: [],
+      });
+    });
+
+    it("records the provider's scope and flags anything it granted unasked", async () => {
+      const { recordedOAuth } = await connectSlackWithTokenScope(
+        "channels:read chat:write",
+        ["channels:read"],
+      );
+
+      expect(recordedOAuth).toMatchObject({
+        scope: "channels:read chat:write",
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+    });
+
+    it("treats a scope matching the request as a clean provider assertion", async () => {
+      const { recordedOAuth } = await connectSlackWithTokenScope(
+        "channels:read",
+        ["channels:read"],
+      );
+
+      expect(recordedOAuth).toMatchObject({
+        scopeSource: "provider",
+        unrequestedScopes: [],
+      });
+    });
+  });
+
   it("creates and resolves an agent-initiated user authorization grant card", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv(
@@ -9156,6 +9275,13 @@ describeEmbeddedPostgres("tool access service", () => {
         ),
       );
     expect(grant).toMatchObject({ kind: "user", status: "active" });
+    // PAP-18538: this token response carries no `scope`, so the recorded scope is inferred
+    // from the request rather than asserted by the provider. Keep the distinction visible.
+    expect(grant.providerTenant.oauth).toMatchObject({
+      scopes: ["channels:read"],
+      scopeSource: "requested_fallback",
+      unrequestedScopes: [],
+    });
     expect(
       grant.credentialSecretRefs.map((ref) => ref.configPath).sort(),
     ).toEqual(["oauth.access_token", "oauth.refresh_token"]);
