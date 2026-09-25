@@ -282,6 +282,42 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(Buffer.compare(downloaded.body as Buffer, bytes)).toBe(0);
   });
 
+  it("streams as attachment when the download query param is duplicated", async () => {
+    // Regression: a board link carrying `download=1` twice makes Express parse
+    // the param as an array, which the strict boolean check used to reject —
+    // silently falling back to the preview path and failing with 422 too_large
+    // on files above the preview cap.
+    const { root, projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    const relativePath = "artifacts/large.bin";
+    const bytes = Buffer.alloc(WORKSPACE_FILE_TEXT_MAX_BYTES + 1024, 0x41);
+    await fs.mkdir(path.join(projectRoot, "artifacts"), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, relativePath), bytes);
+
+    const app = createApp(db, {
+      type: "board",
+      userId: "board-user",
+      companyIds: [graph.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query(`workspace=project&path=${encodeURIComponent(relativePath)}&download=1&download=1`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => callback(null, Buffer.concat(chunks)));
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="large.bin"');
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(Buffer.compare(res.body as Buffer, bytes)).toBe(0);
+  });
+
   it("falls back from an execution workspace miss to the project workspace", async () => {
     const { projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
