@@ -7902,6 +7902,12 @@ export function issueRoutes(
       });
       return;
     }
+    if (req.query.assigneeId !== undefined) {
+      res.status(400).json({
+        error: "assigneeId is not supported. Use assigneeAgentId or assigneeUserId.",
+      });
+      return;
+    }
     const assigneeUserFilterRaw = req.query.assigneeUserId as
       string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as

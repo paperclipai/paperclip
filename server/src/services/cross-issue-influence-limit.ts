@@ -1,6 +1,6 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, isNull, notInArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -10,6 +10,7 @@ export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.00
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
 const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap_rejected";
+const CROSS_ISSUE_INFLUENCE_SOURCE_ACTIVITY = "issue.cross_issue_influence_source_bound";
 
 /**
  * Every kind shares one per-run counter. `interaction_resolution` covers the
@@ -91,6 +92,7 @@ export async function observeCrossIssueInfluence(
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
+        nativeIssueId: heartbeatRuns.nativeIssueId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -109,15 +111,75 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    // An explicit guard binding is immutable for this run. Heartbeat can replace
+    // the context snapshot later, so keep the binding in its own audit receipt.
+    const [binding] = await tx
+      .select({ sourceIssueId: activityLog.entityId })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.runId, input.runId),
+        eq(activityLog.agentId, input.agentId),
+        eq(activityLog.action, CROSS_ISSUE_INFLUENCE_SOURCE_ACTIVITY),
+      ))
+      .limit(1);
+    const sourceIssueId = binding?.sourceIssueId
+      ?? run.nativeIssueId
+      ?? readRunSourceIssueId(run.contextSnapshot);
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId && (
+        sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      )
     ) {
       return null;
     }
 
+    // Manual and timer runs can select work after dispatch. Checkout records
+    // ownership on the issue, without adding a source to the run snapshot.
+    // Pin the first attempted write's verified held issue, under the run-row
+    // lock. Like the counter below, this survives a later mutation failure.
+    // A later checkout cannot expand the exemption to a second issue.
+    if (!sourceIssueId && isUuidLike(input.targetIssueId)) {
+      const [ownedIssue] = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.targetIssueId),
+          eq(issues.companyId, input.companyId),
+          eq(issues.assigneeAgentId, input.agentId),
+          isNull(issues.assigneeUserId),
+          notInArray(issues.status, ["done", "cancelled"]),
+          or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, input.runId)),
+          or(isNull(issues.executionRunId), eq(issues.executionRunId, input.runId)),
+          or(eq(issues.checkoutRunId, input.runId), eq(issues.executionRunId, input.runId)),
+        ))
+        .limit(1)
+        // Do not bind ownership being changed by another transaction, or wait
+        // on an issue lock while holding the run lock. Count that attempt instead.
+        .for("update", { skipLocked: true });
+      if (ownedIssue) {
+        await tx.insert(activityLog).values({
+          companyId: input.companyId,
+          actorType: "agent",
+          actorId: input.agentId,
+          agentId: input.agentId,
+          runId: input.runId,
+          responsibleUserId: input.responsibleUserId ?? run.responsibleUserId ?? null,
+          action: CROSS_ISSUE_INFLUENCE_SOURCE_ACTIVITY,
+          entityType: "issue",
+          entityId: ownedIssue.id,
+          details: { sourceIssueId: ownedIssue.id, reason: "current_checkout" },
+        });
+        // This is now the run's fixed source, even after release/completion.
+        // Route permissions still govern the subsequent issue mutation.
+        return null;
+      }
+    }
+
+    // A valid run without a source still has an attributable, locked counter.
+    // Charge writes without checkout proof conservatively, and retain null
+    // source provenance rather than inventing a source or rejecting all work.
     const priorCount = await tx
       .select({ count: count() })
       .from(activityLog)
