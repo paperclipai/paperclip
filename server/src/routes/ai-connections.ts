@@ -325,8 +325,19 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         )
       )
         throw forbidden("Viewers cannot change defaults");
+      // Report the shape problem as a shape problem. The list response exposes
+      // both `id` (the connection) and `grantId` (the grant), and this route
+      // takes the grant; a caller that sends `connectionId`/`id` used to get
+      // "Choose a personal connection", which reads as an ownership/eligibility
+      // failure and sends them looking at the wrong connection.
+      if (req.body.grantId === undefined)
+        throw unprocessable(
+          "grantId is required. Use the grantId from GET /ai-connections, not the connection id.",
+        );
       if (!z.string().uuid().safeParse(req.body.grantId).success)
-        throw unprocessable("Choose a personal connection");
+        throw unprocessable(
+          "grantId must be a UUID. Use the grantId from GET /ai-connections, not the connection id.",
+        );
       await service.setDefault(companyId, userId, req.body.grantId);
       await logActivity(db, {
         companyId,
