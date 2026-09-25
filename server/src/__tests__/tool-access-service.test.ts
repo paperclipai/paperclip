@@ -10127,6 +10127,119 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toHaveLength(2);
   });
 
+  // A refresh has no fresh authorization request, so the standing grant is the baseline the
+  // provider's response is judged against. A provider that widens at refresh must not be able
+  // to do it quietly.
+  it("flags a scope the provider widens at refresh time", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
+      "slack-client-secret",
+    );
+    const company = await createCompany(db);
+    const userId = `oauth-refresh-scope-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "slack",
+        name: "Refresh scope widening",
+        grantKind: "user",
+      },
+      { actorType: "user", actorId: userId },
+    );
+    const started = await service.startOAuth(
+      company.id,
+      connected.connectionId,
+      {
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: userId },
+        subjectUserId: userId,
+        scopes: ["channels:read"],
+      },
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        if (body.get("grant_type") === "refresh_token") {
+          return mcpHttpResponse({
+            ok: true,
+            access_token: "refreshed-access-token",
+            refresh_token: "rotated-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+            // Wider than the grant being refreshed.
+            scope: "channels:read chat:write",
+          });
+        }
+        return mcpHttpResponse({
+          ok: true,
+          access_token: "personal-access-token",
+          refresh_token: "personal-refresh-token",
+          expires_in: 3600,
+          token_type: "Bearer",
+        });
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [] },
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!,
+      code: "personal-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: userId },
+    });
+    const [grant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.connectionId, connected.connectionId),
+          eq(connectionGrants.subjectUserId, userId),
+        ),
+      );
+    expect(grant.providerTenant?.oauth).toMatchObject({
+      scopes: ["channels:read"],
+      scopeSource: "requested_fallback",
+    });
+
+    await db
+      .update(connectionGrants)
+      .set({
+        providerTenant: {
+          ...(grant.providerTenant ?? {}),
+          oauth: {
+            ...(grant.providerTenant?.oauth ?? {}),
+            accessTokenExpiresAt: "2000-01-01T00:00:00.000Z",
+          },
+        },
+      })
+      .where(eq(connectionGrants.id, grant.id));
+
+    await service.checkHealth(connected.connectionId, {
+      actorType: "system",
+      actorId: "health-check",
+    });
+
+    const [refreshed] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.id, grant.id));
+    expect(refreshed.providerTenant?.oauth).toMatchObject({
+      scopes: ["channels:read", "chat:write"],
+      scopeSource: "provider",
+      unrequestedScopes: ["chat:write"],
+    });
+  });
+
   it("returns a pre-scoped personal Notion callback directly to Permissions", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
