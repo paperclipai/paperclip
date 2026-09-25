@@ -169,8 +169,14 @@ Two consequences, one for this connector and one for the product:
    is the specified reading — but it means a provider that over-grants and omits
    `scope` makes Paperclip record a scope the provider never asserted. The
    widening guard runs on the request only; there is no matching check on the
-   grant. Tracked as a separate blocking product change; the Enterpret entry must
-   not go store-visible before it lands.
+   grant. Tracked as a separate blocking product change (#14059); the Enterpret
+   entry must not go store-visible before it lands. Note the limit of that fix:
+   it labels the stored scope as inferred rather than asserted, and flags any
+   scope a provider asserts unasked. Against a provider that omits `scope`
+   entirely, as Enterpret does, the extra scopes remain unknown to Paperclip —
+   the fix removes a false assurance, it does not supply the missing one.
+   Discovering `mcp:write` required RFC 7662 introspection by hand, which
+   Paperclip does not do.
 
 Whether to widen the request to `mcp:write` is **not** the question this raises.
 Widening would change nothing about the token Enterpret issues and would only
@@ -459,7 +465,7 @@ never inferred from a self-hosted result.
 | Catalog and configuration | **pass** — authenticated `tools/list` returned 8 tools; `execute_cypher_query` absent | not run | not run |
 | Allowed execution | **pass** — `get_organization_details` resolved to the intended organization; one further bounded metadata read also succeeded | not run | not run |
 | Denied execution | **pass** — ungranted agent got HTTP 403 `deny_default` and saw 0 tools; `run_graph_query` stayed 403 for the *granted* agent | not run | not run |
-| Runtime delivery | **pass, with a caveat** — a headless agent on a `per_user` OAuth connection needs an explicit grant delegation; see below | not run | not run |
+| Runtime delivery | **not proven** — gateway and policy were exercised by a real agent-authenticated session, but no agent process ever ran; see below | not run | not run |
 | Refresh and recovery | **not run** — refresh deliberately not exercised once the scope over-grant was found | not run | not run |
 | Revoke and reconnect | **cannot pass** — no `revocation_endpoint` exists to call. Local disable verified: the connection was disabled and the gateway decision flips to deny | cannot pass — structural, not deployment-dependent | cannot pass |
 | Activity and secret handling | **pass** — invocations audited with correct decisions and actor attribution; tokens AES-256-GCM at rest with no plaintext in secret storage; API returns `secretId` references only | not run | not run |
@@ -469,8 +475,21 @@ Self-hosted VPS and Cloud are `not run`, not "probably fine". Nothing in the
 same-machine column is carried across, and nothing here is carried over from the
 PAP-18519 loopback mirror either.
 
-Two further findings from the run, recorded because they change how an operator
-should read this connector rather than what it does:
+**Why runtime delivery is `not proven`, precisely.** Every allowed and denied
+result above was produced through the real gateway path — an agent-minted
+session, `actor_type: agent` on the invocation row, decided by the real policy
+service. What did **not** happen is an agent *process*. Minting that session
+requires a `heartbeat_runs` row, and the two rows used here were inserted by
+hand for that precondition alone. Both show `started_at` NULL, no pid, no
+transcript and no run events other than the reaper's, and the instance later
+marked them `failed` / `process_lost` — which is the reaper correctly noticing
+there was never a process behind them, not a product defect. So this connector
+is proven to work under Paperclip's *authorization and transport* layer, and is
+untested under an actual agent runtime driving it through a heartbeat. Scenario
+6 needs a genuine woken agent run before it can be called a pass.
+
+Three further findings from the run, recorded because they change how an
+operator should read this connector rather than what it does:
 
 - **`per_user` credential policy blocks unattended agents.** A headless run has
   no acting user, so a `kind: user` grant yields HTTP 409
@@ -500,7 +519,8 @@ Labels as defined in the connector skills' shared matrix.
 | OAuth consent and token exchange | `verified` | `untested` | `untested` |
 | Auth-token (header) connection | `untested` — the OAuth method was the one validated | `untested` | `untested` |
 | Authenticated `tools/list` | `verified` — 8 tools, all self-annotated `readOnlyHint: true` | `untested` | `untested` |
-| Agent execution through the gateway | `verified` — allowed and denied paths both exercised through a real agent session | `untested` | `untested` |
+| Agent execution through the gateway | `verified` — allowed and denied paths both exercised through a real agent-authenticated session | `untested` | `untested` |
+| Execution driven by an actual agent runtime | `untested` — the sessions above were minted against hand-inserted run rows; no agent process ran | `untested` | `untested` |
 | Granted scope matches the requested scope | **`failed`** — `mcp:write` and `email` granted against an `mcp:read` request | `failed` — provider-side | `failed` — provider-side |
 | Provider-side revocation | `unsupported` — the authorization server advertises no `revocation_endpoint` | `unsupported` | `unsupported` |
 | Store visibility | `deferred` — withheld until the scope over-grant is resolved | `deferred` | `deferred` |
@@ -522,9 +542,14 @@ Steps 1–3 below are **done** as of 2026-09-25 and are kept for the record. Ste
 4. **The scope over-grant resolved.** This is the blocker. Three things have to
    happen, in this order:
    - The product change that stops recording a requested scope as the granted
-     one must land, so an over-grant is at least visible rather than silently
-     rewritten into a read-only-looking record. Tracked separately from this PR
-     because it changes the shared OAuth completion path for every connector.
+     one must land (#14059). Be precise about what it buys: it marks the stored
+     scope as `requested_fallback`, meaning "this is our request, not the
+     provider's assertion", and it flags any scope the provider *does* assert
+     unasked. For Enterpret, which asserts nothing at all, it removes the false
+     read-only assurance — it does **not** reveal `mcp:write`. Paperclip does
+     not introspect, so the actual extra scopes stay unknown to it. Tracked
+     separately from this PR because it changes the shared OAuth completion
+     path for every connector.
    - A reviewed decision on whether Paperclip ships a read-only connector whose
      provider issues a write-capable token, and what it tells operators if so.
    - Enterpret contacted about honouring `mcp:read`, or the limitation accepted
