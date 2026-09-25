@@ -544,6 +544,9 @@ describe("managed AI connections", () => {
       const prepared = await request(app).post(attempts).set("x-local", "yes").send(codex);
       expect(prepared.status).toBe(201);
       expect(prepared.body.command).toMatch(/^\(export CODEX_HOME=.* && mkdir -p .* && codex -c .* login --device-auth\)$/);
+      // Workspaces that disable device code sign-in need the browser flow into the same isolated home.
+      expect(prepared.body.browserCommand).toMatch(/^\(export CODEX_HOME=.* && mkdir -p .* && codex -c .* login\)$/);
+      expect(prepared.body.browserCommand).toContain(prepared.body.command.match(/CODEX_HOME=('[^']*')/)[1]);
       expect((await request(app).post(attempts).set("x-local", "yes").send(codex)).body).toEqual(prepared.body);
       expect((await request(app).delete(`${attempts}/${prepared.body.sessionId}`).set("x-test-user", "bob").send()).status).toBe(404);
       expect((await request(app).delete(`${attempts}/${prepared.body.sessionId}`).set("x-local", "yes").send()).status).toBe(200);
@@ -591,6 +594,7 @@ describe("managed AI connections", () => {
       expect(started.status).toBe(201);
       expect(started.headers["cache-control"]).toBe("no-store");
       expect(started.body.command).toContain(provider === "anthropic" ? "CLAUDE_CONFIG_DIR=" : "login --device-auth");
+      expect(started.body.browserCommand === undefined).toBe(provider === "anthropic");
       expect((await request(app).post(`${base}/attempts`).send(intent)).body).toEqual(started.body);
       const input = { ...intent, localSessionId: started.body.sessionId };
       for (const endpoint of [base, `${base}/check`]) {

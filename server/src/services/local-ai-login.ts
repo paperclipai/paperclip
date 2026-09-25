@@ -18,13 +18,17 @@ function loginHome(id: string) {
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiLoginAttempt {
   const directory = loginHome(id);
+  if (provider === "openai") {
+    const codexLogin = `export CODEX_HOME=${shellQuote(directory)} && mkdir -p "$CODEX_HOME" && codex -c 'cli_auth_credentials_store="file"' login`;
+    // Device code works from any browser, so it stays the default. Some ChatGPT
+    // workspaces disable it; the browser flow writes to the same isolated home.
+    return { sessionId: id, expiresAt: expiresAt.toISOString(), command: `(${codexLogin} --device-auth)`, browserCommand: `(${codexLogin})` };
+  }
   return {
     sessionId: id, expiresAt: expiresAt.toISOString(),
-    command: provider === "openai"
-      ? `(export CODEX_HOME=${shellQuote(directory)} && mkdir -p "$CODEX_HOME" && codex -c 'cli_auth_credentials_store="file"' login --device-auth)`
-      : provider === "anthropic"
-        ? `(export CLAUDE_CONFIG_DIR=${shellQuote(directory)} && mkdir -p "$CLAUDE_CONFIG_DIR" && claude auth login)`
-        : `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)`,
+    command: provider === "anthropic"
+      ? `(export CLAUDE_CONFIG_DIR=${shellQuote(directory)} && mkdir -p "$CLAUDE_CONFIG_DIR" && claude auth login)`
+      : `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)`,
   };
 }
 async function prepareHome(id: string, provider: string) {

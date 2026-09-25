@@ -226,7 +226,11 @@ attempt’s credential files, never the server operator’s account or Keychain.
 Codex and Grok start a separate terminal sign-in for each connection or reconnect.
 The shared component shows a server-generated command with a fresh `CODEX_HOME`
 or `GROK_HOME`. Codex uses file credential storage in that home and `login --device-auth`, so
-signing in from another computer does not depend on a localhost callback. The home is never
+signing in from another computer does not depend on a localhost callback. Some ChatGPT
+workspaces disable device code sign-in, so Codex attempts also return a `browserCommand`:
+the same command without `--device-auth`, which writes to the same home through the
+localhost callback flow. The UI shows it behind "Device code sign-in blocked?" and notes
+that it only works from a browser on the machine running Paperclip. The home is never
 seeded with the operator's existing login: copying a rotating refresh token would
 allow managed runs to invalidate credentials still used by legacy agents or the
 operator's terminal. The user completes browser sign-in from that command, then
