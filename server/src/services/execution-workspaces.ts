@@ -408,15 +408,54 @@ async function runExpensiveGitStatus(input: {
   cwd: string;
   operation: string;
   fairnessKeys?: readonly string[];
+  /**
+   * Callers that poll the same workspace git status on a timer used to disable the
+   * scheduler cache (`cacheTtlMs: 0`), so every poll paid for a fresh `git status`
+   * subprocess. A bounded TTL lets a repeated identical scan join the cached result
+   * instead. Callers that need strict freshness omit this and keep the default 0.
+   */
+  cacheTtlMs?: number;
 }) {
   return workspaceGitOperationScheduler.run({
     workspacePath: input.cwd,
     args: input.args,
     operation: input.operation,
     fairnessKeys: input.fairnessKeys,
-    cacheTtlMs: 0,
+    cacheTtlMs: Math.max(0, Math.min(60_000, input.cacheTtlMs ?? 0)),
   });
 }
+
+/**
+ * The terminal-workspace reaper requires a terminal issue tree before it archives a
+ * workspace. These flags come from the database-only issue tree read, so a caller
+ * can check them before it pays for a Git status inspection.
+ */
+function issueTreeTerminalFlags(
+  workspace: Pick<ExecutionWorkspaceRow, "sourceIssueId">,
+  issueTree: readonly { id: string; status: string }[],
+): { sourceIssueTerminal: boolean; subtreeTerminal: boolean } {
+  const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
+  return {
+    sourceIssueTerminal: Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status)),
+    subtreeTerminal: Boolean(
+      sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)),
+    ),
+  };
+}
+
+/**
+ * Bounded cache TTL for the close-readiness Git status scan on read paths.
+ * Default 15s; `PAPERCLIP_CLOSE_READINESS_GIT_CACHE_TTL_MS=0` restores the
+ * always-fresh behavior. Keep it at or above the heartbeat scheduler interval,
+ * because that tick reads the workspace of every active run.
+ */
+const closeReadinessGitCacheTtlMs = (() => {
+  const raw = process.env.PAPERCLIP_CLOSE_READINESS_GIT_CACHE_TTL_MS?.trim();
+  if (!raw) return 15_000;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return 15_000;
+  return Math.max(0, Math.min(60_000, Math.trunc(parsed)));
+})();
 
 async function readGitStdout(args: string[], cwd: string): Promise<string | null> {
   const output = await runGit(args, cwd);
@@ -788,7 +827,15 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
   }
 }
 
-async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
+async function inspectGitCloseReadiness(
+  workspace: ExecutionWorkspace,
+  /**
+   * Read and display callers pass a bounded cache TTL. Correctness-sensitive
+   * callers (the terminal cleanup fence, the archiving reaper) omit it and always
+   * read live Git state.
+   */
+  options: { cacheTtlMs?: number } = {},
+): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
   statusInspectionSucceeded: boolean;
@@ -865,6 +912,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
           `workspace:${workspace.id}`,
           ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
         ],
+        cacheTtlMs: options.cacheTtlMs ?? 0,
       })).stdout;
       for (const line of statusOutput.split(/\r?\n/)) {
         if (!line) continue;
@@ -1269,7 +1317,11 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
   executionWorkspaceId: string;
 };
 
-const inspectGitForDisplay = createWorkspaceGitInspectionCache(inspectGitCloseReadiness);
+const closeReadinessReadOptions = { cacheTtlMs: closeReadinessGitCacheTtlMs };
+
+const inspectGitForDisplay = createWorkspaceGitInspectionCache(
+  (workspace) => inspectGitCloseReadiness(workspace, closeReadinessReadOptions),
+);
 
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
   const inspectDisplay = opts.inspectGitCloseReadiness
@@ -1317,6 +1369,34 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // removes the upper bound and makes the scan chase newer churn again. This
   // flag lets only one sweep run at a time, so one sweep owns the shared state.
   let terminalSweepInProgress = false;
+  // The reaper reads live Git state before it archives, so the bounded
+  // close-readiness cache does not apply to it. A candidate that is terminal but
+  // not eligible (unmerged delivery, dirty tree) keeps the same row, so a sweep
+  // re-inspected the same workspace every tick. Remember the last inspection per
+  // workspace and skip an unchanged row inside this window. The archive path
+  // re-verifies the Git state under the lifecycle lock, so a delayed inspection
+  // can only delay an archive, never corrupt one.
+  const reaperGitInspectionCooldownMs = 5 * 60 * 1000;
+  const reaperGitInspections = new Map<string, { updatedAtMs: number; inspectedAtMs: number }>();
+  const recordReaperGitInspection = (workspace: ExecutionWorkspaceRow, at: number) => {
+    const updatedAtMs = workspace.updatedAt instanceof Date
+      ? workspace.updatedAt.getTime()
+      : new Date(workspace.updatedAt as unknown as string).getTime();
+    if (reaperGitInspections.size >= 512 && !reaperGitInspections.has(workspace.id)) {
+      const oldest = reaperGitInspections.keys().next().value;
+      if (oldest !== undefined) reaperGitInspections.delete(oldest);
+    }
+    reaperGitInspections.set(workspace.id, { updatedAtMs, inspectedAtMs: at });
+  };
+  const shouldSkipReaperGitInspection = (workspace: ExecutionWorkspaceRow, at: number) => {
+    const previous = reaperGitInspections.get(workspace.id);
+    if (!previous) return false;
+    const updatedAtMs = workspace.updatedAt instanceof Date
+      ? workspace.updatedAt.getTime()
+      : new Date(workspace.updatedAt as unknown as string).getTime();
+    if (previous.updatedAtMs !== updatedAtMs) return false;
+    return at - previous.inspectedAtMs < reaperGitInspectionCooldownMs;
+  };
 
   async function listWorkspaceIssueTree(workspace: Pick<ExecutionWorkspaceRow, "companyId" | "sourceIssueId">) {
     if (!workspace.sourceIssueId) return [];
@@ -1377,11 +1457,22 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   async function assessDelivery(
     workspace: ExecutionWorkspaceRow,
     git: ExecutionWorkspaceCloseGitReadiness | null,
+    /**
+     * An optional precomputed issue tree, so a caller that already read it (the
+     * reaper's terminal gate) does not pay for a second round trip.
+     */
+    precomputed?: {
+      issueTree: Awaited<ReturnType<typeof listWorkspaceIssueTree>>;
+      sourceIssueTerminal: boolean;
+      subtreeTerminal: boolean;
+    },
   ) {
-    const issueTree = await listWorkspaceIssueTree(workspace);
+    const issueTree = precomputed?.issueTree ?? await listWorkspaceIssueTree(workspace);
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
-    const sourceIssueTerminal = Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
-    const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
+    const sourceIssueTerminal = precomputed?.sourceIssueTerminal
+      ?? Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
+    const subtreeTerminal = precomputed?.subtreeTerminal
+      ?? Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
     // The cooldown anchor is the most recent terminal timestamp across the whole
     // issue tree. The reaper compares it against the cooldown window. A null
     // anchor means no issue in the tree is terminal yet, so the cooldown never
@@ -2262,7 +2353,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       );
     },
 
-    getCloseReadiness: async (id: string): Promise<ExecutionWorkspaceCloseReadiness | null> => {
+    getCloseReadiness: async (
+      id: string,
+      /**
+       * Historical note: the archive route decides whether it may destroy the
+       * worktree from this read, so it asks for live Git state (`cacheTtlMs: 0`).
+       * The board display read keeps the bounded cache, because a stale banner is
+       * cosmetic while a stale archive decision is not.
+       */
+      options: { freshGitStatus?: boolean } = {},
+    ): Promise<ExecutionWorkspaceCloseReadiness | null> => {
       const workspace = await db
         .select()
         .from(executionWorkspaces)
@@ -2333,7 +2433,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         git,
         warnings: gitWarnings,
         statusInspectionSucceeded,
-      } = await inspectGitCloseReadiness(executionWorkspace);
+      } = await inspectGitCloseReadiness(
+        executionWorkspace,
+        options.freshGitStatus ? { cacheTtlMs: 0 } : closeReadinessReadOptions,
+      );
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
@@ -2540,6 +2643,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedActiveRun: 0,
           skippedNonTerminalTree: 0,
           skippedUndelivered: 0,
+          skippedRecentlyInspected: 0,
           skippedRace: 0,
           skippedReopened: 0,
           skippedCooldown: 0,
@@ -2604,24 +2708,36 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedActiveRun: 0,
         skippedNonTerminalTree: 0,
         skippedUndelivered: 0,
+        skippedRecentlyInspected: 0,
         skippedRace: 0,
         skippedReopened: 0,
         skippedCooldown: 0,
         clearedStaleReopenPending: 0,
       };
 
+      // 54 of the 59 candidate rows resolve to the same directory, so inspecting
+      // each row cost one full `git status --untracked-files=all` per row even
+      // though every one of them describes the same working tree. Read each
+      // directory once per sweep and share that snapshot across the rows that
+      // point at it.
+      const perSweepGitReadiness = new Map<
+        string,
+        Promise<{ git: ExecutionWorkspaceCloseGitReadiness | null; warnings: string[]; statusInspectionSucceeded: boolean }>
+      >();
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
-        if (!statusInspectionSucceeded) {
-          result.skippedUndelivered += 1;
-          continue;
-        }
-        const assessment = await assessDelivery(workspace, git);
+        // Read the issue tree first. It is a database-only read, while the Git
+        // inspection below costs a full `git status --porcelain
+        // --untracked-files=all` plus two more Git subprocesses in the workspace.
+        // The old order paid that Git cost for every candidate and then skipped
+        // most of them here, which produced a steady stream of
+        // `execution_workspaces.close_readiness_status` scans in the server log.
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,
         );
-        if (!assessment.sourceIssueTerminal || !assessment.subtreeTerminal) {
+        const issueTree = await listWorkspaceIssueTree(workspace);
+        const treeTerminal = issueTreeTerminalFlags(workspace, issueTree);
+        if (!treeTerminal.sourceIssueTerminal || !treeTerminal.subtreeTerminal) {
           if (reopenPending) {
             // The source issue left the terminal state, so the reopen transition
             // committed. Clear the reopen-pending flag under the lifecycle lock so
@@ -2634,6 +2750,39 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               ),
             });
           }
+          result.skippedNonTerminalTree += 1;
+          continue;
+        }
+        const sweepNowMs = now().getTime();
+        if (shouldSkipReaperGitInspection(workspace, sweepNowMs)) {
+          result.skippedRecentlyInspected += 1;
+          continue;
+        }
+        recordReaperGitInspection(workspace, sweepNowMs);
+        // One git read per directory per sweep: the rows that share a working
+        // tree share the snapshot it produced.
+        const gitReadinessKey =
+          readNullableString(workspace.providerRef)
+          ?? readNullableString(workspace.cwd)
+          ?? `workspace:${workspace.id}`;
+        let gitReadiness = perSweepGitReadiness.get(gitReadinessKey);
+        if (!gitReadiness) {
+          gitReadiness = inspectGitCloseReadiness(executionWorkspace);
+          perSweepGitReadiness.set(gitReadinessKey, gitReadiness);
+        }
+        const { git, statusInspectionSucceeded } = await gitReadiness;
+        if (!statusInspectionSucceeded) {
+          result.skippedUndelivered += 1;
+          continue;
+        }
+        // The reaper archives workspaces, so this inspection stays on live Git
+        // state. Only read and display callers use the bounded cache TTL.
+        const assessment = await assessDelivery(workspace, git, {
+          issueTree,
+          sourceIssueTerminal: treeTerminal.sourceIssueTerminal,
+          subtreeTerminal: treeTerminal.subtreeTerminal,
+        });
+        if (!assessment.sourceIssueTerminal || !assessment.subtreeTerminal) {
           result.skippedNonTerminalTree += 1;
           continue;
         }
