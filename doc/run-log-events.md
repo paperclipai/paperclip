@@ -167,6 +167,18 @@ matching receipt in PostgreSQL and project only the run's issue/task identifiers
 from its context, so historical duplicate receipts cannot multiply run contexts
 in server memory. Existing duplicate events do not require deletion or migration.
 
+## Provider quota gate
+
+Paperclip writes `provider.quota_gate.opened` when a provider reports a quota
+failure with a known future reset time. The payload contains the provider,
+biller, normalized billing type, reset time, and source run ID. Paperclip writes
+`provider.quota_gate.deferred` when that gate delays a queued run with the same
+provider and biller. Both events use the same bounded payload.
+
+These records explain why Paperclip delayed provider work. They do not contain
+provider output, credentials, environment values, prompts, or task content.
+They remain in the local run log and add no Telemetry or OpenTelemetry export.
+
 ## Codex resume usage snapshot
 
 The native runner retains a bounded local `harness.diagnostic` event with code

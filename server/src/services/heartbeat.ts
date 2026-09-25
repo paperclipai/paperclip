@@ -569,7 +569,11 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
-import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import {
+  evaluateCodexCredentialReadiness,
+  resolveCodexAcpBillingIdentity,
+} from "@paperclipai/adapter-codex-local/server";
+import { resolveClaudeAcpBillingIdentity } from "@paperclipai/adapter-claude-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
@@ -791,6 +795,17 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
+const PROVIDER_QUOTA_GATE_RETRY_REASON = "provider_quota_gate";
+type ProviderQuotaScope = {
+  provider: string;
+  biller: string;
+  billingType: string;
+};
+type ProviderQuotaGate = ProviderQuotaScope & {
+  blockedUntil: string;
+  sourceRunId: string;
+  recordedAt: string;
+};
 function isTransientWorkspaceGitScanCode(code: string | null | undefined): boolean {
   return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated;
 }
@@ -1104,6 +1119,78 @@ function readTransientRetryNotBeforeFromRun(
   }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeProviderQuotaScope(input: {
+  provider?: unknown;
+  biller?: unknown;
+  billingType?: unknown;
+}): ProviderQuotaScope | null {
+  const provider = readNonEmptyString(input.provider)?.toLowerCase() ?? null;
+  const biller = readNonEmptyString(input.biller)?.toLowerCase() ?? null;
+  if (!provider || !biller || provider === "unknown" || biller === "unknown") {
+    return null;
+  }
+  return {
+    provider,
+    biller,
+    billingType: normalizeLedgerBillingType(input.billingType),
+  };
+}
+
+function readProviderQuotaScope(value: unknown): ProviderQuotaScope | null {
+  const record = parseObject(value);
+  return normalizeProviderQuotaScope({
+    provider: record.provider,
+    biller: record.biller,
+    billingType: record.billingType,
+  });
+}
+
+function readProviderQuotaGate(value: unknown): ProviderQuotaGate | null {
+  const record = parseObject(value);
+  const scope = readProviderQuotaScope(record);
+  const blockedUntil = readNonEmptyString(record.blockedUntil);
+  const sourceRunId = readNonEmptyString(record.sourceRunId);
+  const recordedAt = readNonEmptyString(record.recordedAt);
+  if (!scope || !blockedUntil || !sourceRunId || !recordedAt) return null;
+  if (Number.isNaN(Date.parse(blockedUntil)) || Number.isNaN(Date.parse(recordedAt))) {
+    return null;
+  }
+  return { ...scope, blockedUntil, sourceRunId, recordedAt };
+}
+
+function providerQuotaScopesMatch(
+  left: ProviderQuotaScope,
+  right: ProviderQuotaScope,
+) {
+  return left.provider === right.provider && left.biller === right.biller;
+}
+
+function providerQuotaScopeFromResult(
+  result: AdapterExecutionResult,
+): ProviderQuotaScope | null {
+  return normalizeProviderQuotaScope({
+    provider: result.provider,
+    biller: resolveLedgerBiller(result),
+    billingType: result.billingType,
+  });
+}
+
+function providerQuotaScopeFromKnownAgentConfig(
+  agent: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">,
+): ProviderQuotaScope | null {
+  if (agent.adapterType === "claude_local") {
+    return readProviderQuotaScope(
+      resolveClaudeAcpBillingIdentity({ config: parseObject(agent.adapterConfig) }),
+    );
+  }
+  if (agent.adapterType === "codex_local") {
+    return readProviderQuotaScope(
+      resolveCodexAcpBillingIdentity({ config: parseObject(agent.adapterConfig) }),
+    );
+  }
+  return null;
 }
 
 function readTransientRecoveryContractFromRun(
@@ -12671,6 +12758,179 @@ export function heartbeatService(
     return ensured;
   }
 
+  async function resolveAgentProviderQuotaScope(
+    agent: typeof agents.$inferSelect,
+  ): Promise<ProviderQuotaScope | null> {
+    const runtimeState = await getRuntimeState(agent.id);
+    const persisted = readProviderQuotaScope(
+      parseObject(runtimeState?.stateJson).billingIdentity,
+    );
+    return persisted ?? providerQuotaScopeFromKnownAgentConfig(agent);
+  }
+
+  async function persistProviderQuotaGate(input: {
+    agent: typeof agents.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    result: AdapterExecutionResult;
+    now?: Date;
+  }): Promise<ProviderQuotaGate | null> {
+    if (input.result.errorFamily !== "provider_quota") return null;
+    const blockedUntil = input.result.retryNotBefore
+      ? new Date(input.result.retryNotBefore)
+      : null;
+    const now = input.now ?? new Date();
+    const scope = providerQuotaScopeFromResult(input.result);
+    if (
+      !scope ||
+      !blockedUntil ||
+      Number.isNaN(blockedUntil.getTime()) ||
+      blockedUntil.getTime() <= now.getTime()
+    ) {
+      return null;
+    }
+
+    await ensureRuntimeState(input.agent);
+    const gate = await db.transaction(async (tx) => {
+      const current = await tx
+        .select({ stateJson: agentRuntimeState.stateJson })
+        .from(agentRuntimeState)
+        .where(eq(agentRuntimeState.agentId, input.agent.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!current) return null;
+
+      const stateJson = parseObject(current.stateJson);
+      const existing = readProviderQuotaGate(stateJson.providerQuotaGate);
+      const candidate: ProviderQuotaGate = {
+        ...scope,
+        blockedUntil: blockedUntil.toISOString(),
+        sourceRunId: input.run.id,
+        recordedAt: now.toISOString(),
+      };
+      const selected =
+        existing &&
+        providerQuotaScopesMatch(existing, candidate) &&
+        Date.parse(existing.blockedUntil) >= blockedUntil.getTime()
+          ? existing
+          : candidate;
+
+      await tx
+        .update(agentRuntimeState)
+        .set({
+          stateJson: {
+            ...stateJson,
+            billingIdentity: scope,
+            providerQuotaGate: selected,
+          },
+          updatedAt: now,
+        })
+        .where(eq(agentRuntimeState.agentId, input.agent.id));
+      return selected;
+    });
+
+    if (gate) {
+      await appendRunEvent(input.run, {
+        eventType: "provider.quota_gate.opened",
+        stream: "system",
+        level: "warn",
+        message: `Provider quota gate opened until ${gate.blockedUntil}`,
+        payload: {
+          provider: gate.provider,
+          biller: gate.biller,
+          billingType: gate.billingType,
+          blockedUntil: gate.blockedUntil,
+          sourceRunId: gate.sourceRunId,
+        },
+      });
+    }
+    return gate;
+  }
+
+  async function findActiveProviderQuotaGate(
+    agent: typeof agents.$inferSelect,
+    now: Date,
+  ): Promise<ProviderQuotaGate | null> {
+    const scope = await resolveAgentProviderQuotaScope(agent);
+    if (!scope) return null;
+    const states = await db
+      .select({ stateJson: agentRuntimeState.stateJson })
+      .from(agentRuntimeState)
+      .where(eq(agentRuntimeState.companyId, agent.companyId));
+
+    let active: ProviderQuotaGate | null = null;
+    for (const state of states) {
+      const gate = readProviderQuotaGate(
+        parseObject(state.stateJson).providerQuotaGate,
+      );
+      if (
+        !gate ||
+        !providerQuotaScopesMatch(scope, gate) ||
+        Date.parse(gate.blockedUntil) <= now.getTime()
+      ) {
+        continue;
+      }
+      if (!active || Date.parse(gate.blockedUntil) > Date.parse(active.blockedUntil)) {
+        active = gate;
+      }
+    }
+    return active;
+  }
+
+  async function parkQueuedRunsForProviderQuotaGate(
+    queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
+    gate: ProviderQuotaGate,
+    now: Date,
+  ) {
+    const parked: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (const run of queuedRuns) {
+      const contextSnapshot = parseObject(run.contextSnapshot);
+      const updated = await db
+        .update(heartbeatRuns)
+        .set({
+          status: "scheduled_retry",
+          scheduledRetryAt: new Date(gate.blockedUntil),
+          scheduledRetryReason: PROVIDER_QUOTA_GATE_RETRY_REASON,
+          contextSnapshot: {
+            ...contextSnapshot,
+            retryReason: PROVIDER_QUOTA_GATE_RETRY_REASON,
+            scheduledRetryAt: gate.blockedUntil,
+            providerQuotaRetryNotBefore: gate.blockedUntil,
+            providerQuotaScope: {
+              provider: gate.provider,
+              biller: gate.biller,
+              billingType: gate.billingType,
+            },
+            providerQuotaGateSourceRunId: gate.sourceRunId,
+          },
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.status, "queued"),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) continue;
+      parked.push(updated);
+      await appendRunEvent(updated, {
+        eventType: "provider.quota_gate.deferred",
+        stream: "system",
+        level: "warn",
+        message: `Run deferred by provider quota gate until ${gate.blockedUntil}`,
+        payload: {
+          provider: gate.provider,
+          biller: gate.biller,
+          billingType: gate.billingType,
+          blockedUntil: gate.blockedUntil,
+          sourceRunId: gate.sourceRunId,
+        },
+      });
+    }
+    return parked;
+  }
+
   // Emits agent.task_run for a run write that just reached a terminal
   // status, unless the write only re-set a status the run already had (a
   // status-preserving patch, such as a livenessReason update on a run that
@@ -15245,6 +15505,9 @@ export function heartbeatService(
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
+    const providerQuotaScope = readProviderQuotaScope(
+      parseObject(run.resultJson).providerQuotaScope,
+    );
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
     if (!baseSchedule) {
@@ -15439,6 +15702,7 @@ export function heartbeatService(
           ? {
               providerQuotaRetryNotBefore:
                 transientRetryNotBefore.toISOString(),
+              ...(providerQuotaScope ? { providerQuotaScope } : {}),
             }
           : {}),
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
@@ -15778,6 +16042,7 @@ export function heartbeatService(
                   ? {
                       providerQuotaRetryNotBefore:
                         transientRetryNotBefore.toISOString(),
+                      ...(providerQuotaScope ? { providerQuotaScope } : {}),
                     }
                   : {}),
                 ...(codexTransientFallbackMode
@@ -19660,6 +19925,7 @@ export function heartbeatService(
     });
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
+    const billingIdentity = providerQuotaScopeFromResult(result);
     const ledgerScope = await resolveLedgerScopeForRun(
       db,
       agent.companyId,
@@ -19670,6 +19936,11 @@ export function heartbeatService(
       .update(agentRuntimeState)
       .set({
         adapterType: agent.adapterType,
+        ...(billingIdentity
+          ? {
+              stateJson: sql`jsonb_set(coalesce(${agentRuntimeState.stateJson}, '{}'::jsonb), '{billingIdentity}', ${JSON.stringify(billingIdentity)}::jsonb, true)`,
+            }
+          : {}),
         sessionId: session.legacySessionId,
         lastRunId: run.id,
         lastRunStatus: run.status,
@@ -19741,6 +20012,20 @@ export function heartbeatService(
         )
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
+
+      const quotaGateNow = new Date();
+      const providerQuotaGate = await findActiveProviderQuotaGate(
+        agent,
+        quotaGateNow,
+      );
+      if (providerQuotaGate) {
+        await parkQueuedRunsForProviderQuotaGate(
+          queuedRuns,
+          providerQuotaGate,
+          quotaGateNow,
+        );
+        return [];
+      }
 
       const dependencyReadiness = await listQueuedRunDependencyReadiness(
         agent.companyId,
@@ -24716,6 +25001,10 @@ export function heartbeatService(
                 : "failed";
 
         const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
+        const adapterProviderQuotaScope =
+          adapterResult.errorFamily === "provider_quota"
+            ? providerQuotaScopeFromResult(adapterResult)
+            : null;
         const usageJson =
           normalizedUsage ||
           adapterResult.costUsd != null ||
@@ -24784,6 +25073,9 @@ export function heartbeatService(
                 ...parseObject(adapterResult.resultJson),
                 ...(adapterResult.executionRecovery
                   ? { executionRecovery: adapterResult.executionRecovery }
+                  : {}),
+                ...(adapterProviderQuotaScope
+                  ? { providerQuotaScope: adapterProviderQuotaScope }
                   : {}),
                 configFreshness: configFreshnessResultMetadata,
               },
@@ -24911,6 +25203,11 @@ export function heartbeatService(
             );
           }
           const livenessRun = finalizedRun;
+          await persistProviderQuotaGate({
+            agent,
+            run: livenessRun,
+            result: adapterResult,
+          });
           await refreshContinuationSummaryForRun(livenessRun, agent);
           const skipRunIssueComment =
             parseObject(livenessRun.contextSnapshot).skipIssueComment === true;

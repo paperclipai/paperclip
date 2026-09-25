@@ -70,6 +70,7 @@ const mockedAppendHeartbeatRunEvent = vi.mocked(appendHeartbeatRunEvent);
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+const PROVIDER_QUOTA_SCOPE_TEST_ADAPTER = "provider_quota_scope_test";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -362,6 +363,225 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("defers and coalesces same-biller wakes behind a provider quota gate", async () => {
+    const companyId = randomUUID();
+    const sourceAgentId = randomUUID();
+    const targetAgentId = randomUUID();
+    const apiBilledAgentId = randomUUID();
+    const retryNotBefore = "2030-04-22T21:00:00.000Z";
+    const executions = new Map<string, number>();
+
+    registerServerAdapter({
+      type: PROVIDER_QUOTA_SCOPE_TEST_ADAPTER,
+      execute: async (ctx) => {
+        executions.set(ctx.agent.id, (executions.get(ctx.agent.id) ?? 0) + 1);
+        if (ctx.agent.id === sourceAgentId) {
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: "You've hit your weekly limit.",
+            errorCode: "provider_quota",
+            errorFamily: "provider_quota",
+            executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+            retryNotBefore,
+            provider: "openai",
+            biller: "chatgpt",
+            billingType: "subscription",
+            resultJson: { errorFamily: "provider_quota", retryNotBefore },
+          };
+        }
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          provider: "openai",
+          biller: ctx.agent.id === apiBilledAgentId ? "openai" : "chatgpt",
+          billingType: ctx.agent.id === apiBilledAgentId ? "api" : "subscription",
+          resultJson: {},
+        };
+      },
+      testEnvironment: async () => ({
+        adapterType: "codex_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Provider quota gate",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+      await db.insert(agents).values([
+        {
+          id: sourceAgentId,
+          companyId,
+          name: "Quota source",
+          role: "engineer",
+          status: "active",
+          adapterType: PROVIDER_QUOTA_SCOPE_TEST_ADAPTER,
+          adapterConfig: {},
+          runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+          permissions: {},
+        },
+        {
+          id: targetAgentId,
+          companyId,
+          name: "Same subscription",
+          role: "engineer",
+          status: "active",
+          adapterType: PROVIDER_QUOTA_SCOPE_TEST_ADAPTER,
+          adapterConfig: {},
+          runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+          permissions: {},
+        },
+        {
+          id: apiBilledAgentId,
+          companyId,
+          name: "API billed",
+          role: "engineer",
+          status: "active",
+          adapterType: PROVIDER_QUOTA_SCOPE_TEST_ADAPTER,
+          adapterConfig: {},
+          runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+          permissions: {},
+        },
+      ]);
+      await db.insert(agentRuntimeState).values([
+        {
+          agentId: sourceAgentId,
+          companyId,
+          adapterType: PROVIDER_QUOTA_SCOPE_TEST_ADAPTER,
+          stateJson: {
+            billingIdentity: {
+              provider: "openai",
+              biller: "chatgpt",
+              billingType: "subscription",
+            },
+          },
+        },
+        {
+          agentId: targetAgentId,
+          companyId,
+          adapterType: PROVIDER_QUOTA_SCOPE_TEST_ADAPTER,
+          stateJson: {
+            billingIdentity: {
+              provider: "openai",
+              biller: "chatgpt",
+              billingType: "subscription",
+            },
+          },
+        },
+        {
+          agentId: apiBilledAgentId,
+          companyId,
+          adapterType: PROVIDER_QUOTA_SCOPE_TEST_ADAPTER,
+          stateJson: {
+            billingIdentity: {
+              provider: "openai",
+              biller: "openai",
+              billingType: "api",
+            },
+          },
+        },
+      ]);
+
+      const sourceRun = await heartbeat.invoke(sourceAgentId, "on_demand", {}, "manual");
+      expect(sourceRun).not.toBeNull();
+      expect((await waitForRunToFinish(heartbeat, sourceRun!.id))?.errorCode).toBe(
+        "provider_quota",
+      );
+      await expect
+        .poll(
+          () =>
+            db
+              .select({ stateJson: agentRuntimeState.stateJson })
+              .from(agentRuntimeState)
+              .where(eq(agentRuntimeState.agentId, sourceAgentId))
+              .then((rows) => rows[0]?.stateJson ?? null),
+          { timeout: 5_000, interval: 50 },
+        )
+        .toMatchObject({
+          providerQuotaGate: {
+            provider: "openai",
+            biller: "chatgpt",
+            blockedUntil: retryNotBefore,
+            sourceRunId: sourceRun!.id,
+          },
+        });
+
+      const targetRun = await heartbeat.invoke(targetAgentId, "on_demand", {}, "manual");
+      expect(targetRun).not.toBeNull();
+      await expect
+        .poll(() => heartbeat.getRun(targetRun!.id), { timeout: 5_000, interval: 50 })
+        .toMatchObject({
+          status: "scheduled_retry",
+          scheduledRetryReason: "provider_quota_gate",
+          scheduledRetryAt: new Date(retryNotBefore),
+        });
+      expect(executions.get(targetAgentId) ?? 0).toBe(0);
+
+      const coalesced = await heartbeat.invoke(targetAgentId, "on_demand", {}, "manual");
+      expect(coalesced?.id).toBe(targetRun!.id);
+      expect(
+        await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, targetAgentId)),
+      ).toHaveLength(1);
+
+      const apiRun = await heartbeat.invoke(apiBilledAgentId, "on_demand", {}, "manual");
+      expect(apiRun).not.toBeNull();
+      expect((await waitForRunToFinish(heartbeat, apiRun!.id))?.status).toBe("succeeded");
+      expect(executions.get(apiBilledAgentId)).toBe(1);
+
+      const sourceState = await db
+        .select({ stateJson: agentRuntimeState.stateJson })
+        .from(agentRuntimeState)
+        .where(eq(agentRuntimeState.agentId, sourceAgentId))
+        .then((rows) => rows[0]?.stateJson ?? {});
+      await db
+        .update(agentRuntimeState)
+        .set({
+          stateJson: {
+            ...sourceState,
+            providerQuotaGate: {
+              ...(sourceState.providerQuotaGate as Record<string, unknown>),
+              blockedUntil: "2000-01-01T00:00:00.000Z",
+            },
+          },
+        })
+        .where(eq(agentRuntimeState.agentId, sourceAgentId));
+      await db
+        .update(heartbeatRuns)
+        .set({ scheduledRetryAt: new Date("2000-01-01T00:00:00.000Z") })
+        .where(eq(heartbeatRuns.id, targetRun!.id));
+      await heartbeat.promoteDueScheduledRetries(new Date());
+      await heartbeat.resumeQueuedRuns();
+      expect((await waitForRunToFinish(heartbeat, targetRun!.id))?.status).toBe("succeeded");
+      expect(executions.get(targetAgentId)).toBe(1);
+
+      const manualAfterReset = await heartbeat.invoke(
+        targetAgentId,
+        "on_demand",
+        {},
+        "manual",
+      );
+      expect(manualAfterReset).not.toBeNull();
+      expect((await waitForRunToFinish(heartbeat, manualAfterReset!.id))?.status).toBe(
+        "succeeded",
+      );
+      expect(executions.get(targetAgentId)).toBe(2);
+    } finally {
+      unregisterServerAdapter(PROVIDER_QUOTA_SCOPE_TEST_ADAPTER);
+    }
   });
 
   async function seedMaxTurnFixture(input?: {
