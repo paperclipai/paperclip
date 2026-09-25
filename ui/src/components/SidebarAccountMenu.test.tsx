@@ -55,6 +55,7 @@ vi.mock("../context/SidebarContext", () => ({
 vi.mock("../context/ThemeContext", () => ({
   useTheme: () => ({
     theme: "dark",
+    themePreference: "dark",
     toggleTheme: mockToggleTheme,
   }),
 }));
