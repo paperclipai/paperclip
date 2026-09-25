@@ -226,7 +226,6 @@ describe("SidebarAccountMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Edit profile");
     expect(document.body.textContent).toContain("Settings");
     expect(document.body.textContent).not.toContain("Instance settings");
     expect(document.body.textContent).toContain("Documentation");
@@ -234,6 +233,28 @@ describe("SidebarAccountMenu", () => {
     const popover = document.body.querySelector('[data-slot="popover-content"]');
     expect(popover?.textContent).not.toContain("Feedback");
     expect(popover?.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
+
+    // Profile access moved off the action list: the header links to the
+    // profile, and the separate view/edit rows are gone. Editing lives on the
+    // profile page itself.
+    expect(popover?.textContent).not.toContain("View profile");
+    expect(popover?.textContent).not.toContain("Edit profile");
+    const profileHeaderLink = popover?.querySelector<HTMLAnchorElement>('a[aria-label="View profile"]');
+    expect(profileHeaderLink?.getAttribute("href")).toBe("/u/jane-example");
+    expect(profileHeaderLink?.textContent).toContain("Jane Example");
+    expect(profileHeaderLink?.textContent).toContain("jane@example.com");
+    expect(popover?.querySelector('a[href="/company/settings/instance/profile"]')).toBeNull();
+
+    // Self-hosted invites open the in-app Members page on its Invites tab.
+    const inviteLink = popover?.querySelector<HTMLAnchorElement>(
+      'a[href="/company/settings/members?tab=invites"]',
+    );
+    expect(inviteLink?.textContent).toBe("Invite");
+    expect(inviteLink?.querySelector("svg")?.classList).toContain("lucide-user-plus");
+    expect(inviteLink?.hasAttribute("target")).toBe(false);
+    const menuOrder = popover?.textContent ?? "";
+    expect(menuOrder.indexOf("Settings")).toBeLessThan(menuOrder.indexOf("Invite"));
+    expect(menuOrder.indexOf("Invite")).toBeLessThan(menuOrder.indexOf("Documentation"));
 
     // Documentation still appears before the theme toggle.
     const menuText = popover?.textContent ?? "";
@@ -255,7 +276,6 @@ describe("SidebarAccountMenu", () => {
       .not.toContain("bg-muted");
     expect(document.body.textContent).not.toContain("Manage company and instance settings.");
     expect(document.body.textContent).not.toContain("Open your activity, task, and usage ledger.");
-    expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
     expect(document.body.querySelector('a[href="/company/settings"]')).not.toBeNull();
 
     const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
@@ -309,6 +329,20 @@ describe("SidebarAccountMenu", () => {
 
     expect(container.querySelector('a[aria-label="Share feedback"]')).toBeNull();
 
+    // Cloud manages invitations in the stack's People settings, reached with a
+    // same-tab top-level navigation rather than the in-app router.
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    const inviteLink = Array.from(popover?.querySelectorAll("a") ?? []).find(
+      (anchor) => anchor.textContent?.includes("Invite"),
+    );
+    expect(inviteLink?.getAttribute("href")).toBe(
+      "https://cloud.example.test/workspaces/acme-labs/settings?section=people",
+    );
+    expect(inviteLink?.hasAttribute("target")).toBe(false);
+    expect(popover?.querySelector('a[href="/company/settings/members?tab=invites"]')).toBeNull();
+    expect(popover?.querySelector('a[aria-label="View profile"]')?.getAttribute("href")).toBe("/u/jane-example");
+    expect(popover?.textContent).not.toContain("Edit profile");
+
     const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Sign out"),
     );
@@ -321,6 +355,40 @@ describe("SidebarAccountMenu", () => {
     expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
     expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
     expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("hides the invite shortcut when the operator hides invites (%#)", async (AccountMenu) => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+      hiddenSettings: ["company.invites"],
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <AccountMenu deploymentMode="authenticated" open />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    expect(popover?.textContent).not.toContain("Invite");
+    expect(popover?.querySelector('a[href="/company/settings/members?tab=invites"]')).toBeNull();
+    // The settings-independent entries stay put.
+    expect(popover?.querySelector('a[aria-label="View profile"]')).not.toBeNull();
+    expect(popover?.textContent).toContain("Documentation");
 
     await act(async () => {
       root.unmount();

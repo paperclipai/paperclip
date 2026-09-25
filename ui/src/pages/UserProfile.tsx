@@ -1,15 +1,22 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, UserRound } from "lucide-react";
-import type { UserProfileDailyPoint, UserProfileWindowStats } from "@paperclipai/shared";
+import { AlertCircle, UserRound, UserRoundPen } from "lucide-react";
+import {
+  hidesInstancePage,
+  type UserProfileDailyPoint,
+  type UserProfileWindowStats,
+} from "@paperclipai/shared";
 import { Link, useParams } from "@/lib/router";
+import { authApi } from "../api/auth";
 import { userProfilesApi } from "../api/userProfiles";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
+import { Button } from "../components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { IssueStatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useHiddenSettings } from "../hooks/useHiddenSettings";
 import { queryKeys } from "../lib/queryKeys";
 import {
   formatCents,
@@ -23,6 +30,7 @@ import {
 } from "../lib/utils";
 
 const NO_COMPANY = "__none__";
+const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 
 function initials(name: string | null | undefined) {
   const value = name?.trim() || "User";
@@ -205,6 +213,18 @@ export function UserProfile() {
     queryFn: () => userProfilesApi.get(companyId, userSlug),
     enabled: !!selectedCompanyId && !!userSlug,
   });
+  // The edit link only belongs on the viewer's own profile, and never when the
+  // hosting operator hides the profile settings surface the link points at.
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const canEditProfile =
+    Boolean(data?.user.id) &&
+    data?.user.id === session?.user.id &&
+    !hidesInstancePage(hiddenSettings, "instance.profile");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Users" }, { label: data?.user.name ?? userSlug }]);
@@ -280,6 +300,14 @@ export function UserProfile() {
               <span>{metaParts.join(" · ")}</span>
             </div>
           </div>
+          {canEditProfile ? (
+            <Button asChild variant="outline" size="sm">
+              <Link to={PROFILE_SETTINGS_PATH}>
+                <UserRoundPen />
+                Edit profile
+              </Link>
+            </Button>
+          ) : null}
         </div>
 
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
