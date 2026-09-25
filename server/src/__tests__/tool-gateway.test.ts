@@ -421,18 +421,17 @@ rl.on("line", (line) => {
 }
 
 function expectedConnectedToolName(input: { applicationKey: string | null; connectionId: string; toolName: string }) {
-  const applicationSegment = (input.applicationKey ?? "mcp")
+  const slug = (value: string, fallback: string, max: number) => (value
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 64) || "mcp";
-  const toolSegment = input.toolName
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64) || "tool";
+    .slice(0, 64) || fallback)
+    .slice(0, max)
+    .replace(/-+$/, "");
+  const applicationKey = input.applicationKey?.replace(/^app-gallery:([a-z0-9-]+)(?::.*)?$/i, "$1") ?? "mcp";
+  const applicationSegment = slug(applicationKey, "mcp", 24);
+  const toolSegment = slug(input.toolName, "tool", 48);
   return `mcp.${applicationSegment}-${input.connectionId.replace(/-/g, "").slice(0, 8)}:${toolSegment}`;
 }
 
@@ -649,6 +648,51 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("keeps tool names distinct when they share the capped name prefix", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    // Both names are the same for the first 48 slug characters, so both cap to one base name.
+    const sharedPrefix = "notion-show-advanced-analysis-next-steps-for-the";
+    const first = await createRemoteMcpTool(db, company.id, {
+      applicationKey: `app-gallery:notion:${randomUUID()}`,
+      connectionName: "Notion",
+      toolName: `${sharedPrefix}-current-workspace`,
+      riskLevel: "read",
+    });
+    const { id: _firstId, ...firstEntry } = first.catalogEntry;
+    const [second] = await db.insert(toolCatalogEntries).values({
+      ...firstEntry,
+      name: `${sharedPrefix}-archived-workspace-${randomUUID()}`,
+      toolName: `${sharedPrefix}-archived-workspace`,
+      versionHash: randomUUID(),
+    }).returning();
+    const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+    await db.insert(toolProfileEntries).values([first.catalogEntry.id, second!.id].map((catalogEntryId) => ({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "catalog_entry" as const,
+      effect: "include" as const,
+      catalogEntryId,
+    })));
+
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tools = await gateway.listToolsForSession(session.token);
+    const names = [first.catalogEntry.id, second!.id].map(
+      (catalogEntryId) => tools.find((tool) => tool.catalogEntryId === catalogEntryId)?.name,
+    );
+
+    const baseName = `mcp.notion-${first.connection.id.replace(/-/g, "").slice(0, 8)}:${sharedPrefix}`;
+    expect(names).toEqual([
+      `${baseName}-${first.catalogEntry.id.replace(/-/g, "").slice(0, 8)}`,
+      `${baseName}-${second!.id.replace(/-/g, "").slice(0, 8)}`,
+    ]);
+    for (const name of names) {
+      expect(`mcp__paperclip-assigned__${name}`.length).toBeLessThanOrEqual(128);
+    }
+  });
+
   it("exposes a named gateway with scoped bearer-token auth and revocation", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(async ({ body }) => ({
@@ -795,6 +839,39 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     } finally {
       await remote.close();
     }
+  });
+
+  it("keeps app-gallery tool names under the provider tool-name limit", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const longToolName = "notion-show-advanced-analysis-next-steps-for-the-current-workspace";
+    const galleryTool = await createRemoteMcpTool(db, company.id, {
+      applicationKey: `app-gallery:notion:${randomUUID()}`,
+      connectionName: "Notion",
+      toolName: longToolName,
+      riskLevel: "read",
+    });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "catalog_entry",
+      effect: "include",
+      catalogEntryId: galleryTool.catalogEntry.id,
+    });
+
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tools = await gateway.listToolsForSession(session.token);
+    const tool = tools.find((candidate) => candidate.catalogEntryId === galleryTool.catalogEntry.id);
+
+    const connectionSegment = galleryTool.connection.id.replace(/-/g, "").slice(0, 8);
+    expect(tool?.name).toBe(
+      `mcp.notion-${connectionSegment}:notion-show-advanced-analysis-next-steps-for-the`,
+    );
+    // Claude Code exposes gateway tools as `mcp__<server>__<name>`; providers reject names over 128.
+    expect(`mcp__paperclip-assigned__${tool!.name}`.length).toBeLessThanOrEqual(128);
   });
 
   it("keeps additive app-gallery assignments out of gateway-only runtimes", async () => {
