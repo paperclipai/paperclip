@@ -1538,8 +1538,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
     enabled: !!issueId,
-    refetchInterval:
-      hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
+    refetchInterval: hasLiveRuns ? 1000 : false,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const resolvedActivity = activity ?? [];

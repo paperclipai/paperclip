@@ -287,6 +287,19 @@ function isActiveRun(run: Pick<LedgerRun, "status" | "isLive">) {
   return run.isLive || ACTIVE_RUN_STATUSES.has(run.status);
 }
 
+export function issueRunsRefetchInterval(
+  hasLiveRuns: boolean,
+  runs: RunForIssue[] | undefined,
+) {
+  if (hasLiveRuns) return 5000;
+  // runsForIssue backfills missing liveness in the background, so refetch until it lands.
+  return runs?.some(
+    (run) => !ACTIVE_RUN_STATUSES.has(run.status) && !run.livenessState,
+  )
+    ? 5000
+    : false;
+}
+
 function runSummary(
   run: LedgerRun,
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>,
@@ -453,8 +466,8 @@ export function IssueRunLedger({
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
-    refetchInterval:
-      hasLiveRuns || issueStatus === "in_progress" ? 5000 : false,
+    refetchInterval: (query) =>
+      issueRunsRefetchInterval(hasLiveRuns, query.state.data),
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const { data: liveRuns } = useQuery({

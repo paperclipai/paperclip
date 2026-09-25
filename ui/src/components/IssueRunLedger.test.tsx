@@ -7,7 +7,7 @@ import type { ActivityEvent, Issue, RunLivenessState } from "@paperclipai/shared
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue } from "../api/heartbeats";
-import { IssueRunLedgerContent } from "./IssueRunLedger";
+import { IssueRunLedgerContent, issueRunsRefetchInterval } from "./IssueRunLedger";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => (
@@ -627,5 +627,34 @@ describe("IssueRunLedger", () => {
     });
 
     expect(container.querySelector('[data-testid="responsible-user-denial-notice"]')).toBeNull();
+  });
+});
+
+describe("issueRunsRefetchInterval", () => {
+  it("polls while a run is live", () => {
+    expect(issueRunsRefetchInterval(true, [createRun()])).toBe(5000);
+  });
+
+  it("stops polling once every finished run has liveness", () => {
+    expect(issueRunsRefetchInterval(false, [createRun()])).toBe(false);
+    expect(issueRunsRefetchInterval(false, undefined)).toBe(false);
+  });
+
+  it("polls until a finished run's liveness backfill lands", () => {
+    expect(
+      issueRunsRefetchInterval(false, [
+        createRun(),
+        createRun({ runId: "run-backfill", livenessState: null }),
+      ]),
+    ).toBe(5000);
+  });
+
+  it("does not poll for queued or running runs without liveness", () => {
+    expect(
+      issueRunsRefetchInterval(false, [
+        createRun({ status: "queued", livenessState: null }),
+        createRun({ status: "running", livenessState: null }),
+      ]),
+    ).toBe(false);
   });
 });
