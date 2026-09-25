@@ -162,6 +162,50 @@ function extractClaudeErrorMessages(parsed: Record<string, unknown>): string[] {
   return messages;
 }
 
+/**
+ * Reduce a Claude CLI stdout stream to the run's own error surface.
+ *
+ * `--output-format stream-json` multiplexes three unrelated things onto stdout:
+ * the agent's transcript, the CLI's telemetry, and — when the run fails — the
+ * error text. Only the last one may decide a failure class, so everything else
+ * is dropped here before the login-prompt markers see it. Without this, a
+ * transcript line that merely quotes "Unauthorized" (a tool result, a log
+ * excerpt, anything the agent read or wrote) flips requiresLogin regardless of
+ * what the run actually failed with.
+ *
+ * Kept are the error-bearing events (`result`, `error`, and anything flagged
+ * `is_error`) and every non-JSON line, because a CLI that dies before its
+ * first stream event reports that failure as plain text on stdout — which is
+ * also where a real login prompt shows up before any JSON starts.
+ *
+ * Duplicated locally rather than imported: the shared version of this
+ * reduction lives in upstream PR #11052 (AUR-1656), not yet merged. Once it
+ * lands, this copy should be removed in favor of the shared one — the bodies
+ * are intentionally identical.
+ */
+function claudeStdoutErrorSurface(stdout: string): string {
+  const surface: string[] = [];
+
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const event = parseJson(line);
+    if (!event) {
+      surface.push(line);
+      continue;
+    }
+
+    const type = asString(event.type, "");
+    if (type === "result" || type === "error" || asBoolean(event.is_error, false)) {
+      surface.push(asString(event.result, "") || asString(event.error, ""));
+      surface.push(...extractClaudeErrorMessages(event));
+    }
+  }
+
+  return surface.filter(Boolean).join("\n");
+}
+
 export function extractClaudeLoginUrl(text: string): string | null {
   const match = text.match(URL_RE);
   if (!match || match.length === 0) return null;
@@ -211,10 +255,18 @@ export function detectClaudeLoginRequired(input: {
   const parsed = input.parsed ?? null;
   const resultText = asString(parsed?.result, "").trim();
 
-  // The legacy login-prompt markers keep their broad scope. They match against
-  // every output line, which includes the parsed result, the parsed errors, and
-  // the raw stdout and stderr.
-  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
+  // The legacy login-prompt markers keep their broad scope, but only within
+  // the run's own error surface — never the full stdout transcript. The CLI
+  // prints a real login prompt either as plain text before its first stream
+  // event or inside the terminal result/error event; an assistant or tool
+  // event quoting the same words (a 401 in a curl transcript, "Unauthorized"
+  // in log output) never reaches this scan.
+  const promptLines = [
+    resultText,
+    ...extractClaudeErrorMessages(parsed ?? {}),
+    claudeStdoutErrorSurface(input.stdout),
+    input.stderr,
+  ]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
