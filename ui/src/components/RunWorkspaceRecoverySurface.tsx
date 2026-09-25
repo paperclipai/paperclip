@@ -179,8 +179,8 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
 
   const resolve = useMutation({
     mutationFn: (data: {
-      outcome: "restored" | "false_positive";
-      sourceIssueStatus: "todo" | "done" | "in_review";
+      outcome: "restored" | "false_positive" | "intentionally_deferred";
+      sourceIssueStatus: "todo" | "done" | "in_review" | "backlog";
     }) => {
       if (!issueId || !recoveryAction) throw new Error("No recovery action to resolve.");
       return issuesApi.resolveRecoveryAction(issueId, {
@@ -229,6 +229,9 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
   const handleResolve = useCallback(
     (outcome: RecoveryResolveOutcome) => {
       switch (outcome) {
+        case "backlog":
+          void resolve.mutateAsync({ outcome: "intentionally_deferred", sourceIssueStatus: "backlog" });
+          return;
         case "todo":
           void resolve.mutateAsync({ outcome: "restored", sourceIssueStatus: "todo" });
           return;

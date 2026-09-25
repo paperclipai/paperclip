@@ -178,6 +178,23 @@ function click(element: Element | null) {
 }
 
 describe("RunWorkspaceRecoverySurface", () => {
+  it("parks recovery in backlog from the run workspace view", async () => {
+    issueGetMock.mockResolvedValue(buildIssue(buildRecoveryAction()));
+    boardAccessMock.mockResolvedValue({ source: "local_implicit", companyIds: ["company-1"] });
+    resolveRecoveryMock.mockResolvedValue({});
+    const node = await renderSurface(buildRun());
+    click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+    click([...document.body.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Park in backlog"),
+    ) ?? null);
+    await flush();
+    expect(resolveRecoveryMock).toHaveBeenCalledExactlyOnceWith("issue-1", {
+      actionId: "action-1",
+      outcome: "intentionally_deferred",
+      sourceIssueStatus: "backlog",
+    });
+  });
+
   it("renders nothing for a run that is not a workspace-validation failure", async () => {
     issueGetMock.mockResolvedValue(buildIssue(buildRecoveryAction()));
     boardAccessMock.mockResolvedValue(undefined);

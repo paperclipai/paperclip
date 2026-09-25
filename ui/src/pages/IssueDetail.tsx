@@ -395,7 +395,7 @@ type ActionableIssueThreadInteraction =
   | RequestConfirmationInteraction
   | RequestCheckboxConfirmationInteraction;
 type ResolveRecoveryActionOutcome =
-  "restored" | "false_positive" | "blocked" | "cancelled";
+  "restored" | "false_positive" | "blocked" | "intentionally_deferred" | "cancelled";
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   runId?: string | null;
   runAgentId?: string | null;

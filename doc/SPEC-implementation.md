@@ -537,6 +537,7 @@ V1 non-terminal liveness rule:
 - legacy active agent-owned recovery actions remain readable, resolvable, and API-compatible after upgrade, but reconciliation does not enqueue another takeover wake for them
 - active-run output silence is an informational board UI signal at one hour (`suspicious`) and four hours (`critical`); it does not create or update issues or recovery actions, comment on or block source work, change assignments, or wake an agent
 - board snooze and continue decisions suppress the run signal until their stored re-arm time; a false-positive decision suppresses it permanently for that run; open legacy evaluation issues remain readable and manually resolvable without automatic refresh
+- a recovery owner may intentionally defer an issue by resolving the recovery with `outcome: intentionally_deferred` and `sourceIssueStatus: backlog`; the atomic resolution clears the active recovery without enqueueing a continuation wake, and no other recovery outcome may target `backlog`
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 

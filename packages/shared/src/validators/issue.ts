@@ -552,6 +552,7 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
   "false_positive",
   "blocked",
+  "intentionally_deferred",
   "cancelled",
 ] as const;
 
@@ -568,7 +569,7 @@ export const resolveIssueRecoveryActionSchema = z
       .optional(),
     actionId: z.string().guid().optional(),
     outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
-    sourceIssueStatus: z.enum(["todo", "done", "in_review", "blocked"]),
+    sourceIssueStatus: z.enum(["backlog", "todo", "done", "in_review", "blocked"]),
     resolutionNote: multilineTextSchema.optional().nullable(),
   })
   .strict()
@@ -595,6 +596,17 @@ export const resolveIssueRecoveryActionSchema = z
           code: z.ZodIssueCode.custom,
           message:
             "Blocked recovery actions must move the source issue to blocked",
+          path: ["sourceIssueStatus"],
+        });
+      }
+      return;
+    }
+
+    if (value.outcome === "intentionally_deferred") {
+      if (value.sourceIssueStatus !== "backlog") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Intentionally deferred recovery actions must move the source issue to backlog",
           path: ["sourceIssueStatus"],
         });
       }
