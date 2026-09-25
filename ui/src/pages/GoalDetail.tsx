@@ -11,7 +11,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
 import { GoalTree } from "../components/GoalTree";
-import { StatusBadge } from "../components/StatusBadge";
+import { StatusBadge, ProjectStatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -215,7 +215,7 @@ export function GoalDetail() {
                   title={project.name}
                   subtitle={project.description ?? undefined}
                   to={projectUrl(project)}
-                  trailing={<StatusBadge status={project.status} />}
+                  trailing={<ProjectStatusBadge status={project.status} />}
                 />
               ))}
             </div>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { PROJECT_COLORS, PROJECT_ICON_NAMES, PROJECT_STATUSES, isUuidLike, type BudgetPolicySummary, type ProjectStatus } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -15,9 +15,10 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
+import { ProjectProperties, SaveIndicator, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
-import { StatusBadge } from "../components/StatusBadge";
+import { ProjectStatusBadge } from "../components/StatusBadge";
+import { Check, ChevronDown } from "lucide-react";
 import { ProjectTile } from "../components/ProjectTile";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
@@ -319,6 +320,56 @@ function ProjectPluginOperationsList({
   );
 }
 
+/* ── Project status picker — tap the chip next to the title, pick one of the
+   five PROJECT_STATUSES (single source of truth in @paperclipai/shared).
+   Mirrors CaseStatusPicker in CaseDetail.tsx: Popover + trigger wrapping the
+   status badge + ChevronDown, one row per status with a Check on the current. ── */
+
+function ProjectStatusPicker({
+  status,
+  disabled,
+  onChange,
+}: {
+  status: ProjectStatus;
+  disabled?: boolean;
+  onChange: (next: ProjectStatus) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          className="inline-flex items-center gap-1 rounded-md hover:bg-accent/50 disabled:opacity-50"
+          aria-label={`Change project status (current: ${status.replace(/[_-]/g, " ")})`}
+        >
+          <ProjectStatusBadge status={status} />
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-44 p-1">
+        {PROJECT_STATUSES.map((s) => (
+          <button
+            key={s}
+            type="button"
+            data-testid="project-status-option"
+            aria-current={s === status ? "true" : undefined}
+            onClick={() => {
+              setOpen(false);
+              if (s !== status) onChange(s);
+            }}
+            className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left hover:bg-accent"
+          >
+            <ProjectStatusBadge status={s} />
+            {s === status && <Check className="h-4 w-4 text-muted-foreground" />}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 /* ── Main project page ── */
 
 export function ProjectDetail() {
@@ -335,6 +386,7 @@ export function ProjectDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [fieldSaveStates, setFieldSaveStates] = useState<Partial<Record<ProjectConfigFieldKey, ProjectFieldSaveState>>>({});
+  const [optimisticStatus, setOptimisticStatus] = useState<ProjectStatus | null>(null);
   const [dismissedLeftProjectIds, setDismissedLeftProjectIds] = useState<Set<string>>(() => new Set());
   const fieldSaveRequestIds = useRef<Partial<Record<ProjectConfigFieldKey, number>>>({});
   const fieldSaveTimers = useRef<Partial<Record<ProjectConfigFieldKey, ReturnType<typeof setTimeout>>>>({});
@@ -549,6 +601,33 @@ export function ProjectDetail() {
     };
   }, []);
 
+  // Optimistic chip value: after a pick, the chip shows the new status right
+  // away instead of lagging behind the refetch. When a fresh status arrives
+  // from the server — including one changed by another operator after our
+  // PATCH — drop the optimistic value so the chip always reflects the
+  // current project state.
+  useEffect(() => {
+    setOptimisticStatus(null);
+  }, [project?.status]);
+  // Navigating to another project must not carry the status chip's save
+  // feedback across: supersede any in-flight status save so its late
+  // resolution is ignored, drop its reset timer, and clear the indicator.
+  useEffect(() => {
+    fieldSaveRequestIds.current["status"] = (fieldSaveRequestIds.current["status"] ?? 0) + 1;
+    const timer = fieldSaveTimers.current["status"];
+    if (timer) {
+      clearTimeout(timer);
+      delete fieldSaveTimers.current["status"];
+    }
+    setOptimisticStatus(null);
+    setFieldSaveStates((current) => {
+      if (!("status" in current)) return current;
+      const next = { ...current };
+      delete next.status;
+      return next;
+    });
+  }, [project?.id]);
+
   const setFieldState = useCallback((field: ProjectConfigFieldKey, state: ProjectFieldSaveState) => {
     setFieldSaveStates((current) => ({ ...current, [field]: state }));
   }, []);
@@ -685,6 +764,22 @@ export function ProjectDetail() {
   const projectStarPending = projectMembershipPending && membershipMutation.variables?.starred !== undefined;
   const projectJoinLeavePending = projectMembershipPending && membershipMutation.variables?.starred === undefined;
 
+  // Status chip — rides the same per-field save machinery the configuration
+  // tab uses, so the chip shows saving/saved/failed and failures surface
+  // instead of being silently ignored. The chip flips optimistically on pick
+  // and reverts on failure, so "Saved" never sits beside a stale value.
+  const statusSaveState = fieldSaveStates["status"] ?? "idle";
+  const displayStatus = optimisticStatus ?? project.status;
+  const handleStatusChange = (next: ProjectStatus) => {
+    setOptimisticStatus(next);
+    updateProjectField("status", { status: next }).catch((error) => {
+      // The SaveIndicator next to the chip already surfaces the failure to
+      // the user; log it and revert the optimistic chip value.
+      setOptimisticStatus(null);
+      console.error("Failed to update project status:", error);
+    });
+  };
+
   const handleTabChange = (tab: ProjectTab) => {
     // Cache the active tab per project
     if (project?.id) {
@@ -753,12 +848,20 @@ export function ProjectDetail() {
           />
         </div>
         <div className="min-w-0 space-y-2">
-          <InlineEditor
-            value={project.name}
-            onSave={(name) => updateProject.mutate({ name })}
-            as="h2"
-            className="text-xl font-bold"
-          />
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <InlineEditor
+              value={project.name}
+              onSave={(name) => updateProject.mutate({ name })}
+              as="h2"
+              className="text-xl font-bold"
+            />
+            <ProjectStatusPicker
+              status={displayStatus}
+              disabled={statusSaveState === "saving"}
+              onChange={handleStatusChange}
+            />
+            <SaveIndicator state={statusSaveState} />
+          </div>
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-caps) text-red-800 dark:text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />

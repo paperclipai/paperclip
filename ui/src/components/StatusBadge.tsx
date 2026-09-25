@@ -1,8 +1,10 @@
 import type { CSSProperties } from "react";
+import type { ProjectStatus } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import {
   statusBadge,
   statusBadgeDefault,
+  projectStatusBadge,
   agentStatusMotion,
   agentStatusVar,
   agentStatusVarDefault,
@@ -33,6 +35,26 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
       className={cn(
         "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0",
         statusBadge[status] ?? statusBadgeDefault
+      )}
+    >
+      {label ?? status.replace(/[_-]/g, " ")}
+    </span>
+  );
+}
+
+/**
+ * Project status chip — all five `PROJECT_STATUSES` render distinctly through
+ * the dedicated `projectStatusBadge` map. In the generic `statusBadge` map,
+ * `backlog`, `planned`, and `cancelled` share one muted recipe, which makes a
+ * status picker list impossible to tell apart. Distinct from the generic
+ * {@link StatusBadge} so run/goal/approval badges are unaffected.
+ */
+export function ProjectStatusBadge({ status, label }: { status: ProjectStatus; label?: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0",
+        projectStatusBadge[status]
       )}
     >
       {label ?? status.replace(/[_-]/g, " ")}
