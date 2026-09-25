@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -113,6 +113,15 @@ function emit(value) {
   for (const response of clients) response.write(frame);
 }
 
+function parsedPromptText(promptBody) {
+  const text = promptBody.parts?.[0]?.text ?? "";
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+}
+
 async function mcpRequest(method, params) {
   const response = await fetch(mcp.url, {
     method: "POST",
@@ -159,7 +168,7 @@ async function callFirstPaperclipTool() {
 }
 
 async function callTerminalTool(promptBody) {
-  const prompt = JSON.parse(promptBody.parts?.[0]?.text ?? "{}");
+  const prompt = parsedPromptText(promptBody);
   const blocked = String(prompt.message ?? "").includes("block-result");
   const result = {
     schema: "paperclip.run_result.v1",
@@ -169,9 +178,9 @@ async function callTerminalTool(promptBody) {
       : "Fake provider completed the task.",
     completionClaim: {
       contractRevision:
-        prompt.task?.completionContract?.revision ?? "codex-demo-v1",
+        prompt.completionContract?.revision ?? prompt.task?.completionContract?.revision ?? "codex-demo-v1",
       objectiveSatisfied: !blocked,
-      criteria: (prompt.task?.completionContract?.criteria ?? []).map(
+      criteria: (prompt.completionContract?.criteria ?? prompt.task?.completionContract?.criteria ?? []).map(
         (criterion) => ({
           criterionId: criterion.id,
           status: blocked ? "unknown" : "satisfied",
@@ -360,8 +369,9 @@ const server = createServer(async (request, response) => {
   ) {
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
-    request.on("end", () => {
+    request.on("end", async () => {
       const promptPayload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      await appendFile(join(process.env.XDG_DATA_HOME, "fake-prompt-requests.ndjson"), JSON.stringify(promptPayload) + "\n");
       if (
         promptPayload.providerID !== "openrouter" ||
         promptPayload.modelID !== "deepseek/deepseek-v4-flash-0731" ||
@@ -374,7 +384,7 @@ const server = createServer(async (request, response) => {
       json(response, 204, null);
       setTimeout(async () => {
         await callFirstPaperclipTool();
-        const parsedPrompt = JSON.parse(promptPayload.parts?.[0]?.text ?? "{}");
+        const parsedPrompt = parsedPromptText(promptPayload);
         if (String(parsedPrompt.message ?? "").includes("native-question")) {
           pendingQuestion = nativeQuestion();
           emit({

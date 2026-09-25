@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { contextIntegrityTasks } from "./context-integrity-cases.js";
 import { normalizePrpResultSignals } from "../../packages/paperclip-runner/src/protocol/result-normalization.js";
 import {
   connectionReviewSuite,
@@ -8,6 +9,7 @@ import {
   openRouterBreadthExcludedModelIds,
   openRouterBreadthProfiles,
   openRouterBreadthTasks,
+  contextIntegrityProfiles,
   localIntegrityTasks,
   runnerProfiles,
   runnerSuites,
@@ -15,9 +17,11 @@ import {
   daytonaWarmContinuityTask,
   daytonaWarmEnvironment,
   isImmutableDaytonaImage,
+  pendingContextIntegrityProfiles,
   suiteDefinitionHash,
   validateRunnerCatalog,
 } from "./catalog.js";
+import { assertRunnerE2EPrerequisites, UNQUALIFIED_PROFILE_GAPS } from "./prerequisites.js";
 import {
   buildMatrixJobs,
   parseRunnerSelectors,
@@ -26,6 +30,22 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("validates context-integrity task IDs and selectable groups", () => {
+    const task = contextIntegrityTasks[0]!;
+    const originalId = task.id;
+    const originalGroups = task.groups;
+    try {
+      task.id = runnerTasks[0]!.id;
+      expect(() => validateRunnerCatalog()).toThrow("Duplicate task fixture ids");
+      task.id = originalId;
+      task.groups = ["not-a-selectable-group" as typeof task.groups[number]];
+      expect(() => validateRunnerCatalog()).toThrow("declares unknown groups");
+    } finally {
+      task.id = originalId;
+      task.groups = originalGroups;
+    }
+  });
+
   it("supplies an actionable human review in native warm completion examples", () => {
     const prompts = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
     for (const [index, prompt] of prompts.entries()) {
@@ -71,10 +91,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      23, 47, 52, 28, 18, 6, 6, 42, 14, 10, 2,
+      23, 47, 20, 52, 28, 18, 6, 6, 42, 14, 10, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(248);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(248);
+    expect(validateRunnerCatalog()).toHaveLength(268);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(268);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
@@ -362,6 +382,47 @@ describe("runner E2E catalog", () => {
     ).toBe(true);
   });
 
+  it("lists pending Kimi and Grok context profiles without treating them as qualified", () => {
+    expect(pendingContextIntegrityProfiles.map((profile) => profile.id)).toEqual([
+      "legacy-kimi-cli",
+      "legacy-kimi-acp",
+      "legacy-grok",
+    ]);
+    expect(contextIntegrityProfiles.map((profile) => profile.id)).toEqual(
+      expect.arrayContaining(pendingContextIntegrityProfiles.map((profile) => profile.id)),
+    );
+    expect(UNQUALIFIED_PROFILE_GAPS.pi).toMatch(/no qualified model source/);
+  });
+
+  it("blocks pending profiles before provider admission", () => {
+    const pending = runnerMatrix.filter((entry) =>
+      pendingContextIntegrityProfiles.some((profile) => profile.id === entry.profile.id),
+    );
+    expect(pending.length).toBeGreaterThan(0);
+    expect(() => assertRunnerE2EPrerequisites(pending)).toThrow(/No provider credentials were loaded or sent/);
+  });
+
+  it("binds pending provider credentials through secret references only", () => {
+    for (const profile of pendingContextIntegrityProfiles) {
+      const payload = profile.buildAgent({
+        environmentId: "fixture-company",
+        environmentFixtureId: "local",
+        workspacePath: "/tmp/runner-e2e-workspace",
+        secretRefs: {
+          [profile.credential]: {
+            type: "secret_ref",
+            secretId: "22222222-2222-4222-8222-222222222222",
+            version: "latest",
+          },
+        },
+        executionId: `pending-${profile.id}`,
+      });
+      expect(payload.adapterConfig).toMatchObject({
+        env: { [profile.credential]: { type: "secret_ref" } },
+      });
+    }
+  });
+
   it("pins legacy Codex and Claude to their classic CLI engines", () => {
     for (const profileId of ["legacy-codex", "legacy-claude"]) {
       const execution = runnerMatrix.find(
@@ -627,5 +688,23 @@ describe("runner E2E selectors", () => {
     expect(() =>
       parseRunnerSelectors(["--all", "--max-parallel", "0"]),
     ).toThrow("positive integer");
+  });
+
+  it("accepts an explicit zero or one automatic retry", () => {
+    expect(parseRunnerSelectors(["--all"]).maxAutomaticRetries).toBe(1);
+    expect(
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "0"])
+        .maxAutomaticRetries,
+    ).toBe(0);
+    expect(
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "1"])
+        .maxAutomaticRetries,
+    ).toBe(1);
+    expect(() =>
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "2"]),
+    ).toThrow("0 or 1");
+    expect(() =>
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "-1"]),
+    ).toThrow("0 or 1");
   });
 });

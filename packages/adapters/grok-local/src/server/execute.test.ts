@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
 // Bundles the remote-lane mock state and every mocked execution-target
 // function behind one hoisted object, so the `vi.mock` factory below (which
@@ -862,6 +863,63 @@ describe("grok_local execute", () => {
       expect(await fs.readFile(path.join(hostGrokHome, "auth.json"), "utf8")).toBe(
         grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }),
       );
+    });
+
+    it("delivers the owned assignment and ordered wake comments through --single", async () => {
+      const root = await makeTempRoot();
+      const fixture = createPromptContextFixture();
+      let deliveredPrompt = "";
+      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        deliveredPrompt = String(args.at(-1) ?? "");
+        return makeSuccessfulRunResult();
+      });
+
+      const ctx = await makeCtx("run-context-ownership", root);
+      ctx.context = fixture;
+
+      await execute(ctx);
+
+      expect(deliveredPrompt).toContain(fixture.paperclipTaskMarkdownAssignment);
+      expect(deliveredPrompt.indexOf("Append the same ledger entry.")).toBeLessThan(
+        deliveredPrompt.lastIndexOf("Append the same ledger entry."),
+      );
+      expect(deliveredPrompt.indexOf("comment-first")).toBeLessThan(
+        deliveredPrompt.indexOf("comment-second"),
+      );
+      expect(deliveredPrompt.indexOf("comment-second")).toBeLessThan(
+        deliveredPrompt.indexOf("comment-scope"),
+      );
+      expect(deliveredPrompt).toContain("Change the final scope to the launch checklist.");
+    });
+
+    it("retries a stale session with the full assignment and wake context", async () => {
+      const root = await makeTempRoot();
+      const fixture = createPromptContextFixture();
+      const prompts: string[] = [];
+      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        prompts.push(String(args.at(-1) ?? ""));
+        if (prompts.length === 1) {
+          return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "unknown session sess-stale" };
+        }
+        return makeSuccessfulRunResult();
+      });
+
+      const ctx = await makeCtx("run-grok-recovery-context", root);
+      ctx.runtime = {
+        sessionId: "sess-stale",
+        sessionParams: { sessionId: "sess-stale", cwd: root },
+        sessionDisplayId: "sess-stale",
+        taskKey: null,
+      };
+      ctx.context = fixture;
+      const result = await execute(ctx);
+
+      expect(result.exitCode).toBe(0);
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toContain(fixture.paperclipTaskMarkdownAssignmentCompact);
+      expect(prompts[1]).toContain(fixture.paperclipTaskMarkdownAssignment);
+      expect(prompts[1]).toContain("comment-first");
+      expect(prompts[1]).toContain("comment-scope");
     });
   });
 });

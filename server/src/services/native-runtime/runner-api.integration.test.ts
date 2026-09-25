@@ -9,6 +9,7 @@ import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-ser
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
 import { runnerApiCatalog } from "./runner-api-catalog.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
+import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
 
 describe("runner API against real HTTP routes", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
@@ -268,6 +269,111 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const result = await fixture.authority.execute({ tool: "call_api", callId: "comment", arguments: { operationId: "POST /api/issues/{id}/comments", pathParams: { id: fixture.issueId }, body: { body: "Identity proof", authorAgentId: randomUUID(), authorUserId: "spoofed", runId: randomUUID() } } });
     expect(result).toMatchObject({ status: 201 });
     expect((await fixture.snapshot()).comments).toEqual(expect.arrayContaining([expect.objectContaining({ body: "Identity proof", authorAgentId: fixture.agentId, authorUserId: null })]));
+  });
+
+  it("rejects a stale source-run question over public HTTP and accepts it from the next run", async () => {
+    const localTrustedServer = await startRunnerApiTestServer({ deploymentMode: "local_trusted" });
+    try {
+      const fixture = await localTrustedServer.fixture({
+        disableWakeOnDemand: true,
+        contextSnapshot: { paperclipWake: { comments: [] } },
+      });
+      const sourceToken = createLocalAgentJwt(
+        fixture.agentId,
+        fixture.companyId,
+        "paperclip_runner",
+        fixture.runId,
+      );
+      expect(sourceToken).toBeTruthy();
+      const requestHeaders = (token: string) => ({
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-paperclip-run-id": fixture.runId,
+      });
+      const humanCommentResponse = await fetch(
+        `${fixture.apiUrl}/api/issues/${fixture.issueId}/comments`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ body: "Human direction committed after the old wake." }),
+        },
+      );
+      expect(humanCommentResponse.status).toBe(201);
+      const humanComment = await humanCommentResponse.json() as { id: string; authorUserId?: string | null; authorAgentId?: string | null; createdByRunId?: string | null };
+      expect(humanComment).toMatchObject({ authorUserId: "local-board", authorAgentId: null, createdByRunId: null });
+
+      const questionPayload = {
+        kind: "ask_user_questions",
+        idempotencyKey: `stale-source-question-${fixture.runId}`,
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          title: "One real question",
+          questions: [{
+            id: "scope",
+            prompt: "Choose a scope.",
+            selectionMode: "single",
+            required: true,
+            options: [{ id: "small", label: "Small" }],
+          }],
+        },
+      };
+      const staleResponse = await fetch(
+        `${fixture.apiUrl}/api/issues/${fixture.issueId}/interactions`,
+        { method: "POST", headers: requestHeaders(sourceToken!), body: JSON.stringify(questionPayload) },
+      );
+      expect(staleResponse.status).toBe(409);
+      const staleBody = await staleResponse.json() as { details?: { reason?: string; commentIds?: string[] } };
+      expect(staleBody.details).toMatchObject({ reason: "newer_comment_not_delivered", commentIds: [humanComment.id] });
+      const afterStale = await fetch(`${fixture.apiUrl}/api/issues/${fixture.issueId}/interactions`);
+      expect(afterStale.status).toBe(200);
+      expect(await afterStale.json()).toEqual([]);
+
+      const successorRunId = randomUUID();
+      await localTrustedServer.db.insert(heartbeatRuns).values({
+        id: successorRunId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        status: "running",
+        runtimeMode: "native",
+        nativeIssueId: fixture.issueId,
+        invocationSource: "continuation",
+        triggerDetail: "comment",
+        contextSnapshot: { issueId: fixture.issueId, paperclipWake: { comments: [{ id: humanComment.id }] } },
+      });
+      await localTrustedServer.db.update(issues).set({ executionRunId: successorRunId, checkoutRunId: successorRunId }).where(eq(issues.id, fixture.issueId));
+      const successorToken = createLocalAgentJwt(
+        fixture.agentId,
+        fixture.companyId,
+        "paperclip_runner",
+        successorRunId,
+      );
+      expect(successorToken).toBeTruthy();
+      const acceptedResponse = await fetch(
+        `${fixture.apiUrl}/api/issues/${fixture.issueId}/interactions`,
+        {
+          method: "POST",
+          headers: { ...requestHeaders(successorToken!), "x-paperclip-run-id": successorRunId },
+          body: JSON.stringify({ ...questionPayload, idempotencyKey: `fresh-source-question-${successorRunId}` }),
+        },
+      );
+      const acceptedText = await acceptedResponse.text();
+      expect(acceptedResponse.status, acceptedText).toBe(201);
+      const accepted = JSON.parse(acceptedText) as { id: string; status: string; sourceRunId: string };
+      expect(accepted).toMatchObject({ status: "pending", sourceRunId: successorRunId });
+      const answerResponse = await fetch(
+        `${fixture.apiUrl}/api/issues/${fixture.issueId}/interactions/${accepted.id}/respond`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ answers: [{ questionId: "scope", optionIds: ["small"] }] }),
+        },
+      );
+      expect(answerResponse.status).toBe(200);
+      expect((await answerResponse.json() as { status: string }).status).toBe("answered");
+    } finally {
+      await localTrustedServer.close();
+    }
   });
 
   it("creates child tasks after seeding and preserves company numbering", async () => {

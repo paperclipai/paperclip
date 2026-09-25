@@ -22,6 +22,16 @@ function worker() {
 }
 
 describe("service worker privacy boundaries", () => {
+  it.each([
+    "/@fs/tmp/runner/vite-cache/deps/@assistant-ui_react.js?v=fixture",
+    "/@vite/client", "/@id/__x00__virtual:module", "/src/main.tsx", "/node_modules/.vite/deps/react.js",
+  ])("leaves development module request %s to the browser", pathname => {
+    const w = worker();
+    expect(w.request("default", pathname)).not.toHaveBeenCalled();
+    expect(w.fetch).not.toHaveBeenCalled();
+    expect(w.put).not.toHaveBeenCalled();
+    expect(w.match).not.toHaveBeenCalled();
+  });
   it("bypasses both caching and offline fallback for a no-store request outside /api", () => {
     const w = worker();
     expect(w.request("no-store")).not.toHaveBeenCalled();

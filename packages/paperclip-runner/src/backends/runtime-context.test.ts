@@ -341,6 +341,10 @@ describe("native runtime context files", () => {
     expect(answeredConstraint).toContain(
       "message.interactionResponses[0].response.result.answers",
     );
+    const preparedConstraint = nativeTaskConstraints({ ...input, schema: "paperclip.native-execution-input.v5" } as NativeExecutionInput)
+      .find((constraint) => constraint.includes("already authoritatively answered"));
+    expect(preparedConstraint).toContain("interactionResponses[0].response.result.answers");
+    expect(preparedConstraint).not.toContain("message.interactionResponses");
     expect(buildNativeModelEnvelope(input).interactionResponses).toEqual(
       input.interactionResponses,
     );

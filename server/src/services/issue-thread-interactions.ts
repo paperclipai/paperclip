@@ -1,4 +1,7 @@
-import { currentContinuationOrigins } from "./execution-continuation.js";
+import {
+  currentContinuationOrigins,
+  deliveredContinuationCommentIds,
+} from "./execution-continuation.js";
 import { connectionIntentDeliveries } from "@paperclipai/db";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -6,6 +9,7 @@ import {
   asc,
   desc,
   eq,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -3430,11 +3434,16 @@ export function issueThreadInteractionService(
 
       let originCommentIds: string[] = data.sourceCommentId ? [data.sourceCommentId] : [];
       let sourceIdentityContextId: string | null = null;
+      let sourceRunContext: Record<string, unknown> | null = null;
+      let sourceRunCreatedAt: Date | null = null;
       if (data.sourceRunId) {
         const sourceRun = await db
           .select({
             contextSnapshot: heartbeatRuns.contextSnapshot,
             companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+            nativeIssueId: heartbeatRuns.nativeIssueId,
+            createdAt: heartbeatRuns.createdAt,
             activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
           })
           .from(heartbeatRuns)
@@ -3443,6 +3452,22 @@ export function issueThreadInteractionService(
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
         }
+        if (data.kind === "ask_user_questions") {
+          if (actor.agentId && sourceRun.agentId !== actor.agentId) {
+            throw unprocessable("sourceRunId must belong to the creating agent");
+          }
+          const snapshot = sourceRun.contextSnapshot ?? {};
+          const boundIssueIds = [
+            sourceRun.nativeIssueId,
+            snapshot.issueId,
+            snapshot.taskId,
+          ].filter((value): value is string => typeof value === "string" && value.length > 0);
+          if (boundIssueIds.some((boundIssueId) => boundIssueId !== issue.id)) {
+            throw unprocessable("sourceRunId must belong to the same issue");
+          }
+        }
+        sourceRunContext = sourceRun.contextSnapshot;
+        sourceRunCreatedAt = sourceRun.createdAt;
         originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot)])];
         sourceIdentityContextId = actor.identityContextId ?? sourceRun.activeIdentityContextId;
         if (sourceIdentityContextId) {
@@ -3480,6 +3505,42 @@ export function issueThreadInteractionService(
             .for("update");
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
+          }
+          if (
+            data.kind === "ask_user_questions" &&
+            sourceRunContext &&
+            sourceRunCreatedAt
+          ) {
+            const delivered = deliveredContinuationCommentIds(sourceRunContext);
+            if (delivered.known) {
+              const newerHumanComments = await tx
+                .select({ id: issueComments.id })
+                .from(issueComments)
+                .where(
+                  and(
+                    eq(issueComments.companyId, issue.companyId),
+                    eq(issueComments.issueId, issue.id),
+                    eq(issueComments.authorType, "user"),
+                    isNotNull(issueComments.authorUserId),
+                    ne(issueComments.authorUserId, "board-concierge"),
+                    isNull(issueComments.createdByRunId),
+                    isNull(issueComments.deletedAt),
+                    gte(issueComments.createdAt, sourceRunCreatedAt),
+                  ),
+                );
+              const undelivered = newerHumanComments.filter(
+                (comment) => !delivered.ids.has(comment.id),
+              );
+              if (undelivered.length > 0) {
+                throw conflict(
+                  "New user comments arrived after this run's context; continue after queued comments are delivered",
+                  {
+                    reason: "newer_comment_not_delivered",
+                    commentIds: undelivered.map((comment) => comment.id),
+                  },
+                );
+              }
+            }
           }
           // Validate the plan/document confirmation target inside the same
           // transaction (locking the document row) so the latest-revision check

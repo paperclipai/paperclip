@@ -1755,6 +1755,35 @@ describe("rebindNativeSessionCheckpoint", () => {
     },
   );
 
+  it.each([
+    ["paperclip.native-execution-input.v4", "paperclip.native-execution-input.v5"],
+    ["paperclip.native-execution-input.v5", "paperclip.native-execution-input.v4"],
+  ] as const)("retains a recoverable %s session when the constructor defaults to %s", (priorSchema, currentSchema) => {
+    const prior = previousRun();
+    const profile = prior.runnerProfileJson as Record<string, unknown>;
+    profile.nativeExecutionInput = { ...execution(previousRunId), schema: priorSchema };
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    checkpoint.goal = { status: "paused", objective: "Preserve the existing durable work" };
+    const before = structuredClone(prior);
+    const result = buildNativeExecutionWithCheckpoint({
+      previousRun: prior,
+      normalizedSessionId,
+      buildExecution: ({ normalizedSessionId: sessionId, resumedSession }) => parseNativeExecutionInput({
+        ...execution(currentRunId), schema: currentSchema,
+        session: { ...execution(currentRunId).session, normalizedSessionId: sessionId },
+        continuationPrompt: resumedSession ? "New direction only; do not replay completed actions" : null,
+      }),
+    });
+    expect(result.execution.schema).toBe(priorSchema);
+    expect(result.normalizedSessionId).toBe(normalizedSessionId);
+    expect(result.checkpoint).toMatchObject({
+      providerSessionId: "provider-thread-123",
+      providerRecoveryPolicy: "same_session_only",
+      goal: { status: "paused", objective: "Preserve the existing durable work" },
+    });
+    expect(prior).toEqual(before);
+  });
+
   it("keeps a valid checkpoint and does not rebuild the resumed task", () => {
     const calls: boolean[] = [];
     const result = buildNativeExecutionWithCheckpoint({
@@ -2514,15 +2543,15 @@ describe("buildNativeExecutionInput wake projection", () => {
     });
 
     expect(codex).toMatchObject({
-      schema: "paperclip.native-execution-input.v4",
+      schema: "paperclip.native-execution-input.v5",
       provider: { kind: "codex", approvalPolicy: "on-request" },
     });
     expect(opencode).toMatchObject({
-      schema: "paperclip.native-execution-input.v4",
+      schema: "paperclip.native-execution-input.v5",
       provider: { kind: "opencode", permissionMode: "ask" },
     });
     expect(acpx).toMatchObject({
-      schema: "paperclip.native-execution-input.v4",
+      schema: "paperclip.native-execution-input.v5",
       provider: { kind: "acpx", permissionMode: "deny-all" },
     });
     expect(claudeManaged).toMatchObject({

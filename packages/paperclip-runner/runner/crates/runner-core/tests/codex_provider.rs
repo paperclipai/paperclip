@@ -66,6 +66,7 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
         approval_policy: "never".to_owned(),
         externally_sandboxed: false,
         include_skill_instructions: None,
+        conversation_mode: None,
     }
 }
 

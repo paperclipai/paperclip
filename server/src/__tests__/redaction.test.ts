@@ -213,6 +213,27 @@ describe("redaction", () => {
     });
   });
 
+  it("preserves native execution v5 and model envelope v3 schema identifiers", () => {
+    const input = {
+      schema: "paperclip.native-execution-input.v5",
+      nested: {
+        runtimeSchema: "paperclip.native-model-envelope.v3",
+        providerValue: "paperclip.native-execution-input.v5",
+      },
+    };
+    expect(sanitizeRecord(input)).toEqual({
+      schema: input.schema,
+      nested: {
+        runtimeSchema: input.nested.runtimeSchema,
+        providerValue: REDACTED_EVENT_VALUE,
+      },
+    });
+    expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v4", runtimeSchema: "paperclip.native-model-envelope.v2" })).toEqual({
+      schema: "paperclip.native-execution-input.v4",
+      runtimeSchema: "paperclip.native-model-envelope.v2",
+    });
+  });
+
   it("preserves only known PRP v1 event discriminators inside validated envelopes", () => {
     const payload = {
       prpEvent: {

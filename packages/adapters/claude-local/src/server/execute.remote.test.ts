@@ -77,6 +77,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute } from "./execute.js";
 import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
 
@@ -536,6 +537,82 @@ describe("claude remote execution", () => {
         (call[2] as string[]).includes("--version"),
       )).toBe(false);
     });
+  });
+
+
+  it("reselects the full assignment and bootstrap guidance after a failed resume", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-cli-fallback-context-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    runChildProcess
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({
+          type: "result",
+          session_id: "12345678-1234-4abc-9def-123456789012",
+          is_error: true,
+          subtype: "error_during_execution",
+          result: "No conversation found with session id 12345678-1234-4abc-9def-123456789012",
+        }),
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "session-fresh", model: "claude-sonnet" }),
+          JSON.stringify({ type: "result", session_id: "session-fresh", subtype: "success", is_error: false, result: "Recovered" }),
+        ].join("\n"),
+        stderr: "",
+        pid: 124,
+        startedAt: new Date().toISOString(),
+      });
+
+    const result = await execute({
+      runId: "run-claude-cli-fallback-context",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "12345678-1234-4abc-9def-123456789012",
+        sessionParams: { sessionId: "12345678-1234-4abc-9def-123456789012", cwd: workspaceDir },
+        sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
+        taskKey: null,
+      },
+      config: {
+        engine: "cli",
+        command: "claude",
+        env: { ANTHROPIC_API_KEY: "fixture-anthropic-key" },
+      },
+      context: {
+        ...createPromptContextFixture(),
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(runChildProcess).toHaveBeenCalledTimes(2);
+    const first = (runChildProcess.mock.calls[0] as unknown as [string, string, string[], { stdin?: string }])[3]?.stdin ?? "";
+    const retry = (runChildProcess.mock.calls[1] as unknown as [string, string, string[], { stdin?: string }])[3]?.stdin ?? "";
+    expect(first).toContain("## Compact assignment");
+    expect(first).not.toContain("Explain the next step before starting work.");
+    expect(retry).toContain("## Owned assignment");
+    expect(retry).toContain("Explain the next step before starting work.");
+    expect(retry).not.toContain("## Compact assignment");
+    expect(retry.indexOf("comment-first")).toBeLessThan(retry.indexOf("comment-second"));
+    expect(retry.split("Append the same ledger entry.")).toHaveLength(3);
   });
 
 });

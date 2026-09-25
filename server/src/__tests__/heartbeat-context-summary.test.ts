@@ -5,8 +5,74 @@ import {
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
 } from "../services/heartbeat.js";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("leaves current comments to the wake renderer when assignment-only rendering is selected", () => {
+    const commentBody = "Keep this current comment exactly once.";
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-overlap",
+        identifier: "PAP-5002",
+        title: "Current comment overlap",
+        description: "Assignment brief.",
+      },
+      wakeComments: [{ id: "comment-1", body: commentBody }],
+      includeWakeComments: false,
+    });
+    const wakePrompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-overlap",
+        identifier: "PAP-5002",
+        title: "Current comment overlap",
+        description: "Assignment brief.",
+      },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: commentBody }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(markdown).not.toContain(commentBody);
+    expect(wakePrompt).toContain(commentBody);
+    expect(`${markdown}\n${wakePrompt}`.split(commentBody)).toHaveLength(2);
+  });
+
+  it("keeps attachment descriptors and follow-up rules when assignment markdown omits wake bodies", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-files", identifier: "PAP-5003", title: "Files", description: "Brief" },
+      wakeComments: [{
+        id: "comment-files",
+        body: "Inspect the file.",
+        attachments: [{
+          id: "attachment-1",
+          filename: "evidence.png",
+          contentType: "image/png",
+          byteSize: 42,
+          contentPath: "/api/attachments/attachment-1/content",
+        }],
+      }],
+      includeWakeComments: false,
+    });
+
+    expect(markdown).not.toContain("Inspect the file.");
+    expect(markdown).toContain("Follow-up directive:");
+    expect(markdown).toContain('Attachments on wake comment "comment-files":');
+    expect(markdown).toContain('"id":"attachment-1"');
+  });
+
+  it("preserves repeated same-body wake events as distinct ordered comments", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-order", identifier: "PAP-5004", title: "Order", description: null },
+      wakeComments: [
+        { id: "comment-a", body: "Repeat me." },
+        { id: "comment-b", body: "Repeat me." },
+      ],
+    });
+    expect(markdown!.indexOf('"comment-a"')).toBeLessThan(markdown!.indexOf('"comment-b"'));
+    expect(markdown!.split("Repeat me.")).toHaveLength(3);
+  });
+
   it("keeps a durable task plan in full and resumed context without granting execution approval", () => {
     const taskPlan = {
       documentId: "document", revisionId: "revision", revisionNumber: 1,

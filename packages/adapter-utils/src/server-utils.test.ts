@@ -3041,6 +3041,21 @@ describe("selectPaperclipTaskMarkdown", () => {
     ).toBe(fullMarkdown);
   });
 
+  it("prefers assignment-only fields while preserving historical fallback fields", () => {
+    const context = {
+      paperclipTaskMarkdown: `${fullMarkdown}\nHistorical wake comment`,
+      paperclipTaskMarkdownCompact: `${compactMarkdown}\nHistorical compact comment`,
+      paperclipTaskMarkdownAssignment: fullMarkdown,
+      paperclipTaskMarkdownAssignmentCompact: compactMarkdown,
+      paperclipWake: wake("issue_commented"),
+    };
+    expect(selectPaperclipTaskMarkdown(context)).toBe(fullMarkdown);
+    expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(compactMarkdown);
+    expect(
+      selectPaperclipTaskMarkdown({ paperclipTaskMarkdown: "legacy", paperclipWake: wake("issue_commented") }),
+    ).toBe("legacy");
+  });
+
   it("returns the compact markdown for non-assignment resume deltas", () => {
     expect(
       selectPaperclipTaskMarkdown(
@@ -3832,5 +3847,163 @@ describe("runtime skill assignment boundaries", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("wake continuation comment ownership", () => {
+  const continuation = (messages: Array<Record<string, unknown>>, resumeDelta?: Array<Record<string, unknown>>) => ({
+    version: 1,
+    companyId: "company-1",
+    issueId: "issue-1",
+    trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+    originCommentIds: [],
+    objective: "Continue the task.",
+    messages,
+    ...(resumeDelta ? { resumeDelta: { baseRunId: "run-old", messages: resumeDelta } } : {}),
+    interactionOutcomes: [],
+    completedWork: null,
+    unresolvedInteractionIds: [],
+    coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+  });
+
+  const message = (id: string, body: string) => ({
+    id,
+    authorType: "user",
+    authorId: "user-1",
+    body,
+    createdAt: "2026-09-21T00:00:00.000Z",
+    updatedAt: "2026-09-21T00:00:00.000Z",
+    deleted: false,
+    sourceTrust: "human",
+  });
+
+  it("suppresses only an exact continuation owner and keeps same-body distinct IDs", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: null },
+      comments: [
+        { id: "comment-a", body: "Repeat body" },
+        { id: "comment-b", body: "Repeat body" },
+        { id: "comment-edited", body: "Edited current body" },
+      ],
+      commentWindow: { requestedCount: 3, includedCount: 3, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: continuation([
+        message("comment-a", "Repeat body"),
+        message("comment-edited", "Original body"),
+      ]),
+    });
+    expect(prompt).toContain("comment-b");
+    expect(prompt).toContain("comment-edited");
+    expect(prompt).not.toContain("comment-a at");
+  });
+
+  it("does not suppress a current comment absent from the rendered resume delta", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: null },
+      comments: [{ id: "comment-new", body: "Current delta body" }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: continuation(
+        [message("comment-new", "Current delta body")],
+        [],
+      ),
+    }, { resumedSession: true });
+    expect(prompt).toContain("comment-new");
+    expect(prompt).toContain("Current delta body");
+  });
+
+  it("does not repeat the shared issue brief as continuation objective on a fresh owned wake", () => {
+    const objective = "Assignment brief owned by task markdown.";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: objective },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), objective, objectiveSource: { kind: "description", id: "issue-1", revision: "3afeec397239f147627f99ddaa883639fa50d191fc2bbce0dc7515a0f05deedb" } },
+    }, { suppressIssueDescription: true });
+    expect(prompt).not.toContain(`"objective":"${objective}"`);
+  });
+
+  it("keeps a changed continuation objective on an ordinary compact resume", () => {
+    const objective = "Changed objective must reach the compact resumed turn.";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Original brief" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), objective, objectiveSource: { kind: "description", id: "issue-1", revision: "3fdd2539337403e2e9551085a24ce3737978e6f0d2fc129d71d6a27c2befb523" } },
+    }, { resumedSession: true, suppressIssueDescription: true });
+    expect(prompt).toContain(`"objective":"${objective}"`);
+  });
+
+  it("keeps continuation objective when its issue identity does not match the assignment", () => {
+    const objective = "Mismatched continuation objective remains visible.";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), issueId: "issue-2", objective, objectiveSource: { kind: "description", id: "issue-2", revision: "ba02348ecb9f87dd102e0faf7ae65731c856c8a13ba64874394a873cc529c63f" } },
+    }, { suppressIssueDescription: true });
+    expect(prompt).toContain(`"objective":"${objective}"`);
+  });
+
+  it("suppresses a latest comment objective only when its exact revised message is displayed", () => {
+    const objective = "Latest user direction.";
+    const source = { ...message("comment-latest", objective), updatedAt: "2026-09-21T00:02:00.000Z" };
+    const full = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [{ id: "comment-latest", body: objective }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([source]), objective, objectiveSource: { kind: "comment", id: source.id, revision: source.updatedAt } },
+    }, { suppressIssueDescription: true });
+    expect(full).not.toContain(`"objective":"${objective}"`);
+
+    const stale = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [{ id: "comment-latest", body: objective }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([source]), objective, objectiveSource: { kind: "comment", id: source.id, revision: "stale-revision" } },
+    }, { suppressIssueDescription: true });
+    expect(stale).toContain(`"objective":"${objective}"`);
+
+    const wrongSource = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [{ id: "comment-latest", body: objective }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([source]), objective, objectiveSource: { kind: "comment", id: "comment-other", revision: source.updatedAt } },
+    }, { suppressIssueDescription: true });
+    expect(wrongSource).toContain(`"objective":"${objective}"`);
+
+    const missingDelta = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [{ id: "comment-latest", body: objective }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([source], []), objective, objectiveSource: { kind: "comment", id: source.id, revision: source.updatedAt } },
+    }, { resumedSession: true, suppressIssueDescription: true });
+    expect(missingDelta).toContain(`"objective":"${objective}"`);
+
+    const legacy = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: "Assignment brief" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), objective },
+    }, { suppressIssueDescription: true });
+    expect(legacy).toContain(`"objective":"${objective}"`);
   });
 });

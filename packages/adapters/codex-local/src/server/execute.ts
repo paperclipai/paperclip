@@ -44,8 +44,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderTemplate,
-  renderPaperclipWakePrompt,
-  selectPaperclipTaskMarkdown,
+  selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
@@ -1085,7 +1084,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
     const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
     let instructionsPrefix = "";
-    let instructionsChars = 0;
     if (instructionsFilePath) {
       try {
         const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
@@ -1093,7 +1091,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `${instructionsContents}\n\n` +
           `The above agent instructions were loaded from ${instructionsFilePath}. ` +
           `Resolve any relative file references from ${instructionsDir}.\n\n`;
-        instructionsChars = instructionsPrefix.length;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await onLog(
@@ -1114,19 +1111,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const renderedBootstrapPrompt =
-      !sessionId && bootstrapPromptTemplate.trim().length > 0
-        ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-        : "";
-    const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-      resumedSession: Boolean(sessionId),
-      conversationMode: context.conversationMode === true,
-      suppressIssueDescription: taskContextNote.length > 0,
-    });
-    const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-    const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
-    instructionsChars = promptInstructionsPrefix.length;
     const continuationSummary = parseObject(context.paperclipContinuationSummary);
     const continuationSummaryBody = asString(continuationSummary.body, "").trim() || null;
     const codexFallbackHandoffNote =
@@ -1137,22 +1121,45 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             continuationSummaryBody,
           })
         : "";
-    const commandNotes = (() => {
-      if (!instructionsFilePath) {
-        const notes = [repoAgentsNote];
-        if (forceSaferInvocation) {
-          notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+    const runAttempt = async (resumeSessionId: string | null) => {
+      const renderedBootstrapPrompt =
+        !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
+          ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+          : "";
+      const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
+        resumedSession: Boolean(resumeSessionId),
+      });
+      const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
+      const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
+      const commandNotes = (() => {
+        if (!instructionsFilePath) {
+          const notes = [repoAgentsNote];
+          if (forceSaferInvocation) {
+            notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+          }
+          if (forceFreshSession) {
+            notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+          }
+          return notes;
         }
-        if (forceFreshSession) {
-          notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-        }
-        return notes;
-      }
-      if (instructionsPrefix.length > 0) {
-        if (shouldUseResumeDeltaPrompt) {
+        if (instructionsPrefix.length > 0) {
+          if (shouldUseResumeDeltaPrompt) {
+            const notes = [
+              `Loaded agent instructions from ${instructionsFilePath}`,
+              "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+              repoAgentsNote,
+            ];
+            if (forceSaferInvocation) {
+              notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+            }
+            if (forceFreshSession) {
+              notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+            }
+            return notes;
+          }
           const notes = [
             `Loaded agent instructions from ${instructionsFilePath}`,
-            "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+            `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
             repoAgentsNote,
           ];
           if (forceSaferInvocation) {
@@ -1164,8 +1171,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return notes;
         }
         const notes = [
-          `Loaded agent instructions from ${instructionsFilePath}`,
-          `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+          `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
           repoAgentsNote,
         ];
         if (forceSaferInvocation) {
@@ -1175,51 +1181,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
         }
         return notes;
+      })();
+      if (executionTargetIsSandbox) {
+        commandNotes.push(
+          "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
+        );
       }
-      const notes = [
-        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-        repoAgentsNote,
-      ];
-      if (forceSaferInvocation) {
-        notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+      if (preparedRuntimeConfig.notes.length > 0) {
+        commandNotes.unshift(...preparedRuntimeConfig.notes);
       }
-      if (forceFreshSession) {
-        notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-      }
-      return notes;
-    })();
-    if (executionTargetIsSandbox) {
-      commandNotes.push(
-        "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
-      );
-    }
-    if (preparedRuntimeConfig.notes.length > 0) {
-      commandNotes.unshift(...preparedRuntimeConfig.notes);
-    }
-    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-      ? ""
-      : renderTemplate(promptTemplate, templateData);
-    const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-    const prompt = joinPromptSections([
-      promptInstructionsPrefix,
-      renderedBootstrapPrompt,
-      wakePrompt,
-      codexFallbackHandoffNote,
-      sessionHandoffNote,
-      taskContextNote,
-      renderedPrompt,
-    ]);
-    const promptMetrics = {
-      promptChars: prompt.length,
-      instructionsChars,
-      bootstrapPromptChars: renderedBootstrapPrompt.length,
-      wakePromptChars: wakePrompt.length,
-      sessionHandoffChars: sessionHandoffNote.length,
-      taskContextChars: taskContextNote.length,
-      heartbeatPromptChars: renderedPrompt.length,
-    };
-
-    const runAttempt = async (resumeSessionId: string | null) => {
+      const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+        ? ""
+        : renderTemplate(promptTemplate, templateData);
+      const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+      const prompt = joinPromptSections([
+        promptInstructionsPrefix,
+        renderedBootstrapPrompt,
+        wakePrompt,
+        codexFallbackHandoffNote,
+        sessionHandoffNote,
+        taskContextNote,
+        renderedPrompt,
+      ]);
+      const promptMetrics = {
+        promptChars: prompt.length,
+        instructionsChars: promptInstructionsPrefix.length,
+        bootstrapPromptChars: renderedBootstrapPrompt.length,
+        wakePromptChars: wakePrompt.length,
+        sessionHandoffChars: sessionHandoffNote.length,
+        taskContextChars: taskContextNote.length,
+        heartbeatPromptChars: renderedPrompt.length,
+      };
       const execArgs = buildCodexExecArgs(
         forceSaferInvocation ? { ...config, fastMode: false } : config,
         {

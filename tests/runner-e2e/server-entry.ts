@@ -2,9 +2,11 @@
 // service code has no test flag, delay, altered prompt, or private test API.
 import { ServerResponse } from "node:http";
 import { PaperclipRunnerToolAuthority } from "../../server/src/services/native-runtime/paperclip-runner-tool-authority.js";
+import { canonicalDocumentIssueId, contextCommentGateSelected, holdCommittedDocumentResponse } from "./context-comment-gate.js";
 import { holdInteractionResponse } from "./interaction-response-gate.js";
 
 const ids: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
+const contextCommentGate = contextCommentGateSelected(ids);
 if (ids.some((id) => id.endsWith(".accept-while-running"))) {
   const held = new Set<string>();
   const hold = async (value: any) => {
@@ -40,6 +42,39 @@ if (ids.some((id) => id.endsWith(".accept-while-running"))) {
     }
     if (interaction?.sourceRunId && ["request_confirmation", "request_checkbox_confirmation"].includes(interaction.kind)) {
       void hold(interaction).then(() => Reflect.apply(end, this, args), (error) => this.destroy(error));
+      return this;
+    }
+    return Reflect.apply(end, this, args);
+  } as typeof end;
+}
+if (contextCommentGate) {
+  const heldIssues = new Set<string>();
+  const holdFirstDocument = async (issueId: string) => {
+    if (heldIssues.has(issueId)) return;
+    heldIssues.add(issueId);
+    await holdCommittedDocumentResponse(issueId);
+  };
+  const execute = PaperclipRunnerToolAuthority.prototype.execute;
+  PaperclipRunnerToolAuthority.prototype.execute = async function (...args) {
+    const result = await execute.apply(this, args);
+    if (args[0].tool === "write_document") {
+      const issueId = this.binding?.issueId;
+      if (typeof issueId === "string") await holdFirstDocument(issueId);
+    }
+    return result;
+  };
+  const end = ServerResponse.prototype.end;
+  ServerResponse.prototype.end = function (this: ServerResponse, ...args: any[]) {
+    const body = args[0];
+    const request = this.req as typeof this.req & { originalUrl?: string };
+    const issueId = this.req.method === "PUT"
+      ? canonicalDocumentIssueId(request.url, body, request.originalUrl)
+      : undefined;
+    if (issueId && this.statusCode >= 200 && this.statusCode < 300) {
+      void holdFirstDocument(decodeURIComponent(issueId)).then(
+        () => Reflect.apply(end, this, args),
+        (error) => this.destroy(error),
+      );
       return this;
     }
     return Reflect.apply(end, this, args);

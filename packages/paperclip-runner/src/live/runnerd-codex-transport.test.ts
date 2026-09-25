@@ -7199,3 +7199,74 @@ it("resolves explicit skills to the remote provider home and rejects unassigned 
   }
   expect(() => resolveRunnerdCodexSkillInputs([skill], null, "/runner/codex-home")).toThrow("assigned runtime skill");
 });
+
+
+it("preserves prepared input through runnerd and the real OpenCode proxy boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-prepared-opencode-"));
+  // The qualified launch boundary unlinks its executable after exec. Use a
+  // native wrapper, like the real OpenCode binary; a shebang script would need
+  // to reopen the now-unlinked path in its interpreter.
+  const executable = join(root, "fake-opencode");
+  const fixture = resolve("test/fixtures/fake-opencode-server.mjs");
+  execFileSync("cc", ["-x", "c", "-o", executable, "-"], {
+    input: `#include <unistd.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(process.execPath)}; args[1] = ${JSON.stringify(fixture)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }`,
+  });
+  // Use the production bundler without depending on (or mutating) shared dist
+  // artifacts. The Vitest CI lane builds Rust but does not build TypeScript.
+  const proxy = join(root, "opencode-app-server-proxy.cjs");
+  const proxyBytes = execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import { bundleVerifiedProviderEntrypoints } from "./scripts/build-verified-provider-entrypoints.mjs";
+    const entries = await bundleVerifiedProviderEntrypoints({ write: false });
+    const proxy = entries.find(({ entrypoint }) => entrypoint.name === "opencode-app-server-proxy");
+    process.stdout.write(proxy.verifiedResult.outputFiles[0].contents);
+  `], { maxBuffer: 16 * 1024 * 1024 });
+  await writeFile(proxy, proxyBytes, { mode: 0o755 });
+  const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
+  const runtime = join(root, "opencode");
+  const bundle = createCapabilityRunnerdCodexTransport({
+    provider: "opencode",
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    stateDirectory: join(root, "runner-state"),
+    opencodeRuntimeDirectory: runtime,
+    opencodeCommand: executable,
+    opencodeCommandSha256: digest(executable),
+    opencodeProxyPath: proxy,
+    opencodeProxySha256: digest(proxy),
+    providerNodeCommand: process.execPath,
+    providerNodeCommandSha256: digest(process.execPath),
+    environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+  });
+  const task = createCodexTaskEnvelope({
+    objective: "Preserve the prepared task.", contractRevision: "prepared-v1",
+    criteria: [{ id: "objective", requirement: "Keep this request unchanged." }],
+  });
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: task,
+    conversationMode: "prepared",
+    model: "openrouter/deepseek/deepseek-v4-flash-0731",
+    transportFactory: () => bundle.transport,
+    workingDirectoryAuthority: "remote_runner",
+    environment: { PAPERCLIP_WORKSPACE_CWD: root },
+  });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+  const prepared = JSON.stringify({
+    schema: "paperclip.native-model-envelope.v3",
+    task: { prompt: "Keep this request unchanged." },
+    completionContract: { revision: "prepared-v1", criteria: task.completionContract.criteria },
+  });
+  try {
+    session = await driver.openSession({ runId: "prepared-opencode", normalizedSessionId: "prepared-opencode", workingDirectory: root });
+    await session.startTurn({ message: { role: "user", text: prepared } });
+    for await (const event of session.events()) {
+      if (event.eventType === "turn.completed") break;
+    }
+    const sessionRoots = (await readdir(runtime, { withFileTypes: true })).filter((entry) => entry.isDirectory());
+    expect(sessionRoots).toHaveLength(1);
+    const requests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(requests.map((request) => request.parts)).toEqual([[{ type: "text", text: prepared }]]);
+  } finally {
+    await session?.close();
+    await bundle.transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);

@@ -96,7 +96,21 @@ const support = externalDatabaseUrl
         nativeIssueId: issueId,
         runtimeMode: "native",
         status: "failed",
-        contextSnapshot: { issueId },
+        contextSnapshot: {
+          issueId,
+          preservedRecoveryContext: true,
+          paperclipWake: { comments: [{ id: "stale-comment" }] },
+          paperclipWakeComment: { id: "stale-comment" },
+          paperclipTaskMarkdown: "stale historical task",
+          paperclipTaskMarkdownCompact: "stale historical compact task",
+          paperclipTaskMarkdownAssignment: "stale assignment task",
+          paperclipTaskMarkdownAssignmentCompact: "stale assignment compact task",
+          paperclipTurnContext: {
+            version: 1,
+            assignment: { owner: "task_markdown" },
+            events: { owner: "wake_prompt", comments: [{ id: "stale-comment" }] },
+          },
+        },
         runnerProfileJson: {
           recoveryEventInventoryVersion: 1,
           nativeExecutionInput: {
@@ -164,6 +178,21 @@ const support = externalDatabaseUrl
           if (mode === "verified") {
             expect(retire).toHaveBeenCalledOnce();
             expect(task!.status).toBe("in_progress");
+            expect(successors[0]!.contextSnapshot).toMatchObject({
+              issueId: source.issueId,
+              preservedRecoveryContext: true,
+            });
+            for (const key of [
+              "paperclipWake",
+              "paperclipWakeComment",
+              "paperclipTaskMarkdown",
+              "paperclipTaskMarkdownCompact",
+              "paperclipTaskMarkdownAssignment",
+              "paperclipTaskMarkdownAssignmentCompact",
+              "paperclipTurnContext",
+            ]) {
+              expect(successors[0]!.contextSnapshot).not.toHaveProperty(key);
+            }
             const continuation = await buildExecutionContinuation({
               db, companyId: source.companyId, issueId: source.issueId, agentId: source.agentId,
               context: successors[0]!.contextSnapshot!, summary: null, exposeLowTrustRaw: false,

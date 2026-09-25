@@ -352,7 +352,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
     await db
       .update(executionWorkspaces)
-      .set({ sourceIssueId })
+      // Keep delivery eligibility independent of the sweep's JavaScript clock
+      // boundary; database defaultNow() can be a few microseconds newer.
+      .set({ sourceIssueId, updatedAt: new Date("2020-01-01T00:00:00Z") })
       .where(eq(executionWorkspaces.id, executionWorkspaceId));
     if (options.childStatus) {
       await db.insert(issues).values({

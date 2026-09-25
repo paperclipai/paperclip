@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ExecutionContinuationEnvelope, AskUserQuestionsInteraction } from "@paperclipai/shared";
 
 import { formatDurableQuestionResponseSummary } from "../question-response-delivery.js";
-import { buildNativeCompletionContract } from "./completion-contracts.js";
+import { nativeCompletionSource, buildNativeCompletionContract } from "./completion-contracts.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -521,5 +521,42 @@ describe("follow-up context size", () => {
     expect(JSON.stringify(contract)).not.toContain(oldBody);
     expect(JSON.stringify(contract)).not.toContain(answerText);
     expect(resumed.length + JSON.stringify(contract).length).toBeLessThan(fresh.length);
+  });
+});
+
+
+describe("native completion references", () => {
+  const source = nativeCompletionSource("description", "task", "Repeat. Repeat.");
+  const args: Parameters<typeof buildNativeExecutionInput>[0] = {
+    companyId: "company", runId: "run", agentId: "agent",
+    issue: { id: "task", identifier: "PAP-1", title: "Brief", description: "Repeat. Repeat.", workMode: "standard" },
+    taskPrompt: "Issue description:\nRepeat. Repeat.",
+    workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+    normalizedSessionId: null,
+    runtimeContext: nativeRuntimeContextFixture(),
+    completionContract: {
+      id: "contract", sha256: "a".repeat(64), schemaVersion: "paperclip.completion-contract.v1",
+      contract: { revision: "1", objective: "Brief", criteria: [{ id: "objective", requirement: "Repeat. Repeat." }] },
+      sources: [{ id: "objective", source }],
+    },
+  };
+  it("binds only source identities and revisions attested by the task renderer", () => {
+    const input = buildNativeExecutionInput({ ...args, turnContext: {
+      version: 1,
+      assignment: { owner: "task_markdown", description: { id: source.id, revision: source.revision } },
+      events: { owner: "wake_prompt", comments: [] },
+    } });
+    expect(input.completionSources).toMatchObject({ contractRevision: "1", criteria: [{ id: "objective", source }] });
+    expect(input.completionContract.contract).toEqual(args.completionContract.contract);
+    expect(input.task.description).toBe("Repeat. Repeat.");
+  });
+  it.each([
+    undefined,
+    { version: 1, assignment: { owner: "task_markdown", description: { id: "another-task", revision: source.revision } } },
+    { version: 1, assignment: { owner: "task_markdown", description: { id: source.id, revision: "stale" } } },
+  ])("keeps the full requirement when provenance is absent or stale", (turnContext) => {
+    const input = buildNativeExecutionInput({ ...args, turnContext });
+    expect(input.completionSources).toBeUndefined();
+    expect(input.completionContract.contract).toEqual(args.completionContract.contract);
   });
 });

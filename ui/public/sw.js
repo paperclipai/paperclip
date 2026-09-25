@@ -65,6 +65,15 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // Vite's development modules have no offline-cache contract. Forwarding a
+  // wide import graph through fetch/respondWith creates another set of browser
+  // loaders and can exhaust their resources on reload. Let the browser load
+  // these directly; production /assets/ caching keeps its existing policy.
+  if (url.origin === self.location.origin &&
+      /^\/(?:@fs|@vite|@id|src|node_modules)\//.test(url.pathname)) {
+    return;
+  }
+
   // Network-first; only public build assets can use an offline fallback.
   event.respondWith(
     fetch(request)

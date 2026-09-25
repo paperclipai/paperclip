@@ -151,3 +151,14 @@ export interface NativeSkillInput {
   name: string;
   path: string;
 }
+
+
+/** Select only explicit task references from assigned names, never comments. */
+export function explicitTaskSkillNames(description: string | null, assignedNames: readonly string[]): string[] {
+  if (!description) return [];
+  const names = new Set(Array.from(
+    description.matchAll(/(?:^|[\s(`])[$/]([a-zA-Z0-9_-]+)(?=$|[\s)`,.;:!?])/g),
+    (match) => match[1],
+  ));
+  return [...new Set(assignedNames)].filter((name) => names.has(name));
+}

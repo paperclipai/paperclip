@@ -133,6 +133,16 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("attests the exact latest user comment selected as the objective", async () => {
+      const envelope = await build();
+      const latest = await db.select().from(issueComments).where(eq(issueComments.id, laterId)).then(rows => rows[0]!);
+      expect(envelope.objective).toBe(latest.body);
+      expect(envelope.objectiveSource).toEqual({
+        kind: "comment",
+        id: laterId,
+        revision: latest.updatedAt.toISOString(),
+      });
+    });
     it("loads authenticated human answers from stored resolver identity", async () => {
       const answerId = randomUUID();
       await db.insert(issueThreadInteractions).values({ id: answerId, companyId, issueId,

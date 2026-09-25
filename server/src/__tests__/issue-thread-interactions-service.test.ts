@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -159,6 +159,328 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
     });
   }
+
+  async function seedSourceQuestionFixture(contextSnapshot: Record<string, unknown>) {
+    const { companyId, issueId } = await seedConfirmationIssue("Source question race");
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Questioner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: new Date("2026-07-25T12:00:00.000Z"),
+      startedAt: new Date("2026-07-25T12:00:01.000Z"),
+      contextSnapshot: { issueId, ...contextSnapshot },
+    });
+    return { companyId, issueId, agentId, runId };
+  }
+
+  function questionCreateInput(sourceRunId: string) {
+    return {
+      kind: "ask_user_questions" as const,
+      sourceRunId,
+      continuationPolicy: "wake_assignee" as const,
+      payload: {
+        version: 1 as const,
+        questions: [{
+          id: "scope",
+          prompt: "Which scope?",
+          selectionMode: "single" as const,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    };
+  }
+
+  it("rejects a source-run question when a newer human comment was not delivered", async () => {
+    const fixture = await seedSourceQuestionFixture({ paperclipWake: { comments: [] } });
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "board-user",
+      body: "The requested scope is already specified.",
+      createdAt: new Date("2026-07-25T12:01:00.000Z"),
+      updatedAt: new Date("2026-07-25T12:01:00.000Z"),
+    });
+
+    await expect(interactionsSvc.create(
+      { id: fixture.issueId, companyId: fixture.companyId },
+      questionCreateInput(fixture.runId),
+      { agentId: fixture.agentId, runId: fixture.runId },
+    )).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        reason: "newer_comment_not_delivered",
+        commentIds: [commentId],
+      }),
+    });
+    expect(await interactionsSvc.listForIssue(fixture.companyId, fixture.issueId)).toEqual([]);
+  });
+
+  it("allows a source-run question when the newer human comment is explicitly delivered", async () => {
+    const commentId = randomUUID();
+    const fixture = await seedSourceQuestionFixture({ paperclipWake: { comments: [{ id: commentId }] } });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "board-user",
+      body: "Choose phase one.",
+      createdAt: new Date("2026-07-25T12:01:00.000Z"),
+      updatedAt: new Date("2026-07-25T12:01:00.000Z"),
+    });
+
+    const created = await interactionsSvc.create(
+      { id: fixture.issueId, companyId: fixture.companyId },
+      questionCreateInput(fixture.runId),
+      { agentId: fixture.agentId, runId: fixture.runId },
+    );
+    expect(created).toMatchObject({ kind: "ask_user_questions", status: "pending" });
+  });
+
+  it("keeps legacy source snapshots compatible when delivered comments are unknown", async () => {
+    const fixture = await seedSourceQuestionFixture({});
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "board-user",
+      body: "A legacy context cannot prove delivery.",
+      createdAt: new Date("2026-07-25T12:01:00.000Z"),
+      updatedAt: new Date("2026-07-25T12:01:00.000Z"),
+    });
+
+    const created = await interactionsSvc.create(
+      { id: fixture.issueId, companyId: fixture.companyId },
+      questionCreateInput(fixture.runId),
+      { agentId: fixture.agentId, runId: fixture.runId },
+    );
+    expect(created.status).toBe("pending");
+  });
+
+  it("does not apply the delivery guard to approval interactions", async () => {
+    const fixture = await seedSourceQuestionFixture({ paperclipWake: { comments: [] } });
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "board-user",
+      body: "Please review the plan.",
+      createdAt: new Date("2026-07-25T12:01:00.000Z"),
+      updatedAt: new Date("2026-07-25T12:01:00.000Z"),
+    });
+
+    const created = await interactionsSvc.create(
+      { id: fixture.issueId, companyId: fixture.companyId },
+      {
+        kind: "request_confirmation",
+        sourceRunId: fixture.runId,
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Approve this plan?" },
+      },
+      { agentId: fixture.agentId, runId: fixture.runId },
+    );
+    expect(created).toMatchObject({ kind: "request_confirmation", status: "pending" });
+  });
+
+  it("does not treat the board concierge reply as human direction", async () => {
+    const fixture = await seedSourceQuestionFixture({ paperclipWake: { comments: [] } });
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "board-concierge",
+      body: "The concierge relay replied.",
+      createdAt: new Date("2026-07-25T12:01:00.000Z"),
+      updatedAt: new Date("2026-07-25T12:01:00.000Z"),
+    });
+
+    const created = await interactionsSvc.create(
+      { id: fixture.issueId, companyId: fixture.companyId },
+      questionCreateInput(fixture.runId),
+      { agentId: fixture.agentId, runId: fixture.runId },
+    );
+    expect(created.status).toBe("pending");
+  });
+
+  it("rejects an explicitly mismatched source-run issue or agent", async () => {
+    const fixture = await seedSourceQuestionFixture({ paperclipWake: { comments: [] } });
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId: fixture.companyId,
+      name: "Other questioner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.update(heartbeatRuns)
+      .set({ nativeIssueId: randomUUID() })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await expect(interactionsSvc.create(
+      { id: fixture.issueId, companyId: fixture.companyId },
+      questionCreateInput(fixture.runId),
+      { agentId: fixture.agentId, runId: fixture.runId },
+    )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the same issue" });
+
+    await db.update(heartbeatRuns)
+      .set({ nativeIssueId: null, contextSnapshot: { issueId: randomUUID(), paperclipWake: { comments: [] } } })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await expect(interactionsSvc.create(
+      { id: fixture.issueId, companyId: fixture.companyId },
+      questionCreateInput(fixture.runId),
+      { agentId: fixture.agentId, runId: fixture.runId },
+    )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the same issue" });
+
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId: fixture.issueId, paperclipWake: { comments: [] } } })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await expect(interactionsSvc.create(
+      { id: fixture.issueId, companyId: fixture.companyId },
+      questionCreateInput(fixture.runId),
+      { agentId: otherAgentId, runId: fixture.runId },
+    )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the creating agent" });
+  });
+
+  it("expires a question when a comment transaction started earlier inserts after it commits", async () => {
+    const fixture = await seedSourceQuestionFixture({});
+    let transactionStarted!: () => void;
+    let allowCommentInsert!: () => void;
+    const started = new Promise<void>((resolve) => { transactionStarted = resolve; });
+    const continueComment = new Promise<void>((resolve) => { allowCommentInsert = resolve; });
+    const commentPromise = db.transaction(async (tx) => {
+      // Establish the PostgreSQL transaction before the question is created;
+      // the old DEFAULT now() would therefore make this comment appear older.
+      await tx.execute(sql`select now()`);
+      transactionStarted();
+      await continueComment;
+      return issuesSvc.addComment(
+        fixture.issueId,
+        "The board supplied the missing scope.",
+        { userId: "board-user" },
+        { authorType: "user" },
+        tx,
+      );
+    });
+    await started;
+
+    let created: Awaited<ReturnType<typeof interactionsSvc.create>>;
+    try {
+      created = await interactionsSvc.create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions",
+          continuationPolicy: "wake_assignee",
+          payload: {
+            version: 1,
+            questions: [{
+              id: "scope",
+              prompt: "Which scope?",
+              selectionMode: "single",
+              options: [{ id: "phase-1", label: "Phase 1" }],
+            }],
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+    } finally {
+      allowCommentInsert();
+    }
+    await commentPromise;
+
+    const [comment] = await db
+      .select({ createdAt: issueComments.createdAt, updatedAt: issueComments.updatedAt })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, fixture.issueId));
+    expect(comment?.updatedAt.toISOString()).toBe(comment?.createdAt.toISOString());
+
+    await expect(interactionsSvc.getById(created.id)).resolves.toMatchObject({
+      status: "expired",
+      result: { expirationReason: "superseded_by_comment" },
+    });
+  });
+
+  it("locks the issue before inserting a supplied-transaction comment", async () => {
+    const fixture = await seedSourceQuestionFixture({});
+    let insertReached!: () => void;
+    let releaseInsert!: () => void;
+    const reached = new Promise<void>((resolve) => { insertReached = resolve; });
+    const release = new Promise<void>((resolve) => { releaseInsert = resolve; });
+
+    await db.transaction(async (tx) => {
+      const lockedTx = new Proxy(tx as any, {
+        get(target, property, receiver) {
+          if (property !== "insert") return Reflect.get(target, property, receiver);
+          return (table: unknown) => {
+            const builder = target.insert(table);
+            if (table !== issueComments) return builder;
+            return new Proxy(builder, {
+              get(insertBuilder, builderProperty, builderReceiver) {
+                if (builderProperty !== "values") {
+                  return Reflect.get(insertBuilder, builderProperty, builderReceiver);
+                }
+                return (...values: unknown[]) => {
+                  const valued = insertBuilder.values(...values);
+                  return new Proxy(valued, {
+                    get(returningBuilder, returningProperty, returningReceiver) {
+                      if (returningProperty !== "returning") {
+                        return Reflect.get(returningBuilder, returningProperty, returningReceiver);
+                      }
+                      return (...returningArgs: unknown[]) => {
+                        insertReached();
+                        return release.then(() => returningBuilder.returning(...returningArgs));
+                      };
+                    },
+                  });
+                };
+              },
+            });
+          };
+        },
+      });
+      const commentPromise = issuesSvc.addComment(
+        fixture.issueId,
+        "Comment inserted under a caller-owned transaction.",
+        { userId: "board-user" },
+        { authorType: "user" },
+        lockedTx,
+      );
+      await reached;
+      try {
+        await expect(db.transaction(async (observer) => {
+          await observer.execute(sql`
+            select id from issues
+            where id = ${fixture.issueId}
+            for update nowait
+          `);
+        })).rejects.toMatchObject({ cause: { code: "55P03" } });
+      } finally {
+        releaseInsert();
+        await commentPromise;
+      }
+    });
+  });
 
   it("reuses human-addressed connection intents across runs and ordinary comments", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Connection intent");

@@ -168,7 +168,7 @@ export class CodexHarnessSession
     const continuationTurn = input.continuation === true;
     const turnSkills = continuationTurn ? [] : this.skillInputs;
     const taskText =
-      this.conversationMode === "direct"
+      this.conversationMode === "direct" || this.conversationMode === "prepared"
         ? input.message.text
         : dispositionOnlyRecovery || continuationTurn
           ? input.message.text

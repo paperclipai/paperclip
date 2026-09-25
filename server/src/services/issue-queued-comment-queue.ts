@@ -95,6 +95,9 @@ export function withQueuedCommentIdsInRunContext(
   delete context.paperclipWakeComment;
   delete context.paperclipTaskMarkdown;
   delete context.paperclipTaskMarkdownCompact;
+  delete context.paperclipTaskMarkdownAssignment;
+  delete context.paperclipTaskMarkdownAssignmentCompact;
+  delete context.paperclipTurnContext;
   return context;
 }
 

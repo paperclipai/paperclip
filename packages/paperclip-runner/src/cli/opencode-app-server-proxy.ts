@@ -118,6 +118,8 @@ async function open(
     runnerInstanceId:
       process.env.PAPERCLIP_RUNNER_INSTANCE_ID ?? "paperclip-runnerd-opencode",
     taskEnvelope: openCodeProxyTaskEnvelope(params),
+    conversationMode:
+      params.conversationMode === "prepared" ? "prepared" : "task",
     systemInstructions: text(
       params.baseInstructions,
       "Complete only the supplied task.",

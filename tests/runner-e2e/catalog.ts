@@ -1,4 +1,5 @@
 import { continuationTasks } from "./continuation-cases.js";
+import { contextIntegrityTasks } from "./context-integrity-cases.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
@@ -8,9 +9,12 @@ import { createAgentSchema } from "../../packages/shared/src/validators/agent.js
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "../../packages/adapters/codex-local/src/index.js";
 import { models as claudeModels } from "../../packages/adapters/claude-local/src/index.js";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "../../packages/adapters/kimi-local/src/index.js";
+import { DEFAULT_GROK_LOCAL_MODEL } from "../../packages/adapters/grok-local/src/index.js";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 import { QUALIFIED_OPENCODE_MODEL } from "../../packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.js";
 import { CREDENTIAL_NAMES } from "./types.js";
+import { PENDING_PROFILE_PREREQUISITES } from "./prerequisites.js";
 import {
   openRouterProfileId,
   openRouterRankingSnapshot,
@@ -37,6 +41,7 @@ const SELECTABLE_GROUPS = [
   "breadth",
   "chat",
   "onboarding",
+  "context-integrity",
 ] as const;
 const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -97,7 +102,7 @@ function commonAgent(
 function legacyProfile(input: {
   id: string;
   label: string;
-  adapterType: "codex_local" | "claude_local" | "opencode_local";
+  adapterType: "codex_local" | "claude_local" | "opencode_local" | "kimi_local" | "grok_local";
   provider: string;
   model: string;
   credential: RunnerProfileFixture["credential"];
@@ -290,6 +295,64 @@ export const runnerProfiles: readonly RunnerProfileFixture[] = [
     credential: "OPENAI_API_KEY",
   }),
 ] as const;
+
+/** Narrow legacy ACP lanes used only by the explicit context-integrity matrix. */
+export const legacyAcpxProfiles: readonly RunnerProfileFixture[] = [
+  legacyProfile({
+    id: "legacy-acp-codex",
+    label: "Legacy ACP Codex",
+    adapterType: "codex_local",
+    provider: "codex",
+    model: DEFAULT_CODEX_LOCAL_MODEL,
+    credential: "OPENAI_API_KEY",
+    extraConfig: { engine: "acp", mode: "oneshot" },
+  }),
+  legacyProfile({
+    id: "legacy-acp-claude",
+    label: "Legacy ACP Claude",
+    adapterType: "claude_local",
+    provider: "claude",
+    model: claudeLegacyModel,
+    credential: "ANTHROPIC_API_KEY",
+    extraConfig: { engine: "acp", mode: "oneshot" },
+  }),
+] as const;
+
+/** Explicit-only context-integrity profiles; admission is blocked until qualification is complete. */
+export const pendingContextIntegrityProfiles: readonly RunnerProfileFixture[] = [
+  legacyProfile({
+    id: "legacy-kimi-cli",
+    label: "Legacy Kimi CLI (pending qualification)",
+    adapterType: "kimi_local",
+    provider: "kimi",
+    model: DEFAULT_KIMI_LOCAL_MODEL,
+    credential: "KIMI_MODEL_API_KEY",
+    extraConfig: { engine: "cli" },
+  }),
+  legacyProfile({
+    id: "legacy-kimi-acp",
+    label: "Legacy Kimi ACP (pending qualification)",
+    adapterType: "kimi_local",
+    provider: "kimi",
+    model: DEFAULT_KIMI_LOCAL_MODEL,
+    credential: "KIMI_MODEL_API_KEY",
+    extraConfig: { engine: "acp", mode: "oneshot" },
+  }),
+  legacyProfile({
+    id: "legacy-grok",
+    label: "Legacy Grok (pending qualification)",
+    adapterType: "grok_local",
+    provider: "grok",
+    model: DEFAULT_GROK_LOCAL_MODEL,
+    credential: "XAI_API_KEY",
+  }),
+] as const;
+
+export const contextIntegrityProfiles: readonly RunnerProfileFixture[] = [
+  ...runnerProfiles.filter((profile) => ["runner-codex", "runner-acpx-claude", "runner-opencode", "legacy-codex", "legacy-claude"].includes(profile.id)),
+  ...legacyAcpxProfiles,
+  ...pendingContextIntegrityProfiles,
+];
 
 export const openRouterBreadthExcludedModelIds = ["xiaomi/mimo-v2.5"] as const;
 export const openRouterBreadthExcludedExecutionIds = [
@@ -932,6 +995,25 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 3, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only" },
   },
   {
+    id: "context-integrity",
+    label: "Context Integrity",
+    manualOnly: true,
+    description: "Explicit-only proof that ordered user comments and assigned skills stay bound to the current task context.",
+    groups: ["context-integrity", "native", "legacy"],
+    profiles: contextIntegrityProfiles,
+    environments: [localEnvironment],
+    tasks: contextIntegrityTasks,
+    expectedMatrixSize: contextIntegrityProfiles.length * contextIntegrityTasks.length,
+    definitionMetadata: {
+      version: 1,
+      instructions: "production",
+      grading: "ordered-public-context-and-explicit-skill-invocation",
+      scheduling: "explicit-only",
+      paidCalls: "one provider run per skill case; two bounded turns per comment case",
+      prerequisiteGate: PENDING_PROFILE_PREREQUISITES,
+    },
+  },
+  {
     id: "first-task", label: "First-task onboarding",
     description: "Production onboarding, first replies, approval, and durable task execution.",
     groups: ["onboarding"],
@@ -1137,8 +1219,9 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 }
 
 export function validateRunnerCatalog(): MatrixExecution[] {
-  const allProfiles = [...runnerProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
+  const allProfiles = [...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    ...contextIntegrityTasks,
     ...continuationTasks,
     ...everydayTasks,
     ...runnerTasks,
@@ -1178,12 +1261,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
   }
 
   const sampleRefs = Object.fromEntries(
-    [
-      "OPENAI_API_KEY",
-      "ANTHROPIC_API_KEY",
-      "OPENROUTER_API_KEY",
-      "DAYTONA_API_KEY",
-    ].map((name, index) => [
+    CREDENTIAL_NAMES.map((name, index) => [
       name,
       {
         type: "secret_ref" as const,
