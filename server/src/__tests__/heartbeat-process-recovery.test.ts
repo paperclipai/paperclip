@@ -8998,6 +8998,68 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).not.toHaveProperty("modelProfile");
   });
 
+  it("escalates an execution-review participant whose interrupted run has spent its transient retry budget", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } =
+      await seedInReviewParticipantRunFixture();
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+        error: "Interrupted by graceful server shutdown (SIGTERM)",
+        scheduledRetryAttempt: 2,
+        scheduledRetryReason: "transient_failure",
+        resultJson: {
+          stopReason: "interrupted",
+          conversationContinuation: "continue_conversation_v1",
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "transient_failure_retry",
+        },
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "cancelled", finishedAt, updatedAt: finishedAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+    const successors = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(0);
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("blocked");
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(1);
+    expect(recoveryActions[0]).toMatchObject({
+      companyId,
+      status: "active",
+      cause: "execution_review_participant_recovery",
+      previousOwnerAgentId: agentId,
+    });
+    const again = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(again.escalated).toBe(0);
+  });
+
   it("re-enqueues a stranded execution-review participant when another agent has the latest issue run", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId, stageId } =
       await seedInReviewParticipantRunFixture();

@@ -4883,6 +4883,7 @@ export function recoveryService(
           continue;
         }
 
+        const reviewOutcome: { retryExhausted?: boolean } = {};
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           agentId: participantAgentId,
@@ -4896,10 +4897,33 @@ export function recoveryService(
             reviewRecoveryInstruction:
               "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
           },
+          outcome: reviewOutcome,
         });
         if (queued) {
           result.reviewParticipantRequeued += 1;
           result.issueIds.push(issue.id);
+        } else if (
+          reviewOutcome.retryExhausted &&
+          !(await hasActiveExecutionPath(issue.companyId, issue.id, participantAgentId))
+        ) {
+          // Same exhaustion as the other lanes: the reviewer run's bounded
+          // retries are spent, so escalate as the review-recovery failure it
+          // is instead of skipping on every sweep with no live path. The
+          // live-path re-read guards the write against a run or wake that
+          // started after the loop's check.
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_review",
+            latestRun: participantLatestRun,
+            notice: buildExecutionReviewParticipantRecoveryNoticeSeed(),
+            recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
         } else {
           result.skipped += 1;
         }
@@ -4991,10 +5015,15 @@ export function recoveryService(
         if (queued) {
           result.dispatchRequeued += 1;
           result.issueIds.push(issue.id);
-        } else if (dispatchOutcome.retryExhausted) {
+        } else if (
+          dispatchOutcome.retryExhausted &&
+          !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
+        ) {
           // Same exhaustion as the in_progress lane: the lost dispatch's
           // bounded retries are spent, so escalate instead of skipping on
-          // every sweep with no live path.
+          // every sweep with no live path. The live-path re-read guards the
+          // `blocked` write against a run or wake that started after the
+          // loop's check.
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "todo",
@@ -5283,11 +5312,16 @@ export function recoveryService(
       if (queued) {
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
-      } else if (recoveryOutcome.retryExhausted) {
+      } else if (
+        recoveryOutcome.retryExhausted &&
+        !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
+      ) {
         // The failed run's bounded transient retries are all spent, so no
         // successor will ever be queued for it. Escalate rather than skip
         // on every sweep forever: the issue would otherwise stay
         // `in_progress` with no run and no path until a person noticed.
+        // The live-path re-read guards the `blocked` write against a run or
+        // wake that started after the loop's check.
         const updated = await escalateStrandedAssignedIssue({
           issue,
           previousStatus: "in_progress",
