@@ -5,6 +5,7 @@ import {
   activityLog,
   agents,
   documentRevisions,
+  documents,
   environmentLeases,
   environments,
   heartbeatRunEvents,
@@ -15,7 +16,7 @@ import {
   issueWorkProducts,
   workspaceOperations,
 } from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
@@ -87,6 +88,13 @@ export function activityService(db: Db) {
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
         'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
+        'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
+          in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
+          then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
+        'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
+          then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,
+        'finalResponseRecorded', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'finalResponseRecorded') = 'boolean'
+          then ${heartbeatRuns.resultJson} -> 'finalResponseRecorded' end,
         'billingType', coalesce(${heartbeatRuns.resultJson} -> 'billingType', ${heartbeatRuns.resultJson} -> 'billing_type'),
         'billing_type', coalesce(${heartbeatRuns.resultJson} -> 'billing_type', ${heartbeatRuns.resultJson} -> 'billingType'),
         'costUsd', coalesce(
@@ -489,6 +497,16 @@ export function activityService(db: Db) {
       }
 
       const executionByRunId = await executionProjectionsForRuns(db, companyId, runIds);
+      // Only stored, current plan revisions can support a saved-plan link.
+      // Do not trust an adapter's claim that it wrote a document.
+      const [savedPlan] = runs.some((run) => hasWorkspaceRestoreFailure(run.resultJson))
+        ? await db.select({ revisionId: documentRevisions.id, runId: documentRevisions.createdByRunId })
+          .from(issueDocuments)
+          .innerJoin(documents, and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, companyId)))
+          .innerJoin(documentRevisions, and(eq(documentRevisions.id, documents.latestRevisionId), eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, companyId)))
+          .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, "plan")))
+          .limit(1)
+        : [];
       return runs.map((run) => {
         const leaseRow = leaseByRunId.get(run.runId);
         const leaseMetadata = leaseRow?.lease.metadata ?? null;
@@ -500,6 +518,15 @@ export function activityService(db: Db) {
               : null;
         return {
           ...run,
+          resultJson: run.resultJson ? {
+            ...run.resultJson,
+            ...(Object.hasOwn(run.resultJson, "workspaceRestorePath") ? {
+              workspaceRestorePath: safeWorkspaceRestorePath(run.resultJson.workspaceRestorePath),
+            } : {}),
+            ...(hasWorkspaceRestoreFailure(run.resultJson) ? {
+              ...(savedPlan?.runId === run.runId ? { savedPlanRevisionId: savedPlan.revisionId } : {}),
+            } : {}),
+          } : null,
           execution: executionByRunId.get(run.runId) ?? null,
           environment: leaseRow
             ? {

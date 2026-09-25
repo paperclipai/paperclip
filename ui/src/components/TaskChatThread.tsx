@@ -1,3 +1,5 @@
+import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+import { workspaceRestoreMarkerDetail } from "@/lib/workspace-restore-marker";
 import type { ActivityEvent } from "@paperclipai/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
@@ -1578,13 +1580,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   ? "Run timed out"
                   : "Run failed";
         const responseBoundary = sourceHasNativeResponse
-          ? "after returning a final response"
-          : "before returning an answer";
+          ? " after returning a final response"
+          : "";
         const detail =
           source.status === "cancelled"
-            ? `The run was cancelled ${responseBoundary}.`
+            ? `The run was cancelled${responseBoundary}.`
             : source.status === "interrupted"
-              ? `The run was interrupted ${responseBoundary}.`
+              ? `The run was interrupted${responseBoundary}.`
               : code === "native_provider_approval_required"
                 ? "This operation requires approval, but this runner has no interactive approval handler. Review the operation and update the agent's permission setting before retrying."
                 : code === "native_provider_model_rejected"
@@ -1595,8 +1597,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   : code === "provider_frame_too_large"
                     ? "Provider output exceeded the safe limit."
                     : source.status === "timed_out"
-                      ? `The runner timed out ${responseBoundary} (${code}).`
-                      : `The runner stopped ${responseBoundary} (${code}).`;
+                      ? `The runner timed out${responseBoundary} (${code}).`
+                      : `The runner stopped${responseBoundary} (${code}).`;
         const id = `${source.id}:failure`;
         const runAgent = meta?.agentId
           ? agentMap?.get(meta.agentId)
@@ -1640,20 +1642,26 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           : canRetryFailedRun
             ? "You can retry this message now."
             : "Your message is preserved.";
+        const restoreFailed = hasWorkspaceRestoreFailure(meta?.resultJson);
+        const savedPlan = Boolean(planDocument && (meta?.resultJson?.savedPlanRevisionId === planDocument.latestRevisionId || interactions?.some((interaction) =>
+          interaction.sourceRunId === source.id && interactionTargetsPlanRevision(interaction, planDocument),
+        )));
         const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
-        const detail = aiRequest
+        const detail = restoreFailed
+          ? workspaceRestoreMarkerDetail({ result: meta?.resultJson, savedPlan, hasResponse: sourceHasPresentationComment || Boolean(acceptedSummary) })
+          : aiRequest
           ? aiRequest.status === "pending"
             ? "The selected AI account is unavailable. Fix it in the connection card."
             : "This run stopped because its AI account was unavailable."
           : source.status === "cancelled"
             ? code === "execution_reconciliation_required"
               ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
-              : "Execution was stopped before returning an answer."
+              : "Execution was stopped."
             : code === "provider_frame_too_large"
             ? `Provider output exceeded the safe limit. ${retryDetail}`
             : code.startsWith("workspace_git_scan_")
             ? `Workspace setup failed before the agent started. ${retryDetail}`
-            : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
+            : `The run failed (${code}). ${retryDetail}`;
         const id = `${source.id}:failure`;
         entriesWithFailures.push({
           ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
@@ -1663,8 +1671,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             id,
             kind: "marker",
             variant: "interrupted",
-            label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+            label: restoreFailed ? "Workspace restore failed" : source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
             runId: source.status === "cancelled" ? undefined : source.id,
+            ...(restoreFailed ? {
+              retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive",
+              collapsible: true,
+              runHref: meta?.agentId ? `/agents/${encodeURIComponent(agentMap?.get(meta.agentId)?.urlKey ?? meta.agentId)}/runs/${encodeURIComponent(source.id)}` : undefined,
+              planHref: savedPlan ? "#document-plan" : undefined,
+            } : {}),
             tone: source.status === "cancelled" ? "neutral" : "error",
             detail,
           },
@@ -2049,6 +2063,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     steeringAnchorsByRun,
     legacyTimelineAnchorsByRun,
     hasBrief,
+    planDocument,
     planDocumentSourceRunId,
     planTurnItem,
     agentMap,

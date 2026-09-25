@@ -75,12 +75,10 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedQueuedRun() {
+  async function seedAgentAndIssue() {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
-    const runId = randomUUID();
-    const wakeupRequestId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -119,6 +117,14 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       assigneeAgentId: agentId,
       responsibleUserId: "responsible-user",
     });
+
+    return { companyId, agentId, issueId };
+  }
+
+  async function seedQueuedRun() {
+    const { companyId, agentId, issueId } = await seedAgentAndIssue();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
 
     await db.insert(agentWakeupRequests).values({
       id: wakeupRequestId,
@@ -217,6 +223,78 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     expect(finished?.status).toBe("succeeded");
+  }, 20_000);
+
+  it("keeps a wake that arrives during a task drain queued and runs it once the drain lifts", async () => {
+    const { agentId, issueId } = await seedAgentAndIssue();
+    const heartbeat = heartbeatService(db);
+
+    // The drain holds ADMISSION, not the request. The wake lands in the
+    // durable queue, so the restart that clears the process-local drain
+    // resumes it instead of losing it. (Before this, the wake was written
+    // as `skipped` and the issue sat in `todo` with no run and no path.)
+    startTaskDrain({});
+    await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system",
+      requestedByActorId: "issue_assignment",
+    });
+    await heartbeat.drainActiveRunExecutions();
+
+    const wakeup = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toMatchObject({ status: "queued", reason: "issue_assigned" });
+    expect(wakeup?.payload).not.toHaveProperty("heartbeatSkip");
+    const queuedRuns = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns);
+    expect(queuedRuns).toHaveLength(1);
+    expect(queuedRuns[0]).toMatchObject({ status: "queued" });
+    const runId = queuedRuns[0]!.id;
+
+    // Admission stays held for as long as the drain is active, and the
+    // queued row does not count against quiescence: the restart may proceed.
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const held = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(held?.status).toBe("queued");
+    expect(getTaskDrainStatus()).toMatchObject({
+      draining: true,
+      activeRuns: 0,
+      pendingWakes: 0,
+      quiescent: true,
+    });
+
+    // The drain lifts (a restart clears it the same way): the queued wake
+    // runs to completion through the normal admission path.
+    stopTaskDrain();
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const finished = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(finished?.status).toBe("succeeded");
+    const completedWakeup = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .then((rows) => rows[0] ?? null);
+    expect(completedWakeup?.status).toBe("completed");
   }, 20_000);
 
   // Fault only the release write after suppression starts, independently of

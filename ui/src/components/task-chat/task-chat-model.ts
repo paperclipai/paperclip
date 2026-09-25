@@ -255,6 +255,7 @@ export interface TaskChatMarkerItem {
   runId?: string;
   createdAtIso?: string;
   runHref?: string;
+  planHref?: string;
 }
 
 /** A second-tier live token/cost readout (ACP UsageUpdate). */

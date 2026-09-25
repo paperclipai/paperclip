@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "../adapters/types.js";
+import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
+import { isLauncherCapacityFailure } from "@paperclipai/adapter-utils/launcher-capacity";
 import {
   agents,
   approvals,
@@ -789,6 +791,49 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       expect((await heartbeat.getRun(queued.runId))?.status).toBe("succeeded");
       expect(execute).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it.each(["restore_unsafe_archive", "restore_lock_timeout"])("keeps the existing retry budget for %s", async (classification) => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "workspace_restore_failed", resultJson: {
+      workspaceRestoreFailure: classification, conversationContinuation: "continue_conversation_v1", errorFamily: "transient_upstream",
+    } });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Restore fixture", status: "in_progress", assigneeAgentId: agentId });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, wakeReason: "issue_assigned" } }).where(eq(heartbeatRuns.id, runId));
+    const result = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    if (classification === "restore_unsafe_archive") {
+      expect(result).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    } else {
+      expect(result.outcome).toBe("scheduled");
+      if (result.outcome !== "scheduled" || !result.run) throw new Error("Expected a bounded retry");
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "workspace_restore_failed", scheduledRetryAttempt: 2,
+        resultJson: { workspaceRestoreFailure: classification, conversationContinuation: "continue_conversation_v1", errorFamily: "transient_upstream" },
+      }).where(eq(heartbeatRuns.id, result.run.id));
+      expect(await heartbeat.scheduleBoundedRetry(result.run.id, { now, random: () => 0 })).toMatchObject({ outcome: "retry_exhausted" });
+    }
+  });
+
+  it("keeps unsafe workspace restore authoritative over launcher bootstrap evidence", async () => {
+    const executionRecovery = { kind: "bootstrap" as const, providerWorkStarted: false as const,
+      launcher: { version: 1 as const, outcome: "capacity_unavailable" as const } };
+    const restored = applyWorkspaceRestoreFailure({ exitCode: 5, signal: null, timedOut: false,
+      errorCode: "launcher_capacity_unavailable", executionRecovery,
+      resultJson: { stdout: "", executionRecovery, workspaceRestoreFailure: "restore_unsafe_archive" } });
+    expect(restored.errorCode).toBe("workspace_restore_failed");
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now,
+      errorCode: restored.errorCode!, resultJson: restored.resultJson });
+    await db.update(heartbeatRuns).set({ exitCode: restored.exitCode, signal: restored.signal })
+      .where(eq(heartbeatRuns.id, runId));
+    const run = await heartbeat.getRun(runId);
+    expect(isLauncherCapacityFailure(run!)).toBe(false);
+    expect(await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 }))
+      .toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
   });
 
   it("reuses one failure successor across concurrent and repeated scheduling", async () => {
