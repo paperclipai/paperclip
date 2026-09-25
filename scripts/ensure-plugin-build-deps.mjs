@@ -5,11 +5,28 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, "..");
-const tscCliPath = path.join(rootDir, "node_modules", "typescript", "bin", "tsc");
+// Resolve the TypeScript CLI through Node's own resolution instead of assuming
+// it sits in this package's own node_modules. Package managers are free to hoist
+// `typescript` to a parent directory — pnpm does so whenever Paperclip is a
+// workspace member of a larger repository — and the hard-coded path then misses
+// a perfectly installed compiler.
+const require = createRequire(import.meta.url);
+const tscCliPath = resolveTscCli();
+
+function resolveTscCli() {
+  try {
+    return require.resolve("typescript/bin/tsc");
+  } catch {
+    // Keep the previous location as a fallback so the failure message below
+    // still names a concrete path when TypeScript is genuinely missing.
+    return path.join(rootDir, "node_modules", "typescript", "bin", "tsc");
+  }
+}
 const lockDir = path.join(rootDir, "node_modules", ".cache", "paperclip-plugin-build-deps.lock");
 const lockTimeoutMs = 60_000;
 const lockPollMs = 100;
