@@ -224,6 +224,12 @@ export interface ConnectionGrant {
       scopeSource?: "provider" | "requested_fallback";
       /** Scopes the provider asserted that we never asked for. Empty unless it over-granted. */
       unrequestedScopes?: string[];
+      /**
+       * The scopes the authorization URL sent for *this* grant, kept per-grant because two
+       * users can authorize the same connection with different scopes. A refresh has no fresh
+       * request, so this is the baseline its response is judged against.
+       */
+      requestedScopes?: string[];
       tokenType?: string;
       refreshTokenExpiresAt?: string;
       refreshedAt?: string;

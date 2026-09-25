@@ -10391,6 +10391,130 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  // Two users can authorize the same connection with different scopes. The connection-level
+  // scope list is whichever callback ran last, so it is the wrong refresh baseline for at
+  // least one of them — the baseline has to live on the grant.
+  it("gives each personal grant its own refresh scope baseline", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
+      "slack-client-secret",
+    );
+    const company = await createCompany(db);
+    const wideUser = `oauth-wide-${randomUUID()}`;
+    await grantBoardUser(db, company.id, wideUser, [], "owner");
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "slack",
+        name: `Per-grant baseline ${randomUUID()}`,
+        grantKind: "user",
+      },
+      { actorType: "user", actorId: wideUser },
+    );
+    let tokenScope: string | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        return mcpHttpResponse({
+          ok: true,
+          access_token: `access-${randomUUID()}`,
+          refresh_token: `refresh-${randomUUID()}`,
+          expires_in: 3600,
+          token_type: "Bearer",
+          ...(tokenScope === null ? {} : { scope: tokenScope }),
+        });
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [] },
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    const authorize = async (userId: string, scopes: string[]) => {
+      const started = await service.startOAuth(
+        company.id,
+        connected.connectionId,
+        {
+          redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+          actor: { actorType: "user", actorId: userId },
+          subjectUserId: userId,
+          scopes,
+        },
+      );
+      tokenScope = scopes.join(" ");
+      await service.completeOAuthCallback({
+        state: new URL(started.authorizationUrl).searchParams.get("state")!,
+        code: `code-${randomUUID()}`,
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: userId },
+      });
+      const [grant] = await db
+        .select()
+        .from(connectionGrants)
+        .where(
+          and(
+            eq(connectionGrants.connectionId, connected.connectionId),
+            eq(connectionGrants.subjectUserId, userId),
+          ),
+        );
+      return grant;
+    };
+
+    const wideGrant = await authorize(wideUser, ["channels:read", "chat:write"]);
+    expect(wideGrant.providerTenant?.oauth).toMatchObject({
+      requestedScopes: ["channels:read", "chat:write"],
+    });
+
+    // Stand in for a second, narrower authorization on the same connection: the
+    // connection-level scope list is whichever callback ran last, so it drifts away from
+    // what this grant asked for. Written directly because a gallery personal connection
+    // pins one identity; a `per_user` connection reaches the same state through a real
+    // second callback.
+    const [beforeDrift] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    await db
+      .update(toolConnections)
+      .set({
+        config: {
+          ...beforeDrift.config,
+          oauth: {
+            ...(beforeDrift.config.oauth as Record<string, unknown>),
+            scopes: ["channels:read"],
+          },
+        },
+      })
+      .where(eq(toolConnections.id, connected.connectionId));
+
+    // Refresh this grant. The provider asserts exactly what this grant asked for, so
+    // nothing is unrequested — even though the connection now records only
+    // `channels:read`.
+    tokenScope = "channels:read chat:write";
+    await service.refreshOAuthGrantCredentials({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      grantId: wideGrant.id,
+      forceRefresh: true,
+      actor: { actorType: "user", actorId: wideUser },
+    });
+
+    const [refreshedWide] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.id, wideGrant.id));
+    expect(refreshedWide.providerTenant?.oauth).toMatchObject({
+      scopes: ["channels:read", "chat:write"],
+      scopeSource: "provider",
+      unrequestedScopes: [],
+    });
+  });
+
   // PAP-18538: an over-grant recorded at authorization has to survive the ordinary life of the
   // connection. A refresh is the routine event, and the shared organization identity is the
   // shape the grants API and the Permissions UI read from.

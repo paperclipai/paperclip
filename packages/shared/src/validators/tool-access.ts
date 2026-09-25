@@ -220,6 +220,7 @@ export const connectionGrantSchema = z.object({
       scopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
       scopeSource: z.enum(["provider", "requested_fallback"]).optional(),
       unrequestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      requestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
       tokenType: z.string().trim().min(1).max(100).optional(),
       refreshTokenExpiresAt: z.string().datetime().optional(),
       refreshedAt: z.string().datetime().optional(),

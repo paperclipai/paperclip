@@ -196,6 +196,12 @@ export const connectionGrants = pgTable(
         scopeSource?: "provider" | "requested_fallback";
         /** Scopes the provider asserted that we never asked for. Empty unless it over-granted. */
         unrequestedScopes?: string[];
+        /**
+         * The scopes the authorization URL sent for *this* grant. A refresh carries no fresh
+         * request, so this is the baseline it judges the provider's response against. It is
+         * per-grant because two users can authorize the same connection with different scopes.
+         */
+        requestedScopes?: string[];
         tokenType?: string;
         refreshedAt?: string;
         refreshTokenExpiresAt?: string;

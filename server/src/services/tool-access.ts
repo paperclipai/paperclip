@@ -5498,6 +5498,7 @@ export function toolAccessService(
       scopes: string[];
       scopeSource: "provider" | "requested_fallback";
       unrequestedScopes: string[];
+      requestedScopes: string[];
     },
   ) {
     const providerTenantWithOauth = (
@@ -5511,6 +5512,7 @@ export function toolAccessService(
               scopes: oauthProvenance.scopes,
               scopeSource: oauthProvenance.scopeSource,
               unrequestedScopes: oauthProvenance.unrequestedScopes,
+              requestedScopes: oauthProvenance.requestedScopes,
             },
           }
         : current;
@@ -11513,13 +11515,20 @@ export function toolAccessService(
           ? new Date(Date.now() + token.expiresIn * 1000).toISOString()
           : null;
         // A refresh carries no fresh authorization request, so the baseline stays what
-        // Paperclip asked for at authorization — the connection's configured scopes. Judging
-        // the response against the *grant* instead would let an over-grant that the provider
-        // re-asserts on every refresh read back as clean, because the widened grant would have
-        // become its own baseline.
+        // Paperclip asked for when *this* grant was authorized. Judging the response against
+        // the grant's own scopes instead would let an over-grant that the provider re-asserts
+        // on every refresh read back as clean, because the widened grant would have become
+        // its own baseline. The connection-level list is only a fallback for grants created
+        // before the per-grant baseline existed — it is whichever callback ran last, so on a
+        // connection two users authorized with different scopes it is the wrong baseline for
+        // at least one of them.
         const refreshed = resolveGrantedOauthScopes({
           tokenScope: token.scope,
-          requestedScopes: oauth.scopes ?? oauth.scope ?? grantOauth.scopes,
+          requestedScopes:
+            grantOauth.requestedScopes ??
+            oauth.scopes ??
+            oauth.scope ??
+            grantOauth.scopes,
           previous: {
             scopes: grantOauth.scopes,
             scopeSource: grantOauth.scopeSource,
@@ -15970,6 +15979,10 @@ export function toolAccessService(
               scopes: grantedScopes.scopes,
               scopeSource: grantedScopes.scopeSource,
               unrequestedScopes: grantedScopes.unrequestedScopes,
+              // Per-grant, because two users can authorize the same connection with
+              // different scopes. The connection-level list is whichever callback ran last,
+              // so it is the wrong baseline for anyone else's refresh.
+              requestedScopes: authorizedScopes,
               tokenType: token.tokenType,
               refreshedAt: connectedAt.toISOString(),
             },
@@ -16349,6 +16362,7 @@ export function toolAccessService(
         scopes: organizationGrantedScopes.scopes,
         scopeSource: organizationGrantedScopes.scopeSource,
         unrequestedScopes: organizationGrantedScopes.unrequestedScopes,
+        requestedScopes: organizationAuthorizedScopes,
       });
       await syncCredentialBindings(connection, [], tx);
     });
