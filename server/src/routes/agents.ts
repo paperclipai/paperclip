@@ -4982,11 +4982,16 @@ export function agentRoutes(
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
-    if (req.actor.type !== "board") {
-      throw forbidden("Only board-authenticated callers can manage instructions path or bundle configuration");
+    if (req.actor.type !== "board" && req.actor.type !== "agent") {
+      throw forbidden("Only board-authenticated callers or the agent itself can manage instructions path or bundle configuration");
     }
 
     const id = req.params.id as string;
+
+    // Agents can only update their own instructions path
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      throw forbidden("Agents can only manage their own instructions path");
+    }
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
 

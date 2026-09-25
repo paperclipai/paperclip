@@ -1801,6 +1801,18 @@ async function startServerWithDatabaseTeardown(
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
               }
             })
+            .then(async () => {
+              // Cancel orphaned wakeup requests (status=queued, run_id=null) that
+              // were left behind when enqueueWakeup succeeded but the heartbeat
+              // run insert or its .catch() path did not stamp the run link.
+              const recovered = await heartbeat.sweepOrphanedWakeupRequests();
+              if (recovered.cancelled > 0) {
+                logger.warn(
+                  { ...recovered },
+                  "periodic sweep cancelled orphaned wakeup requests",
+                );
+              }
+            })
             .catch((err) => {
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));
