@@ -25,19 +25,6 @@ export function cloudAppUrl(cloudBaseUrl: string | null | undefined, path: strin
   }
 }
 
-/**
- * Entry-code handoff for another stack: cloud authenticates the user for that
- * stack and wakes it if it is asleep before redirecting to its tenant host.
- */
-export function cloudStackEnterUrl(
-  cloudBaseUrl: string | null | undefined,
-  stackSlug: string | null | undefined,
-): string | null {
-  const slug = stackSlug?.trim();
-  if (!slug) return null;
-  return cloudAppUrl(cloudBaseUrl, `/stacks/${encodeURIComponent(slug)}/enter`);
-}
-
 /** Cloud's own create-a-stack flow, which replaces the in-app company wizard. */
 export function cloudStackCreateUrl(cloudBaseUrl: string | null | undefined): string | null {
   return cloudAppUrl(cloudBaseUrl, "/stacks/new");
