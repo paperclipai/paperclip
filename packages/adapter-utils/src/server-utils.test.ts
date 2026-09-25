@@ -1,8 +1,10 @@
-import { spawn } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
@@ -38,6 +40,8 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+const execFile = promisify(execFileCallback);
 
 describe("runtime connection tool delivery", () => {
   const access = {
@@ -567,6 +571,79 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("does not crash when the child closes stdin before a delayed write", async () => {
+    const tempDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-stdin-epipe-"),
+    );
+    const harnessPath = path.join(tempDir, "stdin-epipe-harness.ts");
+    const stdinClosedMarkerPath = path.join(tempDir, "stdin-closed");
+    const serverUtilsUrl = pathToFileURL(
+      path.join(import.meta.dirname, "server-utils.ts"),
+    ).href;
+    const tsxCli = path.resolve(
+      import.meta.dirname,
+      "../../../cli/node_modules/tsx/dist/cli.mjs",
+    );
+
+    try {
+      await fs.writeFile(
+        harnessPath,
+        [
+          "import fs from 'node:fs/promises';",
+          `import { runChildProcess } from ${JSON.stringify(serverUtilsUrl)};`,
+          `const stdinClosedMarkerPath = ${JSON.stringify(stdinClosedMarkerPath)};`,
+          "void (async () => {",
+          "const result = await runChildProcess(",
+          "  'stdin-epipe-regression',",
+          "  process.execPath,",
+          "  [",
+          "    '-e',",
+          "    \"const fs = require('node:fs'); fs.closeSync(0); fs.writeFileSync(process.argv[1], 'closed'); setTimeout(() => process.exit(23), 1000);\",",
+          "    stdinClosedMarkerPath,",
+          "  ],",
+          "  {",
+          "    cwd: process.cwd(),",
+          "    env: {},",
+          "    stdin: 'payload after child closed stdin',",
+          "    timeoutSec: 5,",
+          "    graceSec: 1,",
+          "    onLog: async () => {},",
+          "    onSpawn: async () => {",
+          "      const deadline = Date.now() + 2_000;",
+          "      while (Date.now() < deadline) {",
+          "        try {",
+          "          await fs.access(stdinClosedMarkerPath);",
+          "          return;",
+          "        } catch {",
+          "          await new Promise((resolve) => setTimeout(resolve, 10));",
+          "        }",
+          "      }",
+          "      throw new Error('child did not confirm closing stdin');",
+          "    },",
+          "  },",
+          ");",
+          "if (result.exitCode !== 23) {",
+          "  throw new Error(`unexpected exit code: ${result.exitCode}`);",
+          "}",
+          "})().catch((error) => {",
+          "  console.error(error);",
+          "  process.exitCode = 1;",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+
+      await expect(
+        execFile(process.execPath, [tsxCli, harnessPath], {
+          cwd: process.cwd(),
+          timeout: 10_000,
+        }),
+      ).resolves.toMatchObject({ stderr: "" });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
