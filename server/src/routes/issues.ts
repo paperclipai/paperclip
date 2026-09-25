@@ -6631,7 +6631,12 @@ export function issueRoutes(
 
   async function requireRecoveryActionAuthority(
     req: Request,
-    issue: { id: string; companyId: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      assigneeAgentId: string | null;
+      createdByAgentId?: string | null;
+    },
     activeRecoveryAction: Awaited<
       ReturnType<typeof recoveryActionsSvc.getActiveForIssue>
     >,
@@ -6655,6 +6660,18 @@ export function issueRoutes(
     ) {
       return true;
     }
+    // When there is no agent assignee the issue creator is the natural fallback
+    // owner — consistent with how reconcileResolvedDependencyWakeBackstop treats
+    // null-assignee blocked tasks (wakes createdByAgentId). Source mutation
+    // authority (requireRecoverySourceMutationAuthority) enforces the board-owned
+    // restriction on the status change separately, so this check only gates
+    // whether the actor may mark the recovery action itself as resolved.
+    if (
+      !issue.assigneeAgentId &&
+      issue.createdByAgentId === actorAgentId
+    ) {
+      return true;
+    }
     if (activeRecoveryAction.ownerAgentId === actorAgentId) return true;
     if (
       activeRecoveryAction.ownerAgentId &&
@@ -6672,6 +6689,7 @@ export function issueRoutes(
       recoveryActionId: activeRecoveryAction.id,
       actorAgentId,
       assigneeAgentId: issue.assigneeAgentId,
+      createdByAgentId: issue.createdByAgentId ?? null,
       recoveryOwnerAgentId: activeRecoveryAction.ownerAgentId,
       source: input.source,
       securityPrinciples: [
@@ -6699,10 +6717,12 @@ export function issueRoutes(
       companyId: string;
       status: string;
       assigneeAgentId: string | null;
+      createdByAgentId?: string | null;
       checkoutRunId?: string | null;
       executionRunId?: string | null;
       executionState?: unknown;
     },
+    recoveryActionOwnerAgentId?: string | null,
   ) {
     if (req.actor.type !== "agent") return;
     const actorAgentId = req.actor.agentId;
@@ -6719,7 +6739,14 @@ export function issueRoutes(
         issue.assigneeAgentId,
       )),
     );
-    if (!isSourceOwner && !isExecutionParticipant && !hasPolicyGrant) {
+    // Creator fallback mirrors requireRecoveryActionAuthority: allowed only when
+    // the recovery action is board-owned (null ownerAgentId), which is where the
+    // board has implicitly ceded the decision back to the issue creator.
+    const isCreatorFallback =
+      !issue.assigneeAgentId &&
+      issue.createdByAgentId === actorAgentId &&
+      !recoveryActionOwnerAgentId;
+    if (!isSourceOwner && !isExecutionParticipant && !hasPolicyGrant && !isCreatorFallback) {
       throw forbidden(
         "Recovery ownership does not authorize this source issue mutation",
         {
@@ -9373,7 +9400,7 @@ export function issueRoutes(
               recoveryAction: activeRecoveryAction,
             });
           } else {
-            await requireRecoverySourceMutationAuthority(req, lockedIssue);
+            await requireRecoverySourceMutationAuthority(req, lockedIssue, activeRecoveryAction?.ownerAgentId ?? null);
           }
 
           if (
@@ -12947,7 +12974,7 @@ export function issueRoutes(
               typeof updateFields.status === "string" &&
               updateFields.status !== existing.status));
         if (recoveryRestrictedSourceMutationRequested) {
-          await requireRecoverySourceMutationAuthority(req, existing);
+          await requireRecoverySourceMutationAuthority(req, existing, activeRecoveryActionBeforeUpdate?.ownerAgentId ?? null);
         }
       }
       if (
