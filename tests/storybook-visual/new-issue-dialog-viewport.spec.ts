@@ -71,11 +71,38 @@ test("does not collapse the new-task dialog during a transient zero-height visua
     top: viewport.offsetTop + 16,
     bottom: viewport.offsetTop + viewport.visualHeight - 16,
   });
+
+  await page.evaluate(() => {
+    const visualViewport = window.visualViewport as VisualViewport & {
+      height: number;
+      offsetTop: number;
+    };
+    visualViewport.height = 0;
+    visualViewport.offsetTop = Number.NaN;
+    visualViewport.dispatchEvent(new Event("resize"));
+  });
+  await expect.poll(async () => dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  })).toEqual({
+    top: viewport.offsetTop + 16,
+    bottom: viewport.offsetTop + viewport.visualHeight - 16,
+  });
 });
 
-for (const { pickerName, triggerName } of [
-  { pickerName: "assignee", triggerName: "CodexCoder" },
-  { pickerName: "project", triggerName: "Board UI" },
+for (const { pickerName, triggerName, query, selectionName } of [
+  {
+    pickerName: "assignee",
+    triggerName: "CodexCoder",
+    query: "QA",
+    selectionName: "QAChecker",
+  },
+  {
+    pickerName: "project",
+    triggerName: "Board UI",
+    query: "Runtime",
+    selectionName: "Agent Runtime",
+  },
 ]) {
   test(`keeps the open ${pickerName} picker inside the mobile visual viewport`, async ({ page }) => {
     const viewport = VIEWPORT_CASES[0];
@@ -107,6 +134,12 @@ for (const { pickerName, triggerName } of [
     expect(geometry.inputTop).toBeGreaterThanOrEqual(visibleTop);
     expect(geometry.inputBottom).toBeLessThanOrEqual(visibleBottom);
     expect(geometry.portalledOutsideDialog).toBe(true);
+
+    const searchInput = picker.locator("input");
+    await searchInput.fill(query);
+    await picker.getByRole("button", { name: selectionName }).click();
+    await expect(picker).toBeHidden();
+    await expect(dialog.getByRole("button", { name: selectionName })).toBeVisible();
   });
 }
 

@@ -1328,7 +1328,7 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("ignores transient invalid visual viewport measurements instead of collapsing the dialog", async () => {
+  it("ignores transient invalid visual viewport measurements and keeps the last valid layout", async () => {
     const visualViewport = new EventTarget() as EventTarget & {
       height: number;
       offsetTop: number;
@@ -1362,6 +1362,17 @@ describe("NewIssueDialog", () => {
     });
 
     expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
+    expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
+    expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
+
+    visualViewport.height = 0;
+    visualViewport.offsetTop = Number.NaN;
+    await act(async () => {
+      visualViewport.dispatchEvent(new Event("resize"));
+    });
+
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-offset-top")).toBe("24px");
     expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
     expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
 

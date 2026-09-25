@@ -140,7 +140,11 @@ function useVisualViewportLayout(enabled: boolean) {
     const viewport = window.visualViewport;
     if (!viewport) return;
 
-    const updateLayout = () => setLayout(readVisualViewportLayout());
+    const updateLayout = () => {
+      const nextLayout = readVisualViewportLayout();
+      // Keep the last valid keyboard geometry during transient invalid readings.
+      if (nextLayout) setLayout(nextLayout);
+    };
     updateLayout();
     viewport.addEventListener("resize", updateLayout);
     viewport.addEventListener("scroll", updateLayout);
