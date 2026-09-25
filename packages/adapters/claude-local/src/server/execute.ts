@@ -1191,7 +1191,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? proc.errorCode
       : loginMeta.requiresLogin
       ? "claude_auth_required"
-      : failed && isClaudeModelNotFoundError({
+      // Structured CLI signals outrank the model-not-found detector, which
+      // scans the run's full stdout for a literal "model not found" phrase.
+      // An agent's own tool output (grepping runtime source, tailing logs,
+      // echoing an issue body) lands in that stdout, so a genuine
+      // error_max_turns run that merely *mentions* the phrase would otherwise
+      // be sealed as model_not_found. Same guard the providerQuota and
+      // transientUpstream branches above already apply.
+      : failed && !clearSessionForMaxTurns && !poisonedPreviousMessageId && isClaudeModelNotFoundError({
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
