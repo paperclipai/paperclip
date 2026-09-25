@@ -214,6 +214,26 @@ async function upsertTokenSecret(
     .returning()
     .then((rows) => rows[0]!);
 
+  if (existing) {
+    // Lock and update the parent secret row before the new version insert.
+    // This order matches rotate(). A credential write-back locks the
+    // parent row first, then waits on the same version unique constraint.
+    // If this transaction inserted the version row first instead, the two
+    // transactions could take the parent lock and the version constraint
+    // in opposite order and deadlock.
+    await tx
+      .update(companySecrets)
+      .set({
+        status: "active",
+        latestVersion: nextVersion,
+        externalRef: prepared.externalRef ?? existing.externalRef,
+        providerConfigId: existing.providerConfigId,
+        lastRotatedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(companySecrets.id, existing.id));
+  }
+
   await tx.insert(companySecretVersions).values({
     secretId: secret.id,
     version: nextVersion,
@@ -240,17 +260,6 @@ async function upsertTokenSecret(
         eq(companySecretVersions.secretId, existing.id),
         eq(companySecretVersions.version, nextVersion),
       ));
-    await tx
-      .update(companySecrets)
-      .set({
-        status: "active",
-        latestVersion: nextVersion,
-        externalRef: prepared.externalRef ?? existing.externalRef,
-        providerConfigId: existing.providerConfigId,
-        lastRotatedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(companySecrets.id, existing.id));
   }
 
   const ref: ToolCredentialSecretRef = {
