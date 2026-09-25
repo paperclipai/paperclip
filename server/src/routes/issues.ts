@@ -11675,10 +11675,18 @@ export function issueRoutes(
         ))
       )
         return;
+      // Default assigneeAgentId to the requesting agent when omitted (or null) by
+      // an agent actor — prevents orphaned tasks (INUA-7275 invalid-state-representable).
+      const effectiveRawAssigneeAgentId: string | null | undefined =
+        req.actor.type === "agent" &&
+        (rawCreateBody.assigneeAgentId === undefined ||
+          rawCreateBody.assigneeAgentId === null)
+          ? (req.actor.agentId ?? undefined)
+          : (rawCreateBody.assigneeAgentId as string | null | undefined);
       const normalizedAssigneeAgentId =
         await normalizeIssueAssigneeAgentReference(
           companyId,
-          rawCreateBody.assigneeAgentId as string | null | undefined,
+          effectiveRawAssigneeAgentId,
           { actorType: req.actor.type },
         );
       await assertNoAgentDelegationCycle({
