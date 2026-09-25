@@ -1,5 +1,5 @@
 {
-  "id": "f8d6dd11-e9b8-4528-869c-d1bd5e681662",
+  "id": "ef3186ee-1f04-44ce-be2e-e91c27fe9bdd",
   "prevId": "786cd4a9-366b-4934-be90-014e1ee15b51",
   "version": "7",
   "dialect": "postgresql",
@@ -23125,6 +23125,7 @@
             }
           ],
           "isUnique": false,
+          "where": "\"heartbeat_runs\".\"started_at\" IS NOT NULL AND \"heartbeat_runs\".\"status\" IN ('failed', 'timed_out', 'succeeded', 'cancelled', 'interrupted')",
           "concurrently": false,
           "method": "btree",
           "with": {}

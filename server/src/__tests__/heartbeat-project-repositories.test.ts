@@ -179,11 +179,18 @@ suite("task project repository provisioning", () => {
       expect(execute.mock.calls.filter(([input]) => input.agent.id === agentId)).toHaveLength(0);
       return;
     }
+    // Expiring the task retry does not bypass the independent seat cooldown.
+    expect((await heartbeat.getRun(retry!.id))?.status).toBe("queued");
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 6 * 60_000) })
+      .where(eq(heartbeatRuns.id, run!.id));
+    await heartbeat.resumeQueuedRuns();
     if (scenario === "exhausted") {
       await heartbeat.drainActiveRunExecutions();
       expect((await heartbeat.getRun(retry!.id))?.errorCode).toBe(code);
       const [last] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, retry!.id));
       expect(last).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 2 });
+      await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 6 * 60_000) })
+        .where(eq(heartbeatRuns.id, retry!.id));
       await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, last!.id));
       await heartbeat.promoteDueScheduledRetries();
       await heartbeat.resumeQueuedRuns();

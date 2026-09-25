@@ -1,5 +1,5 @@
 import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 
 const BASE_DELAY_MS = 5_000;
 const MAX_DELAY_MS = 5 * 60_000;
@@ -45,8 +45,10 @@ export async function deferQueuedRunAfterStartupFailure(
     }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, run.companyId),
       eq(heartbeatRuns.agentId, run.agentId),
-      isNotNull(heartbeatRuns.startedAt),
-      inArray(heartbeatRuns.status, ["failed", "timed_out", "succeeded", "cancelled", "interrupted"]),
+      // Keep the fixed predicate literal so generic prepared plans can use
+      // the partial completion index; null terminal completions still reset it.
+      sql`${heartbeatRuns.startedAt} IS NOT NULL AND ${heartbeatRuns.status}
+        IN ('failed', 'timed_out', 'succeeded', 'cancelled', 'interrupted')`,
       cursor ? sql`(${heartbeatRuns.finishedAt}, ${heartbeatRuns.id}) <
         (${cursor.finishedAt}::timestamptz, ${cursor.id}::uuid)` : undefined,
     )).orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.id)).limit(pageSize);

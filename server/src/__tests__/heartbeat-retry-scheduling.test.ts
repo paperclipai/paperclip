@@ -471,6 +471,43 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
 
     describe("durable startup history", () => {
+      it("does not hide ambiguous terminal rows with no completion timestamp", async () => {
+        const seat = await seedFailedSeat();
+        await db.insert(heartbeatRuns).values({
+          companyId: seat.companyId, agentId: seat.agentId, status: "failed",
+          startedAt: new Date(), finishedAt: null,
+        });
+        const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+        const deferred = await db.transaction(async (tx) => {
+          const [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.runId));
+          return deferQueuedRunAfterStartupFailure(tx as unknown as Db, run!);
+        });
+        expect(deferred).toBe(false);
+      });
+
+      it("uses the completion index without filtering queued backlog", async () => {
+        const seat = await seedFailedSeat();
+        await db.insert(heartbeatRuns).values(Array.from({ length: 1_024 }, () => ({
+          companyId: seat.companyId, agentId: seat.agentId, status: "queued",
+        })));
+        const plan = await db.transaction(async (tx) => {
+          await tx.execute(sql`set local enable_seqscan = off`);
+          await tx.execute(sql`set local enable_bitmapscan = off`);
+          await tx.execute(sql`set local enable_sort = off`);
+          return tx.execute(sql`explain (analyze, format json)
+            select id from heartbeat_runs
+            where company_id = ${seat.companyId} and agent_id = ${seat.agentId}
+              and started_at is not null
+              and status in ('failed', 'timed_out', 'succeeded', 'cancelled', 'interrupted')
+            order by finished_at desc, id desc limit 1`);
+        });
+        const root = (plan[0]!["QUERY PLAN"] as Array<{ Plan: { Plans: Array<Record<string, unknown>> } }>)[0]!.Plan;
+        const scan = root.Plans[0]!;
+        expect(scan["Index Name"]).toBe("heartbeat_runs_company_agent_finished_idx");
+        expect(scan["Rows Removed by Filter"] ?? 0).toBe(0);
+        expect(scan["Actual Rows"]).toBe(1);
+      });
+
       async function seedExpiredFailures(seat: { companyId: string; agentId: string }, count: number) {
         const latestCompletion = Date.now() - 10 * 60_000;
         await db.insert(heartbeatRuns).values(Array.from({ length: count }, (_, index) => ({
