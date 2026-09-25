@@ -10,6 +10,21 @@ const CACHE_NAME = `paperclip-public-assets-${BUILD_ID}`;
 const privateRequests = new Set();
 const privateCacheControl = /(?:^|,)\s*(?:no-store|private)(?:\s*(?:,|=)|\s*$)/i;
 
+// Static recovery only: never cache or embed authenticated page content here.
+function offlineNavigationResponse() {
+  return new Response(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>Paperclip is offline</title></head>
+<body><main><h1>Paperclip is offline</h1>
+<p>Check your connection, then reload this page to try again.</p>
+<button type="button" onclick="window.location.reload()">Reload page</button>
+</main></body></html>`, {
+    status: 503,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
 async function evictRequest(request) {
   await Promise.all((await caches.keys()).map(async (key) => {
     const cache = await caches.open(key);
@@ -72,7 +87,7 @@ self.addEventListener("fetch", (event) => {
       })
       .catch(async () => {
         if (privateRequests.has(request.url)) return Response.error();
-        if (!publicAsset) return request.mode === "navigate" ? new Response("Offline", { status: 503 }) : Response.error();
+        if (!publicAsset) return request.mode === "navigate" ? offlineNavigationResponse() : Response.error();
         // Restrict lookup to this policy's cache; old arbitrary-response caches
         // must not become fallback candidates if activation cleanup fails.
         try {

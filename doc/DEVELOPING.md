@@ -368,6 +368,14 @@ pnpm test:release-smoke
 
 These browser suites are intended for targeted local verification and CI, not the default agent/human test command.
 
+The default E2E configuration builds the UI into `server/ui-dist` before starting
+its throwaway instance and serves that build with
+`PAPERCLIP_UI_DEV_MIDDLEWARE=false`. This exercises the
+shipped assets, including service-worker takeover and reload, without traversing
+the development server's unbundled module graph on each navigation. Browser
+assertion deadlines and retries remain unchanged. Use `pnpm dev` separately when
+verifying Vite/HMR behavior.
+
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
 ### Task search evaluation
@@ -681,6 +689,8 @@ Tasks use every distinct repository attached to their project, including reposit
 When an additional repository has a configured local checkout, Paperclip seeds the task copy from its current commit and uncommitted files. Git-ignored files stay out of that copy. Subsequent task edits stay in the task copy. They do not overwrite the configured source folder. Existing task copies retain their work across runs.
 
 Sandbox staging, including Daytona, transfers each repository's Git history and working files. Restore merges files and commits back into each local task checkout independently. Durable sandbox recovery keeps the same repository snapshots. Normal ignore and workspace exclusion rules still apply. A clone failure stops task preparation with an error so the agent does not start with only part of the project.
+
+Staging preserves relative symlink targets in secondary repositories, including skill links such as `.claude/skills/demo -> ../../skills/demo`. It does not rewrite them to host temporary paths or copy their target contents in place of the link. Daytona still rejects outbound archives with absolute or escaping link targets before extraction.
 
 If a repository is detached or its source configuration changes, its previous task copy is retained under `.paperclip-runtime/detached-repositories/` and excluded from future sandbox transfers. Referenced projects continue to use the separate read-only multi-project workspace behavior.
 

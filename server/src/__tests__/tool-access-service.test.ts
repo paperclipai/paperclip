@@ -811,14 +811,14 @@ describeEmbeddedPostgres("tool access service", () => {
       process.env.PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL?.trim();
     if (externalDatabaseUrl) {
       db = createDb(externalDatabaseUrl);
-      await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
       return;
     }
     tempDb = await startEmbeddedPostgresTestDatabase(
       "paperclip-tool-access-service-",
     );
     db = createDb(tempDb.connectionString);
-    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
   }, 20_000);
 
   afterEach(async () => {
@@ -5092,7 +5092,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "youcom",
       ]),
     );
-    expect(res.body.apps).toHaveLength(51);
+    expect(res.body.apps).toHaveLength(56);
     expect(
       res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,
@@ -11589,6 +11589,149 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it.each(["mem0", "zep", "supermemory", "cognee", "honcho"])("rejects %s setup before creating credentials when memory connectors are disabled", async (provider) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: false });
+    try {
+      const response = await request(createRouteApp(db)).get(`/api/companies/${company.id}/tools/gallery`).expect(200);
+      expect(response.body.apps.some((app: { slug: string }) => app.slug === provider)).toBe(false);
+      await expect(service.connectGalleryApp(company.id, { galleryKey: provider })).rejects.toMatchObject({ status: 403, details: { code: "memory_connectors_disabled" } });
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toHaveLength(0);
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id))).toHaveLength(0);
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+    }
+  });
+
+  it("rotates an existing Mem0 key while new memory setup is disabled", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "search_memories", annotations: { readOnlyHint: true } }]);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "mem0", credentialValues: { "credentials.authorization": "old-key" },
+    });
+    await db.update(toolConnections).set({ status: "active" }).where(eq(toolConnections.id, connected.connectionId));
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: false });
+    try {
+      const result = await service.reconnectGalleryApp(connected.connectionId, company.id,
+        { credentialValues: { "credentials.authorization": "new-key" } });
+      expect(result.connection.id).toBe(connected.connectionId);
+      expect(result.connection.healthStatus).toBe("ok");
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+    }
+  });
+
+  it("keeps active Cognee tools available during a transient Cloud probe outage", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }));
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "cognee", credentialValues: { "env.COGNEE_BASE_URL": "https://fixture.aws.cognee.ai", "env.COGNEE_API_KEY": "key" },
+    });
+    await db.update(toolConnections).set({ status: "active" }).where(eq(toolConnections.id, connected.connectionId));
+    fetchMock.mockReset().mockRejectedValue(new Error("temporary timeout"));
+    const result = await service.checkHealth(connected.connectionId);
+    expect(result.connection.healthStatus).toBe("ok");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const catalog = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connected.connectionId));
+    expect(catalog).toHaveLength(3);
+  });
+
+  it("creates a user-owned value when reconnect restores a missing personal credential field", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "search_memories", annotations: { readOnlyHint: true } }]);
+    const actor = { actorType: "user" as const, actorId: "personal-reconnect-owner" };
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "mem0", grantKind: "user", credentialValues: { "credentials.authorization": "old-key" },
+    }, actor);
+    const { grants } = await service.listConnectionGrants(connected.connectionId, company.id);
+    await db.update(connectionGrants).set({ credentialSecretRefs: [] }).where(eq(connectionGrants.id, grants[0]!.id));
+    await service.reconnectGalleryApp(connected.connectionId, company.id,
+      { credentialValues: { "credentials.authorization": "restored-key" } }, actor);
+    const after = await service.listConnectionGrants(connected.connectionId, company.id);
+    const ref = after.grants[0]!.credentialSecretRefs[0]!;
+    const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+    expect(secret).toMatchObject({ scope: "user", ownerUserId: actor.actorId });
+    const resolved = await secretService(db).resolveUserSecretValue(company.id, {
+      definitionId: secret.userSecretDefinitionId!, responsibleUserId: actor.actorId,
+    }, { consumerType: "tool_connection", consumerId: connected.connectionId, configPath: ref.configPath,
+      actorType: "system", actorId: null, responsibleUserId: actor.actorId });
+    expect(resolved?.value).toBe("restored-key");
+    expect((await service.getConnection(connected.connectionId, company.id)).credentialSecretRefs).toEqual([]);
+  });
+
+  it("keeps rejected Mem0 API keys on the key-entry path rather than switching to OAuth", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unauthorized", { status: 401, headers: { "www-authenticate": "Bearer" } }));
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "mem0", credentialValues: { "credentials.authorization": "invalid-key" },
+    })).rejects.toMatchObject({ status: 422, details: { code: "memory_api_key_rejected" } });
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id))).toHaveLength(0);
+  });
+
+  it("vaults Cognee environment credentials and verifies Cloud access before exposing its reviewed tools", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }));
+    const key = "cognee-private-fixture-key";
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "cognee",
+      credentialValues: { "env.COGNEE_BASE_URL": "https://fixture.aws.cognee.ai", "env.COGNEE_API_KEY": key },
+    });
+    expect(fetchMock).toHaveBeenCalledWith("https://fixture.aws.cognee.ai/api/v1/datasets/", expect.objectContaining({
+      method: "GET", headers: { "X-Api-Key": key }, redirect: "manual",
+    }));
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    expect(connection.config).toMatchObject({ templateId: "paperclip.cognee-cloud" });
+    expect(connection.credentialSecretRefs.map(ref => ref.configPath).sort()).toEqual(["env.COGNEE_API_KEY", "env.COGNEE_BASE_URL"]);
+    expect(JSON.stringify(connected)).not.toContain(key);
+    expect(JSON.stringify(connection)).not.toContain(key);
+    const catalog = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connected.connectionId));
+    expect(catalog.map(entry => [entry.toolName, entry.riskLevel]).sort()).toEqual([["forget", "destructive"], ["recall", "read"], ["remember", "write"]]);
+  });
+
+  it("resolves personal Cognee credentials through their owner and durable declarations", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }));
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "cognee", grantKind: "user",
+      credentialValues: { "env.COGNEE_BASE_URL": "https://fixture.aws.cognee.ai", "env.COGNEE_API_KEY": "personal-cognee-key" },
+    }, { actorType: "user", actorId: "carol" });
+    const { grants } = await service.listConnectionGrants(connected.connectionId, company.id);
+    expect(grants).toHaveLength(1);
+    expect(connected.connection.credentialSecretRefs).toEqual([]);
+    const vault = secretService(db);
+    for (const ref of grants[0]!.credentialSecretRefs) {
+      const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+      expect(secret).toMatchObject({ scope: "user", ownerUserId: "carol" });
+      const resolved = await vault.resolveUserSecretValue(company.id, {
+        definitionId: secret.userSecretDefinitionId, responsibleUserId: "carol",
+      }, { consumerType: "tool_connection", consumerId: connected.connectionId, configPath: ref.configPath,
+        actorType: "system", actorId: null, responsibleUserId: "carol" });
+      expect(resolved?.value).toBe(ref.configPath === "env.COGNEE_API_KEY" ? "personal-cognee-key" : "https://fixture.aws.cognee.ai");
+      await expect(vault.resolveUserSecretValue(company.id, {
+        definitionId: secret.userSecretDefinitionId, responsibleUserId: "another-user",
+      })).rejects.toMatchObject({ status: 422, details: { code: "user_secret_missing" } });
+    }
+  });
+
+  it.each(["organization", "user"] as const)("cleans up a rejected %s Cognee connection and its vault records", async (grantKind) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unauthorized", { status: 401 }));
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "cognee", grantKind, credentialValues: { "env.COGNEE_BASE_URL": "https://fixture.aws.cognee.ai", "env.COGNEE_API_KEY": "invalid-key" },
+    }, { actorType: "user", actorId: "carol" })).rejects.toMatchObject({ status: 422, details: { code: "cognee_access_unverified" } });
+    expect(await db.select().from(userSecretDefinitions).where(eq(userSecretDefinitions.companyId, company.id))).toHaveLength(0);
+    expect(await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.companyId, company.id))).toHaveLength(0);
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id))).toHaveLength(0);
+  });
+
   it("retains an encrypted API key when the same draft method resumes", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -17835,6 +17978,14 @@ describeEmbeddedPostgres("tool access service", () => {
 });
 
 describe("classifyRisk", () => {
+  it("classifies Fireflies reads and mutations without changing action defaults", () => {
+    for (const name of ["fireflies_get_transcripts", "fireflies_get_transcript", "fireflies_get_summary"])
+      expect(classifyRisk({ name }, "fireflies")).toBe("read");
+    for (const name of ["fireflies_share_meeting", "fireflies_revoke_meeting_access", "fireflies_move_meeting", "fireflies_create_soundbite", "fireflies_update_meeting_title"])
+      expect(classifyRisk({ name, annotations: { readOnlyHint: true } }, "fireflies")).toBe("write");
+    expect(classifyRisk({ name: "fireflies_share_meeting", annotations: { destructiveHint: true } }, "fireflies")).toBe("destructive");
+  });
+
   const risk = (name: string, annotations?: Record<string, unknown>) =>
     classifyRisk({ name, annotations });
 

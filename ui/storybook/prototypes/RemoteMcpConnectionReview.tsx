@@ -11,7 +11,7 @@ import { exampleUrl, fixtureTools, initialReviewState, newFixtureTool, reviewAge
 
 /** Provider responses are simulated in memory. The saved connection uses the real
  * Permissions action list and its real Test dialog, with scoped API fixtures. */
-export function RemoteMcpConnectionReview({ provider, scenario = "journey", inline = false }: { provider: RemoteMcpProviderId; scenario?: ReviewScenario; inline?: boolean }) {
+export function RemoteMcpConnectionReview({ provider, scenario = "journey", inline = false, upstreamServiceName }: { upstreamServiceName?: string; provider: RemoteMcpProviderId; scenario?: ReviewScenario; inline?: boolean }) {
   const connectionId = `review-${provider}`;
   const client = useMemo(() => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } }), [provider, scenario]);
   const [s, setState] = useState(() => initialReviewState(provider, scenario));
@@ -123,8 +123,8 @@ export function RemoteMcpConnectionReview({ provider, scenario = "journey", inli
     <div className="border-b border-border bg-muted px-4 py-3 text-sm" role="note"><strong>Design review · {remoteMcpProviders[provider].name}</strong><span className="text-muted-foreground"> — Example accounts and tools. No real sign-in, calls, or credential storage. Use fake values only.</span></div>
     {inline ? <Dialog defaultOpen><DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl" showCloseButton={false} aria-describedby={undefined}>
       <DialogTitle className="sr-only">Connect {remoteMcpProviders[provider].name}</DialogTitle>
-      <RemoteMcpConnectionSetup host="dialog" lockedAgentId="researcher" connectionId={connectionId} provider={remoteMcpProviders[provider]} state={{ ...s, allAgents: false, agentIds: ["researcher"] }} actions={actions} agents={reviewAgents} />
-    </DialogContent></Dialog> : <RemoteMcpConnectionSetup connectionId={connectionId} provider={remoteMcpProviders[provider]} state={s} actions={actions} agents={reviewAgents} />}
+      <RemoteMcpConnectionSetup upstreamServiceName={upstreamServiceName} host="dialog" lockedAgentId="researcher" connectionId={connectionId} provider={remoteMcpProviders[provider]} state={{ ...s, allAgents: false, agentIds: ["researcher"] }} actions={actions} agents={reviewAgents} />
+    </DialogContent></Dialog> : <RemoteMcpConnectionSetup upstreamServiceName={upstreamServiceName} connectionId={connectionId} provider={remoteMcpProviders[provider]} state={s} actions={actions} agents={reviewAgents} />}
     <aside aria-label="Storybook simulation" className="mx-auto max-w-6xl space-y-4 border-t border-border p-4 sm:p-8">
       <p className="text-xs font-semibold text-muted-foreground">STORYBOOK SIMULATION</p>
       <div className="flex flex-wrap items-end gap-4 text-sm">

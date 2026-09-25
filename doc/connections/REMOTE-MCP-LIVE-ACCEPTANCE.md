@@ -2,13 +2,15 @@
 
 Test environment: an isolated development worktree with a fresh database and organization. No production data was cloned. The API served the compiled UI with browser-reachable OAuth callbacks. Detailed account and local-instance evidence remains in a private acceptance report.
 
-**This PR delivers default-off experimental support at the maintainer's request. General provider acceptance remains incomplete: Zapier needs its generated credential entered before live validation can finish.** Three providers have real browser and real agent proof. Simulations are recorded separately below. The maintainer's subsequent delivery instruction was to put these connectors behind an experimental MCP aggregators flag and open a PR with passing checks. The Zapier gap is an explicit limitation of that experimental scope, not a claim that the connector playbook's full provider acceptance is complete. Complete that acceptance before promoting the feature out of experimental status.
+The initial delivery was experimental. MCP aggregators are now available by default at the maintainer's request. The historical live evidence below is unchanged: three providers have real browser and real agent proof, while Zapier still lacks complete live acceptance. Removing the setup gate does not supply that missing proof. Simulations are recorded separately below.
 
-## Experimental rollout
+## Default-on rollout — 2026-09-24
 
-Setup is behind **Settings → Experimental → MCP aggregators** (`enableMcpAggregators`). It defaults off on self-hosted and managed instances. When off, all four fresh catalog entries are hidden and direct setup, reconnect setup, and OAuth-start requests are rejected server-side. Existing connections keep running and remain available for management. The legacy Composio API-key broker and child connections have since been retired; see [Composio broker retirement](COMPOSIO-BROKER-RETIREMENT.md). An in-progress OAuth callback may complete; the flag does not revoke already issued credentials or grants.
+Zapier, Arcade, Composio Connect, and Executor are available by default on self-hosted and managed instances. No experimental setting is required for catalog discovery, setup, reconnect, OAuth, or agent connection search. The retired `enableMcpAggregators` setting is ignored, including saved `false` values. Connection authorization, agent access, tool permissions, and external-provider choice still apply. The legacy Composio API-key broker and child connections remain retired; see [Composio broker retirement](COMPOSIO-BROKER-RETIREMENT.md).
 
-Focused regression tests cover flag defaults, persistence, managed metadata, cached catalog visibility, all four direct setup routes, and server-side rejection before network/credential writes.
+The maintainer explicitly requested removal of the experimental gate for all four existing connectors. This rollout follows that request as a scoped exception to the playbook's live-acceptance prerequisite; it does not change the general requirement for new connectors. Zapier's missing live proof remains recorded below and is not a passing acceptance result.
+
+Focused regression tests cover default-on settings, ignored stored and managed opt-outs, cached catalog visibility, all four direct and inline setup routes, successful server setup and discovery, agent fallback with provider choice, and removal of the Settings toggle. The former flag-off rejection test was replaced; there is no longer a flag-based setup rejection before network or credential writes.
 
 ## Live results
 

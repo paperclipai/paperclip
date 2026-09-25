@@ -54,6 +54,7 @@ import {
 } from "../services/tool-content-guards.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { secretService } from "../services/secrets.js";
+import * as cogneeBridge from "../services/cognee-connection.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -580,6 +581,72 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("preserves provider tool errors in MCP responses and failed invocation audits", async () => {
+    const company = await createCompany(db);
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: body?.id,
+        result: { content: [{ type: "text", text: "Search denied: outside consented tag" }], isError: true },
+      },
+    }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, toolName: "search_memory", riskLevel: "read",
+      });
+      await db.update(toolCatalogEntries).set({
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      const toolName = expectedConnectedToolName({
+        applicationKey: application.applicationKey,
+        connectionId: connection.id,
+        toolName: catalogEntry.toolName,
+      });
+      const [profile] = await db.insert(toolProfiles).values({
+        companyId: company.id, profileKey: `error-${randomUUID()}`,
+        name: "Provider error test", defaultAction: "deny",
+      }).returning();
+      await db.insert(toolProfileEntries).values({
+        companyId: company.id, profileId: profile.id,
+        selectorType: "tool_name", effect: "include", toolName,
+      });
+      const gateway = createTestToolGatewayService(db);
+      const named = await gateway.createNamedGateway({
+        companyId: company.id, body: { name: "Provider error test", profileId: profile.id },
+      });
+      const token = await gateway.createNamedGatewayToken({
+        companyId: company.id, gatewayId: named.id, body: { name: "Test" },
+      });
+      const response = await request(createGatewayRouteApp(db, gateway))
+        .post(named.endpointPath)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolName, arguments: {} } })
+        .expect(200);
+      expect(response.body.result).toEqual({
+        content: [{ type: "text", text: "Search denied: outside consented tag" }], isError: true,
+      });
+      expect(await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id)))
+        .toEqual([expect.objectContaining({ status: "failed", errorCode: "tool_error" })]);
+      const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.companyId, company.id));
+      expect(events).toContainEqual(expect.objectContaining({ eventType: "call_failed", outcome: "failure", reasonCode: "tool_error" }));
+      expect(events.some((event) => event.eventType === "call_completed")).toBe(false);
+      const agent = await createAgent(db, company.id);
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user",
+        principalId: "test-user", status: "active", membershipRole: "member" });
+      const testCall = await gateway.executeTestCall({ companyId: company.id, connectionId: connection.id,
+        agentId: agent.id, userId: "test-user", toolName, parameters: {} });
+      expect(testCall).toMatchObject({ decision: "allowed", error: { reasonCode: "tool_error" } });
+      expect(await db.select().from(toolInvocations).where(eq(toolInvocations.id, testCall.invocationId)))
+        .toEqual([expect.objectContaining({ status: "failed", errorCode: "tool_error" })]);
+      const testEvents = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, testCall.invocationId));
+      expect(testEvents.some(event => event.eventType === "call_failed")).toBe(true);
+      expect(testEvents.some(event => event.eventType === "call_completed")).toBe(false);
+    } finally {
+      await remote.close();
+    }
   });
 
   it("exposes a named gateway with scoped bearer-token auth and revocation", async () => {
@@ -1658,6 +1725,54 @@ rl.on("line", (line) => {
       else process.env.DATABASE_URL = previousDatabaseUrl;
     }
   });
+
+  it.each(["credentials.authorization", "headers.X-Api-Key", "oauth.access_token"])(
+    "resolves a personal remote credential using its declared %s path",
+    async (configPath) => {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      await createActiveMember(db, company.id, "alice");
+      await db.update(heartbeatRuns).set({ responsibleUserId: "alice" }).where(eq(heartbeatRuns.id, run.id));
+      const secrets = secretService(db);
+      const definition = await secrets.createUserSecretDefinition(company.id, {
+        name: "Personal remote token",
+        key: `personal_remote_${randomUUID().replace(/-/g, "")}`,
+        provider: "local_encrypted",
+      });
+      const secret = await secrets.createCurrentUserSecretValue(company.id, "alice", {
+        definitionId: definition.id, value: "personal-remote-test-token",
+      });
+      const remote = await createRemoteMcpTool(db, company.id);
+      await db.update(toolConnections).set({
+        credentialPolicy: "per_user",
+        credentialRefs: [{ name: configPath, secretId: secret.id, placement: "header", key: "Authorization", prefix: "Bearer " }],
+      }).where(eq(toolConnections.id, remote.connection.id));
+      await secrets.syncUserSecretDeclarationsForTarget(company.id,
+        { targetType: "tool_connection", targetId: remote.connection.id },
+        [{ definitionKey: definition.key, configPath, envKey: "Authorization", versionSelector: "latest", required: true }],
+        { replaceAll: true });
+      await db.insert(connectionGrants).values({
+        companyId: company.id, connectionId: remote.connection.id, kind: "user", subjectUserId: "alice",
+        credentialSecretRefs: [{ secretId: secret.id, configPath, versionSelector: "latest" }],
+        status: "active", isDefault: false,
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const headers: string[] = [];
+      const gateway = createTestToolGatewayService(db, { remoteHttpRequest: async (_url, init) => {
+        headers.push(new Headers(init.headers).get("authorization") ?? "");
+        const body = JSON.parse(String(init.body)) as { id: string };
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id,
+          result: { content: [{ type: "text", text: "retrieved synthetic memory" }] } }),
+        { headers: { "content-type": "application/json" } });
+      } });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find(t => t.connectionId === remote.connection.id)!;
+      expect((await gateway.executeTool({ sessionToken: session.token, tool: tool.name,
+        parameters: { key: "test", value: "synthetic" } })).status).toBe("completed");
+      expect(headers).toEqual(["Bearer personal-remote-test-token"]);
+    },
+  );
 
   it("passes only the selected grant identity to local stdio MCP processes", async () => {
     const company = await createCompany(db);
@@ -5087,6 +5202,43 @@ rl.on("line", (line) => {
       outcome: "failure",
       reasonCode: "runtime_host_capacity_exhausted",
     });
+  });
+
+  it("calls bundled Cognee in public mode and recovers from provider errors without runtime backoff", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const refs = await Promise.all(Object.entries({
+      COGNEE_BASE_URL: "https://fixture.aws.cognee.ai",
+      COGNEE_API_KEY: "fixture-key",
+    }).map(async ([key, value]) => {
+      const secret = await secretService(db).create(company.id, {
+        name: key, key: `${key}_${randomUUID().replace(/-/g, "")}`,
+        provider: "local_encrypted", value,
+      });
+      return { secretId: secret.id, versionSelector: "latest", configPath: `env.${key}`, required: true };
+    }));
+    const local = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "cognee", toolName: "recall",
+      connectionConfig: { templateId: "paperclip.cognee-cloud" }, credentialSecretRefs: refs,
+    });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const bridge = vi.spyOn(cogneeBridge, "callCogneeCloud")
+      .mockRejectedValueOnce(new Error("Cloud temporarily unavailable"))
+      .mockResolvedValue({ content: [{ type: "text", text: "recalled synthetic memory" }],
+        structuredContent: { result: "recalled synthetic memory" }, isError: false });
+    const gateway = createTestToolGatewayService(db, {
+      deploymentMode: "authenticated", deploymentExposure: "public", trustedLocalStdioRuntimeHost: null,
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find(t => t.connectionId === local.connection.id)!;
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name,
+      parameters: { message: "synthetic" } })).rejects.toThrow("Cloud temporarily unavailable");
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name,
+      parameters: { message: "synthetic" } })).resolves.toMatchObject({ status: "completed" });
+    expect(bridge).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, local.connection.id))).toHaveLength(0);
+    bridge.mockRestore();
   });
 
   it("fails closed for hosted public local stdio unless a trusted runtime host is configured", async () => {

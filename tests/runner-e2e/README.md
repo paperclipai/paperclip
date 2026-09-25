@@ -381,6 +381,12 @@ published with permanent campaign dashboards; fixture authors must therefore
 keep credentials and other private data out of every captured UI state. SVG is
 active content and is rejected from the packaged evidence entirely.
 
+The standard task and chat evidence collectors read durable run events through the paginated
+public API, including completion events beyond the first 1,000 rows. It rejects
+missing, repeated, or out-of-order sequence numbers and fails capture after
+100 full pages instead of grading a truncated stream. Original incomplete
+captures remain failed evidence; qualifying a fix requires a new live attempt.
+
 Every completed local campaign also writes
 `tests/runner-e2e/results/<campaign>/dashboard.html`. The self-contained page
 shows the complete profile/environment grid with screenshot thumbnails.
@@ -1001,6 +1007,21 @@ requires the saved content and usable composer to remain visible. Run it with th
 standard `tests/e2e/playwright.config.ts`; no provider or Daytona credentials are
 needed. Browser-support tests separately exercise blank-root/pending-module
 failure evidence, so a future blank page is distinguishable from a loaded task.
+
+The HTML entry also supplies recovery before React mounts: a failed module shows
+`Reload page`; a startup with no rendered root for 30 seconds offers the same
+manual retry. Late successful startup removes the notice. It never reloads
+automatically, and the notice lives outside `#root`, so it cannot satisfy an
+app-readiness assertion. The saved-task regression interrupts the built bundle,
+clicks retry, and verifies the original task, persisted comment, and composer.
+`pnpm test:e2e:runner:browser-support` also tests failed and stalled imports,
+evaluation errors, service-worker-controlled retry, repeated offline retries, and
+cleanup after startup. The worker returns a static, uncached HTML retry screen
+when a navigation fails offline; it never embeds or caches task content.
+
+These fault-injection tests prove recovery from interrupted startup. They do not
+establish the cause of the historical intermittent Vite module-graph stall;
+ordinary 304 responses and successful reruns alone are not evidence of that cause.
 
 ### Grok branch qualification on EC2
 

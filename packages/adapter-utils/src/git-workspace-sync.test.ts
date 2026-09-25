@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -184,6 +184,43 @@ describe("git workspace sync", () => {
       expect(await git(cloneDir, ["branch", "--show-current"])).toBe("main");
       await expect(readFile(path.join(cloneDir, "tracked.txt"), "utf8")).resolves.toBe("base\n");
     });
+  });
+
+  it.skipIf(process.platform === "win32")("preserves nested repository symlinks after the temporary clone is removed", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-nested-links-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const nested = await createRepo(path.join(repo, ".paperclip-repositories"));
+    await writeFile(path.join(repo, ".git/info/exclude"), ".paperclip-repositories/\n");
+    await mkdir(path.join(nested, "skills", "demo"), { recursive: true });
+    await mkdir(path.join(nested, ".claude", "skills"), { recursive: true });
+    await writeFile(path.join(nested, "skills", "demo", "SKILL.md"), "skill content\n");
+    const links = [
+      [".claude/skills/demo", "../../skills/demo"],
+      ["skill.md", "skills/demo/SKILL.md"],
+      ["skill-alias", ".claude/skills/demo"],
+      ["future", "future.txt"],
+    ] as const;
+    for (const [name, target] of links) await symlink(target, path.join(nested, name));
+    await git(nested, ["add", "."]);
+    await git(nested, ["commit", "-m", "add repository links"]);
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    expect(snapshot?.repositories).toHaveLength(1);
+
+    await withShallowGitWorkspaceClone({ localDir: repo, snapshot: snapshot! }, async (cloneDir) => {
+      // The nested clone's callback has already returned and deleted its temp
+      // directory. Relative links must keep their repository meaning here.
+      const copied = path.join(cloneDir, ".paperclip-repositories", "repo");
+      for (const [name, target] of links) {
+        expect((await lstat(path.join(copied, name))).isSymbolicLink()).toBe(true);
+        expect(await readlink(path.join(copied, name))).toBe(target);
+      }
+      expect(await readFile(path.join(copied, ".claude/skills/demo/SKILL.md"), "utf8")).toBe("skill content\n");
+      expect(await readFile(path.join(copied, "skill-alias/SKILL.md"), "utf8")).toBe("skill content\n");
+      await expect(stat(path.join(copied, "future"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await git(copied, ["status", "--porcelain"])).toBe("");
+    });
+    expect(await git(nested, ["status", "--porcelain"])).toBe("");
   });
 
   it("copies the workspace origin remote into the shallow clone", async () => {

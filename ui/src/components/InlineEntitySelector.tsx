@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
@@ -33,6 +33,8 @@ interface InlineEntitySelectorProps {
   triggerTestId?: string;
   /** Optional slot name used by consuming surfaces for scoped presentation rules. */
   triggerDataSlot?: string;
+  /** Runtime geometry variables for the portalled mobile picker sheet. */
+  contentStyle?: CSSProperties;
 }
 
 const EMPTY_RECENT_OPTION_IDS: string[] = [];
@@ -57,6 +59,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       disabled = false,
       triggerTestId,
       triggerDataSlot,
+      contentStyle,
     },
     ref,
   ) {
@@ -148,6 +151,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           collisionPadding={16}
           className="w-(--sz-calc-6) p-1"
           disablePortal={disablePortal}
+          style={contentStyle}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             inputRef.current?.focus();
@@ -203,7 +207,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
               }
             }}
           />
-          <div className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y">
+          <div data-mobile-entity-picker-list="" className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y">
             {filteredOptions.length === 0 ? (
               <p className="px-2 py-2 text-xs text-muted-foreground">{emptyMessage}</p>
             ) : (

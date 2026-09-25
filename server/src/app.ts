@@ -5,6 +5,7 @@ import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
 import { emailRoutes, emailWebhookRoutes } from "./routes/email.js";
 import { toolActionDeliveryService } from "./services/tool-action-delivery.js";
+import { registerAssignedMcpGateway } from "./services/native-runtime/assigned-mcp-tools.js";
 import express, { Router, type Request as ExpressRequest } from "express";
 import {
   createServer as createHttpServer,
@@ -843,6 +844,7 @@ export async function createApp(
   }));
   api.use(slackToolRoutes(db, opts.authPublicBaseUrl));
   app.locals.toolGateway = toolGateway;
+  registerAssignedMcpGateway(db, toolGateway);
   app.locals.toolActionDeliveries = toolActionDeliveries;
   app.use(mcpGatewayProtocolRoutes(toolGateway));
   api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost }));

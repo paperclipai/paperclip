@@ -21,6 +21,9 @@ definitions that do not run from `master`.
 ## Outputs and reuse
 
 The image uses `ghcr.io/paperclipai/paperclip:sha-<FULL_SHA>-cloud`.
+This explicit operator path is retained after retirement of the recurring public
+`-cloud` publisher. Existing images remain reusable; missing images still build
+the `cloud` Dockerfile target. It is separate from private image composition.
 Full-SHA tags keep separate commits with the same short prefix isolated. Normal
 release images retain their existing short-tag convention. Build arguments carry the full commit SHA.
 Preview builds do not import or overwrite the shared release cache or release
@@ -51,26 +54,18 @@ version 1, request ID, SHA, stage `build`, and status `ready`. It expires after
 
 ### Migrator publication on merge
 
-The `Cloud artifacts` workflow starts a `cloud-migrator` dispatch of `release.yml`
-for every push to `master`. This dispatch builds and publishes only the exact-source
-`@paperclipai/shared` and `@paperclipai/db` preview packages. It starts independently
-of the full npm release and does not wait for the Docker image. The normal Docker
-workflow supplies the image separately.
+`cloud-migrator-artifacts.yml` publishes a signed exact-source DB/shared bundle
+on each canonical master push, independently of image publication and npm.
+See [Direct cloud migrator artifacts](#direct-cloud-migrator-artifacts) below.
+Downstream deployment tooling must verify source, image, and migrator separately.
 
-The run title is `Cloud migrator <FULL_SHA>`. A successful `Cloud artifacts`
-dispatch job only confirms that GitHub accepted the request. Inspect the matching
-`release.yml` run to confirm publication completed. This path does not produce a
-`stack-deploy-result` or certify source-test success or deployment readiness.
-Cloud must still verify all deployment prerequisites.
-
-To retry one commit, dispatch `release.yml` on `master` with `channel=cloud-migrator`,
-the full SHA as `source_ref`, a new UUID v4 as `request_id`, and `dry_run=false`.
-`preview_migrator` is not required for this channel. Existing packages are verified
-and reused. Preview and migrator-only runs use separate workflow concurrency
-groups. Only their package publication jobs share a group for the same SHA, so
-they cannot publish the same version concurrently and the migrator does not wait
-for a preview's image build. Different SHAs publish in separate groups; the full
-release keeps its existing group.
+The manual npm compatibility path remains available: dispatch `release.yml` on
+`master` with `channel=cloud-migrator`, the full SHA as `source_ref`, a new UUID v4
+as `request_id`, and `dry_run=false`. `preview_migrator` is not required for this
+channel. Existing packages are verified and reused. Preview and migrator-only
+runs use separate workflow concurrency groups. Only their npm publication jobs
+share a group for the same SHA. This prevents duplicate publication without
+making the migrator wait for a preview image. Different SHAs remain independent.
 
 ### Publisher identity
 
@@ -170,12 +165,12 @@ The deploy policies are checked in under `.github/cloud-migrator-deploy/`:
 
 There is no lifecycle expiry on this prefix. Keep referenced artifacts for
 rollback; deleting them can prevent a fresh migrator install for an old release.
-Cloud readiness consumes the signed direct bundle after its exact-source
-publisher succeeds. It retains source verification, image identity, and the
-cloud runner's integrity and migration compatibility checks. The cloud direct
-artifact switch must be enabled before adopting this gate. Automatic npm-only
-migrator dispatch is removed; explicit npm previews and manual migrator runs
-remain available. See `doc/cloud-build-readiness.md` for coordinated rollback.
+Downstream deployment consumers verify the signed direct bundle after its
+exact-source publisher succeeds. Source verification, image identity, archive
+integrity and migration compatibility remain required. The retired public
+`Cloud deployable v1` gate no longer waits for this bundle. Explicit npm previews
+and manual migrator runs remain available for compatible consumers and rollback.
+See `doc/cloud-build-readiness.md` for the source proof and retirement boundary.
 
 Local verification:
 

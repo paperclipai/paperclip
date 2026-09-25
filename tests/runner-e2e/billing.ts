@@ -40,6 +40,14 @@ export interface CampaignBillingSummary {
   testsWithCompleteBilling: number;
 }
 
+/** Render observed subtotals without presenting absent measurements as zero. */
+export function billingCoverageLabel(value: string, covered: number, total: number): string {
+  if (!Number.isInteger(covered) || !Number.isInteger(total) || covered <= 0 || total <= 0 || covered > total) {
+    return "Unavailable";
+  }
+  return covered < total ? `${value} (partial: ${covered}/${total} runs)` : value;
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

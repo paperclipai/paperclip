@@ -345,3 +345,13 @@ The code paths and catalog definitions are complete. The unchecked work is delib
 - Provider documentation and working live OAuth metadata are both required for production verification.
 - Preview and early-access providers retain warnings until their live proof passes.
 - This program covers hosted remote MCP connections and credential custody. Generic REST execution and Paperclip-ID-managed shared OAuth registrations remain separate follow-up programs.
+
+### Fireflies addition — 2026-09-23
+
+Fireflies now uses the existing hosted MCP connection flow at
+`https://api.fireflies.ai/mcp`: DCR OAuth with PKCE and scopes `email profile`,
+or a vaulted bearer API key. The public issuer advertises registration and
+refresh; no client registration was performed during research. Its optional
+V2 `meeting.summarized` webhook uses a separately signed routine trigger.
+See [Fireflies setup and evidence](../connections/FIREFLIES.md) for ownership,
+public HTTPS requirements, artwork provenance, and live-proof boundaries.

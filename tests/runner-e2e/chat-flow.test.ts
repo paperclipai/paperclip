@@ -224,20 +224,33 @@ describe("chat acceptance contracts", () => {
     );
   });
   it("retains reset events without requesting a provider log, and does not hide missing real logs", async () => {
-    const get = vi.fn().mockResolvedValue([{ type: "session_reset" }]);
+    const get = vi.fn().mockResolvedValue([{ seq: 1, type: "session_reset" }]);
     const reset = { ...run, resultJson: { conversationReset: true } };
     await expect(collectChatRunEvidence({ get }, reset)).resolves.toEqual({
       runId: run.id,
       log: null,
-      events: [{ type: "session_reset" }],
+      events: [{ seq: 1, type: "session_reset" }],
     });
     expect(get.mock.calls).toEqual([
-      [`/api/heartbeat-runs/${run.id}/events?limit=1000`],
+      [`/api/heartbeat-runs/${run.id}/events?afterSeq=0&limit=1000`],
     ]);
     get.mockRejectedValue(new Error("Run log not found"));
     await expect(collectChatRunEvidence({ get }, run)).rejects.toThrow(
       "Run log not found",
     );
+  });
+  it("retains the tail of a long chat run for invariant checks", async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, i) => ({ seq: i + 1, eventType: "item.delta" }));
+    const tail = { seq: 1001, eventType: "run.terminal" };
+    const get = vi.fn().mockResolvedValueOnce({ content: "fixture log" })
+      .mockResolvedValueOnce(firstPage).mockResolvedValueOnce([tail]);
+    const evidence = await collectChatRunEvidence({ get }, run);
+    expect(evidence.events).toEqual([...firstPage, tail]);
+    expect(get.mock.calls).toEqual([
+      [`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`],
+      [`/api/heartbeat-runs/${run.id}/events?afterSeq=0&limit=1000`],
+      [`/api/heartbeat-runs/${run.id}/events?afterSeq=1000&limit=1000`],
+    ]);
   });
   it("retains events for an unstarted dependency-blocked wake without asking for a nonexistent log", async () => {
     const get = vi.fn().mockResolvedValue([]);

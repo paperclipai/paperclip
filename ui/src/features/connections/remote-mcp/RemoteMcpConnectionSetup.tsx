@@ -25,7 +25,8 @@ function FieldHelp({ label, children }: { label: string; children: ReactNode }) 
 
 /** Controlled presentation shared by provider setup, configuration imports and review stories.
  * Authentication, persistence and calls belong to the controller, never these views. */
-export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, connectionId, fixedGrantKind, lockedAgentId, host = "page", authorizationUrl }: {
+export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agents, connectionId, fixedGrantKind, lockedAgentId, host = "page", authorizationUrl, upstreamServiceName }: {
+  upstreamServiceName?: string;
   host?: "page" | "dialog";
   lockedAgentId?: string;
   authorizationUrl?: string;
@@ -60,10 +61,11 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
 
   return <div className={host === "dialog" ? "min-w-0 text-foreground" : "mx-auto max-w-6xl p-4 text-foreground sm:p-8"} data-remote-mcp-provider={provider.id}>
     <StepHeader headingRef={heading} appIdentity={{ name: provider.name, logoUrl: null }}
-      title={s.step === "draft" ? "Continue your setup" : s.setupComplete ? s.step === "access" ? "Who can use this connection" : s.step === "connect" ? `Reconnect ${provider.name}` : provider.name : undefined}
+      title={upstreamServiceName ? `Connect ${upstreamServiceName} through ${provider.name}` : s.step === "draft" ? "Continue your setup" : s.setupComplete ? s.step === "access" ? "Who can use this connection" : s.step === "connect" ? `Reconnect ${provider.name}` : provider.name : undefined}
       subtitle={currentStep >= 0 && !s.setupComplete ? `Step ${currentStep + 1} of 2` : s.step === "draft" ? `Your ${provider.name} setup is ready to resume.` : s.step === "permissions" ? `Connected${s.identity ? ` as ${s.identity}` : ""} · ${s.tools.length} actions available` : `Manage this ${provider.name} connection.`}
       step={currentStep >= 0 && !s.setupComplete ? "access" : "gallery"} activeIndex={currentStep} labels={["Access", "Connect"]} onCancel={busy || s.step === "management" || s.step === "permissions" || s.step === "draft" ? undefined : a.saveExit} />
     <main className="space-y-6">
+        {upstreamServiceName && <InlineBanner compact>{provider.name} is an external service that handles the connection and requests to {upstreamServiceName}. After connecting, the agent will verify the app and guide you through any additional authorization.</InlineBanner>}
         {s.notice && <p role="status" className="text-sm text-muted-foreground">{s.notice}</p>}
 
         {s.step === "access" && <AccessStepContent agents={agents} lockedAgentId={lockedAgentId} authKind="oauth" grantKinds={fixedGrantKind ? [fixedGrantKind] : undefined} grantKind={s.grantKind} setGrantKind={(grantKind) => { if (grantKind !== "agent") change({ grantKind }); }}

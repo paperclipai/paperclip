@@ -127,6 +127,7 @@ const durableRunnerState = (
 });
 
 const state = vi.hoisted(() => ({
+  createAssignedMcpTools: vi.fn(),
   execute: vi.fn(),
   cleanup: vi.fn(),
   retireCleanup: vi.fn(),
@@ -219,6 +220,11 @@ vi.mock("./paperclip-runner-tool-authority.js", () => ({
   },
 }));
 
+vi.mock("./assigned-mcp-tools.js", () => ({
+  createAssignedMcpTools: state.createAssignedMcpTools,
+  getAssignedMcpGateway: () => ({}),
+}));
+
 vi.mock("./native-runner-file-handoff.js", () => ({
   stageNativeRunnerWakeAttachments: state.stageNativeRunnerWakeAttachments,
   renderNativeRunnerStagedAttachmentPrompt:
@@ -304,6 +310,7 @@ import {
 } from "./native-session-executor.js";
 
 beforeEach(() => {
+  state.createAssignedMcpTools.mockReset();
   state.resolveRunnerBinary.mockReset().mockReturnValue("/tmp/paperclip-runnerd");
   state.resolveCurrentWakeCommentsBinding.mockReset().mockResolvedValue(null);
   state.assertCurrentWakeCommentsRead.mockReset().mockResolvedValue(undefined);
@@ -7997,6 +8004,52 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
+  it.each([
+    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned" },
+    { PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3217/mcp/gateways/test" },
+    { PAPERCLIP_NATIVE_MCP_TOKEN: "private-run-token" },
+  ])("rejects partial remote assigned MCP bindings", async (runnerEnvironment) => {
+    await expect(createRunnerdBackend({
+      db: leaseDb(execution), execution, runnerInstanceId: "runner-partial-mcp", runnerEnvironment,
+      runnerExecutionTarget: {
+        kind: "remote", transport: "sandbox", providerKey: "daytona",
+        leaseId: "lease-partial-mcp", remoteCwd: "/home/daytona/paperclip-workspace",
+        runner: { execute: vi.fn() },
+      } as never,
+    })).rejects.toThrow("assigned native MCP launch binding is incomplete");
+    expect(state.createAssignedMcpTools).not.toHaveBeenCalled();
+  });
+
+  it("keeps assigned MCP credentials on the control plane for remote Codex", async () => {
+    const assignedMcpTools = { definitions: () => [], has: () => false, execute: vi.fn() };
+    state.createAssignedMcpTools.mockResolvedValueOnce(assignedMcpTools);
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    state.toolAuthorityDefinitions.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution), execution, runnerInstanceId: "runner-assigned-mcp",
+      runnerEnvironment: {
+        PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
+        PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3217/mcp/gateways/assigned-test",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "private-run-token",
+      },
+      runnerExecutionTarget: {
+        kind: "remote", transport: "sandbox", providerKey: "daytona",
+        leaseId: "lease-assigned-mcp", remoteCwd: "/home/daytona/paperclip-workspace",
+        runner: { execute: vi.fn() },
+      } as never,
+    });
+    expect(state.createAssignedMcpTools).toHaveBeenCalledWith(expect.objectContaining({
+      gatewayPublicId: "assigned-test", bearerToken: "private-run-token",
+    }));
+    expect(state.toolAuthorityDefinitions).toHaveBeenCalledWith(expect.objectContaining({ assignedMcpTools }));
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls[0]![0] as { environment: NodeJS.ProcessEnv };
+    expect(options.environment.PAPERCLIP_NATIVE_MCP_NAME).toBeUndefined();
+    expect(options.environment.PAPERCLIP_NATIVE_MCP_URL).toBeUndefined();
+    expect(options.environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
+  });
+
   it("makes remote authority archival idempotent and returns the archived state", async () => {
     const remoteExecute = vi.fn();
     const remoteTarget = {
@@ -10396,7 +10449,7 @@ describe("runnerd provider runtime wiring", () => {
   });
 
   it.each([
-    ...["current", "stale", "missing", "retained", "retained-mismatch", "retained-error", "retained-timeout", "retained-explicit"]
+    ...["current", "preinstalled-exact", "preinstalled-mismatch", "preinstalled-error", "preinstalled-timeout", "stale", "missing", "retained", "retained-mismatch", "retained-error", "retained-timeout", "retained-explicit"]
       .map((image) => ({ image, version: "0.156.0", compatible: true })),
     ...["0.149.0", "0.149.1", "0.153.4", "0.156.1"]
       .map((version) => ({ image: "current", version, compatible: true })),
@@ -10405,11 +10458,11 @@ describe("runnerd provider runtime wiring", () => {
   ])("uses shared Codex and the server-owned replacement artifact (image=$image, Codex=$version)", async ({ image, version, compatible }) => {
     const retained = image.startsWith("retained");
     const exactRetained = image === "retained" || image === "retained-explicit";
-    const needsReplacement = image !== "current" && !exactRetained;
+    const needsReplacement = image !== "current" && image !== "preinstalled-exact" && !exactRetained;
     // The mocked remote executes metadata probes; artifact staging only needs bytes.
     // Keep this regression independent of a locally compiled Rust runner binary.
     const controllerArtifact = join(isolatedStateDirectory, "paperclip-runnerd");
-    if (needsReplacement || retained) {
+    if (needsReplacement || retained || image === "preinstalled-exact") {
       await writeFile(controllerArtifact, "fixture runner artifact");
       state.resolveRunnerBinary.mockReturnValueOnce(controllerArtifact);
     }
@@ -10420,10 +10473,10 @@ describe("runnerd provider runtime wiring", () => {
         let stdout = "";
         const script = command.args?.[1] ?? "";
         if (script.includes('sha256sum "$1"')) {
-          if (image === "retained-error") throw new Error("checksum unavailable");
+          if (image.endsWith("-error")) throw new Error("checksum unavailable");
           return {
-            exitCode: 0, signal: null, timedOut: image === "retained-timeout", stderr: "",
-            stdout: `${createHash("sha256").update(image === "retained-mismatch" ? "stale artifact" : "fixture runner artifact").digest("hex")}  ${command.args?.[3]}\n`,
+            exitCode: 0, signal: null, timedOut: image.endsWith("-timeout"), stderr: "",
+            stdout: `${createHash("sha256").update(image.endsWith("-mismatch") ? "stale artifact" : "fixture runner artifact").digest("hex")}  ${command.args?.[3]}\n`,
           };
         } else if (command.args?.[0] === "--build-metadata") {
           stdout = JSON.stringify({

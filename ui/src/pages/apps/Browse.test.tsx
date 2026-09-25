@@ -200,23 +200,33 @@ describe("Connectors landing page", () => {
     expect(container.textContent).not.toContain("Paused");
   });
 
-  it("hides cached MCP aggregators until enabled and preserves saved MCP connections", async () => {
-    const providers = ["zapier", "arcade", "composio", "executor"];
+  it("hides cached memory connectors until enabled and preserves saved MCP connections", async () => {
+    const providers = ["mem0", "zep", "supermemory", "cognee", "honcho"];
     listGalleryMock.mockResolvedValue({ apps: [...providers, "notion"].map(getAppStoreDefinition) });
     const client = await renderBrowse();
     for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
     expect(container.querySelector('[data-app-slug="notion"]')).not.toBeNull();
-    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableMcpAggregators: true }); });
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableMemoryConnectors: true }); });
     await flushReact();
     for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
     await act(() => {
-      client.setQueryData(queryKeys.tools.connections("company-1"), { connections: [connection({ id: "saved", applicationId: "saved-app", config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp" }, transport: "mcp_remote" })] });
-      client.setQueryData(queryKeys.tools.applications("company-1"), { applications: [application({ id: "saved-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
-      client.setQueryData(queryKeys.instance.experimentalSettings, { enableMcpAggregators: false });
+      client.setQueryData(queryKeys.tools.connections("company-1"), { connections: [connection({ id: "saved", applicationId: "saved-app", config: { sourceTemplateKey: "mem0", connectionMethodKey: "mcp" }, transport: "mcp_remote" })] });
+      client.setQueryData(queryKeys.tools.applications("company-1"), { applications: [application({ id: "saved-app", name: "Mem0", metadata: { sourceTemplateKey: "mem0" } })] });
+      client.setQueryData(queryKeys.instance.experimentalSettings, { enableMemoryConnectors: false });
     });
     await flushReact();
-    expect(container.textContent).toContain("Composio");
-    for (const slug of ["zapier", "arcade", "executor"]) expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
+    expect(container.textContent).toContain("Mem0");
+    for (const slug of ["zep", "supermemory", "cognee", "honcho"]) expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
+  });
+
+  it("shows all MCP aggregators by default and ignores cached legacy opt-outs", async () => {
+    const providers = ["zapier", "arcade", "composio", "executor"];
+    listGalleryMock.mockResolvedValue({ apps: [...providers, "notion"].map(getAppStoreDefinition) });
+    const client = await renderBrowse();
+    for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableMcpAggregators: false }); });
+    await flushReact();
+    for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
   });
 
   it("defaults to tools-only GitHub and hides chat-only catalog and existing chat accounts", async () => {

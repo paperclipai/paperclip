@@ -313,6 +313,66 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       return { runId, wakeupRequestId, contextSnapshot };
     }
 
+    it("requires both prior issue cleanup and expired startup cooldown before claiming the same queued run", async () => {
+      const seat = await seedFailedSeat(new Date(Date.now() - 60 * 60_000));
+      const queued = await seedQueuedWork(seat.companyId, seat.agentId);
+      const issueId = queued.contextSnapshot.issueId;
+      await db.update(issues).set({ executionRunId: seat.runId }).where(eq(issues.id, issueId));
+      const [lease] = await db.insert(environmentLeases).values({
+        companyId: seat.companyId, issueId, heartbeatRunId: seat.runId,
+        status: "pending_cleanup", cleanupStatus: "failed",
+      }).returning();
+      const [beforeDispatch] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.runId));
+      const [beforeWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queued.wakeupRequestId));
+
+      // An expired agent cooldown cannot override the prior issue owner's
+      // durable cleanup obligation, even when no local executor remains.
+      await heartbeat.resumeQueuedRuns();
+      expect(await heartbeat.getRun(queued.runId)).toMatchObject({ status: "queued", startedAt: null });
+      expect(execute).not.toHaveBeenCalled();
+      const [owned] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(owned.executionRunId).toBe(seat.runId);
+
+      // Conversely, a cleanup receipt cannot override the agent's persisted
+      // provider deadline. Deferral changes neither the run nor its wake.
+      await db.update(heartbeatRuns).set({ resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        retryNotBefore: new Date(Date.now() + 60 * 60_000).toISOString(),
+      } }).where(eq(heartbeatRuns.id, seat.runId));
+      await db.update(environmentLeases).set({
+        status: "released", cleanupStatus: "success", releasedAt: new Date(),
+      }).where(eq(environmentLeases.id, lease!.id));
+      await heartbeat.resumeQueuedRuns();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.runId))).toEqual([beforeDispatch]);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queued.wakeupRequestId))).toEqual([beforeWake]);
+      expect(execute).not.toHaveBeenCalled();
+
+      await db.update(heartbeatRuns).set({ resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      } }).where(eq(heartbeatRuns.id, seat.runId));
+      let release!: () => void;
+      const executing = new Promise<void>((resolve) => { release = resolve; });
+      execute.mockImplementation(async (context) => {
+        await executing;
+        return completeTask(context);
+      });
+      const secondService = heartbeatService(db);
+      try {
+        await Promise.all([heartbeat.resumeQueuedRuns(), secondService.resumeQueuedRuns()]);
+        await expect.poll(() => execute.mock.calls.length).toBe(1);
+        const [claimed] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(claimed.executionRunId).toBe(queued.runId);
+        expect(await heartbeat.getRun(queued.runId)).toMatchObject({ status: "running" });
+        const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queued.wakeupRequestId));
+        expect(wake).toMatchObject({ runId: queued.runId, status: "claimed", payload: queued.contextSnapshot });
+      } finally {
+        release();
+        await Promise.all([heartbeat.drainActiveRunExecutions(), secondService.drainActiveRunExecutions()]);
+      }
+      expect(await heartbeat.getRun(queued.runId)).toMatchObject({ status: "succeeded" });
+      expect(execute).toHaveBeenCalledTimes(1);
+    }, 30_000);
+
     it("defers existing queued work and fresh task wakes without replacing their context or retry identity", async () => {
       const seat = await seedFailedSeat();
       const queued = await seedQueuedWork(seat.companyId, seat.agentId);

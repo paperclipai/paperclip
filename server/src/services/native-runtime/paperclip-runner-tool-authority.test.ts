@@ -596,6 +596,34 @@ describe("PaperclipRunnerToolAuthority", () => {
     ).resolves.toMatchObject({ approval: { id: approvalId }, tasks: [] });
   });
 
+  it("relays assigned MCP calls only while the native run still owns its task", async () => {
+    const tool = { name: "app_mem0_recall", description: "Recall memory", inputSchema: { type: "object" } };
+    const execute = vi.fn().mockResolvedValue({ content: "synthetic memory" });
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId, runId,
+      assignedMcpTools: { definitions: () => [tool], has: (name) => name === tool.name, execute },
+    });
+    expect(authority.definitions()).toContainEqual(tool);
+    const call = { tool: tool.name, callId: "assigned-mcp", arguments: { query: "compass" } };
+    await expect(authority.execute(call)).resolves.toEqual({ content: "synthetic memory" });
+    expect(execute).toHaveBeenCalledWith(call, "standard");
+    await db.update(issues).set({ workMode: "ask" }).where(eq(issues.id, issueId));
+    try {
+      await authority.execute(call);
+      expect(execute).toHaveBeenLastCalledWith(call, "ask");
+    } finally {
+      await db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, issueId));
+    }
+    execute.mockClear();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(authority.execute(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
   it("does not advertise delegation tools during pre-acceptance planning", () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,

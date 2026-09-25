@@ -5,6 +5,7 @@ import {
   type ReportExecution,
 } from "./report-catalog.js";
 import type {
+  RunnerE2EBillingSummary,
   RunnerE2ECampaign,
   RunnerE2EHistoryIndex,
   RunnerE2EResult,
@@ -12,6 +13,7 @@ import type {
 } from "./types.js";
 import {
   aggregateCampaignBilling,
+  billingCoverageLabel,
   summarizeExecutionBilling,
 } from "./billing.js";
 
@@ -57,8 +59,13 @@ function durationLabel(durationMs: number) {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-function tokenLabel(value: number) {
-  return new Intl.NumberFormat("en-US").format(value);
+function tokenLabel(value: number, llm?: RunnerE2EBillingSummary["llm"]) {
+  const formatted = new Intl.NumberFormat("en-US").format(value);
+  return llm ? billingCoverageLabel(formatted, llm.runsWithTokenUsage, llm.runCount) : formatted;
+}
+
+function llmCostLabel(value: number, llm: RunnerE2EBillingSummary["llm"]) {
+  return billingCoverageLabel(usdLabel(value), llm.runsWithReportedCost, llm.runCount);
 }
 
 function usdLabel(value: number | null) {
@@ -264,7 +271,7 @@ function renderCase(
             data-gallery-runtime="${html(entry?.result.runtimeMode ?? execution.profile.expectedRuntimeMode)}"
             data-gallery-status="${html(label)}"
             data-gallery-duration="${html(entry ? durationLabel(entry.result.durationMs) : "Not run")}"
-            data-gallery-tokens="${html(billing ? `${tokenLabel(billing.llm.inputTokens)} in · ${tokenLabel(billing.llm.outputTokens)} out` : "Unavailable")}"
+            data-gallery-tokens="${html(billing ? `${tokenLabel(billing.llm.inputTokens, billing.llm)} in · ${tokenLabel(billing.llm.outputTokens, billing.llm)} out` : "Unavailable")}"
             data-gallery-matchers="${html(matcherResults.length > 0 ? `${passedMatchers}/${matcherResults.length} matchers passed${notReached ? ` · ${notReached} not reached` : ""}` : "No matchers recorded")}"
             aria-label="Open ${html(item.label)} for ${html(execution.id)} in gallery"
           >
@@ -276,8 +283,8 @@ function renderCase(
     : "";
   const billingStrip = billing
     ? `<div class="billing-strip" aria-label="Billing for ${html(execution.id)}">
-        <div><span>Tokens</span><strong>${html(tokenLabel(billing.llm.inputTokens))} in · ${html(tokenLabel(billing.llm.outputTokens))} out</strong><small>${html(tokenLabel(billing.llm.cachedInputTokens))} cached · ${billing.llm.runsWithTokenUsage}/${billing.llm.runCount} runs covered</small></div>
-        <div><span>LLM spend</span><strong>${billing.llm.runsWithReportedCost > 0 ? html(usdLabel(billing.reportedCostUsd)) : html(billing.llm.costStatus)}</strong><small>${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs provider-priced</small></div>
+        <div><span>Tokens</span><strong>${html(tokenLabel(billing.llm.inputTokens, billing.llm))} in · ${html(tokenLabel(billing.llm.outputTokens, billing.llm))} out</strong><small>${html(tokenLabel(billing.llm.cachedInputTokens, billing.llm))} cached · ${billing.llm.runsWithTokenUsage}/${billing.llm.runCount} runs covered</small></div>
+        <div><span>LLM spend</span><strong>${html(llmCostLabel(billing.reportedCostUsd, billing.llm))}</strong><small>${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs provider-priced</small></div>
         <div><span>Execution</span><strong>${billing.runtime.estimatedListCostUsd === undefined ? html(billing.runtime.costStatus === "not_metered" ? "Local · not metered" : "Cost unavailable") : `${html(usdLabel(billing.runtime.estimatedListCostUsd))} est.`}</strong><small>${html(durationLabel(billing.runtime.agentRunDurationMs))} agent${billing.runtime.leaseDurationMs === null ? "" : ` · ${html(durationLabel(billing.runtime.leaseDurationMs))} lease`}</small></div>
       </div>`
     : "";
@@ -516,8 +523,8 @@ function renderHistory(history: RunnerE2EHistoryIndex | undefined) {
         <td><a href="${html(campaign.publicUrl)}">${html(campaign.campaignId)}</a><small>${html(new Date(campaign.generatedAt).toLocaleString("en-US", { timeZone: "UTC" }))} UTC</small></td>
         <td>${sha ? `<code>${html(sha.slice(0, 10))}</code>` : "Unknown"}<small>${html(campaign.source.ref ?? "unknown ref")}</small></td>
         <td><span class="status history-${status}">${status}</span><small>${campaign.passed}/${campaign.selected} passed${campaign.incomplete ? ` · ${campaign.incomplete} incomplete` : ""} · ${campaign.complete ? "complete" : "partial"}</small></td>
-        <td>${html(tokenLabel(campaign.billing.llm.inputTokens))} / ${html(tokenLabel(campaign.billing.llm.outputTokens))}<small>input / output · ${html(tokenLabel(campaign.billing.llm.cachedInputTokens))} cached</small></td>
-        <td>${html(usdLabel(campaign.billing.reportedLlmCostUsd))}<small>${html(usdLabel(campaign.billing.estimatedRuntimeCostUsd))} runtime estimate</small></td>
+        <td>${html(tokenLabel(campaign.billing.llm.inputTokens, campaign.billing.llm))} / ${html(tokenLabel(campaign.billing.llm.outputTokens, campaign.billing.llm))}<small>input / output · ${html(tokenLabel(campaign.billing.llm.cachedInputTokens, campaign.billing.llm))} cached</small></td>
+        <td>${html(llmCostLabel(campaign.billing.reportedLlmCostUsd, campaign.billing.llm))}<small>${html(usdLabel(campaign.billing.estimatedRuntimeCostUsd))} runtime estimate</small></td>
         <td>${html(durationLabel(campaign.billing.agentRunDurationMs))}<small>${html(durationLabel(campaign.billing.leaseDurationMs))} lease</small></td>
       </tr>`;
     })
@@ -607,8 +614,8 @@ function renderSuiteMatrix(input: {
   const summaryHtml = summary
     ? `<div class="suite-summary" aria-label="${html(suite.label)} current campaign summary">
         <div><span>Pass rate</span><strong>${summary.selected > 0 ? ((summary.passed / summary.selected) * 100).toFixed(1) : "0.0"}%</strong><small>${summary.passed}/${summary.selected} passed${summary.incomplete ? ` · ${summary.incomplete} incomplete` : ""}</small></div>
-        <div><span>Tokens</span><strong>${html(tokenLabel(summary.billing.llm.totalTokens))}</strong><small>${html(tokenLabel(summary.billing.llm.inputTokens))} input · ${html(tokenLabel(summary.billing.llm.outputTokens))} output</small></div>
-        <div><span>Cost</span><strong>${html(usdLabel(summary.billing.observedAndEstimatedCostUsd))}</strong><small>reported LLM + runtime${summary.billing.judge ? " + judge" : ""} estimate</small></div>
+        <div><span>Tokens</span><strong>${html(tokenLabel(summary.billing.llm.totalTokens, summary.billing.llm))}</strong><small>${html(tokenLabel(summary.billing.llm.inputTokens, summary.billing.llm))} input · ${html(tokenLabel(summary.billing.llm.outputTokens, summary.billing.llm))} output</small></div>
+        <div><span>Known spend</span><strong>${html(summary.billing.llm.runsWithReportedCost > 0 || summary.billing.estimatedRuntimeCostUsd > 0 || summary.billing.judge ? `${usdLabel(summary.billing.observedAndEstimatedCostUsd)}${summary.billing.testsWithCompleteBilling < summary.billing.testCount ? " (partial)" : ""}` : "Unavailable")}</strong><small>reported LLM + runtime${summary.billing.judge ? " + judge" : ""} estimate</small></div>
         <div><span>Agent time</span><strong>${html(durationLabel(summary.billing.agentRunDurationMs))}</strong><small>${html(durationLabel(summary.billing.leaseDurationMs))} lease</small></div>
         <div><span>Execution</span><strong>${summary.executed}/${summary.selected}</strong><small>${summary.retries} retries · cleanup ${summary.cleanupPassed ? "passed" : "failed"}</small></div>
       </div>`
@@ -1118,10 +1125,10 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </header>
     ${publicSummaryImageHref ? `<figure class="public-summary"><img src="${html(publicSummaryImageHref)}" alt="Runner E2E campaign status summary"></figure>` : ""}
     <section class="billing-overview" aria-label="Campaign billing summary">
-      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens))}</strong><span>Input tokens</span></div>
-      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens))}</strong><span>Output tokens</span></div>
-      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.cachedInputTokens))}</strong><span>Cached tokens</span></div>
-      <div class="billing-metric"><strong>${html(usdLabel(campaignBilling.reportedLlmCostUsd))}</strong><span>LLM reported subtotal</span></div>
+      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens, campaignBilling.llm))}</strong><span>Input tokens</span></div>
+      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens, campaignBilling.llm))}</strong><span>Output tokens</span></div>
+      <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.cachedInputTokens, campaignBilling.llm))}</strong><span>Cached tokens</span></div>
+      <div class="billing-metric"><strong>${html(llmCostLabel(campaignBilling.reportedLlmCostUsd, campaignBilling.llm))}</strong><span>LLM reported subtotal</span></div>
       <div class="billing-metric"><strong>${html(usdLabel(campaignBilling.estimatedRuntimeCostUsd))}</strong><span>Daytona list estimate</span></div>
       ${campaignBilling.judge ? `<div class="billing-metric"><strong>${html(usdLabel(campaignBilling.judge.estimatedCostUsd))}</strong><span>Judge estimate · ${campaignBilling.judge.attempts} attempts · ${campaignBilling.judge.attemptsWithUnknownUsage} unknown usage</span><small>${html(tokenLabel(campaignBilling.judge.inputTokens))} in / ${html(tokenLabel(campaignBilling.judge.outputTokens))} out · $${campaignBilling.judge.reservedCostUsd.toFixed(6)} reserved</small></div>` : ""}
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.agentRunDurationMs))}</strong><span>Agent execution time</span></div>
