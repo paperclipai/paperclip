@@ -101,6 +101,11 @@ type NewIssueDialogViewportStyle = CSSProperties & {
   "--new-issue-dialog-height"?: string;
 };
 
+type MobileEntityPickerViewportStyle = CSSProperties & {
+  "--mobile-entity-picker-visual-viewport-height"?: string;
+  "--mobile-entity-picker-visual-viewport-bottom"?: string;
+};
+
 function readVisualViewportLayout(): VisualViewportLayout | null {
   if (typeof window === "undefined" || !window.visualViewport) return null;
   const { height, offsetTop } = window.visualViewport;
@@ -1337,6 +1342,13 @@ export function NewIssueDialog() {
         : {}),
     };
   }, [visualViewportLayout]);
+  const entityPickerViewportStyle = useMemo<MobileEntityPickerViewportStyle>(() => {
+    if (!visualViewportLayout) return {};
+    return {
+      "--mobile-entity-picker-visual-viewport-height": `${visualViewportLayout.height}px`,
+      "--mobile-entity-picker-visual-viewport-bottom": `${visualViewportLayout.offsetTop + visualViewportLayout.height}px`,
+    };
+  }, [visualViewportLayout]);
 
   useEffect(() => {
     if (!visualViewportLayout?.constrained) return;
@@ -1501,7 +1513,7 @@ export function NewIssueDialog() {
                 placeholder="Assignee"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
-                disablePortal
+                contentStyle={entityPickerViewportStyle}
                 noneLabel="No assignee"
                 searchPlaceholder="Search assignees..."
                 emptyMessage="No assignees found."
@@ -1562,7 +1574,7 @@ export function NewIssueDialog() {
                 placeholder="Project"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
-                disablePortal
+                contentStyle={entityPickerViewportStyle}
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
@@ -1673,7 +1685,7 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Reviewer"
-                disablePortal
+                contentStyle={entityPickerViewportStyle}
                 noneLabel="No reviewer"
                 searchPlaceholder="Search reviewers..."
                 emptyMessage="No reviewers found."
@@ -1718,7 +1730,7 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Approver"
-                disablePortal
+                contentStyle={entityPickerViewportStyle}
                 noneLabel="No approver"
                 searchPlaceholder="Search approvers..."
                 emptyMessage="No approvers found."
@@ -1962,7 +1974,7 @@ export function NewIssueDialog() {
                       value={assigneeModelOverride}
                       options={modelOverrideOptions}
                       placeholder="Default model"
-                      disablePortal
+                      contentStyle={entityPickerViewportStyle}
                       noneLabel="Default model"
                       searchPlaceholder="Search models..."
                       emptyMessage="No models found."

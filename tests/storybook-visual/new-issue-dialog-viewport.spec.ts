@@ -73,6 +73,41 @@ test("does not collapse the new-task dialog during a transient zero-height visua
   });
 });
 
+test("keeps the open assignee and project pickers inside the mobile visual viewport", async ({ page }) => {
+  const viewport = VIEWPORT_CASES[0];
+  const dialog = await renderDialog(page, viewport);
+  await constrainVisualViewport(page, viewport);
+
+  for (const triggerName of ["CodexCoder", "Board UI"]) {
+    await dialog.getByRole("button", { name: triggerName }).click();
+    const picker = page.locator("[data-mobile-entity-picker]");
+    await expect(picker).toBeVisible();
+
+    const geometry = await picker.evaluate((element) => {
+      const pickerRect = element.getBoundingClientRect();
+      const inputRect = element.querySelector("input")!.getBoundingClientRect();
+      const dialogElement = document.querySelector('[data-slot="dialog-content"]');
+      return {
+        pickerTop: pickerRect.top,
+        pickerBottom: pickerRect.bottom,
+        inputTop: inputRect.top,
+        inputBottom: inputRect.bottom,
+        portalledOutsideDialog: !dialogElement?.contains(element),
+      };
+    });
+    const visibleTop = viewport.offsetTop;
+    const visibleBottom = viewport.offsetTop + viewport.visualHeight;
+    expect(geometry.pickerTop).toBeGreaterThanOrEqual(visibleTop);
+    expect(geometry.pickerBottom).toBeLessThanOrEqual(visibleBottom);
+    expect(geometry.inputTop).toBeGreaterThanOrEqual(visibleTop);
+    expect(geometry.inputBottom).toBeLessThanOrEqual(visibleBottom);
+    expect(geometry.portalledOutsideDialog).toBe(true);
+
+    await page.keyboard.press("Escape");
+    await expect(picker).toBeHidden();
+  }
+});
+
 async function constrainVisualViewport(page: Page, viewport: ViewportCase) {
   await page.evaluate(({ height, offsetTop }) => {
     const visualViewport = window.visualViewport as VisualViewport & {
