@@ -9155,6 +9155,28 @@ describeEmbeddedPostgres("tool access service", () => {
         unrequestedScopes: [],
       });
     });
+
+    // The limit of this fix, asserted so nobody reads `unrequestedScopes: []` as "no extra
+    // scopes were granted". This is exactly the Enterpret shape from PAP-18538: the token
+    // response omitted `scope` while the token really carried `mcp:write`, and only RFC 7662
+    // introspection revealed it. Paperclip does not introspect, so the extra scope is
+    // *unknown*, not absent. `requested_fallback` is the marker that says so; an operator who
+    // needs certainty has to check at the provider.
+    it("cannot see an over-grant that the provider hides by omitting scope", async () => {
+      const { recordedOAuth } = await connectSlackWithTokenScope(null, [
+        "channels:read",
+      ]);
+
+      expect(recordedOAuth).toMatchObject({
+        scope: null,
+        // Not "provider": the scope list below is Paperclip's own request, so it carries no
+        // assurance about what the token can actually do.
+        scopeSource: "requested_fallback",
+        // Empty because nothing was asserted to compare against — NOT because the provider
+        // is known to have granted only what was asked.
+        unrequestedScopes: [],
+      });
+    });
   });
 
   it("creates and resolves an agent-initiated user authorization grant card", async () => {
@@ -10237,6 +10259,173 @@ describeEmbeddedPostgres("tool access service", () => {
       scopes: ["channels:read", "chat:write"],
       scopeSource: "provider",
       unrequestedScopes: ["chat:write"],
+    });
+  });
+
+  // PAP-18538: an over-grant recorded at authorization has to survive the ordinary life of the
+  // connection. A refresh is the routine event, and the shared organization identity is the
+  // shape the grants API and the Permissions UI read from.
+  describe("over-grant provenance on an organization grant", () => {
+    async function connectSharedSlack(authorizationScope: string | null) {
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+      vi.stubEnv(
+        "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
+        "slack-client-secret",
+      );
+      const company = await createCompany(db);
+      const userId = `oauth-shared-scope-${randomUUID()}`;
+      await grantBoardUser(db, company.id, userId, [], "owner");
+      const service = createTestToolAccessService(db);
+      const connected = await service.connectGalleryApp(
+        company.id,
+        { galleryKey: "slack", name: `Shared scope ${randomUUID()}` },
+        { actorType: "user", actorId: userId },
+      );
+      const started = await service.startOAuth(
+        company.id,
+        connected.connectionId,
+        {
+          redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+          actor: { actorType: "user", actorId: userId },
+          scopes: ["channels:read"],
+        },
+      );
+      const slackToken = (scope: string | null) =>
+        mcpHttpResponse({
+          ok: true,
+          access_token: `access-${randomUUID()}`,
+          refresh_token: `refresh-${randomUUID()}`,
+          expires_in: 3600,
+          token_type: "Bearer",
+          ...(scope === null ? {} : { scope }),
+        });
+      let refreshScope: string | null = null;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (href === "https://slack.com/api/oauth.v2.access") {
+          const body = init?.body as URLSearchParams;
+          return body.get("grant_type") === "refresh_token"
+            ? slackToken(refreshScope)
+            : slackToken(authorizationScope);
+        }
+        if (href === "https://mcp.slack.com/mcp") {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: "paperclip-catalog-refresh",
+            result: { tools: [] },
+          });
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+      await service.completeOAuthCallback({
+        state: new URL(started.authorizationUrl).searchParams.get("state")!,
+        code: "shared-authorization-code",
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: userId },
+      });
+      const readGrant = async () => {
+        const [grant] = await db
+          .select()
+          .from(connectionGrants)
+          .where(
+            and(
+              eq(connectionGrants.connectionId, connected.connectionId),
+              eq(connectionGrants.kind, "organization"),
+            ),
+          );
+        return grant;
+      };
+      const readConnectionOAuth = async () => {
+        const [connection] = await db
+          .select()
+          .from(toolConnections)
+          .where(eq(toolConnections.id, connected.connectionId));
+        return (
+          connection.config.providerMetadata as {
+            oauth?: Record<string, unknown>;
+          }
+        )?.oauth;
+      };
+      return {
+        service,
+        companyId: company.id,
+        connectionId: connected.connectionId,
+        actor: { actorType: "user" as const, actorId: userId },
+        readGrant,
+        readConnectionOAuth,
+        refreshWithScope: async (scope: string | null) => {
+          refreshScope = scope;
+          const grant = await readGrant();
+          await service.refreshOAuthGrantCredentials({
+            companyId: company.id,
+            connectionId: connected.connectionId,
+            grantId: grant.id,
+            forceRefresh: true,
+            actor: { actorType: "user", actorId: userId },
+          });
+        },
+      };
+    }
+
+    it("records the over-grant on the shared organization grant", async () => {
+      const lane = await connectSharedSlack("channels:read chat:write");
+
+      // The organization grant is created before OAuth has any credentials, so it used to be
+      // the one record with no provenance at all.
+      expect((await lane.readGrant()).providerTenant?.oauth).toMatchObject({
+        scopes: ["channels:read", "chat:write"],
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+    });
+
+    it("keeps the over-grant warning when a refresh asserts no scope", async () => {
+      const lane = await connectSharedSlack("channels:read chat:write");
+
+      await lane.refreshWithScope(null);
+
+      // The refresh response said nothing about scope. That is not evidence the provider took
+      // `chat:write` away, so the warning stays on both the grant and the connection.
+      expect((await lane.readGrant()).providerTenant?.oauth).toMatchObject({
+        scopes: ["channels:read", "chat:write"],
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+      expect(await lane.readConnectionOAuth()).toMatchObject({
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+    });
+
+    it("keeps the warning when a refresh re-asserts the same widened scope", async () => {
+      const lane = await connectSharedSlack("channels:read chat:write");
+
+      await lane.refreshWithScope("channels:read chat:write");
+
+      // Judging the response against the widened grant instead of the original request would
+      // read this back as clean, because the over-grant would have become its own baseline.
+      expect((await lane.readGrant()).providerTenant?.oauth).toMatchObject({
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+    });
+
+    it("clears the warning when a refresh narrows the scope to the request", async () => {
+      const lane = await connectSharedSlack("channels:read chat:write");
+
+      await lane.refreshWithScope("channels:read");
+
+      // A fresh assertion *is* evidence, so the warning is not sticky once the provider says
+      // the grant has narrowed.
+      expect((await lane.readGrant()).providerTenant?.oauth).toMatchObject({
+        scopes: ["channels:read"],
+        scopeSource: "provider",
+        unrequestedScopes: [],
+      });
+      expect(await lane.readConnectionOAuth()).toMatchObject({
+        scopeSource: "provider",
+        unrequestedScopes: [],
+      });
     });
   });
 
@@ -14475,6 +14664,14 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(startUrl.searchParams.get("scope")).toBe("tools.read tools.write");
     const state = startUrl.searchParams.get("state");
     expect(state).toBeTruthy();
+    // A generic MCP connection has no caller-supplied scopes: the consent screen is asked for
+    // whatever discovery advertised. Persist that, because it is the only baseline the callback
+    // has for judging what the provider comes back with.
+    const [pendingState] = await db
+      .select()
+      .from(toolOauthStates)
+      .where(eq(toolOauthStates.state, state!));
+    expect(pendingState.requestedScopes).toEqual(["tools.read", "tools.write"]);
     expect(connectRes.body.connection.config.oauth).toMatchObject({
       provider: "generic_example_test",
       tokenUrl: "https://generic.example.test/oauth/token",
@@ -14536,6 +14733,23 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(connection.config)).not.toContain(
       "generic-access-token",
     );
+    // This provider omitted `scope` from the token response, so the discovered scopes the
+    // authorization URL asked for are what gets recorded — not an empty list.
+    expect(
+      (connection.config.providerMetadata as { oauth?: Record<string, unknown> })
+        ?.oauth,
+    ).toMatchObject({
+      scopeSource: "requested_fallback",
+      unrequestedScopes: [],
+    });
+    const [genericGrant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connectRes.body.connectionId));
+    expect(genericGrant.providerTenant?.oauth).toMatchObject({
+      scopes: ["tools.read", "tools.write"],
+      scopeSource: "requested_fallback",
+    });
   });
 
   it("blocks Smoke Lab OAuth issuer URLs from the normal tool OAuth secret pipeline", async () => {
