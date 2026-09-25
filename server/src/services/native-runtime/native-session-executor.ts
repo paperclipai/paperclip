@@ -12655,7 +12655,10 @@ async function createRunnerdBackendWithinSessionClaim(
       remove: async () => {
         for (const name of ["auth.json", "auth.json.returned"] as const) {
           rmSync(join(root, "codex-home", name), { force: true });
-          if (remoteRunnerFilesystemRoot && remoteCommandRunner) await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", posix.join(remoteRunnerFilesystemRoot, "codex-home", name)], bypassSession: true, timeoutMs: 10000 });
+          if (remoteRunnerFilesystemRoot && remoteCommandRunner) {
+            const removed = await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", posix.join(remoteRunnerFilesystemRoot, "codex-home", name)], bypassSession: true, timeoutMs: 10000 });
+            if (removed.exitCode !== 0 || removed.timedOut) throw new Error("AI credential cleanup failed");
+          }
         }
       },
     });

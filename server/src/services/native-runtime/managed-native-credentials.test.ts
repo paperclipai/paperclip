@@ -101,6 +101,17 @@ describe("managed native credential turns", () => {
     await closing;
   });
 
+  it("retries failed deletion without repeating a successful credential merge", async () => {
+    const session = { close: async () => {} } as unknown as NativeSession;
+    const copyBack = vi.fn(async () => {});
+    const remove = vi.fn(async () => {}).mockRejectedValueOnce(new Error("remote deletion failed"));
+    bindManagedNativeCredentialTurn(session, { copyBack, remove });
+    await expect(session.close({ reason: "completed" })).rejects.toThrow("remote deletion failed");
+    await session.close({ reason: "retry" });
+    expect(copyBack).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledTimes(2);
+  });
+
   it("retains stopped-provider credentials until a failed copy-back succeeds", async () => {
     const session = { close: async () => {} } as unknown as NativeSession;
     const remove = vi.fn(async () => {});

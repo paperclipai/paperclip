@@ -703,7 +703,9 @@ describe("managed Codex credentials", () => {
     await writeFile(source, '{"tokens":{"access_token":"original"}}', { mode: 0o600 });
     const lease = await stageManagedCodexCredential({ agentHomeDirectory: fixture.home, sourcePath: source, returnPath });
     await writeFile(lease.path, '{"tokens":{"access_token":"refreshed"}}', { mode: 0o600 });
+    await writeFile(`${returnPath}.staging`, "interrupted export", { mode: 0o600 });
     await lease.checkpoint!();
+    await expect(stat(`${returnPath}.staging`)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(returnPath, "utf8")).resolves.toContain("refreshed");
     await expect(readFile(lease.path, "utf8")).resolves.toContain("refreshed");
     await rm(returnPath);

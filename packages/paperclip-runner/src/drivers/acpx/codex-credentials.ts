@@ -685,6 +685,9 @@ function credentialLease(
       const bytes = await readManagedCredential(path);
       try {
         validateCredentialDocument(bytes);
+        // The home lease and exportAttempt serialize this session's exports.
+        // Recover an interrupted exclusive-create without following symlinks.
+        await removeReplaceableCredential(`${returnPath}.staging`);
         await writeCredential(returnPath, `${returnPath}.staging`, returnHome, bytes);
       } finally {
         bytes.fill(0);
