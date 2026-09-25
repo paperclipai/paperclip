@@ -16128,13 +16128,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
+    // Eight ordered admissions commit separately. Allow the asynchronous drain
+    // to finish; the default one-second wait can observe only its first half.
     await vi.waitFor(async () => {
       const rows = await db
         .select({ id: issueComments.id })
         .from(issueComments)
         .where(eq(issueComments.issueId, conversation.issueId));
       expect(rows).toHaveLength(8);
-    });
+    }, { timeout: 5_000 });
     const comments = await db
       .select({ id: issueComments.id, body: issueComments.body })
       .from(issueComments)
@@ -27368,6 +27370,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(providerRuntime.posts).toHaveLength(1);
   });
 
+  async function processFixtureReceiptReactions(
+    service: ChatChannelService,
+    endpointId: string,
+  ) {
+    // These assertions own one fixture, not the global worker queue. Other
+    // fixtures may deliberately retain pending work and a credential lease.
+    const actions = await db
+      .select({ id: chatActions.id })
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.endpointId, endpointId),
+          eq(chatActions.kind, "receipt_reaction"),
+        ),
+      );
+    for (const action of actions) {
+      await service.processPendingReceiptReactions(1, action.id);
+    }
+  }
+
   async function waitForProcessedReceiptRemoval(
     endpointId: string,
     receipt: { threadId: string; messageId: string; emoji: string },
@@ -27921,7 +27943,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const beforePosts = f.providerRuntime.posts.length;
           const beforeRemovals = f.providerRuntime.removedReactions.length;
           await f.service.processPendingPublications();
-          await f.service.processPendingReceiptReactions();
+          await processFixtureReceiptReactions(f.service, f.endpoint.id);
           expect(f.providerRuntime.edits).toEqual([]);
           expect(f.providerRuntime.posts).toHaveLength(beforePosts + 1);
           expect(f.providerRuntime.posts.at(-1)?.text).toBe(close.payload.text);
@@ -28398,7 +28420,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const editCount = f.providerRuntime.edits.length,
             postCount = f.providerRuntime.posts.length;
           await f.service.processPendingPublications();
-          await f.service.processPendingReceiptReactions();
+          await processFixtureReceiptReactions(f.service, f.endpoint.id);
           expect(f.providerRuntime.edits).toHaveLength(
             editCount + (mode === "working" ? 1 : 0),
           );
@@ -46923,7 +46945,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const editCount = runtime.edits.length,
             postCount = runtime.posts.length;
           await f.service.processPendingPublications();
-          await f.service.processPendingReceiptReactions();
+          await processFixtureReceiptReactions(f.service, f.endpoint.id);
           expect(runtime.edits).toHaveLength(
             editCount + (mode === "working" ? 1 : 0),
           );
@@ -47607,6 +47629,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               ),
             );
           if (!action) throw new Error("Expected admitted source action");
+          if (admitted) {
+            // An admitted action can be visible before its scheduler receipt
+            // commits. The synthetic run must reference that durable receipt.
+            await vi.waitFor(async () => {
+              const [receipt] = await db
+                .select({ id: agentWakeupRequests.id })
+                .from(agentWakeupRequests)
+                .where(eq(agentWakeupRequests.id, action.id));
+              expect(receipt?.id).toBe(action.id);
+            }, { timeout: 5_000 });
+          }
           const runId = randomUUID();
           // The fixture heartbeat does not execute a model. Persist the exact
           // scheduler linkage for the already admitted source, then exercise
@@ -61854,6 +61887,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(deferred).toHaveLength(4);
     await drainDeferred();
     await vi.waitFor(async () => {
+      // Dispatch callbacks queued by the asynchronous ingress work too.
+      // A callback returning does not mean its background task has finished.
+      await drainDeferred();
       const deliveries = await db
         .select({
           eventKind: chatDeliveries.eventKind,
@@ -61865,7 +61901,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(
         deliveries.every((delivery) => delivery.state === "processed"),
       ).toBe(true);
-    });
+    }, { timeout: 5_000 });
 
     const [conversation] = await db
       .select()
@@ -61893,7 +61929,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toMatchObject({ ok: true });
     expect(deferred).toHaveLength(1);
     await drainDeferred();
-    await vi.waitFor(() => expect(deferred).toHaveLength(1));
+    await vi.waitFor(() => expect(deferred).toHaveLength(1), { timeout: 5_000 });
     await drainDeferred();
     await vi.waitFor(async () => {
       await expect(
@@ -61919,7 +61955,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           state: "filtered",
         },
       ]);
-    });
+    }, { timeout: 5_000 });
     await expect(
       db
         .select({ body: issueComments.body })
@@ -63397,7 +63433,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await vi.waitFor(() =>
         expect(dm.post).toHaveBeenCalledWith(visibleFailure),
       );
-      await expect(
+      // Provider output is observable before its durable action is settled.
+      await vi.waitFor(() => expect(
         db
           .select({ kind: chatActions.kind, status: chatActions.status })
           .from(chatActions)
@@ -63407,7 +63444,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           { kind: "inbound_wakeup", status: "failed" },
           { kind: "provider_effect", status: "processed" },
         ]),
-      );
+      ), { timeout: 5_000 });
     } finally {
       await retirePublicationFixture(service, endpoint.id);
     }

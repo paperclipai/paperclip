@@ -1,19 +1,49 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 
 import { linkSdkInto, readPluginsUnder } from "./link-plugin-dev-sdk.mjs";
 
 let workDir;
+let repoPluginDir;
 
 before(() => {
   workDir = mkdtempSync(join(tmpdir(), "link-plugin-dev-sdk-"));
+  const script = fileURLToPath(new URL("./link-plugin-dev-sdk.mjs", import.meta.url));
+  const providers = join(dirname(script), "..", "packages", "plugins", "sandbox-providers");
+  repoPluginDir = mkdtempSync(join(providers, "plugin-link-test-"));
 });
 
 after(() => {
   rmSync(workDir, { force: true, recursive: true });
+  if (repoPluginDir) rmSync(repoPluginDir, { force: true, recursive: true });
+});
+
+test("single-package CLI links only the requested excluded plugin", () => {
+  const script = fileURLToPath(new URL("./link-plugin-dev-sdk.mjs", import.meta.url));
+  const target = makePackage(join(repoPluginDir, "target"));
+  const sibling = makePackage(join(repoPluginDir, "sibling"));
+  const result = spawnSync(process.execPath, [script, target], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(lstatSync(join(target, "node_modules", "@paperclipai", "plugin-sdk")).isSymbolicLink());
+  assert.equal(existsSync(join(sibling, "node_modules")), false);
+});
+
+test("single-package CLI rejects outside packages and symlinked provider directories", () => {
+  const script = fileURLToPath(new URL("./link-plugin-dev-sdk.mjs", import.meta.url));
+  const outside = makePackage(join(workDir, "outside-cli"));
+  const alias = join(repoPluginDir, "alias");
+  symlinkSync(outside, alias, "dir");
+  for (const target of [outside, alias]) {
+    const result = spawnSync(process.execPath, [script, target], { encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /target must be an excluded repository plugin/);
+    assert.equal(existsSync(join(outside, "node_modules")), false);
+  }
 });
 
 function makePackage(dir) {
