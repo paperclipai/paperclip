@@ -2635,15 +2635,22 @@ describe.sequential("issue comment reopen routes", () => {
     },
   );
 
-  it.each(["invalid", "wrong agent", "wrong company"])(
+  // A malformed run id and a run id that names no run of this agent are
+  // different failures with different remedies, so the route must surface
+  // whichever code the guard raised instead of flattening both into one.
+  it.each([
+    ["invalid", "cross_issue_influence_run_context_required"],
+    ["wrong agent", "cross_issue_influence_run_not_recognized"],
+    ["wrong company", "cross_issue_influence_run_not_recognized"],
+  ] as const)(
     "rejects comment and PATCH writes with a %s run",
-    async () => {
+    async (_label, code) => {
       mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
       mockObserveCrossIssueInfluence.mockRejectedValue(
         new HttpError(
           403,
           "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
-          { code: "cross_issue_influence_run_context_required" },
+          { code },
         ),
       );
       const actor = agentActor("44444444-4444-4444-8444-444444444444");
@@ -2657,9 +2664,7 @@ describe.sequential("issue comment reopen routes", () => {
 
       for (const res of [commentRes, updateRes]) {
         expect(res.status).toBe(403);
-        expect(res.body.details).toEqual({
-          code: "cross_issue_influence_run_context_required",
-        });
+        expect(res.body.details).toEqual({ code });
       }
       expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(2);
       expect(mockIssueService.update).not.toHaveBeenCalled();

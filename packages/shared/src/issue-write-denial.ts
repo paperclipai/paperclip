@@ -31,6 +31,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_assignee_run_lock",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
+  "cross_issue_influence_run_not_recognized",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -254,12 +255,36 @@ export function describeIssueWriteDenial(
         description:
           `Every agent comment and task update is attributed to a heartbeat run so the ` +
           `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
+          `This request carried no \`X-Paperclip-Run-Id\` header, or the value was not a ` +
+          `run id, so it could not be contained.`,
         whoCanAct: `${actor}, once the request carries its own run id.`,
         sanctionedPath:
           `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
           `and retry.`,
 
+      };
+
+    // Split out from `cross_issue_influence_run_context_required` because the two
+    // causes need opposite remedies. That code's advice — "send the header" — is a
+    // dead end here: the header *was* sent, it just named a run that does not
+    // resolve. An agent that reads "send the header" when it already did retries
+    // the identical request, loops, and gives up.
+    case "cross_issue_influence_run_not_recognized":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Heartbeat run identity",
+        title: "That run id does not belong to this agent",
+        description:
+          `The \`X-Paperclip-Run-Id\` header was present, but no heartbeat run with that id ` +
+          `belongs to ${actor} in this company — either the id matches no run at all, or it ` +
+          `names a run of another agent or another company. Run age is not the cause: a ` +
+          `finished run of this agent still resolves. Resending the same header cannot fix this.`,
+        whoCanAct: `${actor}, using a run id issued to one of its own heartbeats.`,
+        sanctionedPath:
+          `Use the \`$PAPERCLIP_RUN_ID\` issued to this agent's own heartbeat rather than an id ` +
+          `copied from another agent or another install, and retry.`,
       };
 
     case "issue_write_attribution_spoof_rejected":

@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -31,6 +31,16 @@ export function crossIssueInfluenceRunContextError() {
   // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
   // so the agent reading this 403 is told the fix, not just the refusal.
   const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required");
+  return forbidden(body.error, body.details);
+}
+
+/**
+ * The header was sent but names no run of this agent in this company. Telling
+ * that caller to "send the header" is an inoperative remedy — it already did —
+ * so this case gets copy that names the real condition instead.
+ */
+export function crossIssueInfluenceRunNotRecognizedError() {
+  const { body } = issueWriteDenialResponse("cross_issue_influence_run_not_recognized");
   return forbidden(body.error, body.details);
 }
 
@@ -106,16 +116,53 @@ export async function observeCrossIssueInfluence(
       run.companyId !== input.companyId ||
       run.agentId !== input.agentId
     ) {
-      throw crossIssueInfluenceRunContextError();
+      throw crossIssueInfluenceRunNotRecognizedError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    let sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId &&
+      (sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
+    }
+
+    // A timer heartbeat carries no issue in its context snapshot, so the snapshot
+    // alone cannot say whether a write is same-issue. The checkout the run already
+    // holds answers that question. The snapshot stays authoritative when it names
+    // an issue, so a scoped run cannot clear the cap by checking out each target.
+    if (!sourceIssueId) {
+      if (isUuidLike(input.targetIssueId)) {
+        const targetAnchor = await tx
+          .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(and(eq(issues.id, input.targetIssueId), eq(issues.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null);
+        // The run owns the target issue. This is a same-issue write, not influence.
+        if (
+          targetAnchor &&
+          (targetAnchor.checkoutRunId === input.runId || targetAnchor.executionRunId === input.runId)
+        ) {
+          return null;
+        }
+      }
+
+      // Anchor the counter on the issue the run checked out, so a genuine
+      // cross-issue write is counted against the cap.
+      const checkedOut = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, input.companyId), eq(issues.checkoutRunId, input.runId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      // A free heartbeat — no issue in its snapshot and no checkout — is still
+      // a real, authenticated run, and it is the only anchor containment needs:
+      // the counter keys on `runId`, never on the source issue, which is an
+      // audit detail. Refusing such a run therefore bought no containment while
+      // costing an agent the ability to comment or resolve an interaction at
+      // all. It writes with a null source issue and spends the same per-run cap.
+      sourceIssueId = checkedOut?.id ?? null;
     }
 
     const priorCount = await tx
