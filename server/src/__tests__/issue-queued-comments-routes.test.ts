@@ -792,6 +792,41 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     return queueRunId;
   }
 
+  it("keeps queued comments editable and discardable during a startup failure cooldown", async () => {
+    const seeded = await seedQueue();
+    const queueRunId = await promoteQueue(seeded);
+    await db.update(agents).set({ adapterType: "process", adapterConfig: {
+      command: process.execPath, args: ["-e", "process.exit(0)"],
+    } }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy" })
+      .where(eq(heartbeatRuns.id, queueRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "failed",
+      startedAt: new Date(Date.now() - 100), finishedAt: new Date(), errorCode: "adapter_failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    try {
+      await heartbeat.resumeQueuedRuns();
+      const edited = await request(client)
+        .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+        .send({ queueId: seeded.wakeId, revision: initial.body.revision, body: "Edit while waiting for startup recovery" });
+      expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+      const discarded = await request(client)
+        .delete(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[1]}`)
+        .send({ queueId: seeded.wakeId, revision: edited.body.revision });
+      expect(discarded.status, JSON.stringify(discarded.body)).toBe(200);
+      expect(discarded.body.entries.map((entry: any) => entry.comment.body))
+        .toEqual(["Edit while waiting for startup recovery"]);
+      const [queued] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queueRunId));
+      expect(queued).toMatchObject({ status: "queued", startedAt: null, scheduledRetryAt: null });
+      expect(queued.contextSnapshot?.wakeCommentIds).toEqual([seeded.commentIds[0]]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  });
+
   it("projects the recovery wait reason only while the message is deferred", async () => {
     const seeded = await seedQueue();
     const executionWait = { reason: "remote_cleanup", message: "Waiting for the previous environment to stop." };

@@ -123,6 +123,12 @@ export const heartbeatRuns = pgTable(
       table.agentId,
       table.startedAt,
     ),
+    companyAgentFinishedIdx: index("heartbeat_runs_company_agent_finished_idx").on(
+      table.companyId,
+      table.agentId,
+      table.finishedAt.desc().nullsFirst(),
+      table.id.desc().nullsFirst(),
+    ).where(sql`${table.startedAt} IS NOT NULL AND ${table.status} IN ('failed', 'timed_out', 'succeeded', 'cancelled', 'interrupted')`),
     companyResponsibleUserIdx: index("heartbeat_runs_company_responsible_user_idx").on(
       table.companyId,
       table.responsibleUserId,

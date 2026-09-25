@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { hasLauncherCapacityRecord, LAUNCHER_NONCE_ENV } from "@paperclipai/adapter-utils/launcher-capacity";
+import { classifyWorkspaceRestoreFailure, describeWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -1320,9 +1324,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
 
       try {
+        const launcherNonce = config.launcherCapacityRecovery === true ? randomBytes(16).toString("hex") : null;
+        const launchEnv = { ...env };
+        delete launchEnv[LAUNCHER_NONCE_ENV];
+        if (launcherNonce) launchEnv[LAUNCHER_NONCE_ENV] = launcherNonce;
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
           cwd,
-          env,
+          env: launchEnv,
           stdin: prompt,
           timeoutSec,
           graceSec,
@@ -1349,6 +1357,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             stderr: cleanedStderr,
           },
           rawStderr: proc.stderr,
+          launcherNonce,
           parsed: parseCodexJsonl(proc.stdout),
           monitor: monitorFired
             ? {
@@ -1377,6 +1386,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
+        launcherNonce: string | null;
         parsed: ReturnType<typeof parseCodexJsonl>;
         monitor?:
           | { fired: false }
@@ -1497,8 +1507,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const errorFamily =
         authRefreshFailure ??
         (providerQuota ? "provider_quota" : transientUpstream || harnessCrash ? "transient_upstream" : null);
+      const launcherCapacity =
+        // An internal unknown-session fallback cannot attest that the earlier
+        // process in this same invocation never started provider work.
+        !isRetry && attempt.launcherNonce !== null && hasLauncherCapacityRecord(attempt.rawStderr, attempt.launcherNonce) &&
+        attempt.proc.exitCode === 5 && !attempt.proc.signal && !attempt.proc.errorCode &&
+        attempt.proc.stdout === "" && !attempt.parsed.sawProtocolEvent &&
+        !attempt.parsed.sessionId && !attempt.parsed.summary && !attempt.parsed.errorMessage &&
+        !parseCodexJsonl(attempt.rawStderr).sawProtocolEvent &&
+        Object.values(attempt.parsed.usage).every((value) => value === 0) && !errorFamily;
 
       return {
+        ...(launcherCapacity ? { executionRecovery: {
+          kind: "bootstrap" as const, providerWorkStarted: false as const,
+          launcher: { version: 1 as const, outcome: "capacity_unavailable" as const },
+        } } : {}),
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
@@ -1512,6 +1535,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // `duplex_channel_lost` code before any provider classification.
           attempt.proc.errorCode
             ? attempt.proc.errorCode
+            : launcherCapacity
+            ? "launcher_capacity_unavailable"
             : authRefreshFailure
             ? authRefreshFailure
             : providerQuota
@@ -1546,43 +1571,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
-    let executionError: unknown = null;
-    try {
-      const initial = await runAttempt(sessionId);
-      if (
-        sessionId &&
-        !initial.proc.timedOut &&
-        !initial.proc.signal &&
-        // A started session can emit stale-rollout warnings for other threads.
-        // After Ctrl-C those warnings must not restart the cancelled turn.
-        !initial.parsed.sessionId &&
-        (initial.proc.exitCode ?? 0) !== 0 &&
-        isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-      ) {
-        await onLog(
-          "stdout",
-          `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-        );
-        const retry = await runAttempt(null);
-        const retryResult = toResult(retry, true, true);
-        if (retryResult.errorMessage) {
-          executionError = new Error(retryResult.errorMessage);
+    const executeTurn = async () => {
+      try {
+        const initial = await runAttempt(sessionId);
+        if (
+          sessionId &&
+          !initial.proc.timedOut &&
+          !initial.proc.signal &&
+          // A started session can emit stale-rollout warnings for other threads.
+          // After Ctrl-C those warnings must not restart the cancelled turn.
+          !initial.parsed.sessionId &&
+          (initial.proc.exitCode ?? 0) !== 0 &&
+          isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+        ) {
+          await onLog(
+            "stdout",
+            `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+          );
+          const retry = await runAttempt(null);
+          return toResult(retry, true, true);
         }
-        return retryResult;
-      }
 
-      const result = toResult(initial, false, false);
-      if (result.errorMessage) {
-        executionError = new Error(result.errorMessage);
+        return toResult(initial, false, false);
+      } finally {
+        if (paperclipBridge) {
+          await paperclipBridge.stop();
+        }
       }
-      return result;
-    } catch (error) {
-      executionError = error;
-      throw error;
-    } finally {
-      if (paperclipBridge) {
-        await paperclipBridge.stop();
-      }
+    };
+    return await withWorkspaceRestore(executeTurn, async () => {
       if (restoreRemoteWorkspace) {
         try {
           await onLog(
@@ -1596,16 +1613,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               "stderr",
               `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
                 executionTarget,
-              )}: ${error instanceof Error ? error.message : String(error)}\n`,
+              )}: ${describeWorkspaceRestoreFailure(classifyWorkspaceRestoreFailure(error))}\n`,
             ),
           ).catch(() => undefined);
-          // A provider failure remains the primary outcome. When provider work
-          // succeeded, however, silently accepting a failed copy-back can lose
-          // the only workspace edits before a replacement sandbox starts.
-          if (executionError === null) throw error;
+          throw error;
         }
       }
-    }
+    });
   } finally {
     // Remove the staged CODEX_HOME allowlist temp dir on every exit path
     // (teardown AND error), never only the happy path. Cleanup failure is

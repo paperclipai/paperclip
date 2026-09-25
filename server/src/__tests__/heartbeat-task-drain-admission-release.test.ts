@@ -297,10 +297,9 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     expect(completedWakeup?.status).toBe("completed");
   }, 20_000);
 
-  // Inject one rollback only after the test starts task drain. Admission also
-  // uses transactions, so transaction call numbers do not identify release.
-  function withFailingTransactionalUpdate(realDb: typeof db, failingTable: unknown, armed: () => boolean) {
-    let injected = false;
+  // Fault only the release write after suppression starts, independently of
+  // how many admission/validation transactions preceded it.
+  function withFailingTransactionalUpdate(realDb: typeof db, shouldFail: () => boolean) {
     return new Proxy(realDb, {
       get(target, prop, receiver) {
         if (prop !== "transaction") return Reflect.get(target, prop, receiver);
@@ -310,8 +309,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
               get(txTarget, txProp, txReceiver) {
                 if (txProp === "update") {
                   return (table: unknown) => {
-                    if (!injected && armed() && table === failingTable) {
-                      injected = true;
+                    if (table === issues && shouldFail()) {
                       throw new Error("simulated transactional write failure");
                     }
                     return (txTarget as any).update(table);
@@ -332,15 +330,20 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     // Fault the release transaction on the issue-lock write, so executeRun's
     // suppression branch catches the failure, logs it, and returns instead
     // of throwing. There is no in-process fallback or retry for this path.
-    let releaseStarted = false;
-    const failingDb = withFailingTransactionalUpdate(db, issues, () => releaseStarted);
+    let suppressing = false;
+    let releaseFailureInjected = false;
+    const failingDb = withFailingTransactionalUpdate(db, () => {
+      if (!suppressing || releaseFailureInjected) return false;
+      releaseFailureInjected = true;
+      return true;
+    });
     const heartbeat = heartbeatService(failingDb);
 
     const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
       const payload = event.payload as { runId?: string; status?: string };
       if (event.type === "heartbeat.run.status" && payload.runId === runId && payload.status === "running") {
+        suppressing = true;
         startTaskDrain({});
-        releaseStarted = true;
       }
     });
 
@@ -350,6 +353,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     } finally {
       unsubscribe();
     }
+
+    expect(releaseFailureInjected).toBe(true);
 
     // The release transaction rolled back, so the run, wakeup, and issue
     // lock stay exactly as the admission claim left them.

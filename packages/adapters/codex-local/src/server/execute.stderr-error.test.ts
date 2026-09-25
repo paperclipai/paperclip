@@ -112,7 +112,7 @@ function buildContext(config: Record<string, unknown> = {}) {
       ...config,
     },
     context: {},
-    onLog: vi.fn(async () => {}),
+    onLog: vi.fn(async (_stream: "stdout" | "stderr", _chunk: string) => {}),
   };
 }
 
@@ -182,5 +182,94 @@ describe("firstMeaningfulStderrLine", () => {
   it("returns an empty string for blank input", () => {
     expect(firstMeaningfulStderrLine("")).toBe("");
     expect(firstMeaningfulStderrLine(" \n\t\n")).toBe("");
+  });
+});
+
+describe("pre-provider launcher capacity contract", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function mockLauncher(change: (proc: Record<string, unknown>, nonce: string) => void = () => {}) {
+    runAdapterExecutionTargetProcess.mockImplementation(async (...args: unknown[]) => {
+      const options = args[4] as { env: Record<string, string>; onLog: (stream: string, text: string) => Promise<void> };
+      const nonce = options.env.PAPERCLIP_LAUNCHER_NONCE;
+      const proc = { exitCode: 5, signal: null, timedOut: false, stdout: "",
+        stderr: `launcher: no free slot\npaperclip-launcher:v1:capacity_unavailable:${nonce}\n`,
+        pid: 123, startedAt: new Date().toISOString() };
+      change(proc, nonce);
+      await options.onLog("stdout", proc.stdout);
+      await options.onLog("stderr", proc.stderr);
+      return proc;
+    });
+  }
+
+  it("accepts only this attempt's capacity refusal, preserving setup logs and session identity", async () => {
+    prepareCodexRuntimeConfig.mockResolvedValueOnce({ cleanup: vi.fn(async () => {}),
+      notes: ["Managed MCP setup complete."] } as never);
+    mockLauncher();
+    const context = buildContext({ launcherCapacityRecovery: true });
+    context.runtime = { sessionId: "prior-session", sessionParams: null, sessionDisplayId: "prior-session", taskKey: null } as never;
+    const result = await execute(context as never);
+    expect(result).toMatchObject({ errorCode: "launcher_capacity_unavailable", errorFamily: null,
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false,
+        launcher: { version: 1, outcome: "capacity_unavailable" } },
+      sessionId: "prior-session", resultJson: { stdout: "" } });
+    expect(context.onLog.mock.calls.some((call) => String(call[1]).includes("Managed MCP setup complete."))).toBe(true);
+    expect(result.resultJson?.stderr).toContain("launcher: no free slot");
+    expect(runAdapterExecutionTargetProcess.mock.calls[0]?.[4].env.PAPERCLIP_LAUNCHER_NONCE).toMatch(/^[a-f0-9]{32}$/);
+  });
+
+  it.each([
+    ["unmarked exit 5", (proc: Record<string, unknown>) => { proc.stderr = "launcher: no free slot"; }],
+    ["unknown version", (proc: Record<string, unknown>) => { proc.stderr = String(proc.stderr).replace(":v1:", ":v2:"); }],
+    ["unknown outcome", (proc: Record<string, unknown>) => { proc.stderr = String(proc.stderr).replace("capacity_unavailable", "quota_unknown"); }],
+    ["stale nonce", (proc: Record<string, unknown>) => { proc.stderr = String(proc.stderr).replace(/:[^:\n]+\n$/, `:${"f".repeat(32)}\n`); }],
+    ["duplicate", (proc: Record<string, unknown>) => { proc.stderr = String(proc.stderr).repeat(2); }],
+    ["malformed sibling", (proc: Record<string, unknown>) => { proc.stderr += "paperclip-launcher:broken\n"; }],
+    ["trailing data", (proc: Record<string, unknown>) => { proc.stderr = String(proc.stderr).trimEnd() + " unexpected\n"; }],
+    ["provider text", (proc: Record<string, unknown>) => { proc.stdout = "work started"; }],
+    ["whitespace output", (proc: Record<string, unknown>) => { proc.stdout = "\n"; }],
+    ["protocol event", (proc: Record<string, unknown>) => { proc.stdout = '{"type":"thread.started","thread_id":"provider-session"}\n'; }],
+    ["usage event", (proc: Record<string, unknown>) => { proc.stdout = '{"type":"turn.completed","usage":{"input_tokens":4}}\n'; }],
+    ["stderr protocol", (proc: Record<string, unknown>) => { proc.stderr += '{"type":"thread.started","thread_id":"provider-session"}\n'; }],
+    ["success", (proc: Record<string, unknown>) => { proc.exitCode = 0; }],
+    ["other exit", (proc: Record<string, unknown>) => { proc.exitCode = 1; }],
+    ["signal", (proc: Record<string, unknown>) => { proc.signal = "SIGTERM"; }],
+    ["timeout", (proc: Record<string, unknown>) => { proc.timedOut = true; }],
+    ["transport", (proc: Record<string, unknown>) => { proc.errorCode = "duplex_channel_lost"; }],
+    ["cancellation", (proc: Record<string, unknown>) => { proc.errorCode = "cancelled"; }],
+    ["auth conflict", (proc: Record<string, unknown>) => { proc.stderr += "refresh_token_expired\n"; }],
+    ["quota conflict", (proc: Record<string, unknown>) => { proc.stderr += "You've hit your usage limit\n"; }],
+    ["upstream conflict", (proc: Record<string, unknown>) => { proc.stderr += "We're currently experiencing high demand\n"; }],
+  ])("rejects %s as launcher recovery", async (_name, change) => {
+    mockLauncher(change as (proc: Record<string, unknown>) => void);
+    const result = await execute(buildContext({ launcherCapacityRecovery: true }) as never);
+    expect(result.executionRecovery).toBeUndefined();
+    expect(result.errorCode).not.toBe("launcher_capacity_unavailable");
+    if (_name === "transport") expect(result.errorCode).toBe("duplex_channel_lost");
+    if (_name === "timeout") expect(result.timedOut).toBe(true);
+    if (_name === "signal") expect(result.signal).toBe("SIGTERM");
+    if (_name === "cancellation") expect(result.errorCode).toBe("cancelled");
+  });
+
+  it("requires explicit opt-in and ignores a configured nonce", async () => {
+    mockLauncher((_proc, nonce) => expect(nonce).toBeUndefined());
+    const result = await execute(buildContext({ env: {
+      OPENAI_API_KEY: "test-key", PAPERCLIP_LAUNCHER_NONCE: "a".repeat(32),
+    } }) as never);
+    expect(result.executionRecovery).toBeUndefined();
+    expect(result.errorCode).not.toBe("launcher_capacity_unavailable");
+  });
+
+  it("does not erase an earlier provider attempt when an unknown-session fallback finds capacity unavailable", async () => {
+    mockLauncher();
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({ exitCode: 1, signal: null, timedOut: false,
+      stdout: '{"type":"error","message":"unknown session"}\n', stderr: "", pid: 123,
+      startedAt: new Date().toISOString() });
+    const context = buildContext({ launcherCapacityRecovery: true });
+    context.runtime = { sessionId: "prior-session", sessionParams: null, sessionDisplayId: "prior-session", taskKey: null } as never;
+    const result = await execute(context as never);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);
+    expect(result.executionRecovery).toBeUndefined();
+    expect(result.errorCode).not.toBe("launcher_capacity_unavailable");
   });
 });
