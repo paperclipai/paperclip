@@ -198,6 +198,29 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
+  it("selects the Grok sandbox before connecting without changing the instance default", async () => {
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Local", status: "active", driver: "local", config: {} },
+      { id: "grok-sandbox", name: "Grok sandbox", status: "active", driver: "sandbox", config: { provider: "daytona" } },
+    ]);
+    secrets.listMyUserSecrets.mockResolvedValue([{
+      definition: { id: "grok-key", companyId: "company-1", key: "XAI_API_KEY", name: "Grok key", status: "active" },
+      secret: { companyId: "company-1", status: "active" },
+    }]);
+    await render("paperclip_runner", "grok");
+    const select = container.querySelector('select[aria-label="Environment"]') as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+    await act(async () => {
+      select.value = "grok-sandbox";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    await click("GrokAPI");
+    await click("Use saved API key");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ environmentId: "grok-sandbox" }));
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].defaultEnvironmentId).toBe("grok-sandbox");
+  });
   it.each([false, true])("blocks direct runner setup links when the experiment is disabled (cloud=%s)", async (cloud) => {
     cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud } });
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
