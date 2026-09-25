@@ -18,28 +18,22 @@ permissions:
   contents: read
   packages: write
   id-token: write   # cosign keyless OIDC
+  actions: read     # "Wait for earlier manual builds" lists this workflow's runs
 
-# Serialize runs so two overlapping `push`-triggered builds can't race to
-# publish the floating :latest alias out of order (an older build finishing
-# after a newer one would otherwise silently move :latest backwards).
-# `cancel-in-progress: false` queues the newer run instead of killing the
-# older one mid-push, so a run is never left half-published.
+# Push-triggered runs on the same ref serialize against each other so two
+# overlapping builds can't publish the floating :latest alias out of order
+# (see build-and-sign's "Alias digests under a stable :latest tag" step).
+# `cancel-in-progress: false` queues the newer run instead of killing the older
+# one mid-push. GitHub keeps only the newest pending run per group, which is
+# what we want for pushes: the latest commit is the one :latest should reach.
+#
+# workflow_dispatch runs must never be dropped that way (an explicitly
+# requested version tag would silently never get published), so each gets its
+# own group and is serialized by the "Wait for earlier manual builds" step
+# instead, which has no pending-run limit and isn't affected by Actions'
+# case-insensitive group names.
 concurrency:
-  # Push-triggered runs on the same ref serialize/queue against each other so
-  # :latest can't be published out of order (see build-and-sign's "Alias
-  # digests under a stable :latest tag" step). workflow_dispatch runs are
-  # scoped per requested `version` (not per github.run_id): two manual runs
-  # for *different* versions must run independently, but two manual runs for
-  # the *same* version (e.g. both left at the "dev" default) push the same
-  # six image tags -- if they build different commits, their pushes can
-  # interleave and a tag can end up pointing at either build, with the six
-  # images not all from the same commit. Serializing same-version dispatch
-  # runs against each other prevents that race, while still keeping
-  # different versions and different push-vs-dispatch groups from
-  # cross-blocking (GitHub Actions keeps only one pending run per group, so
-  # a same-group queue collision silently discards whichever run doesn't
-  # win -- this only matters within one version's own group).
-  group: ${{ github.event_name == 'workflow_dispatch' && format('agent-runtime-images-dispatch-{0}', github.event.inputs.version) || format('agent-runtime-images-{0}', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && format('agent-runtime-images-dispatch-{0}', github.run_id) || format('agent-runtime-images-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -50,6 +44,27 @@ jobs:
   build-and-sign:
     runs-on: ubuntu-22.04
     steps:
+      - name: Wait for earlier manual builds
+        # Serialize manual builds in start order so two dispatches for the same
+        # version can't interleave their pushes and leave the six tags pointing
+        # at different commits. Run ids only increase, so the oldest run never
+        # waits and this can't deadlock.
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Fails the step (bash -e) if the API call fails, rather than
+          # building unserialized.
+          while true; do
+            older=$(gh run list --repo "${{ github.repository }}" \
+              --workflow agent-runtime-images.yml --event workflow_dispatch \
+              --limit 100 --json databaseId,status \
+              --jq '[.[] | select(.databaseId < ${{ github.run_id }} and .status != "completed")] | length')
+            [ "${older}" = "0" ] && break
+            echo "Waiting for ${older} earlier manual build(s) to finish..."
+            sleep 30
+          done
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
