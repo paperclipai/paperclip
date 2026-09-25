@@ -1710,6 +1710,19 @@ export const PLUGIN_EVENT_TYPES = [
   "goal.updated",
   "approval.created",
   "approval.decided",
+  // Decisions Desk lifecycle. A decision is the platform's "a human must choose,
+  // by this date" object, so excluding it left notifications unable to cover the
+  // surface operators most need to be woken for. The queue, triage, training and
+  // retention actions stay private: they are desk plumbing, not decisions.
+  "decision.created",
+  // The four ways a decision ends: chosen, timed out, dismissed, cancelled. The
+  // successful transition belongs here with the other terminal states — it is the
+  // one a decision's origin agent is waiting on, and leaving it out meant a plugin
+  // heard about a decision being raised and never about it being answered.
+  "decision.decided",
+  "decision.expired",
+  "decision.dismissed",
+  "decision.cancelled",
   "budget.incident.opened",
   "budget.incident.resolved",
   "cost_event.created",
