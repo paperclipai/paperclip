@@ -26,11 +26,12 @@ if (!['git', 'gh'].includes(program) || !executable) {
   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
   process.exit(127);
 }
-// spawn() below runs without a shell and Node cannot start a .cmd or .bat that way. Report
-// the wrapper that PATH actually selects, rather than reaching past it for an executable in
-// a later directory: that would run a different tool than the PATH order asks for and skip
-// whatever setup the wrapper does.
-if (/\.(cmd|bat)$/i.test(executable)) {
+// Windows only. spawn() below runs without a shell, and on Windows Node cannot start a .cmd
+// or .bat that way. Report the wrapper that PATH actually selects, rather than reaching past
+// it for an executable in a later directory: that would run a different tool than the PATH
+// order asks for and skip whatever setup the wrapper does. On POSIX such a file is an
+// ordinary executable, spawn runs it, and this guard must not fire.
+if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
   process.stderr.write('Paperclip: ' + program + ' resolves to the batch wrapper ' + executable + ', which the managed launcher cannot start.\n');
   process.exit(127);
 }

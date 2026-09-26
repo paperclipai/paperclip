@@ -53,12 +53,24 @@ describe("managed GitHub launchers", () => {
     expect(result.stdout.trim()).toBe("real-executable");
   });
 
-  it("reports a batch wrapper rather than reaching past it for a later executable", async () => {
-    // spawn() in the shim runs without a shell, so Node cannot start this wrapper. Skipping
+  it.runIf(process.platform !== "win32")("runs an executable .cmd on POSIX instead of rejecting it", async () => {
+    // The batch guard is a Windows limitation: there spawn() cannot start a .cmd without a
+    // shell. On POSIX the same file is an ordinary executable, so a host that happens to set
+    // PATHEXT must keep working rather than losing managed git entirely.
+    const fixture = await pathExtFixture();
+    await writeFile(path.join(fixture.early, "git.CMD"), "#!/bin/sh\necho posix-cmd-is-executable\n", { mode: 0o700 });
+    await writeFile(path.join(fixture.real, "git.EXE"), "#!/bin/sh\necho real-executable\n", { mode: 0o700 });
+    const env = { ...process.env, PATH: fixture.searchPath, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+    const result = await exec(path.join(fixture.bin, "git"), ["--version"], { cwd: fixture.root, env });
+    expect(result.stdout.trim()).toBe("posix-cmd-is-executable");
+  });
+
+  it.runIf(process.platform === "win32")("reports a batch wrapper rather than reaching past it for a later executable", async () => {
+    // spawn() in the shim runs without a shell, so Windows cannot start this wrapper. Skipping
     // it would launch git.EXE from a later directory: a different tool than PATH selects,
     // with the wrapper's own setup silently bypassed. Fail with the reason instead.
     const fixture = await pathExtFixture();
-    await writeFile(path.join(fixture.early, "git.CMD"), "#!/bin/sh\necho batch-wrapper\n", { mode: 0o700 });
+    await writeFile(path.join(fixture.early, "git.CMD"), "@echo off\r\necho batch-wrapper\r\n", { mode: 0o700 });
     await writeFile(path.join(fixture.real, "git.EXE"), "#!/bin/sh\necho real-executable\n", { mode: 0o700 });
     const env = { ...process.env, PATH: fixture.searchPath, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
     await expect(exec(path.join(fixture.bin, "git"), ["--version"], { cwd: fixture.root, env }))
