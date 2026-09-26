@@ -73,21 +73,47 @@ from (
 
 -- 2. The migration journal came back. Without it the server cannot tell which
 --    migrations have run and will try to re-apply the whole history.
-insert into restore_verify_results
-select
-  2,
-  'migration journal present',
-  case when to_regclass('drizzle.__drizzle_migrations') is null then 'FAIL'
-       else case when (select count(*) from drizzle.__drizzle_migrations) > 0
-                 then 'PASS' else 'FAIL' end
-  end,
-  case when to_regclass('drizzle.__drizzle_migrations') is null
-       then 'drizzle.__drizzle_migrations is missing — the dump omitted the drizzle schema'
-       else format('%s migration(s) recorded, newest hash %s',
-                   (select count(*) from drizzle.__drizzle_migrations),
-                   (select left(hash, 16) from drizzle.__drizzle_migrations
-                     order by created_at desc limit 1))
-  end;
+--
+--    The journal is read through EXECUTE, not a plain subquery: Postgres
+--    resolves every relation a statement names when it parses it, so a CASE
+--    guard cannot keep a missing table from erroring before the guard runs.
+do $$
+declare
+  n      bigint;
+  newest text;
+begin
+  if to_regclass('drizzle.__drizzle_migrations') is null then
+    insert into restore_verify_results values (
+      2, 'migration journal present', 'FAIL',
+      'drizzle.__drizzle_migrations is missing — the dump omitted the drizzle schema');
+    return;
+  end if;
+  execute 'select count(*), (select left(hash, 16) from drizzle.__drizzle_migrations
+                              order by created_at desc limit 1)
+             from drizzle.__drizzle_migrations'
+    into n, newest;
+  insert into restore_verify_results values (
+    2, 'migration journal present',
+    case when n > 0 then 'PASS' else 'FAIL' end,
+    format('%s migration(s) recorded, newest hash %s', n, coalesce(newest, '(none)')));
+end $$;
+
+-- Every check from here on queries the core relations. If one is missing, a
+-- later query errors and ON_ERROR_STOP exits before the table below prints, so
+-- the operator sees a bare "relation does not exist" instead of which
+-- prerequisite failed. Print what we have and stop.
+select exists (select 1 from restore_verify_results where status = 'FAIL')
+  as prerequisites_failed \gset
+\if :prerequisites_failed
+  \echo '=== restore verification — stopped: prerequisites missing ==='
+  select check_name as "check", status, detail
+  from restore_verify_results
+  order by ord;
+  do $$ begin
+    raise exception 'restore verification FAILED: prerequisites missing'
+      using hint = 'See the check table above. Later checks were not run. Do not point the server at this database.';
+  end $$;
+\endif
 
 -- 3. Extensions the schema depends on. pg_dump emits CREATE EXTENSION, but it
 --    is skipped without the privilege to create it, and the failure only
@@ -207,10 +233,15 @@ from (
 --    partial reload — leaves a sequence behind its column's max, and the
 --    symptom is a duplicate-key error on the first insert after go-live, not
 --    at restore time.
+--
+--    last_value alone is not the next id. With is_called = false the next
+--    nextval() returns last_value itself, so a sequence sitting exactly on its
+--    column's max collides even though it is not "behind" it.
 do $$
 declare
   rec record;
   seq_last bigint;
+  seq_called boolean;
   col_max  bigint;
   behind   text[] := array[]::text[];
   checked  int := 0;
@@ -238,14 +269,15 @@ begin
       and seqns.nspname not like 'pg_%'
   loop
     checked := checked + 1;
-    execute format('select last_value from %I.%I', rec.seq_schema, rec.seq_name)
-      into seq_last;
+    execute format('select last_value, is_called from %I.%I', rec.seq_schema, rec.seq_name)
+      into seq_last, seq_called;
     execute format('select coalesce(max(%I), 0) from %I.%I',
                    rec.col_name, rec.tbl_schema, rec.tbl_name)
       into col_max;
-    if seq_last < col_max then
-      behind := behind || format('%s.%s at %s but max(%s.%s)=%s',
-                                 rec.seq_schema, rec.seq_name, seq_last,
+    -- Compared rather than computed: last_value + 1 overflows at the bigint max.
+    if seq_last < col_max or (not seq_called and seq_last = col_max) then
+      behind := behind || format('%s.%s at %s (is_called=%s) but max(%s.%s)=%s',
+                                 rec.seq_schema, rec.seq_name, seq_last, seq_called,
                                  rec.tbl_name, rec.col_name, col_max);
     end if;
   end loop;

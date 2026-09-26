@@ -400,10 +400,18 @@ with the new one.
 *If it is an ordinary directory*, stage beside it and swap:
 
 ```sh
-sudo mkdir -p "$PC_DATA.restored"
+sudo mkdir "$PC_DATA.restored"
 sudo tar -xzf paperclip-<ts>.tar.gz -C "$PC_DATA.restored" --strip-components=1
-sudo mv "$PC_DATA" "$PC_DATA.old" && sudo mv "$PC_DATA.restored" "$PC_DATA"
+sudo mv -T "$PC_DATA" "$PC_DATA.old" && sudo mv -T "$PC_DATA.restored" "$PC_DATA"
 ```
+
+Both refusals are deliberate. `mkdir` without `-p` fails if an interrupted
+attempt left `$PC_DATA.restored` behind: extracting over it would leave that
+attempt's files mixed into this archive's, and the mixed tree would go into
+service looking like a clean restore. Remove it (`sudo rm -rf
+"$PC_DATA.restored"`) and start the extraction again. `mv -T` fails if a
+`$PC_DATA.old` from an earlier restore is still there, where a plain `mv`
+would quietly move the tree *inside* it; deal with that one first (step 6).
 
 `--strip-components=1` is there because the archive holds the directory itself
 (`paperclip/...`), not its bare contents. Check with
@@ -458,9 +466,20 @@ Restore into a **new** database first. This is the difference between a restore
 and a gamble: if the dump is bad you find out before destroying anything, and the
 switch at the end is two renames in one transaction, with instant rollback.
 
-A plain `pg_dump` artifact — no `--clean`, no `--create` — contains `CREATE`
-statements and no `DROP`s, so **it only loads into an empty database**. Pointed at
-a database that already has the schema it fails on the first `CREATE TABLE`. Do
+Which artifact you hold decides what happens if it is pointed at the wrong
+database, so know it before you run anything:
+
+- **The box backup** runs a plain `pg_dump` — no `--clean`, no `--create`. It
+  contains `CREATE` statements and no `DROP`s, so it only loads into an empty
+  database; pointed at one that already has the schema it fails on the first
+  `CREATE TABLE`.
+- **`paperclipai db:backup`** writes `DROP ... IF EXISTS` before every object,
+  both when it uses `pg_dump` (`--clean --if-exists`) and when it falls back
+  to its own emitter. Pointed at a populated database it **drops and replaces
+  it** rather than failing.
+
+Either way the side database below is where it goes. For the second kind it is
+the only thing between a typo in `-d` and the live board. Do
 not run migrations on the target first; the dump carries the full schema *and*
 the migration journal, so the restored database already knows which migrations
 have run.
@@ -519,7 +538,15 @@ Any `FAIL` stops the restore. In particular:
 - **`sequences ahead of their data` failing** does not break anything until the
   first insert after go-live, which then fails on a duplicate key. Note that
   `setval` is not transactional, so this cannot be fixed by rolling back; fix it
-  forward with `setval` to the column's max.
+  forward with `setval` to the column's max. The check reads `is_called` as
+  well as `last_value`: a sequence left at the max with `is_called = false`
+  hands out the max itself next, so it fails too. The two-argument
+  `setval(seq, max)` sets `is_called` to true and fixes both cases.
+- **`core relations present` or `migration journal present` failing** stops
+  the checker there, with those two rows printed: every later check queries
+  those relations, and would otherwise exit on a bare "relation does not
+  exist" before the table printed. The dump is truncated, or was loaded into
+  the wrong database.
 
 `-v allow_empty=1` downgrades the two population gates to `WARN`, for the rare
 restore whose source genuinely held none of those rows. Passing it to silence a
@@ -551,6 +578,20 @@ restored file against them.
 scripts/restore-verify-logs.sh "$PC_DATA" --expect <that number> \
   --dump-sha256 "$(sha256sum db-<ts>.sql.gz | cut -d' ' -f1)" \
   --archive paperclip-<ts>.tar.gz < run-log-refs.tsv
+```
+
+On a named volume there is no `$PC_DATA` on the host, so run the checker in a
+helper bound to the volume, read-only. Inside it the tree is `/paperclip` and
+the artifacts, and this checkout's `scripts/`, are under `/artifacts`, so every
+path the checker takes is given in the container's terms. Alpine has no `bash`;
+BusyBox covers everything else the checker uses:
+
+```sh
+docker run --rm -i -v "$VOL":/paperclip:ro -v "$PWD":/artifacts:ro alpine sh -c '
+  apk add -q --no-cache bash >/dev/null &&
+  bash /artifacts/scripts/restore-verify-logs.sh /paperclip --expect <that number> \
+    --dump-sha256 "$(sha256sum /artifacts/db-<ts>.sql.gz | cut -d" " -f1)" \
+    --archive /artifacts/paperclip-<ts>.tar.gz' < run-log-refs.tsv
 ```
 
 Write the refs to a file; do not pipe `psql` straight into the checker. When

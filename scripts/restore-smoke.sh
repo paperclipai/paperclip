@@ -441,9 +441,16 @@ smoke_agent="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no
     where r.log_store = 'local_file' and r.log_ref is not null
       and r.log_sha256 is not null and r.log_bytes > 0
       and a.status not in ('terminated', 'pending_approval')
+      -- The issue probe below reads the same company, so pick a company that
+      -- can satisfy it. Otherwise the newest run landing in a company with no
+      -- comments fails a restore another company would have passed.
+      and exists (
+        select 1 from issues i join issue_comments c on c.issue_id = i.id
+         where i.company_id = a.company_id
+      )
     order by r.created_at desc limit 1")"
 if [ -z "$smoke_agent" ]; then
-  echo "FAIL: no active agent with a finalized local run log, 1-1000 run events and an active user in its company to sign in as" >&2
+  echo "FAIL: no active agent with a finalized local run log, 1-1000 run events, a commented issue and an active user in its company to sign in as" >&2
   exit 1
 fi
 agent_id="$(echo "$smoke_agent" | cut -f1)"
