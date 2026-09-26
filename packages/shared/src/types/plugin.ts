@@ -118,6 +118,12 @@ export interface PluginToolDeclaration {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: JsonSchema;
+  /**
+   * Per-tool call timeout in milliseconds. Optional; tools without one use
+   * the transport default. The host maps expiry to a structured timeout
+   * result instead of a generic RPC error.
+   */
+  timeoutMs?: number;
 }
 
 /**
