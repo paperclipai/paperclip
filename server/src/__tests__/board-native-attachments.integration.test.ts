@@ -259,7 +259,182 @@ describe("Board upload receipt to native wake staging", () => {
     },
   );
 
-  it("does not bind or stage an old attachment merely referenced in Markdown", async () => {
+  it("carries and stages a file dropped on the task itself", async () => {
+    const { attachment, bytes } = await upload("dropped.txt");
+    const response = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Read the file I dropped on the task." });
+    expect(response.status).toBe(201);
+    const [unbound] = await db
+      .select()
+      .from(issueAttachments)
+      .where(eq(issueAttachments.id, attachment.id));
+    expect(unbound!.issueCommentId).toBeNull();
+    await vi.waitFor(() => expect(wakeup).toHaveBeenCalled());
+
+    const runId = randomUUID();
+    const contextSnapshot = mergeCoalescedContextSnapshot(
+      {},
+      { issueId, wakeCommentId: response.body.id },
+    );
+    const paperclipWake = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      agentId,
+      runId,
+      contextSnapshot,
+    });
+    expect(paperclipWake?.comments[0]?.attachments ?? []).toEqual([]);
+    expect(paperclipWake?.issueAttachments).toEqual([
+      expect.objectContaining({
+        id: attachment.id,
+        filename: "dropped.txt",
+        byteSize: bytes.length,
+      }),
+    ]);
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: issueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: { ...contextSnapshot, paperclipWake },
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: runId, status: "in_progress" })
+      .where(eq(issues.id, issueId));
+    const workspaceRoot = path.join(root, runId);
+    await mkdir(workspaceRoot);
+    const stage = await stageNativeRunnerWakeAttachments({
+      db,
+      storage,
+      binding: {
+        companyId,
+        issueId,
+        agentId,
+        runId,
+        workspaceRoot,
+        executionTargetKind: "local",
+      },
+    });
+    try {
+      expect(stage.attachments).toEqual([
+        expect.objectContaining({ id: attachment.id, unavailableReason: null }),
+      ]);
+      expect(
+        await readFile(
+          path.join(
+            workspaceRoot,
+            stage.attachments[0]!.workspaceRelativePath!,
+          ),
+        ),
+      ).toEqual(bytes);
+    } finally {
+      await stage.cleanup();
+    }
+  });
+
+  it("keeps the current files when old task drops exceed the cap", async () => {
+    // One past the 20-attachment cap, all older than the current input.
+    const base = Date.UTC(2026, 0, 1);
+    const oldDrops: string[] = [];
+    for (let index = 0; index < 21; index += 1) {
+      const { attachment } = await upload(`old-${index}.txt`);
+      await db
+        .update(issueAttachments)
+        .set({ createdAt: new Date(base + index * 1000) })
+        .where(eq(issueAttachments.id, attachment.id));
+      oldDrops.push(attachment.id);
+    }
+    const { attachment: freshDrop } = await upload("fresh-drop.txt");
+    const { attachment: onComment } = await upload("on-comment.txt");
+    const response = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({
+        body: "Read the file on this comment.",
+        attachmentIds: [onComment.id],
+      });
+    expect(response.status).toBe(201);
+    await vi.waitFor(() => expect(wakeup).toHaveBeenCalled());
+
+    const wake = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      agentId,
+      contextSnapshot: mergeCoalescedContextSnapshot(
+        {},
+        { issueId, wakeCommentId: response.body.id },
+      ),
+    });
+    expect(
+      (wake?.comments[0]?.attachments ?? []).map(
+        (entry: { id: string }) => entry.id,
+      ),
+    ).toEqual([onComment.id]);
+    const served = (wake?.issueAttachments ?? []).map(
+      (entry: { id: string }) => entry.id,
+    );
+    // 1 comment file + 19 task drops fill the cap: the newest drop and the
+    // 18 most recent old ones, oldest-first. The 3 oldest fall off.
+    expect(served).toEqual([...oldDrops.slice(3), freshDrop.id]);
+    expect(wake?.truncated).toBe(true);
+  });
+
+  it("leaves a file an agent run handed back out of the next wake", async () => {
+    const handoffRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: handoffRunId,
+      companyId,
+      agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: issueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: {},
+    });
+    const stored = await storage.putFile({
+      companyId,
+      namespace: `issues/${issueId}`,
+      originalFilename: "agent-output.txt",
+      contentType: "text/plain",
+      body: Buffer.from("Produced by the agent, not dropped by a human"),
+    });
+    const produced = await issueService(db).createAttachment({
+      issueId,
+      issueCommentId: null,
+      ...stored,
+      createdByAgentId: agentId,
+      createdByRunId: handoffRunId,
+    });
+    const response = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Next instruction." });
+    expect(response.status).toBe(201);
+    await vi.waitFor(() => expect(wakeup).toHaveBeenCalled());
+
+    const wake = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      agentId,
+      contextSnapshot: mergeCoalescedContextSnapshot(
+        {},
+        { issueId, wakeCommentId: response.body.id },
+      ),
+    });
+    expect(
+      (wake?.issueAttachments ?? []).map(
+        (entry: { id: string }) => entry.id,
+      ),
+    ).not.toContain(produced.id);
+  });
+
+  it("does not bind an old attachment merely referenced in Markdown", async () => {
     const { attachment } = await upload();
     const response = await request(app)
       .post(`/api/issues/${issueId}/comments`)
@@ -280,7 +455,12 @@ describe("Board upload receipt to native wake staging", () => {
         { issueId, wakeCommentId: response.body.id },
       ),
     });
+    // The link grants the comment no binding. The file still reaches the
+    // assignee as what it is: a board upload sitting on the task.
     expect(wake?.comments[0]?.attachments ?? []).toEqual([]);
+    expect(
+      (wake?.issueAttachments ?? []).map((entry: { id: string }) => entry.id),
+    ).toEqual([attachment.id]);
   });
 
   it.each([
