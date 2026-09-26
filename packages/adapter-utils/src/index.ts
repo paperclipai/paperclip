@@ -63,6 +63,7 @@ export {
   redactHomePathUserSegments,
   redactHomePathUserSegmentsInValue,
   redactTranscriptEntryPaths,
+  redactSecretsInText,
 } from "./log-redaction.js";
 export {
   REDACTED_COMMAND_TEXT_VALUE,
