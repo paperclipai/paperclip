@@ -26,8 +26,19 @@ const LINE2 = '{"ts":"2026-09-25T08:00:01.000Z","stream":"stdout","chunk":"world
 const FULL = LINE1 + LINE2;
 const TORN = LINE1 + LINE2.slice(0, 30); // captured mid-JSON-line
 
-function makeTree(files) {
+// The dump artifact the tree is paired with. The producer writes its sha256
+// to <data-dir>/.backup-generation after the dump is complete and before the
+// tar starts, so the marker inside a tar names the dump that preceded it.
+const DUMP_SHA = sha256("db-20260925T0800.sql.gz contents");
+const OLDER_DUMP_SHA = sha256("db-20260925T0700.sql.gz contents");
+const bound = ["--dump-sha256", DUMP_SHA];
+
+function makeTree(files, { generation = DUMP_SHA } = {}) {
   const root = mkdtempSync(join(tmpdir(), "restore-verify-logs-"));
+  if (generation !== null) {
+    // sha256sum's own output format: what `sha256sum db-<ts>.sql.gz > marker` writes.
+    writeFileSync(join(root, ".backup-generation"), `${generation}  db-<ts>.sql.gz\n`);
+  }
   const base = join(root, "instances", "default", "data", "run-logs");
   for (const [ref, content] of Object.entries(files)) {
     const abs = join(base, ref);
@@ -137,7 +148,7 @@ test("an unfinalized transcript ending on a line boundary passes as a clean pref
       finalized("c/a/r1.ndjson", FULL),
       inflight("c/a/live.ndjson"),
       inflight("c/a/empty.ndjson"),
-    ]);
+    ], bound);
     assert.equal(status, 0, out);
     assert.match(out, /run-log check PASSED/);
     assert.match(out, /1 verified against the database digest/);
@@ -217,7 +228,7 @@ test("an unfinalized transcript at or past the database's recorded length passes
       inflight("c/a/even.ndjson", "2026-09-25 08:00:00", bytes(FULL)),
       inflight("c/a/ahead.ndjson", "2026-09-25 08:00:00", bytes(LINE1)),
       inflight("c/a/nobound.ndjson"),
-    ]);
+    ], bound);
     assert.equal(status, 0, out);
     assert.match(out, /2 unfinalized at or past the length the database recorded/);
     assert.match(out, /1 unfinalized ending on a line boundary with no recorded length/);
@@ -237,7 +248,7 @@ test("unfinalized rows from the four-column query cannot pass silently", () => {
     assert.equal(bare.status, 1, bare.out);
     assert.match(bare.out, /FAIL: 1 unfinalized ref\(s\) arrived without a last_output_bytes column/);
 
-    const allowed = run(root, rows, ["--allow-unverified"]);
+    const allowed = run(root, rows, ["--allow-unverified", ...bound]);
     assert.equal(allowed.status, 0, allowed.out);
     assert.match(allowed.out, /run-log check PASSED/);
   } finally {
@@ -253,11 +264,11 @@ test("--max-torn tolerates the source's known torn transcripts and not one more"
   });
   try {
     const rows = [finalized("c/a/r1.ndjson", FULL), inflight("c/a/old.ndjson"), inflight("c/a/live.ndjson")];
-    const within = run(root, rows, ["--max-torn", "2"]);
+    const within = run(root, rows, ["--max-torn", "2", ...bound]);
     assert.equal(within.status, 0, within.out);
     assert.match(within.out, /2 unfinalized torn mid-line \(within tolerance 2\)/);
 
-    const over = run(root, rows, ["--max-torn", "1"]);
+    const over = run(root, rows, ["--max-torn", "1", ...bound]);
     assert.equal(over.status, 1, over.out);
     assert.match(over.out, /2 unfinalized transcript\(s\) end mid-line \(tolerance 1\)/);
 
@@ -378,6 +389,86 @@ test("--expect fails a ref list shorter than the database's count, and passes th
 
     const bad = run(root, [finalized("c/a/r1.ndjson", FULL)], ["--expect", "two"]);
     assert.equal(bad.status, 2, bad.out);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unfinalized transcript cannot pass unless the tar is proven to follow this dump", () => {
+  // The floor lags the dump by up to a minute, so a data-directory tar from
+  // an earlier backup run can hold a long-running run's file at or past the
+  // floor, ending on a line boundary, and still lack events the dump
+  // preceded. Nothing per-file tells that tar from the right one; the
+  // generation marker does.
+  const { root } = makeTree(
+    { "c/a/r1.ndjson": FULL, "c/a/live.ndjson": LINE1 },
+    { generation: OLDER_DUMP_SHA },
+  );
+  const rows = [
+    finalized("c/a/r1.ndjson", FULL),
+    inflight("c/a/live.ndjson", "2026-09-25 06:00:00", bytes(LINE1)),
+  ];
+  try {
+    const older = run(root, rows, bound);
+    assert.equal(older.status, 1, older.out);
+    assert.match(older.out, /FAIL: the data directory was not taken after this dump/);
+    assert.match(older.out, new RegExp(`marker names ${OLDER_DUMP_SHA}`));
+    assert.doesNotMatch(older.out, /run-log check PASSED/);
+
+    const unstated = run(root, rows);
+    assert.equal(unstated.status, 1, unstated.out);
+    assert.match(unstated.out, /FAIL: 1 unfinalized transcript\(s\) cannot be bounded/);
+    assert.match(unstated.out, /--dump-sha256/);
+    assert.doesNotMatch(unstated.out, /run-log check PASSED/);
+
+    const accepted = run(root, rows, ["--allow-unbound"]);
+    assert.equal(accepted.status, 0, accepted.out);
+    assert.match(accepted.out, /1 unfinalized NOT bounded/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a stated dump the tree carries no marker for fails before any ref is checked", () => {
+  // A tar from a producer that never wrote the marker, or one extracted one
+  // level off, cannot be tied to the dump; saying which dump it was does not
+  // make it so.
+  const { root } = makeTree({ "c/a/r1.ndjson": FULL }, { generation: null });
+  try {
+    const { status, out } = run(root, [finalized("c/a/r1.ndjson", FULL)], bound);
+    assert.equal(status, 1, out);
+    assert.match(out, /FAIL: no \.backup-generation marker/);
+    assert.doesNotMatch(out, /run-log check PASSED/);
+
+    const malformed = run(root, [finalized("c/a/r1.ndjson", FULL)], ["--dump-sha256", "not-a-digest"]);
+    assert.equal(malformed.status, 2, malformed.out);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("finalized runs need no marker: their digests already pin the generation", () => {
+  const { root } = makeTree({ "c/a/r1.ndjson": FULL }, { generation: null });
+  try {
+    const { status, out } = run(root, [finalized("c/a/r1.ndjson", FULL)]);
+    assert.equal(status, 0, out);
+    assert.match(out, /run-log check PASSED/);
+    assert.doesNotMatch(out, /NOT bounded/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a matching marker is reported, so PASSED says the pair was proven", () => {
+  const { root } = makeTree({ "c/a/r1.ndjson": FULL, "c/a/live.ndjson": LINE1 });
+  try {
+    const { status, out } = run(
+      root,
+      [finalized("c/a/r1.ndjson", FULL), inflight("c/a/live.ndjson", "2026-09-25 08:00:00", bytes(LINE1))],
+      ["--dump-sha256", DUMP_SHA.toUpperCase()],
+    );
+    assert.equal(status, 0, out);
+    assert.match(out, /data directory taken after dump [0-9a-f]{12}/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
