@@ -125,6 +125,48 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.sanctionedPath).toContain("CodexCoder");
   });
 
+  it("says a run is live only when the supplied run claim is live", () => {
+    const copy = describeIssueWriteDenial("issue_write_assignee_run_lock", {
+      assigneeLabel: "CodexCoder",
+      issueIdentifier: "TASK-71",
+      assigneeRun: { runId: "run-1", runStatus: "running", runIsLive: true },
+    });
+    expect(copy.description).toContain("a run is live");
+  });
+
+  it("does not claim a live run when the named run is dead", () => {
+    // The old copy asserted "a run is live" and told the reader to wait for a
+    // run that no longer existed, on an issue holding no binding at all.
+    const copy = describeIssueWriteDenial("issue_write_assignee_run_lock", {
+      assigneeLabel: "CodexCoder",
+      issueIdentifier: "TASK-71",
+      assigneeRun: { runId: "run-1", runStatus: "cancelled", runIsLive: false },
+    });
+    expect(copy.description).not.toContain("a run is live");
+    expect(copy.description).toContain("cancelled");
+    expect(copy.sanctionedPath).not.toContain("wait for the run to release");
+    expect(copy.sanctionedPath).toContain("Comment instead");
+  });
+
+  it("does not claim a live run when the named run row is gone", () => {
+    const copy = describeIssueWriteDenial("issue_write_assignee_run_lock", {
+      assigneeLabel: "CodexCoder",
+      issueIdentifier: "TASK-71",
+      assigneeRun: { runId: "run-1", runStatus: null, runIsLive: false },
+    });
+    expect(copy.description).not.toContain("a run is live");
+    expect(copy.description).toContain("no longer exists");
+  });
+
+  it("does not claim a live run when the issue holds no binding at all", () => {
+    const copy = describeIssueWriteDenial("issue_write_assignee_run_lock", {
+      assigneeLabel: "CodexCoder",
+      issueIdentifier: "TASK-71",
+      assigneeRun: null,
+    });
+    expect(copy.description).not.toContain("a run is live");
+  });
+
   it("reuses responsible-user ceiling copy and keeps on-behalf-of terminology", () => {
     const ceiling = describeIssueWriteDenial("issue_write_responsible_user_ceiling", {
       responsibleUserName: "Dotta",

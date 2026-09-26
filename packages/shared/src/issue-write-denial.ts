@@ -75,6 +75,21 @@ export interface IssueWriteDenialContext {
   count?: number | null;
   /** ISO timestamp at which log-only rollout becomes enforcement. */
   enforceAt?: string | null;
+  /**
+   * What the assignee's run claim on the issue actually is. The guard used to
+   * assert "a run is live" without ever reading the run fields; when the server
+   * supplies this, the copy states the observed fact instead of guessing.
+   * `null` means the server looked and the issue holds no run binding; leaving
+   * it undefined means the server did not look, and the copy stays generic.
+   */
+  assigneeRun?: {
+    /** The run id the issue points at, or null when it holds no binding. */
+    runId: string | null;
+    /** Observed run status, or null when the run row no longer exists. */
+    runStatus: string | null;
+    /** True when the run is live and genuinely holds the claim. */
+    runIsLive: boolean;
+  } | null;
 }
 
 export function isIssueWriteDenialCode(
@@ -203,23 +218,68 @@ export function describeIssueWriteDenial(
       };
     }
 
-    case "issue_write_assignee_run_lock":
+    case "issue_write_assignee_run_lock": {
+      // The guard fires on status and assignee alone, so the copy must not assert
+      // a live run it never looked up. Report the observed run fact instead.
+      // `assigneeRun === undefined` means the caller did not look at all, and
+      // the generic wording is the only honest thing left to say.
+      const observedRun = context.assigneeRun;
+      const looked = observedRun !== undefined;
+      // A null `assigneeRun` is a positive observation: the server looked and the
+      // issue names no run at all.
+      const run = observedRun ?? { runId: null, runStatus: null, runIsLive: false };
+      const holdsLiveRun = Boolean(run.runId) && run.runIsLive;
+      if (!looked || holdsLiveRun) {
+        return {
+          code,
+          status: 409,
+          tone: "lock",
+          boundary: "Run checkout lock",
+          title: "Another agent's run owns this task",
+          description:
+            `${assignee} has ${issue} checked out and a run is live. Checkout and run ` +
+            `ownership stay assignee-scoped even though writes are open, so field edits ` +
+            `belong to the run that holds the lock until it finishes.`,
+          whoCanAct:
+            `${assignee}'s live run, or an agent holding the manage-active-checkouts permission.`,
+          sanctionedPath:
+            `Comment instead of patching — comments stay open and wake ${assignee} — or ` +
+            `wait for the run to release the lock and retry.`,
+        };
+      }
+      // Either the issue holds no run binding at all, or the run it names is
+      // dead. Both used to be reported as "a run is live", which named a lock
+      // nobody held and told the reader to wait for a run that never arrives.
+      const staleRun = !run.runId
+        ? "the issue holds no run binding at all"
+        : run.runStatus === null
+          ? "the run it named no longer exists"
+          : `its recorded run is ${run.runStatus}`;
       return {
         code,
         status: 409,
         tone: "lock",
         boundary: "Run checkout lock",
-        title: "Another agent's run owns this task",
+        title: run.runId
+          ? "Another agent's run no longer holds this task"
+          : "Another agent's in-progress task",
         description:
-          `${assignee} has ${issue} checked out and a run is live. Checkout and run ` +
-          `ownership stay assignee-scoped even though writes are open, so field edits ` +
-          `belong to the run that holds the lock until it finishes.`,
+          `${issue} is in_progress under ${assignee}, so its run/checkout lock stays ` +
+          `assignee-scoped even though writes are open. No live run currently holds ` +
+          `that lock: ${staleRun}.`,
         whoCanAct:
-          `${assignee}'s live run, or an agent holding the manage-active-checkouts permission.`,
+          `${assignee}, or an agent holding the manage-active-checkouts permission, ` +
+          `once the stale lock clears.`,
         sanctionedPath:
-          `Comment instead of patching — comments stay open and wake ${assignee} — or ` +
-          `wait for the run to release the lock and retry.`,
+          run.runId
+            ? `Comment instead of patching — comments stay open and wake ${assignee}. Do not ` +
+              `wait on the recorded run to release the lock; it holds no live claim. Ask an ` +
+              `agent with the manage-active-checkouts permission to force-release it if it ` +
+              `does not clear itself.`
+            : `Comment instead of patching — comments stay open and wake ${assignee}. Nothing ` +
+              `is holding the run lock, so this clears on its own; retry once it does.`,
       };
+    }
 
     case "cross_issue_influence_cap_exceeded": {
       const cap = context.cap ?? 20;

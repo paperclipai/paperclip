@@ -270,6 +270,7 @@ import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
+  heartbeatRunHoldsNoLiveClaim,
   ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
@@ -5145,6 +5146,30 @@ export function issueRoutes(
     };
   }
 
+  /**
+   * Observed state of the run an issue's binding names, for denial copy that
+   * must state a fact rather than assert one. Returns null when the issue holds
+   * no run binding, and reports a run whose row has gone as status null.
+   */
+  async function describeIssueRunClaim(runId: string | null) {
+    if (!runId) return null;
+    const run = await db
+      .select({
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+        executionControlDeadlineAt: heartbeatRuns.executionControlDeadlineAt,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    return {
+      runId,
+      runStatus: run?.status ?? null,
+      runIsLive: !heartbeatRunHoldsNoLiveClaim(run ?? null),
+    };
+  }
+
   /** Respond to a denied issue write with copy that names boundary, who, and path. */
   async function denyIssueWrite(
     req: Request,
@@ -5152,9 +5177,13 @@ export function issueRoutes(
     issue: { identifier?: string | null; assigneeAgentId: string | null },
     code: IssueWriteDenialCode,
     extraDetails: Record<string, unknown> = {},
+    contextOverrides: Partial<IssueWriteDenialContext> = {},
   ) {
     const labels = await issueWriteDenialLabels(req, issue);
-    const { status, body } = issueWriteDenialResponse(code, labels);
+    const { status, body } = issueWriteDenialResponse(code, {
+      ...labels,
+      ...contextOverrides,
+    });
     res.status(status).json({
       error: body.error,
       details: { ...body.details, ...extraDetails },
@@ -5330,6 +5359,9 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      /** Read only to state the run claim's observed state in denial copy. */
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
@@ -5402,6 +5434,11 @@ export function issueRoutes(
       if (issue.status === "in_progress") {
         // Run/checkout ownership stays assignee-scoped even though writes are
         // open, so this lock clears on its own — the copy routes to comments.
+        // The denial copy must not claim "a run is live" without reading the
+        // run fields, so resolve the claim's actual state here.
+        const assigneeRun = await describeIssueRunClaim(
+          issue.checkoutRunId ?? issue.executionRunId ?? null,
+        );
         return denyIssueWrite(
           req,
           res,
@@ -5411,7 +5448,11 @@ export function issueRoutes(
             issueId: issue.id,
             assigneeAgentId: issue.assigneeAgentId,
             actorAgentId,
+            ...(assigneeRun
+              ? { assigneeRunId: assigneeRun.runId, assigneeRunStatus: assigneeRun.runStatus }
+              : {}),
           },
+          { assigneeRun },
         );
       }
       // Past the run lock the issue is idle, so only channels that have not

@@ -2057,6 +2057,50 @@ export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
   "cancelled",
   "timed_out",
 ]);
+
+/**
+ * A run that never left the queue past this age can make no further progress, so
+ * it must not pin an issue's run fields. Derived from `createdAt` rather than
+ * from `execution_control_deadline_at`, which is scoped to post-execution
+ * control work and is explicitly never a timeout on thinking.
+ */
+export const HEARTBEAT_RUN_START_GRACE_MS = 30 * 60_000;
+
+/**
+ * Whether a heartbeat run is in a state where its claim on an issue is void:
+ * terminal, missing, or still queued long past the point where it could have
+ * started. Callers must treat such a run's binding as reapable.
+ */
+export function heartbeatRunHoldsNoLiveClaim(run: {
+  status: string;
+  startedAt: Date | null;
+  createdAt: Date;
+  executionControlDeadlineAt: Date | null;
+} | null): boolean {
+  if (!run) return true;
+  if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+  if (run.status === "running") return false;
+  if (run.status !== "queued") return false;
+  // Only a queued run that has already blown its start grace, or that the
+  // execution-control reconciler has declared overdue, is reapable. A control
+  // deadline is authoritative for a queued run because it means the executor
+  // was handed off and is expected to be finishing.
+  if (
+    run.executionControlDeadlineAt &&
+    run.executionControlDeadlineAt.getTime() <= Date.now()
+  ) {
+    return true;
+  }
+  return run.createdAt.getTime() + HEARTBEAT_RUN_START_GRACE_MS <= Date.now();
+}
+
+/** Columns `heartbeatRunHoldsNoLiveClaim` needs, for use as a drizzle selection. */
+const heartbeatRunClaimColumns = {
+  status: heartbeatRuns.status,
+  startedAt: heartbeatRuns.startedAt,
+  createdAt: heartbeatRuns.createdAt,
+  executionControlDeadlineAt: heartbeatRuns.executionControlDeadlineAt,
+};
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -2510,18 +2554,18 @@ async function listPendingFinalizeBlockerIssueIds(
  * Whether a heartbeat run has reached a terminal state or no longer exists.
  * A terminal/missing run can make no further progress on its execution
  * workspace, so callers must not wait on it to advance an in-flight operation.
+ * A run still queued past its start grace counts too: it will never start.
  */
 export async function heartbeatRunIsTerminalOrMissing(
   dbOrTx: Pick<Db, "select">,
   runId: string,
 ): Promise<boolean> {
   const run = await dbOrTx
-    .select({ status: heartbeatRuns.status })
+    .select(heartbeatRunClaimColumns)
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, runId))
-    .then((rows: Array<{ status: string }>) => rows[0] ?? null);
-  if (!run) return true;
-  return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    .then((rows: Array<Parameters<typeof heartbeatRunHoldsNoLiveClaim>[0]>) => rows[0] ?? null);
+  return heartbeatRunHoldsNoLiveClaim(run);
 }
 
 /**
@@ -7465,21 +7509,22 @@ export function issueService(db: Db) {
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
-          .select({ status: heartbeatRuns.status })
+          .select(heartbeatRunClaimColumns)
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
           .then((rows) => rows[0] ?? null),
         tx
-          .select({ status: heartbeatRuns.status })
+          .select(heartbeatRunClaimColumns)
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
-      const stale =
-        !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
-      const actorLive =
-        actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
-      if (!stale || !actorLive) {
+      // The incumbent must hold no live claim. The actor only needs to exist:
+      // a terminal actor run is stranded on exactly this kind of stale state
+      // and is the one actor allowed to clear it.
+      const stale = heartbeatRunHoldsNoLiveClaim(existingRun);
+      const actorPresent = Boolean(actorRun);
+      if (!stale || !actorPresent) {
         return { adopted: null, latest: lockedIssue };
       }
 
@@ -7541,8 +7586,15 @@ export function issueService(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, input.actorRunId))
         .then((rows) => rows[0] ?? null);
-      if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status))
-        return null;
+      if (!actorRun) return null;
+      // A terminal actor run may still adopt. The precondition below is
+      // deliberately narrow — the issue is in_progress, assigned to this
+      // agent, holds no checkout, and its execution run is either absent or
+      // this same run — so there is no competing claim to steal, and the reaper
+      // has already dropped the fields a live run would be protecting. Refusing
+      // here is what turned a heartbeat cancelled mid-run into an agent locked
+      // out of every issue it held: the only actor who can clear the stale
+      // state is the one whose run the clearable check treats as dead.
 
       const now = new Date();
       const adopted = await tx
@@ -7596,11 +7648,11 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select(heartbeatRunClaimColumns)
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (!heartbeatRunHoldsNoLiveClaim(run)) return false;
 
       const updated = await tx
         .update(issues)
@@ -7647,11 +7699,11 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select(heartbeatRunClaimColumns)
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (!heartbeatRunHoldsNoLiveClaim(run)) return false;
 
       if (
         issue.executionRunId &&
@@ -7661,15 +7713,11 @@ export function issueService(db: Db) {
           sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
         );
         const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
+          .select(heartbeatRunClaimColumns)
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, issue.executionRunId))
           .then((rows) => rows[0] ?? null);
-        if (
-          executionRun &&
-          !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)
-        )
-          return false;
+        if (!heartbeatRunHoldsNoLiveClaim(executionRun)) return false;
       }
 
       const updated = await tx
@@ -11339,6 +11387,28 @@ export function issueService(db: Db) {
             "Secure Defaults",
           ],
         });
+      }
+
+      // A run that holds no live claim cannot be given one: every later request
+      // reaps a binding it writes, so a checkout from a dead run succeeds and
+      // then silently unbinds, stranding the agent in a checkout/409 loop. Refuse
+      // the bind outright instead of writing a row the next request deletes.
+      // This also covers a run that never started past its grace, which the
+      // clearers below would drop just as fast.
+      if (checkoutRunId) {
+        const actorRun = await db
+          .select(heartbeatRunClaimColumns)
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, checkoutRunId))
+          .then((rows) => rows[0] ?? null);
+        if (heartbeatRunHoldsNoLiveClaim(actorRun)) {
+          throw conflict("Run cannot check out an issue: run is not live", {
+            issueId: id,
+            checkoutRunId,
+            runStatus: actorRun?.status ?? null,
+            code: "issue_checkout_run_not_live",
+          });
+        }
       }
 
       await clearExecutionRunIfTerminal(id);
