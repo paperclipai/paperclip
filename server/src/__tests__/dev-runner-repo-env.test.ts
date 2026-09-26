@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyRepoRootEnvFile,
   mergeMissingEnvEntries,
@@ -22,6 +22,18 @@ afterAll(() => {
 });
 
 describe("dev-runner repo-root env file (#13816)", () => {
+  // The runner honors these for the real instance directory, so a CI job that
+  // runs against a managed instance would otherwise redirect every expectation
+  // below. Each test states the overrides it depends on.
+  beforeEach(() => {
+    vi.stubEnv("PAPERCLIP_CONFIG", "");
+    vi.stubEnv("PAPERCLIP_HOME", "");
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("parses comments, export prefixes, quoting, escapes, inline comments, and empty values", () => {
     const parsed = parseDotenvFile([
       "# a comment",
