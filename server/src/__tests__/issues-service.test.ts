@@ -7223,3 +7223,184 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     expect(duplicates).toHaveLength(1);
   });
 });
+
+/**
+ * TES-168, disposition side.
+ *
+ * An agent that finishes its work and blocks the issue on someone else still has
+ * to name the unblock owner and explain the handoff. Both are run-attributed
+ * writes. Before this, the status PATCH that set `blocked` cleared
+ * `checkoutRunId`, and a `blocked` issue refuses checkout outright, so the
+ * binding could never be re-acquired and the run that set the block could not
+ * record anything about it.
+ */
+describeEmbeddedPostgres("issueService.update keeps the handing-off run's checkout when blocking", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-block-handoff-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedHeldCheckout(options: { runStatus?: string } = {}) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: options.runStatus ?? "running",
+      invocationSource: "manual",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Hand this off",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+    });
+    return { companyId, agentId, issueId, runId };
+  }
+
+  const readLocks = (issueId: string) =>
+    db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+
+  it("retains the checkout for the run that set the block", async () => {
+    const { issueId, agentId, runId } = await seedHeldCheckout();
+
+    const updated = await svc.update(issueId, {
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId }, action: "Review" },
+      actorAgentId: agentId,
+      actorRunId: runId,
+    });
+
+    expect(updated?.status).toBe("blocked");
+    // The whole point: the run is still bound, so it can still write the
+    // explanation.
+    expect(updated?.checkoutRunId).toBe(runId);
+    const row = await readLocks(issueId);
+    expect(row?.checkoutRunId).toBe(runId);
+    expect(row?.executionRunId).toBe(runId);
+  });
+
+  /**
+   * The negative control, and the one that bounds the carve-out: a *different*
+   * run blocking the issue releases the lock exactly as before. So does a board
+   * write with no run at all. Only the run already holding the checkout keeps it.
+   */
+  it("releases the checkout when a different run sets the block", async () => {
+    const { issueId, agentId } = await seedHeldCheckout();
+    const otherRunId = randomUUID();
+
+    await svc.update(issueId, {
+      status: "blocked",
+      actorAgentId: agentId,
+      actorRunId: otherRunId,
+    });
+
+    const row = await readLocks(issueId);
+    expect(row?.status).toBe("blocked");
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+  });
+
+  it("releases the checkout when a board actor sets the block with no run", async () => {
+    const { issueId } = await seedHeldCheckout();
+
+    await svc.update(issueId, { status: "blocked", actorUserId: "local-board" });
+
+    const row = await readLocks(issueId);
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+  });
+
+  /**
+   * The lock is retained across the transition into `blocked` only. Reaching any
+   * other non-`in_progress` status still releases it, so a blocked issue cannot
+   * become a way to pin a lock open indefinitely.
+   */
+  it("still releases the checkout for a terminal status set by the holding run", async () => {
+    const { issueId, agentId, runId } = await seedHeldCheckout();
+
+    await svc.update(issueId, {
+      status: "cancelled",
+      actorAgentId: agentId,
+      actorRunId: runId,
+    });
+
+    const row = await readLocks(issueId);
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+  });
+
+  /**
+   * Reached by the sweeper: the carve-out is not a way to hold a lock forever.
+   * `clearCheckoutRunIfTerminal` reclaims it as soon as the run is terminal.
+   */
+  it("reclaims the retained checkout once the handing-off run is terminal", async () => {
+    const { issueId, agentId, runId } = await seedHeldCheckout();
+
+    await svc.update(issueId, {
+      status: "blocked",
+      actorAgentId: agentId,
+      actorRunId: runId,
+    });
+    expect((await readLocks(issueId))?.checkoutRunId).toBe(runId);
+
+    await db
+      .update(heartbeatRuns)
+      // "succeeded" is one of TERMINAL_HEARTBEAT_RUN_STATUSES.
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await expect(svc.clearCheckoutRunIfTerminal(issueId)).resolves.toBe(true);
+    const row = await readLocks(issueId);
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+  });
+});

@@ -13254,13 +13254,65 @@ export function issueRoutes(
       const descriptor = updateFields.unblockDescriptor ?? null;
       if (descriptor && typeof descriptor === "object") {
         const owner = descriptor.owner;
-        if (
-          req.actor.type === "agent" &&
-          (owner === "board" || "userId" in owner)
-        ) {
-          throw forbidden(
-            "Agents may only name themselves as an unblock owner",
+        // Self-naming is the no-information case and needs no run binding: it
+        // is visible from `assigneeAgentId` and changes nothing an agent could
+        // not already see. Only naming someone else has to be attributable.
+        const self =
+          owner !== "board" &&
+          "agentId" in owner &&
+          owner.agentId === req.actor.agentId;
+        /**
+         * `unblockDescriptor` says who unblocks this and what they must do. The
+         * overwhelmingly common case is someone *else*: the issue is blocked on
+         * another agent's work, or on a board decision, and naming the caller is
+         * the one case that carries no information — a self-named owner on a
+         * self-assigned issue is already visible from `assigneeAgentId`.
+         *
+         * So the self-only restriction is gone. What replaces it is the check
+         * that actually mattered: the write must be attributable to a run bound
+         * to *this* issue. A caller that is a live run for this issue can say
+         * anything true about the block; one that is not is a board-key or
+         * cross-issue caller with no standing here.
+         *
+         * The company-boundary and active-membership checks below still apply to
+         * every owner form, including self-naming, so this widens who may be
+         * named and never widens what may be named.
+         */
+        if (req.actor.type === "agent" && !self) {
+          if (!req.actor.runId) {
+            throw unprocessable(
+              "Naming another unblock owner requires a run bound to this issue",
+            );
+          }
+          const run = await db
+            .select({
+              companyId: heartbeatRuns.companyId,
+              agentId: heartbeatRuns.agentId,
+              contextSnapshot: heartbeatRuns.contextSnapshot,
+            })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, req.actor.runId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          const raw = run?.contextSnapshot;
+          const runContext =
+            raw && typeof raw === "object" && !Array.isArray(raw)
+              ? (raw as Record<string, unknown>)
+              : null;
+          const runIssueId = [runContext?.issueId, runContext?.taskId].find(
+            (candidate): candidate is string =>
+              typeof candidate === "string" && candidate.trim() !== "",
           );
+          if (
+            !run ||
+            run.companyId !== existing.companyId ||
+            run.agentId !== req.actor.agentId ||
+            runIssueId !== existing.id
+          ) {
+            throw unprocessable(
+              "Naming another unblock owner requires a run bound to this issue",
+            );
+          }
         }
         if (owner !== "board" && "agentId" in owner) {
           const target = await db
@@ -13278,14 +13330,6 @@ export function issueRoutes(
             throw unprocessable(
               "Unblock owner agent must belong to the issue company",
             );
-          if (
-            req.actor.type === "agent" &&
-            req.actor.agentId !== owner.agentId
-          ) {
-            throw forbidden(
-              "Agents may only name themselves as an unblock owner",
-            );
-          }
         } else if (owner !== "board" && "userId" in owner) {
           const member = await db
             .select({ id: companyMemberships.id })
@@ -13565,6 +13609,10 @@ export function issueRoutes(
         ...updateFields,
         actorAgentId: actor.agentId ?? null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        // Read by the blocked-transition carve-out in svc.update: only the run
+        // that already holds the checkout keeps it when it hands the issue to
+        // `blocked`.
+        actorRunId: actor.runId ?? null,
       };
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&

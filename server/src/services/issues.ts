@@ -10537,6 +10537,12 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        /**
+         * The run performing the write. `actorAgentId` alone cannot say which of
+         * an agent's several live runs is speaking, and the blocked-transition
+         * carve-out below is a per-run decision.
+         */
+        actorRunId?: string | null;
         companyGuard?: string;
       },
       dbOrTx: any = db,
@@ -10582,6 +10588,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        actorRunId,
         companyGuard,
         ...issueData
       } = data;
@@ -10826,10 +10833,39 @@ export function issueService(db: Db) {
         patch.cancelledAt = null;
       }
       if (issueData.status && issueData.status !== "in_progress") {
-        patch.checkoutRunId = null;
-        patch.executionRunId = null;
-        patch.executionAgentNameKey = null;
-        patch.executionLockedAt = null;
+        /**
+         * Entering `blocked` is a normal terminal-for-this-run step, not an end:
+         * the agent that finishes its work and hands the issue to someone else
+         * still has to record *who* unblocks it and *what they must do*, and a
+         * comment explaining the handoff. Both are run-attributed writes, and
+         * attribution needs this run to still be bound to the issue.
+         *
+         * Releasing the checkout here threw that binding away at the exact
+         * moment it was about to be needed, and a `blocked` issue refuses
+         * checkout outright (`Issue is blocked by unresolved blockers`), so the
+         * binding could never be re-acquired. The run that set the block was
+         * left unable to say anything about the block it had just set.
+         *
+         * So the run holding the checkout keeps it across the transition into
+         * `blocked`, and only that run. Every other run is still refused by the
+         * checkout gate, and the sweeper
+         * (`clearCheckoutRunIfTerminal`) reclaims the lock as soon as this run
+         * is actually terminal, so a blocked issue cannot hold a lock
+         * indefinitely. A different run, and a board write with no run at all,
+         * release it as before.
+         */
+        const blockHandedOffByThisRun =
+          issueData.status === "blocked" &&
+          existing.status !== "blocked" &&
+          existing.checkoutRunId !== null &&
+          actorRunId !== undefined &&
+          existing.checkoutRunId === actorRunId;
+        if (!blockHandedOffByThisRun) {
+          patch.checkoutRunId = null;
+          patch.executionRunId = null;
+          patch.executionAgentNameKey = null;
+          patch.executionLockedAt = null;
+        }
       }
       if (
         (issueData.assigneeAgentId !== undefined &&

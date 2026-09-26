@@ -322,6 +322,13 @@ function createRunContextDb(
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
   runId: string = ownerRunId,
   chatBindings: Array<{ id: string; companyId: string; issueId: string; state: string }> = [],
+  /**
+   * Rows the agents / company_memberships lookups resolve to. The unblock-owner
+   * check reads the company boundary through them, so the default has to look
+   * like "the named agent exists in this company" and a test that needs the
+   * negative passes `[]`.
+   */
+  memberRows: Array<Record<string, unknown>> | null = null,
 ) {
   const chatBindingQueries: ReturnType<PgDialect["sqlToQuery"]>[] = [];
   const runRows = Array.isArray(runAgentOrRows)
@@ -336,11 +343,23 @@ function createRunContextDb(
   const firstRun = runRows[0] ?? {};
   const runAgentId = typeof firstRun.agentId === "string" ? firstRun.agentId : ownerAgentId;
   const runAgentCompanyId = typeof firstRun.agentCompanyId === "string" ? firstRun.agentCompanyId : companyId;
-  const rowsForSelection = async (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
+  const rowsForSelection = async (
+    selection: Record<string, unknown>,
+    chatBindingQuery = false,
+    settledRecoveryQuery = false,
+    ownerLookupQuery = false,
+  ) => {
     if (chatBindingQuery) return chatBindings;
     // An unknown selector has no settled recovery receipt. Returning the
     // generic issue fixture here would invent an unrelated replay row.
     if (settledRecoveryQuery) return [];
+    // The unblock-owner company-boundary lookups both select just `{ id }` from
+    // `agents` / `company_memberships`. Without this branch they fall through to
+    // the generic agent row below, which always resolves — so a test could not
+    // exercise the "must belong to the issue company" / "active member" denials.
+    if (ownerLookupQuery) {
+      return memberRows ?? [{ id: runAgentId, companyId: runAgentCompanyId }];
+    }
     const keys = Object.keys(selection);
     if (keys.includes("entityId")) return [];
     if (keys.includes("contextSnapshot")) return runRows;
@@ -351,16 +370,21 @@ function createRunContextDb(
     }
     return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
   };
-  const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
+  const buildQuery = (
+    selection: Record<string, unknown>,
+    chatBindingQuery = false,
+    settledRecoveryQuery = false,
+    ownerLookupQuery = false,
+  ) => {
     const whereResult = {
       orderBy: vi.fn(async () => []),
       limit: vi.fn(() => ({
-        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery, ownerLookupQuery)),
       })),
       for: vi.fn(() => ({
-        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery, ownerLookupQuery)),
       })),
-      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery, ownerLookupQuery)),
     };
     const query = {
       innerJoin: vi.fn(() => query),
@@ -376,10 +400,16 @@ function createRunContextDb(
     transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
-        if (getTableName(table) === "issue_thread_interactions") {
+        const tableName = getTableName(table);
+        if (tableName === "issue_thread_interactions") {
           return { where: vi.fn(() => ({ limit: vi.fn(async () => []) })) };
         }
-        return buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions");
+        return buildQuery(
+          selection,
+          tableName === "chat_conversations",
+          tableName === "issue_recovery_actions",
+          tableName === "agents" || tableName === "company_memberships",
+        );
       }),
     })),
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
@@ -1702,35 +1732,183 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  /**
+   * The point of the fix (TES-168): `unblockDescriptor` exists to say who
+   * unblocks an issue and what they must do, and that owner is almost never the
+   * caller. An agent that has finished work and is blocked on someone else must
+   * be able to name them.
+   *
+   * `createApp(ownerActor())` binds the actor's run to this issue via the run's
+   * `contextSnapshot.issueId`, which is what the route requires before it will
+   * accept a non-self owner.
+   */
   it.each([
-    ["board", "board"],
+    ["another agent", { agentId: peerAgentId }],
+    ["the board", "board"],
     ["a company user", { userId: "board-user" }],
-  ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
+  ])("lets an agent bound to the issue name %s as unblock owner", async (_label, unblockOwner) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "blocked" }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(ownerActor(), createRunContextDb(
+      { issueId },
+      ownerAgentId,
+      ownerRunId,
+    )))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+      }),
+    );
+  });
+
+  it("lets an agent change an already-blocked issue's owner to another agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "blocked" }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(ownerActor(), createRunContextDb(
+      { issueId },
+      ownerAgentId,
+      ownerRunId,
+    )))
+      .patch(`/api/issues/${issueId}`)
+      .send({ unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Rebase onto the live base" } });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Rebase onto the live base" },
+      }),
+    );
+  });
+
+  /**
+   * Negative control for the run-binding requirement. This run was started for a
+   * *different* issue, so it has no standing to describe this one's block. Before
+   * the fix the refusal was unconditional self-naming; it is now scoped to the
+   * caller that cannot be attributed to this issue.
+   */
+  it("refuses to name another owner from a run bound to a different issue", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
 
-    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
-      status: "blocked",
-      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
-    });
+    const res = await request(await createApp(ownerActor(), createRunContextDb(
+      { issueId: "99999999-9999-4999-8999-999999999999" },
+      ownerAgentId,
+      ownerRunId,
+    )))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Not my run" },
+      });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe(
+      "Naming another unblock owner requires a run bound to this issue",
+    );
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["board", "board"],
-    ["a company user", { userId: "board-user" }],
-  ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+  it("refuses to name another owner from a run belonging to a different agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
 
-    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
-      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
-    });
+    // The run row says peerAgentId, but the caller authenticates as ownerAgentId
+    // with that run's id. Binding is not enough; the run has to be the caller's.
+    const res = await request(await createApp(ownerActor(), createRunContextDb(
+      { issueId },
+      peerAgentId,
+      ownerRunId,
+    )))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: { owner: "board", action: "Not my run either" },
+      });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe(
+      "Naming another unblock owner requires a run bound to this issue",
+    );
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Widening *who* may be named must not widen *what* may be named. The company
+   * boundary and active-membership rules still refuse a target that does not
+   * exist in this company, and now do so with a 422 that says why.
+   */
+  it.each([
+    ["an agent outside the company", { agentId: peerAgentId }, "Unblock owner agent must belong to the issue company"],
+    ["a user who is not an active member", { userId: "board-user" }, "Unblock owner user must be an active company member"],
+  ])("still refuses %s", async (_label, unblockOwner, expectedError) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+
+    const res = await request(await createApp(ownerActor(), createRunContextDb(
+      { issueId },
+      ownerAgentId,
+      ownerRunId,
+      [],
+      // No agents / company_memberships row resolves: the target is out of
+      // bounds for this company.
+      [],
+    )))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe(expectedError);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Self-naming is unchanged and still needs no run binding: it is visible from
+   * `assigneeAgentId` already, so it was never the case the restriction was
+   * really about.
+   */
+  it("still lets an agent name itself with no run binding at all", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "blocked" }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(ownerActor(), createRunContextDb(
+      {},
+      ownerAgentId,
+      ownerRunId,
+    )))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Review my own blocker" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Review my own blocker" },
+      }),
+    );
   });
 
   it("allows a board actor to name the board as unblock owner", async () => {
