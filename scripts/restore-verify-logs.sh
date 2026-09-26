@@ -22,10 +22,11 @@ set -euo pipefail
 # It reads rows on stdin, one per line, tab-separated, so it does not need to
 # know how your deployment reaches psql:
 #
-#   log_ref <TAB> created_at <TAB> log_bytes <TAB> log_sha256
+#   log_ref <TAB> created_at <TAB> log_bytes <TAB> log_sha256 <TAB> last_output_bytes
 #
 #   "${PSQL[@]}" -d paperclip_restored -Atq -F "$(printf '\t')" -c \
-#     "select log_ref, created_at, log_bytes, log_sha256 from heartbeat_runs
+#     "select log_ref, created_at, log_bytes, log_sha256, last_output_bytes
+#        from heartbeat_runs
 #       where log_store = 'local_file' and log_ref is not null" > refs.tsv
 #   scripts/restore-verify-logs.sh /paperclip --expect <count(*) of the same rows> < refs.tsv
 #
@@ -37,16 +38,22 @@ set -euo pipefail
 # run's file is complete in the tar, so a digest mismatch means a wrong
 # artifact generation or the reverse ordering, and it always fails.
 #
-# An unfinalized transcript has no digest, but it has a shape: the server
-# appends whole NDJSON lines, so an intact transcript is empty or ends in a
-# newline. Tar reads a file up to the size it saw, so what it can do to a
-# transcript still being written is cut it off mid-line, and that is exactly
-# what a last byte other than a newline shows. Those refs are counted as torn
-# and fail beyond --max-torn. One ending on a line boundary is a clean prefix:
-# every event in it opens, and it is reported as unverifiable, not failed.
-# Measured on one live deployment: 286 unfinalized transcripts, 263 ending
-# on a newline or empty, 23 torn at the source itself (runs interrupted by
-# server restarts weeks earlier), none damaged anywhere but the last line.
+# An unfinalized transcript has no digest, but it has a floor. While a run is
+# live the server writes last_output_bytes — the transcript's byte total — to
+# the row after the append it counts, so with the dump taken first the
+# restored file is at least that long. A file shorter than that was cut by
+# the tar, wherever the cut fell, and always fails. Longer is normal: the tar
+# ran after the dump and the run kept writing. The floor lags: it is written
+# at most once a minute, so output from the last minute before the dump is
+# recorded nowhere in the dump and no check can bound it. NULL means the run
+# never produced output.
+#
+# It also has a shape: the server appends whole NDJSON lines, so an intact
+# transcript is empty or ends in a newline. A last byte other than a newline
+# is a cut-off event, counted as torn, failing beyond --max-torn.
+# Measured on one live deployment: 286 unfinalized transcripts, 285 at or
+# past their floor and 1 empty with none, 0 short; 23 torn at the source
+# itself (runs interrupted by server restarts weeks earlier).
 #
 # Check every ref, not a sample. Hashing a gigabyte of transcripts takes
 # seconds, and a sample turns the result into a coin toss (see --max-missing).
@@ -196,6 +203,9 @@ missing=0
 mismatch=0
 verified=0
 unverified=0
+floored=0
+short=0
+unbounded_input=0
 torn=0
 empty=0
 reported=0
@@ -239,11 +249,12 @@ for line in ${rows[@]+"${rows[@]}"}; do
   # Tab is the documented separator (psql -F $'\t'). psql -A without -F
   # separates with '|', and no ref, timestamp, size or digest can contain
   # one, so accept that too rather than turn a forgotten flag into "every
-  # ref is missing".
-  case "$line" in
-    *$'\t'*) IFS=$'\t' read -r ref when want_bytes want_sha _ <<<"$line" ;;
-    *) IFS='|' read -r ref when want_bytes want_sha _ <<<"$line" ;;
-  esac
+  # ref is missing". Tabs are turned into '|' before splitting: tab is IFS
+  # whitespace, so `read` would merge the empty log_bytes/log_sha256 of an
+  # unfinalized row and shift last_output_bytes into log_bytes.
+  line="${line//$'\t'/|}"
+  seps="${line//[!|]/}"
+  IFS='|' read -r ref when want_bytes want_sha floor_bytes _ <<<"$line"
   case "$ref" in
     ''|/*|*..*)
       # A ref is relative and stays inside the base. Anything else is a
@@ -266,6 +277,29 @@ for line in ${rows[@]+"${rows[@]}"}; do
   fi
   if [ -z "$want_sha" ]; then
     # The server never finalized this run, so the database holds no digest.
+    # It does hold a floor: last_output_bytes is written to the row after
+    # the append it counts, and the dump precedes the tar, so the restored
+    # file is at least that long. Shorter is a cut the tar made, on a line
+    # boundary or not.
+    if [ "${#seps}" -eq 3 ]; then
+      # The four-column query: digests selected, the floor not. (Fewer
+      # columns is presence-only input, which the digest rule below refuses.)
+      unbounded_input=$((unbounded_input + 1))
+    elif [ -n "$floor_bytes" ]; then
+      case "$floor_bytes" in
+        *[!0-9]*)
+          short=$((short + 1))
+          report "short: $ref  unreadable last_output_bytes: $floor_bytes"
+          continue
+          ;;
+      esac
+      have_bytes="$(stat -c '%s' "$path")"
+      if [ "$have_bytes" -lt "$floor_bytes" ]; then
+        short=$((short + 1))
+        report "short: $ref  $have_bytes bytes, database recorded at least $floor_bytes${when:+  (run created $when)}"
+        continue
+      fi
+    fi
     # What can still be established is that the file stops on a line
     # boundary; a last byte other than a newline is a cut-off event.
     if [ -s "$path" ] && [ "$(tail -c 1 "$path" | od -An -tx1 | tr -d ' \n')" != "0a" ]; then
@@ -273,7 +307,11 @@ for line in ${rows[@]+"${rows[@]}"}; do
       report "torn: $ref  unfinalized, ends mid-line${when:+  (run created $when)}"
       continue
     fi
-    unverified=$((unverified + 1))
+    if [ -n "$floor_bytes" ]; then
+      floored=$((floored + 1))
+    else
+      unverified=$((unverified + 1))
+    fi
     continue
   fi
   have_bytes="$(stat -c '%s' "$path")"
@@ -333,6 +371,23 @@ if [ "$missing" -gt "$MAX_MISSING" ]; then
   failed=1
 fi
 
+if [ "$short" -gt 0 ]; then
+  echo "FAIL: $checked ref(s) checked, $short unfinalized transcript(s) shorter than the output the database recorded." >&2
+  echo "      The dump recorded more output for these runs than their restored" >&2
+  echo "      files hold, so the tar cut them off. Either the filesystem was" >&2
+  echo "      tarred before the database was dumped, or the files are from an" >&2
+  echo "      older generation. No tolerance: the source never has any." >&2
+  failed=1
+fi
+
+if [ "$unbounded_input" -gt 0 ] && [ "$ALLOW_UNVERIFIED" -ne 1 ]; then
+  echo "FAIL: $unbounded_input unfinalized ref(s) arrived without a last_output_bytes column." >&2
+  echo "      Select it as the fifth column (see the query at the top of this" >&2
+  echo "      script). Without it an in-flight transcript the tar cut on a line" >&2
+  echo "      boundary passes. Pass --allow-unverified to accept that knowingly." >&2
+  failed=1
+fi
+
 if [ "$torn" -gt "$MAX_TORN" ]; then
   echo "FAIL: $checked ref(s) checked, $torn unfinalized transcript(s) end mid-line (tolerance $MAX_TORN)." >&2
   echo "      If the runs above were in flight when the backup ran, the tar cut" >&2
@@ -366,8 +421,11 @@ if [ "$verified" -gt 0 ]; then
 else
   summary="$summary, content NOT verified (no digests on stdin, --allow-unverified given)"
 fi
+if [ "$floored" -gt 0 ]; then
+  summary="$summary, $floored unfinalized at or past the length the database recorded"
+fi
 if [ "$unverified" -gt 0 ]; then
-  summary="$summary, $unverified unfinalized ending on a line boundary (no digest to compare)"
+  summary="$summary, $unverified unfinalized ending on a line boundary with no recorded length"
 fi
 if [ "$torn" -gt 0 ]; then
   summary="$summary, $torn unfinalized torn mid-line (within tolerance $MAX_TORN)"

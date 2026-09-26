@@ -244,14 +244,16 @@ fi
 #    that has a few source-side dangling refs of its own. log_bytes and
 #    log_sha256 are what the server recorded at finalize; the checker compares
 #    the extracted file against them, so a transcript the tar captured
-#    mid-write fails here instead of passing as "present".
+#    mid-write fails here instead of passing as "present". last_output_bytes
+#    is the floor for a run still in flight at the dump.
 step "run-log reachability and content (every ref, tolerance $MAX_MISSING missing, $MAX_TORN torn)"
 #    The rows go to a file first and the checker is held to the database's
 #    count: `docker exec` piped into a reader that falls behind has been
 #    measured dropping rows with exit 0, and a short list passes.
 refs_file="$EXTRACT_DIR.refs"
 docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -F "$(printf '\t')" -c \
-  "select log_ref, created_at, log_bytes, log_sha256 from heartbeat_runs
+  "select log_ref, created_at, log_bytes, log_sha256, last_output_bytes
+     from heartbeat_runs
     where log_store = 'local_file' and log_ref is not null" > "$refs_file"
 ref_count="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -c \
   "select count(*) from heartbeat_runs where log_store = 'local_file' and log_ref is not null")"

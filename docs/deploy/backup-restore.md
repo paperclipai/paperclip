@@ -475,7 +475,8 @@ restored file against them.
 
 ```sh
 "${PSQL[@]}" -d paperclip_restored -Atq -F "$(printf '\t')" -c \
-  "select log_ref, created_at, log_bytes, log_sha256 from heartbeat_runs
+  "select log_ref, created_at, log_bytes, log_sha256, last_output_bytes
+     from heartbeat_runs
     where log_store = 'local_file' and log_ref is not null" > run-log-refs.tsv
 "${PSQL[@]}" -d paperclip_restored -Atq -c \
   "select count(*) from heartbeat_runs
@@ -493,7 +494,7 @@ truncated.
 
 ```
 run-log base: /paperclip/instances/default/data/run-logs
-run-log check PASSED — 6501 ref(s) checked, 11 missing (within tolerance 11), 6204 verified against the database digest, 263 unfinalized ending on a line boundary (no digest to compare), 23 unfinalized torn mid-line (within tolerance 23) (1103 zero-byte, which the source also had)
+run-log check PASSED — 6507 ref(s) checked, 11 missing (within tolerance 11), 6211 verified against the database digest, 261 unfinalized at or past the length the database recorded, 1 unfinalized ending on a line boundary with no recorded length, 23 unfinalized torn mid-line (within tolerance 23) (1103 zero-byte, which the source also had)
 ```
 
 It checks every ref, not a sample — hashing a gigabyte of transcripts takes
@@ -504,11 +505,20 @@ numbers:
   byte-for-byte what the server had when it closed the run, so it opens.
 - **Unfinalized** runs — in flight when the dump was taken, or killed before
   finalize — have no digest in the database. They are the *only* runs a live
-  tar can tear, so the checker holds them to the one property it can still
-  test: the server appends whole NDJSON lines, so an intact transcript ends in
-  a newline, and one that does not was cut off mid-event. Those ending on a
-  line boundary are clean prefixes — every event in them opens — and pass.
-  **Torn** ones fail beyond `--max-torn <n>` (default 0). With the database
+  tar can cut short, and the checker holds them to two things the dump does
+  record. First, length: while a run is live the server writes the
+  transcript's byte total to the row (`last_output_bytes`) after each append
+  it counts, and the dump precedes the tar, so the restored file must be at
+  least that long. **Short** ones fail with no tolerance — the tar cut them,
+  whether mid-line or on a line boundary — and a healthy source has none
+  (measured: 0 of 285). Longer is normal: the run kept writing between the
+  dump and the tar. The floor is written at most once a minute, so output
+  from the minute before the dump is recorded nowhere in the dump and no
+  check can bound it. Second, shape: the server appends whole NDJSON lines,
+  so an intact transcript ends in a newline, and one that does not was cut
+  off mid-event. **Torn** ones fail beyond `--max-torn <n>` (default 0).
+  A four-column ref list (no `last_output_bytes`) fails rather than skip the
+  length check. With the database
   dumped before the tree is tarred, every *finalized* run's file is complete
   in the tar; if the unfinalized count is large relative to the deployment's
   concurrency, the dump and the tar were taken far apart.
@@ -730,14 +740,15 @@ is exercised here.
 ### A captured run
 
 Artifacts taken from a live deployment while its agents were running — the
-database dump first (221 MB gzipped), then a tar of the instance tree (1.3 GB).
+database dump first (221 MB gzipped), then a tar of the instance tree (1.3 GB),
+finished eleven minutes later.
 To keep the test artifact small, that tar left out the backup directories, the
 logs, and the company, project and agent workspaces. A production artifact keeps
 the workspaces, but none of these checks reads them. It was restored with:
 
 ```sh
-scripts/restore-smoke.sh --db db-20260926T030018Z.sql.gz \
-  --volume paperclip-20260926T030018Z.tar.gz --max-missing 11 --max-torn 23 \
+scripts/restore-smoke.sh --db db-20260926T032440Z.sql.gz \
+  --volume paperclip-20260926T032440Z.tar.gz --max-missing 11 --max-torn 23 \
   --boot ghcr.io/paperclipai/paperclip:nightly
 ```
 
@@ -749,12 +760,12 @@ from server restarts a month before the backup.
 |---|---|
 | `gzip -t`, both artifacts | ok |
 | load into clean `postgres:17-alpine`, `ON_ERROR_STOP=1` | ok |
-| `restore-verify.sql` | 7/7 `PASS` — 2 companies, 21 agents, 16 projects, 3179 issues, 10963 comments, 6730 runs, 68429 run events, 284 migrations, no orphans, sequences ahead |
+| `restore-verify.sql` | 7/7 `PASS` — 2 companies, 21 agents, 16 projects, 3181 issues, 10975 comments, 6735 runs, 68498 run events, 284 migrations, no orphans, sequences ahead |
 | master key | mode 600; 63 of 63 secret versions decrypt with it to their recorded `value_sha256` |
-| run logs | 6502 refs, row count matched the database; 6206 byte-identical to the recorded digest, 0 mismatches; 262 unfinalized ending on a line boundary, 23 torn — the source's 23; 11 missing — the source's 11 |
+| run logs | 6507 refs, row count matched the database; 6211 byte-identical to the recorded digest, 0 mismatches; 261 unfinalized at or past the length the database recorded, 0 short, 1 with no recorded length; 23 torn — the source's 23; 11 missing — the source's 11 |
 | server boot | `/api/health` ok on the restored database and tree, 284 migrations |
 | sign-in and board | minted key signed in as an agent; its company, 13 agents and the first page of issues (500) served |
-| issue and comments | the company's most recently commented issue served with 4 comments, database has 4 |
+| issue and comments | the company's most recently commented issue served with 2 comments, database has 2 |
 | run record and events | a finalized run served as `succeeded` with 16 events, database has `succeeded` and 16 |
 | run log through the API | that run's transcript served, first NDJSON line parses |
 

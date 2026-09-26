@@ -37,7 +37,7 @@ function makeTree(files) {
   return { root, base };
 }
 
-// rows: [ref, createdAt, logBytes|null, sha|null]
+// rows: [ref, createdAt, logBytes|null, sha|null, lastOutputBytes|null]
 function run(root, rows, args = []) {
   const stdin = rows
     .map((r) => r.map((c) => (c === null || c === undefined ? "" : String(c))).join("\t"))
@@ -54,8 +54,18 @@ const finalized = (ref, content, createdAt = "2026-09-25 08:00:00") => [
   createdAt,
   bytes(content),
   sha256(content),
+  bytes(content),
 ];
-const inflight = (ref, createdAt = "2026-09-25 08:00:00") => [ref, createdAt, null, null];
+// lastOutputBytes: heartbeat_runs.last_output_bytes, the transcript's byte
+// total when the server last wrote progress to the row. NULL for a run that
+// never produced output.
+const inflight = (ref, createdAt = "2026-09-25 08:00:00", lastOutputBytes = null) => [
+  ref,
+  createdAt,
+  null,
+  null,
+  lastOutputBytes,
+];
 
 test("intact tree with digests passes and reports every ref as verified", () => {
   const { root } = makeTree({
@@ -154,6 +164,82 @@ test("an unfinalized transcript cut off mid-line fails, even beside a verified o
     assert.match(out, /torn: c\/a\/live\.ndjson\s+unfinalized, ends mid-line\s+\(run created 2026-09-25 08:59:00\)/);
     assert.match(out, /1 unfinalized transcript\(s\) end mid-line \(tolerance 0\)/);
     assert.doesNotMatch(out, /run-log check PASSED/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unfinalized transcript cut on a line boundary short of the database's recorded length fails", () => {
+  // The tar finished reading after LINE1, but the dump already recorded the
+  // run's output reaching the end of LINE2. The file ends in a newline, so the
+  // shape check alone passes it; the length the database recorded does not.
+  // Empty log_bytes/log_sha256 sit between created_at and last_output_bytes,
+  // so this also pins that empty tab-separated columns are not collapsed.
+  const { root } = makeTree({
+    "c/a/r1.ndjson": FULL,
+    "c/a/live.ndjson": LINE1,
+    "c/a/gone.ndjson": "",
+  });
+  try {
+    const { status, out } = run(root, [
+      finalized("c/a/r1.ndjson", FULL),
+      inflight("c/a/live.ndjson", "2026-09-25 08:59:00", bytes(FULL)),
+      inflight("c/a/gone.ndjson", "2026-09-25 08:59:30", bytes(LINE1)),
+    ]);
+    assert.equal(status, 1, out);
+    assert.match(
+      out,
+      new RegExp(
+        `short: c/a/live\\.ndjson\\s+${bytes(LINE1)} bytes, database recorded at least ${bytes(FULL)}\\s+\\(run created 2026-09-25 08:59:00\\)`,
+      ),
+    );
+    assert.match(out, new RegExp(`short: c/a/gone\\.ndjson\\s+0 bytes, database recorded at least ${bytes(LINE1)}`));
+    assert.match(out, /2 unfinalized transcript\(s\) shorter than the output the database recorded/);
+    assert.doesNotMatch(out, /run-log check PASSED/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unfinalized transcript at or past the database's recorded length passes", () => {
+  // The database is dumped before the tree is tarred, and the server writes
+  // last_output_bytes only after the append, so the restored file can run
+  // ahead of the row, never behind it.
+  const { root } = makeTree({
+    "c/a/r1.ndjson": FULL,
+    "c/a/even.ndjson": FULL,
+    "c/a/ahead.ndjson": FULL,
+    "c/a/nobound.ndjson": LINE1,
+  });
+  try {
+    const { status, out } = run(root, [
+      finalized("c/a/r1.ndjson", FULL),
+      inflight("c/a/even.ndjson", "2026-09-25 08:00:00", bytes(FULL)),
+      inflight("c/a/ahead.ndjson", "2026-09-25 08:00:00", bytes(LINE1)),
+      inflight("c/a/nobound.ndjson"),
+    ]);
+    assert.equal(status, 0, out);
+    assert.match(out, /2 unfinalized at or past the length the database recorded/);
+    assert.match(out, /1 unfinalized ending on a line boundary with no recorded length/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unfinalized rows from the four-column query cannot pass silently", () => {
+  // The query from before last_output_bytes was selected: an in-flight
+  // transcript would get only the shape check, which a line-boundary cut
+  // passes. Refuse unless the operator says so explicitly.
+  const { root } = makeTree({ "c/a/r1.ndjson": FULL, "c/a/live.ndjson": LINE1 });
+  try {
+    const rows = [finalized("c/a/r1.ndjson", FULL).slice(0, 4), inflight("c/a/live.ndjson").slice(0, 4)];
+    const bare = run(root, rows);
+    assert.equal(bare.status, 1, bare.out);
+    assert.match(bare.out, /FAIL: 1 unfinalized ref\(s\) arrived without a last_output_bytes column/);
+
+    const allowed = run(root, rows, ["--allow-unverified"]);
+    assert.equal(allowed.status, 0, allowed.out);
+    assert.match(allowed.out, /run-log check PASSED/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
