@@ -2120,7 +2120,7 @@ async function buildRuntime(input: {
     // user-configured agentCommand) to avoid passing --model twice.
     if (
       requestedModel &&
-      !agentCommandShell.split(/\s+/).some((arg) => arg === "--model" || arg.startsWith("--model="))
+      !agentCommandShell.split(/\s+/).some((arg) => arg === "--model" || arg === "-m" || arg.startsWith("--model="))
     ) {
       agentCommandShell = `${agentCommandShell} --model ${shellQuote(requestedModel)}`;
       agentCommand = agentCommand ? `${agentCommand} --model ${requestedModel}` : agentCommand;

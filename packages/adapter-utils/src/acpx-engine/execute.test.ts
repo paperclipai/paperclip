@@ -584,7 +584,11 @@ describe("shared ACPX engine runtime behavior", () => {
   });
 
   it("does not append a second --model when a custom Gemini command already sets one", async () => {
-    for (const agentCommand of ["gemini --acp --model gemini-2.5-flash", "gemini --acp --model=gemini-2.5-flash"]) {
+    for (const agentCommand of [
+      "gemini --acp --model gemini-2.5-flash",
+      "gemini --acp --model=gemini-2.5-flash",
+      "gemini --acp -m gemini-2.5-flash",
+    ]) {
       const gemini = await runExecutor({ agent: "gemini", agentCommand, model: "gemini-2.5-pro" });
       expect(gemini.configOptions).toEqual([]);
       expect(gemini.meta[0]?.command).toBe(agentCommand);
