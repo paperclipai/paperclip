@@ -17,6 +17,8 @@ export interface ExecutionContinuationEnvelope {
     /** Run-authored Local CLI comments retain user attribution but are not human direction. */
     createdByRunId?: string | null;
     body: string;
+    /** True when the cap sliced this body to fit the continuation budget. */
+    bodyTruncated?: boolean;
     createdAt: string;
     updatedAt: string;
     deleted: boolean;
@@ -42,6 +44,10 @@ export interface ExecutionContinuationEnvelope {
     baseRunId: string;
     messages: ExecutionContinuationEnvelope["messages"];
   };
+  /** True when the message history was capped to fit the continuation budget. */
+  truncated?: boolean;
+  /** True when older capped-off history must be fetched via the API. */
+  fallbackFetchNeeded?: boolean;
   recoveryOutcomes?: Array<{ recoveryActionId: string; decision: unknown }>;
   completedWork: string | null;
   /** Start a new turn from history; never replay prior tool calls automatically. */

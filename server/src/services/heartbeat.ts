@@ -7982,6 +7982,12 @@ export async function buildPaperclipWakePayload(input: {
     issueDescriptionTruncated ||
     planReviewContext?.truncated === true ||
     documentReviewContext?.truncated === true;
+  const continuationEnvelope = parseObject(
+    input.contextSnapshot.executionContinuation,
+  );
+  const continuationTruncated =
+    continuationEnvelope.truncated === true ||
+    continuationEnvelope.fallbackFetchNeeded === true;
   const recoveryActionId = readNonEmptyString(
     input.contextSnapshot.recoveryActionId,
   );
@@ -8205,8 +8211,11 @@ export async function buildPaperclipWakePayload(input: {
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
-    truncated: payloadTruncated,
-    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
+    truncated: payloadTruncated || continuationTruncated,
+    fallbackFetchNeeded:
+      payloadTruncated ||
+      continuationTruncated ||
+      missingCommentCount > 0,
   };
   return issueId
     ? createRunSecretRedactionRegistry(input.db).redactForIssue(

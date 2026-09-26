@@ -21,6 +21,95 @@ const object = (v: unknown): Record<string, unknown> =>
     : {};
 const string = (v: unknown) =>
   typeof v === "string" && v.length > 0 ? v : null;
+
+// The envelope regrows monotonically as a task thread grows, and every
+// consumer serializes it (prompt sections, DB context snapshots). Bound the
+// message history: keep the newest messages within a byte budget, drop the
+// oldest, and disclose the cap so agents fetch older history via the API.
+const CONTINUATION_MESSAGES_MAX_BYTES = 96 * 1024;
+const CONTINUATION_OBJECTIVE_MAX_BYTES = 16 * 1024;
+// Tool receipts accumulate one per completed API action across every prior
+// run; bound them newest-first so long-running tasks cannot regrow the
+// snapshot or prompt without limit.
+const CONTINUATION_COMPLETED_ACTIONS_MAX_BYTES = 64 * 1024;
+const CONTINUATION_COMPLETED_ACTIONS_MAX_COUNT = 200;
+const CONTINUATION_MESSAGE_OVERHEAD_BYTES = 256;
+const CONTINUATION_TRUNCATED_BODY_MARKER =
+  "\n[truncated; fetch the source comment for the full body]";
+const CONTINUATION_TRUNCATED_OBJECTIVE_MARKER =
+  "\n[objective truncated; fetch the source message for the full request]";
+
+function utf8SliceWithMarker(body: string, maxBytes: number, marker: string) {
+  const buffer = Buffer.from(body, "utf8");
+  const sliced = buffer
+    .subarray(0, Math.max(0, maxBytes - Buffer.byteLength(marker, "utf8")))
+    .toString("utf8")
+    .replace(/\uFFFD+$/, "");
+  return sliced + marker;
+}
+
+function capContinuationMessages(
+  messages: ExecutionContinuationEnvelope["messages"],
+): {
+  messages: ExecutionContinuationEnvelope["messages"];
+  truncated: boolean;
+} {
+  let totalBytes = 0;
+  let firstKeptIndex = messages.length;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const size =
+      Buffer.byteLength(messages[i].body, "utf8") +
+      CONTINUATION_MESSAGE_OVERHEAD_BYTES;
+    if (
+      firstKeptIndex < messages.length &&
+      totalBytes + size > CONTINUATION_MESSAGES_MAX_BYTES
+    )
+      break;
+    totalBytes += size;
+    firstKeptIndex = i;
+  }
+  const kept = messages.slice(firstKeptIndex);
+  let truncated = firstKeptIndex > 0;
+  const newest = kept.at(-1);
+  // Even the newest message must not bypass the budget: keep it with a
+  // sliced body so direction survives but the snapshot stays bounded.
+  if (
+    newest &&
+    Buffer.byteLength(newest.body, "utf8") + CONTINUATION_MESSAGE_OVERHEAD_BYTES >
+      CONTINUATION_MESSAGES_MAX_BYTES
+  ) {
+    newest.body = utf8SliceWithMarker(
+      newest.body,
+      CONTINUATION_MESSAGES_MAX_BYTES,
+      CONTINUATION_TRUNCATED_BODY_MARKER,
+    );
+    newest.bodyTruncated = true;
+    truncated = true;
+  }
+  return { messages: kept, truncated };
+}
+
+function capCompletedActions(
+  actions: NonNullable<ExecutionContinuationEnvelope["completedActions"]>,
+): NonNullable<ExecutionContinuationEnvelope["completedActions"]> {
+  // Receipts are low-trust evidence, not authority: keeping the newest ones
+  // within a budget preserves the actionable context and bounds the envelope.
+  const kept: NonNullable<ExecutionContinuationEnvelope["completedActions"]> =
+    [];
+  let totalBytes = 0;
+  for (let i = actions.length - 1; i >= 0; i--) {
+    const size =
+      Buffer.byteLength(JSON.stringify(actions[i]), "utf8") +
+      CONTINUATION_MESSAGE_OVERHEAD_BYTES;
+    if (kept.length > 0 && (kept.length >= CONTINUATION_COMPLETED_ACTIONS_MAX_COUNT ||
+      totalBytes + size > CONTINUATION_COMPLETED_ACTIONS_MAX_BYTES))
+      break;
+    totalBytes += size;
+    kept.unshift(actions[i]);
+  }
+  return kept;
+}
+
 export function continuationOriginCommentIds(context: unknown): string[] {
   const c = object(context);
   const prior = object(c.executionContinuation);
@@ -243,27 +332,39 @@ export async function buildExecutionContinuation(input: {
   const deliveredMessages = Array.isArray(priorEnvelope.messages)
     ? priorEnvelope.messages.map(object)
     : null;
-  const resumeDelta =
+  const continuationMessages = capContinuationMessages(messages);
+  // Delta against what the earlier provider session actually received. Compute
+  // the delta from the FULL history first: capping the history before the
+  // delta could drop a burst of new comments that were never delivered. The
+  // delta itself is then capped newest-first, with truncation disclosed.
+  const undeliveredMessages =
     deliveredMessages && input.previousContextRunId
-      ? {
-          baseRunId: input.previousContextRunId,
-          messages: messages.filter(
-            (message) =>
-              originCommentIds.includes(message.id) ||
-              !deliveredMessages.some(
-                (prior) =>
-                  prior.id === message.id &&
-                  prior.updatedAt === message.updatedAt &&
-                  prior.body === message.body &&
-                  prior.deleted === message.deleted &&
-                  prior.authorId === message.authorId &&
-                  (prior.createdByRunId ?? null) === message.createdByRunId &&
-                  JSON.stringify(prior.sourceTrust) ===
-                    JSON.stringify(message.sourceTrust),
-              ),
-          ),
-        }
-      : undefined;
+      ? messages.filter(
+          (message) =>
+            originCommentIds.includes(message.id) ||
+            !deliveredMessages.some(
+              (prior) =>
+                prior.id === message.id &&
+                prior.updatedAt === message.updatedAt &&
+                prior.body === message.body &&
+                prior.deleted === message.deleted &&
+                prior.authorId === message.authorId &&
+                (prior.createdByRunId ?? null) === message.createdByRunId &&
+                JSON.stringify(prior.sourceTrust) ===
+                  JSON.stringify(message.sourceTrust),
+            ),
+        )
+      : null;
+  const cappedDelta = undeliveredMessages
+    ? capContinuationMessages(undeliveredMessages)
+    : null;
+  const resumeDelta = cappedDelta
+    ? {
+        baseRunId: input.previousContextRunId!,
+        messages: cappedDelta.messages,
+      }
+    : undefined;
+  const deltaTruncated = cappedDelta?.truncated === true;
   const latestRequest = messages.findLast(
     (row) =>
       row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
@@ -280,22 +381,24 @@ export async function buildExecutionContinuation(input: {
       ),
     )
     .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id));
-  const completedActions = priorRuns.flatMap((run) =>
-    Object.entries(object(object(run.result).apiToolReceipts)).flatMap(
-      ([receiptId, receipt]) => {
-        const value = object(receipt);
-        return value.state === "completed" &&
-          typeof value.operationId === "string"
-          ? [
-              {
-                runId: run.id,
-                receiptId,
-                operationId: value.operationId,
-                result: value.result,
-              },
-            ]
-          : [];
-      },
+  const completedActions = capCompletedActions(
+    priorRuns.flatMap((run) =>
+      Object.entries(object(object(run.result).apiToolReceipts)).flatMap(
+        ([receiptId, receipt]) => {
+          const value = object(receipt);
+          return value.state === "completed" &&
+            typeof value.operationId === "string"
+            ? [
+                {
+                  runId: run.id,
+                  receiptId,
+                  operationId: value.operationId,
+                  result: value.result,
+                },
+              ]
+            : [];
+        },
+      ),
     ),
   );
   const reconciliations = await db
@@ -365,6 +468,19 @@ export async function buildExecutionContinuation(input: {
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
+  // The objective rides the snapshot and the prompt even when the message that
+// carried it was capped off, so it needs its own bound.
+const rawObjective = latestRequest?.body ?? issue.description ?? issue.title;
+  const objectiveOverflows =
+    rawObjective != null &&
+    Buffer.byteLength(rawObjective, "utf8") > CONTINUATION_OBJECTIVE_MAX_BYTES;
+  const objective = objectiveOverflows
+    ? utf8SliceWithMarker(
+        rawObjective,
+        CONTINUATION_OBJECTIVE_MAX_BYTES,
+        CONTINUATION_TRUNCATED_OBJECTIVE_MARKER,
+      )
+    : rawObjective;
   return {
     ...(interruptedRunId ? { interruptedRunId } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
@@ -383,8 +499,11 @@ export async function buildExecutionContinuation(input: {
       sourceRunId,
     },
     originCommentIds,
-    objective: latestRequest?.body ?? issue.description ?? issue.title,
-    messages,
+    objective,
+    messages: continuationMessages.messages,
+    ...(continuationMessages.truncated || deltaTruncated || objectiveOverflows
+      ? { truncated: true, fallbackFetchNeeded: true }
+      : {}),
     humanResponses: interactions.flatMap(row => {
       const response = projectHumanInteractionResponse(row);
       return response ? [response] : [];
@@ -409,7 +528,7 @@ export async function buildExecutionContinuation(input: {
       .map((row) => row.id),
     coverage: {
       kind: "full_task_history",
-      throughCommentId: messages.at(-1)?.id ?? null,
+      throughCommentId: continuationMessages.messages.at(-1)?.id ?? null,
       summaryThroughCommentId: null,
     },
   };

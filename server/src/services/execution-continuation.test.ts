@@ -133,6 +133,200 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("caps the message history budget and discloses truncation", async () => {
+      const capIssueId = randomUUID();
+      const capAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: capAgentId, companyId, name: "Cap", role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: capIssueId, companyId, title: "Cap", status: "in_progress",
+        assigneeAgentId: capAgentId,
+      });
+      const largeBodies = Array.from({ length: 6 }, (_, i) => ({
+        id: randomUUID(),
+        companyId,
+        issueId: capIssueId,
+        authorType: "user" as const,
+        authorUserId: "local-board",
+        body: `chunk ${i}: ${"x".repeat(60_000)}`,
+        createdAt: new Date(Date.now() + i * 1000),
+      }));
+      await db.insert(issueComments).values(largeBodies);
+      try {
+        const envelope = await buildExecutionContinuation({
+          db, companyId, issueId: capIssueId, agentId: capAgentId,
+          context: { wakeReason: "issue_assigned" }, summary: null,
+          exposeLowTrustRaw: false,
+        });
+        expect(envelope.truncated).toBe(true);
+        expect(envelope.fallbackFetchNeeded).toBe(true);
+        const bodyBytes = envelope.messages.reduce(
+          (sum, message) => sum + Buffer.byteLength(message.body, "utf8"),
+          0,
+        );
+        expect(bodyBytes).toBeLessThanOrEqual(
+          96 * 1024 + envelope.messages.length * 256,
+        );
+        // The newest message is always kept; older head history is dropped
+        // and disclosed as fetchable.
+        expect(envelope.messages.at(-1)?.body.startsWith("chunk 5: ")).toBe(true);
+        expect(envelope.messages[0]?.body.startsWith("chunk 0: ")).toBe(false);
+        expect(envelope.coverage.throughCommentId).toBe(
+          envelope.messages.at(-1)?.id,
+        );
+        const prompt = renderPaperclipWakePrompt(
+          { executionContinuation: envelope },
+          { resumedSession: false },
+        );
+        expect(prompt).toContain("task history truncated");
+        expect(prompt).toContain("fallbackFetchNeeded");
+      } finally {
+        await db.delete(issueComments).where(eq(issueComments.issueId, capIssueId));
+        await db.delete(issues).where(eq(issues.id, capIssueId));
+        await db.delete(agents).where(eq(agents.id, capAgentId));
+      }
+    });
+    it("caps a single oversized newest comment instead of bypassing the budget", async () => {
+      const capIssueId = randomUUID();
+      const capAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: capAgentId, companyId, name: "CapOne", role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: capIssueId, companyId, title: "CapOne", status: "in_progress",
+        assigneeAgentId: capAgentId,
+      });
+      const hugeCommentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: hugeCommentId,
+        companyId,
+        issueId: capIssueId,
+        authorType: "user",
+        authorUserId: "local-board",
+        body: `huge: ${"y".repeat(150_000)}`,
+        createdAt: new Date(),
+      });
+      try {
+        const envelope = await buildExecutionContinuation({
+          db, companyId, issueId: capIssueId, agentId: capAgentId,
+          context: { wakeReason: "issue_assigned" }, summary: null,
+          exposeLowTrustRaw: false,
+        });
+        expect(envelope.messages).toHaveLength(1);
+        expect(envelope.messages[0].bodyTruncated).toBe(true);
+        expect(Buffer.byteLength(envelope.messages[0].body, "utf8")).toBeLessThanOrEqual(96 * 1024);
+        expect(envelope.truncated).toBe(true);
+        expect(envelope.fallbackFetchNeeded).toBe(true);
+      } finally {
+        await db.delete(issueComments).where(eq(issueComments.issueId, capIssueId));
+        await db.delete(issues).where(eq(issues.id, capIssueId));
+        await db.delete(agents).where(eq(agents.id, capAgentId));
+      }
+    });
+
+    it("caps the objective so a large latest request stays bounded", async () => {
+      const capIssueId = randomUUID();
+      const capAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: capAgentId, companyId, name: "CapObj", role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: capIssueId, companyId, title: "CapObj", status: "in_progress",
+        assigneeAgentId: capAgentId,
+      });
+      const objectiveCommentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: objectiveCommentId,
+        companyId,
+        issueId: capIssueId,
+        authorType: "user",
+        authorUserId: "local-board",
+        body: `objective: ${"d".repeat(120_000)}`,
+        createdAt: new Date(),
+      });
+      try {
+        const envelope = await buildExecutionContinuation({
+          db, companyId, issueId: capIssueId, agentId: capAgentId,
+          context: { wakeReason: "issue_assigned" }, summary: null,
+          exposeLowTrustRaw: false,
+        });
+        expect(envelope.objective.startsWith("objective: ")).toBe(true);
+        expect(Buffer.byteLength(envelope.objective, "utf8")).toBeLessThanOrEqual(16 * 1024 + 200);
+        expect(envelope.objective).toContain("objective truncated");
+        expect(envelope.truncated).toBe(true);
+        expect(envelope.fallbackFetchNeeded).toBe(true);
+      } finally {
+        await db.delete(issueComments).where(eq(issueComments.issueId, capIssueId));
+        await db.delete(issues).where(eq(issues.id, capIssueId));
+        await db.delete(agents).where(eq(agents.id, capAgentId));
+      }
+    });
+    it("caps completedActions so receipts from many runs cannot regrow the envelope", async () => {
+      const capIssueId = randomUUID();
+      const capAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: capAgentId, companyId, name: "CapActions", role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: capIssueId, companyId, title: "CapActions", status: "in_progress",
+        assigneeAgentId: capAgentId,
+      });
+      const actionRuns = Array.from({ length: 15 }, (_, i) => ({
+        id: randomUUID(),
+        companyId,
+        agentId: capAgentId,
+        status: "succeeded" as const,
+        contextSnapshot: { issueId: capIssueId },
+        resultJson: {
+          apiToolReceipts: {
+            saved: {
+              state: "completed",
+              operationId: `operation_${i}`,
+              result: { blob: "x".repeat(10_000) },
+            },
+          },
+        },
+        createdAt: new Date(Date.now() + i * 1000),
+      }));
+      await db.insert(heartbeatRuns).values(actionRuns);
+      try {
+        const envelope = await buildExecutionContinuation({
+          db, companyId, issueId: capIssueId, agentId: capAgentId,
+          context: { wakeReason: "issue_assigned" }, summary: null,
+          exposeLowTrustRaw: false,
+        });
+        const actions = envelope.completedActions ?? [];
+        // Each receipt is ~10 KiB serialized: 15 of them exceed the 64 KiB
+        // budget, so only the newest ones survive and the oldest are dropped.
+        expect(actions.length).toBeGreaterThan(1);
+        expect(actions.length).toBeLessThan(15);
+        const serializedBytes = Buffer.byteLength(
+          JSON.stringify(actions),
+          "utf8",
+        );
+        expect(serializedBytes).toBeLessThanOrEqual(
+          64 * 1024 + actions.length * 256,
+        );
+        // Newest-first retention: the latest run's receipt is kept, the
+        // earliest runs' receipts are dropped.
+        expect(actions.at(-1)?.operationId).toBe("operation_14");
+        expect(
+          actions.some((action) => action.operationId === "operation_0"),
+        ).toBe(false);
+        expect(
+          actions.some((action) => action.operationId === "operation_8"),
+        ).toBe(false);
+      } finally {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, capAgentId));
+        await db.delete(issues).where(eq(issues.id, capIssueId));
+        await db.delete(agents).where(eq(agents.id, capAgentId));
+      }
+    });
     it("loads authenticated human answers from stored resolver identity", async () => {
       const answerId = randomUUID();
       await db.insert(issueThreadInteractions).values({ id: answerId, companyId, issueId,
