@@ -1,14 +1,16 @@
+import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import type { PaperclipConfig } from "./config/schema.js";
 import { openUrl } from "./client/board-auth.js";
-import { installCommand } from "./commands/install.js";
+import { installCommand, runCommandWithDiagnostics, smokePayload } from "./commands/install.js";
 import { resolvePaperclipInstanceId } from "./config/home.js";
 import { readRuntimeInfo, type PaperclipRuntimeInfo } from "./runtime-info.js";
 import {
   readInstallManifest,
   resolveInstallStorePaths,
+  writeManagedShim,
   type InstallManifest,
 } from "./install-store.js";
 import {
@@ -133,62 +135,75 @@ type OnboardServiceDependencies = {
   warn: (message: string) => void;
 };
 
-const defaultDependencies: OnboardServiceDependencies = {
-  detect: (instanceId) => detectServiceManager({ instanceId }),
-  // The service definition targets the managed shim. An ephemeral run (npx)
-  // never lays it down, so installing the service without this step creates
-  // a definition that crash-loops on a missing binary.
-  ensureServiceShim: async () => {
-    const shimPath = resolveServiceShimPath();
-    if (await isExecutableFile(shimPath)) {
-      return { ok: true, installedNow: false };
-    }
-    const storeShimPath = resolveInstallStorePaths().shimPath;
-    if (path.resolve(shimPath) !== path.resolve(storeShimPath)) {
-      return {
-        ok: false,
-        installedNow: false,
-        reason: `no executable exists at ${shimPath} (PAPERCLIP_SHIM_PATH), and it is outside the managed install store`,
-      };
-    }
-    let manifest: InstallManifest | null = null;
-    try {
-      manifest = readInstallManifest();
-    } catch {}
-    try {
-      if (manifest?.source === "git" && manifest.repo) {
-        // A managed git payload must be preserved as-is: reinstall the
-        // exact revision the manifest records, not an npm release.
-        await installCommand({ repo: manifest.repo, ref: manifest.sha ?? manifest.ref, yes: true });
-      } else if (isInstallableReleaseVersion(packageVersion)) {
-        // packageVersion, not cliVersion: a managed executable's cliVersion
-        // carries provenance text that is not an installable npm spec.
-        await installCommand({ version: packageVersion, yes: true });
-      } else {
-        return {
-          ok: false,
-          installedNow: false,
-          reason:
-            `this build reports version ${packageVersion}, which is not an installable release; ` +
-            "run `paperclipai install` (or `paperclipai install --repo <repo> --ref <ref>` for source builds) first",
-        };
-      }
-    } catch (error) {
-      return {
-        ok: false,
-        installedNow: false,
-        reason: error instanceof Error ? error.message : String(error),
-      };
-    }
-    if (await isExecutableFile(shimPath)) {
-      return { ok: true, installedNow: true };
-    }
+// The service definition targets the managed shim. An ephemeral run (npx)
+// never lays it down, so installing the service without this step creates
+// a definition that crash-loops on a missing binary.
+export async function ensureServiceShim(options: { installIfMissing?: boolean } = {}): Promise<EnsureShimResult> {
+  const shimPath = resolveServiceShimPath();
+  if (await isExecutableFile(shimPath)) {
+    return { ok: true, installedNow: false };
+  }
+  if (options.installIfMissing === false) {
+    return { ok: false, installedNow: false, reason: `no executable exists at ${shimPath}` };
+  }
+  const storeShimPath = resolveInstallStorePaths().shimPath;
+  if (path.resolve(shimPath) !== path.resolve(storeShimPath)) {
     return {
       ok: false,
       installedNow: false,
-      reason: `the managed install completed but no executable shim appeared at ${shimPath}`,
+      reason: `no executable exists at ${shimPath} (PAPERCLIP_SHIM_PATH), and it is outside the managed install store`,
     };
-  },
+  }
+  let manifest: InstallManifest | null = null;
+  try {
+    manifest = readInstallManifest();
+  } catch {}
+  try {
+    if (
+      manifest &&
+      fs.existsSync(path.join(resolveInstallStorePaths().currentPath, "node_modules", "paperclipai", "dist", "index.js"))
+    ) {
+      // Only the shim is missing: smoke-test and restore it for the recorded payload,
+      // keeping its version and update channel instead of reinstalling.
+      await smokePayload(resolveInstallStorePaths().currentPath, manifest.version, runCommandWithDiagnostics);
+      writeManagedShim();
+    } else if (manifest?.source === "git" && manifest.repo) {
+      // A managed git payload must be preserved as-is: reinstall the
+      // exact revision the manifest records, not an npm release.
+      await installCommand({ repo: manifest.repo, ref: manifest.sha ?? manifest.ref, yes: true });
+    } else if (isInstallableReleaseVersion(packageVersion)) {
+      // packageVersion, not cliVersion: a managed executable's cliVersion
+      // carries provenance text that is not an installable npm spec.
+      await installCommand({ version: packageVersion, yes: true });
+    } else {
+      return {
+        ok: false,
+        installedNow: false,
+        reason:
+          `this build reports version ${packageVersion}, which is not an installable release; ` +
+          "run `paperclipai install` (or `paperclipai install --repo <repo> --ref <ref>` for source builds) first",
+      };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      installedNow: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (await isExecutableFile(shimPath)) {
+    return { ok: true, installedNow: true };
+  }
+  return {
+    ok: false,
+    installedNow: false,
+    reason: `the managed install completed but no executable shim appeared at ${shimPath}`,
+  };
+}
+
+const defaultDependencies: OnboardServiceDependencies = {
+  detect: (instanceId) => detectServiceManager({ instanceId }),
+  ensureServiceShim: () => ensureServiceShim(),
   confirm: async () => {
     const answer = await p.confirm({
       message: "Install Paperclip as a background service?",
