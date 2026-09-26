@@ -20,5 +20,11 @@ export const HTTP_LOG_REDACT_PATHS = [
   // at the final serialization boundary in case a future custom serializer
   // bypasses the recursive redactor.
   "reqBody.credentials",
+  // The app-connect/reconnect body groups every provider credential under
+  // `credentialValues`: a map of provider config paths
+  // (`credentials.authorization`, `headers.X-Api-Key`) to the secret string for
+  // each. The key names are chosen by the caller, so no fixed list of leaf
+  // names can cover them. Redact the whole envelope instead.
+  "reqBody.credentialValues",
   "errorContext.details.credentials",
 ] as const;

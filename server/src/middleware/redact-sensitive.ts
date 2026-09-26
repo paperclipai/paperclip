@@ -18,6 +18,12 @@ const SENSITIVE_KEYS = new Set<string>([
   // sync with every connector.
   "credential",
   "credentials",
+  // The app-connect/reconnect envelope. Its keys are caller-chosen provider
+  // config paths (`credentials.authorization`, `headers.X-Api-Key`), so they
+  // never match a leaf name in this set; redact the envelope by name. This is
+  // the durable half: the path list in http-log-redaction.ts only ever covers
+  // shapes someone has already seen leak.
+  "credentialvalues",
   "password",
   "currentpassword",
   "newpassword",
