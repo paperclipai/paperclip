@@ -66,6 +66,22 @@ type GatewayEventFrame = {
   seq?: number;
 };
 
+export function accumulateAssistantStreamText(
+  current: string,
+  data: Record<string, unknown>,
+): string {
+  const snapshot = nonEmpty(data.text);
+  if (snapshot) {
+    // OpenClaw emits `text` as the authoritative cumulative snapshot and may
+    // replay that snapshot in the final frame. Replacing instead of appending
+    // prevents repeated stream/final frames from multiplying the comment body.
+    return snapshot;
+  }
+
+  const delta = nonEmpty(data.delta);
+  return delta ? `${current}${delta}` : current;
+}
+
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -1196,7 +1212,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
-    const assistantChunks: string[] = [];
+    let assistantText = "";
     let lifecycleError: string | null = null;
     let deviceIdentity: GatewayDeviceIdentity | null = null;
 
@@ -1225,13 +1241,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
 
       if (stream === "assistant") {
-        const delta = nonEmpty(data.delta);
-        const text = nonEmpty(data.text);
-        if (delta) {
-          assistantChunks.push(delta);
-        } else if (text) {
-          assistantChunks.push(text);
-        }
+        assistantText = accumulateAssistantStreamText(assistantText, data);
         return;
       }
 
@@ -1401,7 +1411,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
 
-      const summaryFromEvents = assistantChunks.join("").trim();
+      const summaryFromEvents = assistantText.trim();
       const summaryFromPayload =
         extractResultText(asRecord(acceptedPayload?.result)) ??
         extractResultText(acceptedPayload) ??
