@@ -32,6 +32,8 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
+  MAX_ISSUE_MONITOR_INTERVAL_SECONDS,
+  MIN_ISSUE_MONITOR_INTERVAL_SECONDS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
@@ -424,6 +426,14 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .optional()
     .nullable()
     .default(null),
+  intervalSeconds: z
+    .number()
+    .int()
+    .min(MIN_ISSUE_MONITOR_INTERVAL_SECONDS)
+    .max(MAX_ISSUE_MONITOR_INTERVAL_SECONDS)
+    .optional()
+    .nullable()
+    .default(null),
   recoveryPolicy: z
     .enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES)
     .optional()
@@ -482,6 +492,14 @@ export const issueExecutionMonitorStateSchema = z.object({
     .int()
     .positive()
     .max(100)
+    .nullable()
+    .optional()
+    .default(null),
+  intervalSeconds: z
+    .number()
+    .int()
+    .min(MIN_ISSUE_MONITOR_INTERVAL_SECONDS)
+    .max(MAX_ISSUE_MONITOR_INTERVAL_SECONDS)
     .nullable()
     .optional()
     .default(null),

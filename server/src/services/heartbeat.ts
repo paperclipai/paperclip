@@ -89,6 +89,7 @@ import {
   CHAT_PROVIDERS,
   CONNECTION_INTENT_AGENT_GUIDANCE,
   CONNECTION_RUNTIME_TOOL_NAMES,
+  DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
@@ -11164,7 +11165,13 @@ export function heartbeatService(
     if (timeoutAt && input.now.getTime() >= timeoutAt.getTime()) {
       return "timeout_exceeded";
     }
-    const maxAttempts = input.monitor?.maxAttempts ?? null;
+    // Monitors re-arm themselves after each dispatch, so the attempt ceiling is
+    // what stops an otherwise unbounded monitor. The default only applies when
+    // the policy names no bound at all — a timeoutAt already terminates the
+    // monitor, and cutting it off at the ceiling would end it before its
+    // declared deadline.
+    const maxAttempts = input.monitor?.maxAttempts ??
+      (timeoutAt ? null : DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS);
     if (maxAttempts !== null && input.nextAttemptCount > maxAttempts) {
       return "max_attempts_exhausted";
     }
@@ -11535,6 +11542,7 @@ export function heartbeatService(
       serviceName: monitor?.serviceName ?? null,
       timeoutAt: monitor?.timeoutAt ?? null,
       maxAttempts: monitor?.maxAttempts ?? null,
+      intervalSeconds: monitor?.intervalSeconds ?? null,
       recoveryPolicy: monitor?.recoveryPolicy ?? null,
     };
     const executionState =
@@ -11676,14 +11684,16 @@ export function heartbeatService(
           },
         });
 
+      const triggeredPatch = buildIssueMonitorTriggeredPatch({
+        issue: claimed,
+        policy,
+        triggeredAt: input.now,
+      });
+
       await db
         .update(issues)
         .set({
-          ...buildIssueMonitorTriggeredPatch({
-            issue: claimed,
-            policy,
-            triggeredAt: input.now,
-          }),
+          ...triggeredPatch,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, claimed.id));
@@ -11704,6 +11714,7 @@ export function heartbeatService(
           attemptCount: nextAttemptCount,
           notes: claimed.monitorNotes ?? null,
           ...monitorMetadata,
+          rearmedNextCheckAt: triggeredPatch.monitorNextCheckAt?.toISOString() ?? null,
           source: input.activitySource,
         },
       });
