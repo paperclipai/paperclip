@@ -329,6 +329,7 @@ import {
 } from "../services/issue-thread-interaction-resolution.js";
 import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
+  bindRunContextToCheckedOutIssue,
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
@@ -15168,6 +15169,23 @@ export function issueRoutes(
           return;
         }
         throw error;
+      }
+      // Anchor the run to the issue it just claimed. Taskless timer runs persist a
+      // contextSnapshot without `issueId`/`taskId`, which made every subsequent
+      // same-issue write throw `cross_issue_influence_run_context_required` — the
+      // unbounded missing-disposition loop. Bind-once; best-effort: a bind failure
+      // must never fail an otherwise successful checkout.
+      if (updated && checkoutRunId && req.actor.type === "agent" && req.actor.agentId) {
+        try {
+          await bindRunContextToCheckedOutIssue(db, {
+            companyId: issue.companyId,
+            agentId: req.actor.agentId,
+            runId: checkoutRunId,
+            issueId: issue.id,
+          });
+        } catch (error) {
+          logger.warn({ err: error, issueId: issue.id, runId: checkoutRunId }, "failed to bind run context to checked-out issue");
+        }
       }
       const actor = getActorInfo(req);
       if (updated?.harnessKind === "skill_test") {

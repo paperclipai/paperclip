@@ -14,6 +14,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+  bindRunContextToCheckedOutIssue,
   observeCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.js";
 
@@ -112,5 +113,156 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+  });
+
+  it("binds a taskless run at checkout so same-issue writes pass the gate", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const checkedOutIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // A timer-woken run with no task context: no issueId, no taskId.
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: { source: "timer" },
+    });
+
+    // Before the bind, even a same-issue write is rejected for missing context.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: checkedOutIssueId,
+      kind: "comment",
+    })).rejects.toMatchObject({ status: 403 });
+
+    expect(await bindRunContextToCheckedOutIssue(db, {
+      companyId,
+      agentId,
+      runId,
+      issueId: checkedOutIssueId,
+    })).toBe(true);
+
+    const [run] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(run.contextSnapshot).toMatchObject({ issueId: checkedOutIssueId, source: "timer" });
+
+    // Same-issue writes now pass without a throw.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: checkedOutIssueId,
+      kind: "comment",
+    })).resolves.toBeNull();
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: checkedOutIssueId,
+      kind: "update",
+    })).resolves.toBeNull();
+
+    // Cross-issue writes stay metered against the bound source.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: otherIssueId,
+      kind: "comment",
+    })).resolves.toMatchObject({ allowed: true, count: 1 });
+  });
+
+  it("binds once: an existing source issue or task wins and null snapshots are supported", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Once Binder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const insertRun = (runId: string, contextSnapshot: Record<string, unknown> | null) =>
+      db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "running",
+        responsibleUserId: "board-user",
+        contextSnapshot,
+      });
+
+    const taskRunId = randomUUID();
+    await insertRun(taskRunId, { taskId: "task-1", source: "task" });
+    expect(await bindRunContextToCheckedOutIssue(db, {
+      companyId,
+      agentId,
+      runId: taskRunId,
+      issueId,
+    })).toBe(false);
+    const [taskRun] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, taskRunId));
+    expect(taskRun.contextSnapshot).toEqual({ taskId: "task-1", source: "task" });
+
+    const anchoredRunId = randomUUID();
+    await insertRun(anchoredRunId, { issueId: randomUUID() });
+    expect(await bindRunContextToCheckedOutIssue(db, {
+      companyId,
+      agentId,
+      runId: anchoredRunId,
+      issueId,
+    })).toBe(false);
+
+    const nullSnapshotRunId = randomUUID();
+    await insertRun(nullSnapshotRunId, null);
+    expect(await bindRunContextToCheckedOutIssue(db, {
+      companyId,
+      agentId,
+      runId: nullSnapshotRunId,
+      issueId,
+    })).toBe(true);
+    const [nullRun] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, nullSnapshotRunId));
+    expect(nullRun.contextSnapshot).toEqual({ issueId });
   });
 });

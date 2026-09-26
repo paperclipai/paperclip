@@ -1,4 +1,4 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
@@ -176,6 +176,57 @@ export async function observeCrossIssueInfluence(
 
     return decision;
   });
+}
+
+/**
+ * Anchor a heartbeat run to the issue it just checked out.
+ *
+ * Timer-woken runs with no task context persist a contextSnapshot without
+ * `issueId`/`taskId`, so `observeCrossIssueInfluence` would throw
+ * `cross_issue_influence_run_context_required` for every issue write — even
+ * writes to the very issue the run checked out and is assigned. That produced
+ * an unbounded missing-disposition loop: a taskless run could not record the
+ * disposition recovery demanded, so recovery re-fired forever.
+ *
+ * The bind is intentionally once-per-run: only a run that has no source issue
+ * or task yet gets anchored. Rebinding on every checkout would let a run reset
+ * its cross-issue influence source mid-flight and erode the cap. The write is
+ * a single conditional UPDATE, so it is atomic against the gate's
+ * `SELECT ... FOR UPDATE` on the same row.
+ */
+export async function bindRunContextToCheckedOutIssue(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    issueId: string;
+  },
+): Promise<boolean> {
+  const bound = await db
+    .update(heartbeatRuns)
+    .set({
+      contextSnapshot: sql`jsonb_set(coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb), '{issueId}', to_jsonb(${input.issueId}::text))`,
+    })
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+      // Bind-once: an existing source issue/task (task-context run) wins.
+      sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') is null`,
+    ))
+    .returning({ id: heartbeatRuns.id });
+  const didBind = bound.length > 0;
+  if (didBind) {
+    logger.info({
+      event: "run_context_bound_to_checked_out_issue",
+      companyId: input.companyId,
+      runId: input.runId,
+      agentId: input.agentId,
+      issueId: input.issueId,
+    }, "taskless run context anchored to checked-out issue");
+  }
+  return didBind;
 }
 
 export function crossIssueInfluenceLimitError(
