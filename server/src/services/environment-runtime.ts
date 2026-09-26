@@ -485,9 +485,16 @@ export interface EnvironmentDriverReleaseInput {
   status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
 }
 
-function resolvePluginSandboxRpcTimeoutMs(config: Record<string, unknown>): number | undefined {
+function resolvePluginSandboxRpcTimeoutMs(
+  config: Record<string, unknown>,
+  defaultTimeoutMs?: number,
+): number | undefined {
+  const configuredTimeoutMs = typeof config.timeoutMs === "number" &&
+    Number.isFinite(config.timeoutMs) && config.timeoutMs > 0
+    ? config.timeoutMs
+    : defaultTimeoutMs;
   const timeoutCandidates = [
-    typeof config.timeoutMs === "number" ? config.timeoutMs : undefined,
+    configuredTimeoutMs,
     typeof config.bridgeRequestTimeoutMs === "number" ? config.bridgeRequestTimeoutMs : undefined,
   ]
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0)
@@ -2084,7 +2091,10 @@ function createSandboxEnvironmentDriver(
                   ? { requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt) }
                   : {}),
               },
-              resolvePluginSandboxRpcTimeoutMs(workerConfig),
+              resolvePluginSandboxRpcTimeoutMs(
+                workerConfig,
+                pluginProvider.resolved.driver.defaultAcquireTimeoutMs,
+              ),
             );
           } catch (error) {
             const cleanup = readEnvironmentCreationCleanupError(error);
@@ -3390,7 +3400,7 @@ function createPluginEnvironmentDriver(
     if (!workerManager.isRunning(plugin.id)) {
       throw new Error(`Plugin environment driver "${pluginDriverProviderKey(config)}" has no running worker.`);
     }
-    return { plugin };
+    return { plugin, driver };
   }
 
   async function resolvePluginDriverForRelease(input: EnvironmentDriverReleaseInput) {
@@ -3459,7 +3469,7 @@ function createPluginEnvironmentDriver(
       if (parsed.driver !== "plugin") {
         throw new Error(`Expected plugin environment config for driver "${input.environment.driver}".`);
       }
-      const { plugin } = await resolvePluginDriver(parsed.config);
+      const { plugin, driver } = await resolvePluginDriver(parsed.config);
       const providerLease = await workerManager.call(plugin.id, "environmentAcquireLease", {
         driverKey: parsed.config.driverKey,
         companyId: input.companyId,
@@ -3477,7 +3487,10 @@ function createPluginEnvironmentDriver(
         ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
           ? { requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt) }
           : {}),
-      } as PluginEnvironmentAcquireLeaseParams);
+      } as PluginEnvironmentAcquireLeaseParams, resolvePluginSandboxRpcTimeoutMs(
+        parsed.config.driverConfig,
+        driver.defaultAcquireTimeoutMs,
+      ));
 
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,

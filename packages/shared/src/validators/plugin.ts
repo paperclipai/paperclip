@@ -184,6 +184,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   kind: z.enum(["environment_driver", "sandbox_provider"]).optional(),
   displayName: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
+  defaultAcquireTimeoutMs: z.number().int().positive().max(86_400_000).optional(),
   supportsReusableLeases: z.boolean().optional(),
   sandboxCapabilities: sandboxProviderCapabilitiesSchema.optional(),
   supportsInteractiveSetup: z.boolean().optional(),

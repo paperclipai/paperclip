@@ -4685,14 +4685,20 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(checks).toBe(readyAfterChecks);
   });
 
-  it("extends plugin-backed sandbox lease RPC timeouts from provider config", async () => {
+  it.each([
+    { label: "explicit provider and bridge budgets", config: { timeoutMs: 1_234, bridgeRequestTimeoutMs: 40_000 }, declared: 300_000, expected: 70_000 },
+    { label: "declared acquisition default", config: {}, declared: 300_000, expected: 330_000 },
+    { label: "explicit shorter provider budget", config: { timeoutMs: 5_000 }, declared: 300_000, expected: 35_000 },
+    { label: "bridge budget does not shorten acquisition default", config: { bridgeRequestTimeoutMs: 40_000 }, declared: 300_000, expected: 330_000 },
+    { label: "bridge extends the acquisition default", config: { bridgeRequestTimeoutMs: 400_000 }, declared: 300_000, expected: 430_000 },
+    { label: "undeclared provider retains worker default", config: {}, declared: undefined, expected: undefined },
+  ])("uses $label for plugin-backed sandbox acquisition", async ({ config, declared, expected }) => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
       provider: "fake-plugin",
       image: "fake:test",
-      timeoutMs: 1_234,
-      bridgeRequestTimeoutMs: 40_000,
+      ...config,
       reuseLease: false,
     };
     const environment = {
@@ -4728,7 +4734,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             driverKey: "fake-plugin",
             kind: "sandbox_provider",
             displayName: "Fake Plugin",
-            configSchema: { type: "object" },
+            defaultAcquireTimeoutMs: declared,
+            // A timeoutMs schema default can mean lease lifetime (for example
+            // E2B). Only the dedicated declaration sets the host RPC budget.
+            configSchema: { type: "object", properties: { timeoutMs: { type: "number", default: 3_600_000 } } },
           },
         ],
       },
@@ -4746,8 +4755,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             metadata: {
               provider: "fake-plugin",
               image: "fake:test",
-              timeoutMs: 1_234,
-              bridgeRequestTimeoutMs: 40_000,
+              ...config,
               reuseLease: false,
             },
           };
@@ -4774,12 +4782,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         driverKey: "fake-plugin",
         config: {
           image: "fake:test",
-          timeoutMs: 1_234,
-          bridgeRequestTimeoutMs: 40_000,
+          ...config,
           reuseLease: false,
         },
       }),
-      70_000,
+      expected,
     );
   });
 
@@ -7068,7 +7075,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }));
   });
 
-  it("delegates plugin environment leases through the plugin worker manager", async () => {
+  it.each([undefined, 300_000])("delegates plugin environment leases with acquisition budget %s", async (defaultAcquireTimeoutMs) => {
     const pluginId = randomUUID();
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
     const workerManager = {
@@ -7129,6 +7136,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           {
             driverKey: "fake-plugin",
             displayName: "Fake plugin",
+            defaultAcquireTimeoutMs,
             configSchema: { type: "object" },
           },
         ],
@@ -7158,7 +7166,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       adapterType: undefined,
       runId,
       workspaceMode: undefined,
-    });
+    }, defaultAcquireTimeoutMs === undefined ? undefined : 330_000);
     expect(acquired.lease.providerLeaseId).toBe("plugin-lease-1");
     expect(acquired.lease.expiresAt?.toISOString()).toBe(expiresAt);
     expect(acquired.lease.metadata).toMatchObject({
