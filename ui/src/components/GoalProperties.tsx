@@ -20,6 +20,7 @@ interface GoalPropertiesProps {
   onUpdate?: (data: Record<string, unknown>) => void;
   onDelete?: () => void;
   deletePending?: boolean;
+  deleteError?: string | null;
 }
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -147,7 +148,7 @@ function AgentOwnerPicker({
   );
 }
 
-export function GoalProperties({ goal, onUpdate, onDelete, deletePending }: GoalPropertiesProps) {
+export function GoalProperties({ goal, onUpdate, onDelete, deletePending, deleteError }: GoalPropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -253,6 +254,11 @@ export function GoalProperties({ goal, onUpdate, onDelete, deletePending }: Goal
                 <p className="text-xs text-destructive font-medium">
                   Delete this goal? This action cannot be undone.
                 </p>
+                {deleteError && (
+                  <p className="text-xs text-destructive" role="alert">
+                    {deleteError}
+                  </p>
+                )}
                 <div className="flex items-center gap-2">
                   <Button
                     size="xs"
