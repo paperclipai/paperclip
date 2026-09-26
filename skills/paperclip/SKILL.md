@@ -25,6 +25,8 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **CLI safety — use `npx paperclipai` for content-bearing arguments.** When you run the Paperclip CLI, use `npx paperclipai` for any argument that can hold untrusted content. Untrusted content includes issue text, comment bodies, Markdown, pasted snippets, and model output. `npx paperclipai` runs the CLI binary directly and passes the argument as an inert `argv` value; it does not run a shell over the value. Do not use `pnpm paperclipai` for such an argument. `pnpm paperclipai` is a `package.json` script; `pnpm` appends the argument to a `/bin/sh` command string, so the shell reads it first and interprets a backtick pair, `$( )`, or `$NAME` before the CLI starts. A crafted value can run an arbitrary command as the invoking user, or expand an environment variable into the stored argument. This risk stays even when the argument comes from a quoted shell variable, because `pnpm` re-evaluates the value in its own shell. Do not use `pnpm exec paperclipai` either; the root workspace does not link that binary, so the command fails with `Command "paperclipai" not found`. To run local `cli/src` changes with a content-bearing argument, use `node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts <command> <args>`. See `doc/CLI.md` for the full safe/unsafe matrix.
 
+**Comment bodies never go through a shell-typed `--body` string.** When you type `paperclipai issue comment <id> --body "..."` into a shell yourself, the shell interprets a backtick pair or `$( )` inside the double quotes as command substitution before the CLI sees it — the enclosed text is replaced by the command's output (usually empty), and the command runs as a side effect. Put the body in a file or a quoted heredoc on stdin instead: `npx paperclipai issue comment <id> --body-file - <<'MD' ... MD`, or `npx paperclipai issue comment <id> --body-file ./comment.md`. The same applies to `approval comment`.
+
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## Conversation tasks
@@ -596,6 +598,16 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
 
 **Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
+
+**Post standalone comments via `--body-file`, never a shell-typed `--body` string.** `issue comment --body-file -` reads the body from stdin, so a quoted heredoc carries markdown (including `inline code` spans) to the API byte-for-byte with no shell interpretation:
+
+```bash
+npx paperclipai issue comment "$PAPERCLIP_TASK_ID" --body-file - <<'MD'
+Update
+
+- The flag lives on `main`; `systemctl daemon-reload` was refused.
+MD
+```
 
 Example:
 
