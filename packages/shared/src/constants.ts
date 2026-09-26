@@ -1337,6 +1337,14 @@ export const PLUGIN_CAPABILITIES = [
   // Read company approvals (list + get). The host redacts approval payloads to
   // match the web app's own approval read surface.
   "approvals.read",
+  // Read the company attention feed (the decision inbox) as seen by a paired
+  // board user. The host re-verifies the user is an active company member and
+  // applies that user's own dismissal state.
+  "attention.read",
+  // Read decision queues, queue items, and decision triage (decide-by and
+  // snooze) as seen by a paired board user. The host applies the same
+  // per-source read checks as the web app's decision-queue routes.
+  "decision.queues.read",
   "issue.documents.read",
   "agents.read",
   "goals.read",
@@ -1370,6 +1378,12 @@ export const PLUGIN_CAPABILITIES = [
   // user. Same apply-time active-human-member re-verification as above; the
   // web app's approval decision routes are board-only.
   "approvals.respond",
+  // Set decision triage (decide-by, snooze) and decision retention (keep,
+  // archive, revive) on behalf of a paired board user. Same apply-time
+  // active-human-member re-verification as above, plus the web app's
+  // `decision_triage:manage` authorization check. Rows are attributed to the
+  // user; the activity log records the plugin as the actor.
+  "decision.triage.manage",
   "issue.documents.write",
   "projects.managed",
   "routines.managed",

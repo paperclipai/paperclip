@@ -28,7 +28,12 @@ import type {
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import {
+  decisionAttentionSourceKindSchema,
+  pluginOperationIssueOriginKind,
+  updateDecisionTriageSchema,
+  type AttentionSortMode,
+} from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -41,6 +46,9 @@ import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { approvalService } from "./approvals.js";
+import { attentionService } from "./attention.js";
+import { decisionQueueService, type DecisionMutationActor } from "./decision-queues.js";
+import { decisionRetentionService } from "./decision-retention.js";
 import { getStorageService } from "../storage/index.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -756,6 +764,9 @@ export function buildHostServices(
   const issueApprovals = issueApprovalService(db);
   const approvalSvc = approvalService(db);
   const interactions = issueThreadInteractionService(db);
+  const attention = attentionService(db);
+  const decisionQueues = decisionQueueService(db);
+  const decisionRetention = decisionRetentionService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
 
   // Track active session event subscriptions for cleanup
@@ -890,7 +901,7 @@ export function buildHostServices(
     companyId: string,
     userId: string,
     { allowViewer = false }: { allowViewer?: boolean } = {},
-  ): Promise<void> => {
+  ): Promise<{ membershipRole: string | null }> => {
     const [membership] = await db
       .select({ id: companyMemberships.id, membershipRole: companyMemberships.membershipRole })
       .from(companyMemberships)
@@ -907,6 +918,71 @@ export function buildHostServices(
     if (!allowViewer && membership.membershipRole === "viewer") {
       throw new Error(`actorUserId "${userId}" has viewer (read-only) access and cannot take this write action`);
     }
+    return { membershipRole: membership.membershipRole ?? null };
+  };
+
+  /**
+   * Resolve the paired board user a plugin acts for on the attention and
+   * decision surfaces. Re-verifies active human membership on every call
+   * (viewers pass for reads only) and returns the same board authorization
+   * actor the web app's routes see for that user, so the decision services
+   * apply their normal per-source read checks. When `action` is set, also
+   * runs the web app route's company-level authorization check.
+   */
+  const resolveDecisionBoardActor = async (
+    companyId: string,
+    actorUserId: string | undefined,
+    options: {
+      write: boolean;
+      action?: "decision_queue:read" | "decision_triage:manage";
+    },
+  ): Promise<AuthorizationActor & { userId: string }> => {
+    if (typeof actorUserId !== "string" || actorUserId.trim().length === 0) {
+      throw new Error("actorUserId is required: attention and decision calls act for a board user");
+    }
+    const { membershipRole } = await requireActiveHumanMember(companyId, actorUserId, {
+      allowViewer: !options.write,
+    });
+    const actor = {
+      type: "board" as const,
+      userId: actorUserId,
+      companyIds: [companyId],
+      memberships: [{ companyId, membershipRole, status: "active" }],
+      source: "session" as const,
+    };
+    if (options.action) {
+      const decision = await authorization.decide({
+        actor,
+        action: options.action,
+        resource: { type: "company", companyId },
+      });
+      if (!decision.allowed) {
+        throw new Error(decision.explanation || `actorUserId "${actorUserId}" may not ${options.action}`);
+      }
+    }
+    return actor;
+  };
+
+  /** Rows keep the user attribution; the activity log names the plugin. */
+  const pluginDecisionMutationActor = (actorUserId: string): DecisionMutationActor => ({
+    actorType: "user",
+    actorId: actorUserId,
+    agentId: null,
+    userId: actorUserId,
+    runId: null,
+    agentApiKeyId: null,
+    responsibleUserId: actorUserId,
+    viaPlugin: { pluginId, pluginKey },
+  });
+
+  /** Validate a plugin-supplied attention source identity like the web app route does. */
+  const parseDecisionSource = (params: { sourceKind: unknown; sourceId: unknown }) => {
+    const sourceKind = decisionAttentionSourceKindSchema.safeParse(params.sourceKind);
+    const sourceId = typeof params.sourceId === "string" ? params.sourceId.trim() : "";
+    if (!sourceKind.success || !sourceId || sourceId.length > 500) {
+      throw new Error("Invalid attention source identity");
+    }
+    return { sourceKind: sourceKind.data, sourceId };
   };
 
   /**
@@ -2714,6 +2790,137 @@ export function buildHostServices(
         }
 
         return { approval: redactApprovalPayload(approval) as any, applied };
+      },
+    },
+
+    attention: {
+      async list(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        // Mirrors GET /companies/:companyId/attention: the feed is the paired
+        // user's own view (their dismissals), and any active member may read it.
+        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, { write: false });
+        if (params.sort !== undefined && params.sort !== "activity" && params.sort !== "decide") {
+          throw new Error("sort must be 'activity' or 'decide'");
+        }
+        if (params.limit !== undefined && !Number.isInteger(params.limit)) {
+          throw new Error("limit must be an integer");
+        }
+        const all = params.all === true;
+        return (await attention.list(companyId, {
+          userId: actor.userId,
+          includeDismissed: params.includeDismissed === true,
+          archived: params.archived === true,
+          all,
+          allowUnscopedAll: all,
+          activitySince: params.activitySince,
+          activityUntil: params.activityUntil,
+          queue: params.queue,
+          cursor: params.cursor,
+          sort: params.sort as AttentionSortMode | undefined,
+          limit: params.limit,
+        })) as any;
+      },
+    },
+
+    decisions: {
+      async listQueues(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+          write: false,
+          action: "decision_queue:read",
+        });
+        return (await decisionQueues.list(companyId, actor)) as any;
+      },
+      async listQueueItems(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+          write: false,
+          action: "decision_queue:read",
+        });
+        if (typeof params.key !== "string" || params.key.length === 0) {
+          throw new Error("key is required");
+        }
+        return (await decisionQueues.listItems(companyId, params.key, actor)) as any;
+      },
+      async getTriage(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+          write: false,
+          action: "decision_queue:read",
+        });
+        const source = parseDecisionSource(params);
+        return (await decisionQueues.getTriage(companyId, source.sourceKind, source.sourceId, actor)) as any;
+      },
+      async updateTriage(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+          write: true,
+          action: "decision_triage:manage",
+        });
+        const source = parseDecisionSource(params);
+        const patch = updateDecisionTriageSchema.parse({
+          ...(params.decideBy !== undefined ? { decideBy: params.decideBy } : {}),
+          ...(params.snoozedUntil !== undefined ? { snoozedUntil: params.snoozedUntil } : {}),
+        });
+        return (await decisionQueues.updateTriage({
+          companyId,
+          ...source,
+          ...patch,
+          authActor: actor,
+          actor: pluginDecisionMutationActor(actor.userId),
+        })) as any;
+      },
+      async setRetentionKeep(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+          write: true,
+          action: "decision_triage:manage",
+        });
+        const source = parseDecisionSource(params);
+        if (typeof params.keep !== "boolean") throw new Error("keep must be a boolean");
+        return (await decisionRetention.setKeep({
+          companyId,
+          ...source,
+          keep: params.keep,
+          authActor: actor,
+          actor: pluginDecisionMutationActor(actor.userId),
+        })) as any;
+      },
+      async archive(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+          write: true,
+          action: "decision_triage:manage",
+        });
+        const source = parseDecisionSource(params);
+        return (await decisionRetention.archive({
+          companyId,
+          ...source,
+          authActor: actor,
+          actor: pluginDecisionMutationActor(actor.userId),
+        })) as any;
+      },
+      async revive(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const actor = await resolveDecisionBoardActor(companyId, params.actorUserId, {
+          write: true,
+          action: "decision_triage:manage",
+        });
+        const source = parseDecisionSource(params);
+        return (await decisionRetention.revive({
+          companyId,
+          ...source,
+          authActor: actor,
+          actor: pluginDecisionMutationActor(actor.userId),
+        })) as any;
       },
     },
 

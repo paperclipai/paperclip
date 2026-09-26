@@ -23,6 +23,7 @@ import { logActivity } from "./activity-log.js";
 import type { AuthorizationActor } from "./authorization.js";
 import {
   canReadDecisionSource,
+  decisionActivityActor,
   type DecisionMutationActor,
 } from "./decision-queues.js";
 
@@ -205,16 +206,10 @@ export function decisionRetentionService(
     if (!updated) throw notFound("Attention source not found");
     await logActivity(db, {
       companyId: input.companyId,
-      actorType: input.actor.actorType,
-      actorId: input.actor.actorId,
-      agentId: input.actor.agentId,
-      runId: input.actor.runId,
-      agentApiKeyId: input.actor.agentApiKeyId,
-      responsibleUserIdOverride: input.actor.responsibleUserId,
+      ...decisionActivityActor(input.actor, { sourceKind: input.sourceKind, keep: input.keep }),
       action: "decision_retention.keep_updated",
       entityType: "attention_source",
       entityId: input.sourceId,
-      details: { sourceKind: input.sourceKind, keep: input.keep },
     });
     return updated;
   }
@@ -260,16 +255,10 @@ export function decisionRetentionService(
     }
     await logActivity(db, {
       companyId: input.companyId,
-      actorType: input.actor.actorType,
-      actorId: input.actor.actorId,
-      agentId: input.actor.agentId,
-      runId: input.actor.runId,
-      agentApiKeyId: input.actor.agentApiKeyId,
-      responsibleUserIdOverride: input.actor.responsibleUserId,
+      ...decisionActivityActor(input.actor, { sourceKind: input.sourceKind }),
       action: input.archived ? "decision_retention.archived" : "decision_retention.revived",
       entityType: "attention_source",
       entityId: input.sourceId,
-      details: { sourceKind: input.sourceKind },
     });
     return updated;
   }

@@ -22,6 +22,11 @@ import type {
   Agent,
   Goal,
   Approval,
+  AttentionItem,
+  AttentionSourceKind,
+  DecisionQueue,
+  DecisionQueueItem,
+  DecisionTriage,
 } from "@paperclipai/shared";
 import type {
   EventFilter,
@@ -41,6 +46,7 @@ import type {
   PluginLocalFolderEntry,
   PluginLocalFolderStatus,
   PluginAccessMember,
+  PluginDecisionRetentionState,
   PrincipalPermissionGrant,
   PermissionKey,
   PrincipalType,
@@ -115,6 +121,13 @@ export interface TestHarness {
     issueInteractions?: IssueThreadInteraction[];
     issueAttachments?: Array<IssueAttachment & { contentBase64?: string }>;
     approvals?: Approval[];
+    /** Items returned by `ctx.attention.list` (filtered by company, queue, dismissal, and archive state). */
+    attentionItems?: AttentionItem[];
+    decisionQueues?: DecisionQueue[];
+    decisionQueueItems?: DecisionQueueItem[];
+    decisionTriage?: DecisionTriage[];
+    /** Retention rows. `ctx.decisions.retention.*` throws for a source with no row, like the host. */
+    decisionRetention?: PluginDecisionRetentionState[];
     agents?: Agent[];
     goals?: Goal[];
     projectWorkspaces?: PluginWorkspace[];
@@ -502,6 +515,18 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const issueAttachments = new Map<string, IssueAttachment[]>();
   const attachmentContentById = new Map<string, string>();
   const approvals = new Map<string, Approval>();
+  const attentionItems: AttentionItem[] = [];
+  const decisionQueues = new Map<string, DecisionQueue>();
+  const decisionQueueItems: DecisionQueueItem[] = [];
+  const decisionSourceKey = (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) =>
+    `${companyId}:${sourceKind}:${sourceId}`;
+  const decisionTriage = new Map<string, DecisionTriage>();
+  const decisionRetention = new Map<string, PluginDecisionRetentionState>();
+  const requireDecisionRetention = (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) => {
+    const row = decisionRetention.get(decisionSourceKey(companyId, sourceKind, sourceId));
+    if (!row) throw new Error("Attention source not found");
+    return row;
+  };
   const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
@@ -540,15 +565,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   }
 
   /**
-   * Mirror the host's `requireActiveHumanMember` write bar so the harness
-   * rejects the same forged/over-privileged attributions production does: the
-   * actor must be an active `user` member of the company whose `membershipRole`
-   * is not the read-only `viewer` role (the web app 403s viewers on these same
-   * board write-routes). Keeps the harness a faithful mirror so a plugin test
-   * cannot pass an attribution production would reject. Seed members via
-   * `createTestPluginHost({ accessMembers: [...] })`.
+   * Mirror the host's `requireActiveHumanMember` read bar: the actor must be an
+   * active `user` member of the company. Viewer members pass.
    */
-  function assertActiveHumanMemberCanWrite(companyId: string, actorUserId: string) {
+  function assertActiveHumanMember(companyId: string, actorUserId: string | undefined) {
+    if (!actorUserId) {
+      throw new Error("actorUserId is required for this operation");
+    }
     const member = [...accessMembers.values()].find(
       (entry) =>
         entry.companyId === companyId
@@ -559,6 +582,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     if (!member) {
       throw new Error(`actorUserId "${actorUserId}" is not an active human member of this company`);
     }
+    return member;
+  }
+
+  /**
+   * Mirror the host's `requireActiveHumanMember` write bar so the harness
+   * rejects the same forged/over-privileged attributions production does: the
+   * actor must be an active `user` member of the company whose `membershipRole`
+   * is not the read-only `viewer` role (the web app 403s viewers on these same
+   * board write-routes). Keeps the harness a faithful mirror so a plugin test
+   * cannot pass an attribution production would reject. Seed members via
+   * `createTestPluginHost({ accessMembers: [...] })`.
+   */
+  function assertActiveHumanMemberCanWrite(companyId: string, actorUserId: string) {
+    const member = assertActiveHumanMember(companyId, actorUserId);
     if (member.membershipRole === "viewer") {
       throw new Error(`actorUserId "${actorUserId}" has viewer (read-only) access and cannot take this write action`);
     }
@@ -2040,6 +2077,142 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return { approval: decided, applied: true };
       },
     },
+    attention: {
+      async list(input) {
+        requireCapability(manifest, capabilitySet, "attention.read");
+        assertActiveHumanMember(input.companyId, input.actorUserId);
+        if (input.all && !input.queue) {
+          throw new Error("all requires a queue filter");
+        }
+        const items = attentionItems.filter((item) =>
+          item.companyId === input.companyId
+          && (input.includeDismissed || !item.dismissal)
+          && (input.archived ? Boolean(item.archivedAt) : !item.archivedAt)
+          && (!input.queue || item.queues.some((queue) => queue.key === input.queue)),
+        );
+        const limited = !input.all && typeof input.limit === "number" ? items.slice(0, input.limit) : items;
+        const countsBySourceKind = {} as Record<AttentionSourceKind, number>;
+        for (const item of items) {
+          countsBySourceKind[item.sourceKind] = (countsBySourceKind[item.sourceKind] ?? 0) + 1;
+        }
+        return {
+          companyId: input.companyId,
+          generatedAt: new Date().toISOString(),
+          totalCount: items.length,
+          deskBadgeCount: 0,
+          nextCursor: null,
+          countsBySourceKind,
+          items: limited,
+        };
+      },
+    },
+    decisions: {
+      queues: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "decision.queues.read");
+          assertActiveHumanMember(input.companyId, input.actorUserId);
+          return [...decisionQueues.values()]
+            .filter((queue) => queue.companyId === input.companyId)
+            .map((queue) => ({
+              ...queue,
+              itemCount: decisionQueueItems.filter((item) => item.queueId === queue.id).length,
+            }));
+        },
+        async listItems(input) {
+          requireCapability(manifest, capabilitySet, "decision.queues.read");
+          assertActiveHumanMember(input.companyId, input.actorUserId);
+          const queue = [...decisionQueues.values()].find(
+            (entry) => entry.companyId === input.companyId && entry.key === input.key,
+          );
+          if (!queue) throw new Error("Decision queue not found");
+          return decisionQueueItems.filter((item) => item.queueId === queue.id);
+        },
+      },
+      triage: {
+        async get(input) {
+          requireCapability(manifest, capabilitySet, "decision.queues.read");
+          assertActiveHumanMember(input.companyId, input.actorUserId);
+          return decisionTriage.get(decisionSourceKey(input.companyId, input.sourceKind, input.sourceId)) ?? null;
+        },
+        async update(input) {
+          requireCapability(manifest, capabilitySet, "decision.triage.manage");
+          assertActiveHumanMemberCanWrite(input.companyId, input.actorUserId);
+          const key = decisionSourceKey(input.companyId, input.sourceKind, input.sourceId);
+          const current = decisionTriage.get(key);
+          const now = new Date();
+          const next: DecisionTriage = {
+            id: current?.id ?? randomUUID(),
+            companyId: input.companyId,
+            sourceKind: input.sourceKind,
+            sourceId: input.sourceId,
+            decideBy: input.decideBy === undefined ? current?.decideBy ?? null : input.decideBy,
+            snoozedUntil: input.snoozedUntil === undefined
+              ? current?.snoozedUntil ?? null
+              : input.snoozedUntil === null ? null : new Date(input.snoozedUntil),
+            setByType: "user",
+            setByAgentId: null,
+            setByUserId: input.actorUserId,
+            setByRunId: null,
+            responsibleUserId: input.actorUserId,
+            version: (current?.version ?? 0) + 1,
+            createdAt: current?.createdAt ?? now,
+            updatedAt: now,
+          };
+          decisionTriage.set(key, next);
+          return next;
+        },
+      },
+      retention: {
+        async setKeep(input) {
+          requireCapability(manifest, capabilitySet, "decision.triage.manage");
+          assertActiveHumanMemberCanWrite(input.companyId, input.actorUserId);
+          const current = requireDecisionRetention(input.companyId, input.sourceKind, input.sourceId);
+          const next = { ...current, keep: input.keep, version: current.version + 1, updatedAt: new Date() };
+          decisionRetention.set(decisionSourceKey(input.companyId, input.sourceKind, input.sourceId), next);
+          return next;
+        },
+        async archive(input) {
+          requireCapability(manifest, capabilitySet, "decision.triage.manage");
+          assertActiveHumanMemberCanWrite(input.companyId, input.actorUserId);
+          const current = requireDecisionRetention(input.companyId, input.sourceKind, input.sourceId);
+          if (current.archivedAt) return current;
+          const now = new Date();
+          const next: PluginDecisionRetentionState = {
+            ...current,
+            archivedAt: now,
+            archivedReason: "manual",
+            archivedByType: "user",
+            archivedByAgentId: null,
+            archivedByUserId: input.actorUserId,
+            archivedByRunId: null,
+            archiveVersion: current.archiveVersion + 1,
+            version: current.version + 1,
+            updatedAt: now,
+          };
+          decisionRetention.set(decisionSourceKey(input.companyId, input.sourceKind, input.sourceId), next);
+          return next;
+        },
+        async revive(input) {
+          requireCapability(manifest, capabilitySet, "decision.triage.manage");
+          assertActiveHumanMemberCanWrite(input.companyId, input.actorUserId);
+          const current = requireDecisionRetention(input.companyId, input.sourceKind, input.sourceId);
+          if (!current.archivedAt) return current;
+          const next: PluginDecisionRetentionState = {
+            ...current,
+            archivedAt: null,
+            archivedReason: null,
+            archivedByType: null,
+            archivedByAgentId: null,
+            archivedByUserId: null,
+            archivedByRunId: null,
+            version: current.version + 1,
+            updatedAt: new Date(),
+          };
+          decisionRetention.set(decisionSourceKey(input.companyId, input.sourceKind, input.sourceId), next);
+          return next;
+        },
+      },
+    },
     agents: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "agents.read");
@@ -2559,6 +2732,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         attachmentContentById.set(attachment.id, contentBase64 ?? "");
       }
       for (const row of input.approvals ?? []) approvals.set(row.id, row);
+      attentionItems.push(...(input.attentionItems ?? []));
+      for (const row of input.decisionQueues ?? []) decisionQueues.set(row.id, row);
+      decisionQueueItems.push(...(input.decisionQueueItems ?? []));
+      for (const row of input.decisionTriage ?? []) {
+        decisionTriage.set(decisionSourceKey(row.companyId, row.sourceKind, row.sourceId), row);
+      }
+      for (const row of input.decisionRetention ?? []) {
+        decisionRetention.set(decisionSourceKey(row.companyId, row.sourceKind, row.sourceId), row);
+      }
       for (const row of input.agents ?? []) agents.set(row.id, row);
       for (const row of input.goals ?? []) goals.set(row.id, row);
       for (const row of input.projectWorkspaces ?? []) {
