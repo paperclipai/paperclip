@@ -153,6 +153,68 @@ async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
     );
 }
 
+/**
+ * Resolve the acting agent from a bare `X-Paperclip-Run-Id` header in
+ * `local_trusted` mode when the caller presented no bearer credential.
+ *
+ * Without this, an agent run whose HTTP tool call omits the agent bearer (some
+ * taskless/recovery/continuation run contexts do) falls through to the
+ * `local_trusted` default actor `local-board` — an *admin human*. Every comment
+ * it posts is then stored as `local-board` (attribution
+ * laundering) and every reopen/self-wake guard, which keys off actor type,
+ * trusts it as a human interaction. Attributing the request to the run's own
+ * agent is strictly *less* privileged than the admin default it replaces, so it
+ * is safe, and it is gated to `local_trusted` only — a bare run header must
+ * never authenticate in cloud/`authenticated` mode.
+ *
+ * Returns null when the run id is missing/malformed, does not resolve to a
+ * heartbeat run, or the run's agent is not authenticable; the caller then keeps
+ * the existing default-actor fallthrough.
+ */
+async function resolveLocalTrustedRunActor(
+  db: Db,
+  runIdHeader: string | null | undefined,
+): Promise<Express.Request["actor"] | null> {
+  const runId = normalizeOptionalString(runIdHeader);
+  if (!runId || !isUuidLike(runId)) return null;
+
+  const run = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .then((rows) => rows[0] ?? null);
+  if (!run?.agentId || !run.companyId) return null;
+
+  const agentRecord = await db
+    .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, run.agentId))
+    .then((rows) => rows[0] ?? null);
+  if (!agentRecord || agentRecord.companyId !== run.companyId) return null;
+  if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") return null;
+
+  const onBehalfOfUserId = normalizeOptionalString(run.responsibleUserId);
+  return {
+    type: "agent",
+    agentId: run.agentId,
+    companyId: run.companyId,
+    keyId: undefined,
+    keyScope: normalizeAgentApiKeyScope(undefined),
+    runId: run.id,
+    onBehalfOfUserId,
+    onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
+      companyId: run.companyId,
+      userId: onBehalfOfUserId,
+    }),
+    source: "local_run",
+  };
+}
+
 async function auditAgentJwtRunHeaderMismatch(
   db: Db,
   input: { companyId: string; agentId: string; claimRunId: string; headerRunId: string; method: string; url: string },
@@ -300,6 +362,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             runId: runIdHeader ?? undefined,
             source: "session",
           };
+          next();
+          return;
+        }
+      }
+      // local_trusted only: recover the acting agent from a bare run header so an
+      // agent run whose tool call omitted the bearer is attributed to the agent
+      // instead of the admin `local-board` default. Never runs in
+      // authenticated mode — a bare run header must not authenticate in cloud.
+      if (opts.deploymentMode === "local_trusted" && runIdHeader) {
+        const runActor = await resolveLocalTrustedRunActor(db, runIdHeader);
+        if (runActor) {
+          req.actor = runActor;
           next();
           return;
         }

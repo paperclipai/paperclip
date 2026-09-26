@@ -190,6 +190,52 @@ describe("agent auth middleware", () => {
     expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
   });
 
+  // In local_trusted, a bearer-less write that carries a run header
+  // resolving to a live heartbeat run is attributed to that run's agent instead
+  // of laundering into the admin `local-board` default. This is the server-side
+  // recovery for agent tool calls that omit their bearer in some run contexts.
+  it("attributes a bearer-less local request to the run's agent when the run header resolves", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId },
+    });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      agentId,
+      companyId,
+      runId,
+      source: "local_run",
+    });
+    expect(res.body.userId).toBeUndefined();
+  });
+
+  it("never resolves the run-header agent in authenticated mode", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId },
+    });
+
+    const res = await request(createApp(db, "authenticated"))
+      .get("/actor")
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    // A bare run header must never authenticate in cloud/authenticated mode.
+    expect(res.body).toMatchObject({ type: "none" });
+  });
+
   it.each([
     ["empty bearer token", "Bearer   ", "Empty bearer token"],
     ["unverified token", "Bearer not-a-token", "Agent token did not verify"],

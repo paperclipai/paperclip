@@ -2286,6 +2286,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  actorSource?: "local_implicit" | "session" | "board_key" | "cloud_tenant";
   actorRunId: string | null | undefined;
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
@@ -2297,6 +2298,21 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // edits — flipping to todo here would contradict the caller's stated intent
   // in the same request.
   if (input.requestAddsExplicitBlockers) return false;
+  // A `local_implicit` fallback actor that carried a run header is a run-scoped
+  // request (an agent tool call) whose run or agent could not be resolved — an
+  // unknown, expired, or unauthorized run. It is not a genuine human: a human
+  // board request carries no run header. Block only the run-scoped fallback, so
+  // a genuine local-board board comment still implicitly reopens. Such a
+  // comment would otherwise masquerade as a human comment that reopens the very
+  // issue the run just closed — the infinite wake loop. An explicit
+  // `reopen: true` / `resume: true` still bypasses this predicate.
+  if (
+    input.actorSource === "local_implicit" &&
+    typeof input.actorRunId === "string" &&
+    input.actorRunId.length > 0
+  ) {
+    return false;
+  }
   // Local-CLI agents post comments under user auth, so the actor.type is "user"
   // even though the comment originates from the same heartbeat run that owns
   // the issue lock. Without this guard, an agent that closes its own issue and
@@ -13046,6 +13062,7 @@ export function issueRoutes(
               assigneeAgentId: requestedAssigneeAgentId,
               actorType: actor.actorType,
               actorId: actor.actorId,
+              actorSource: actor.actorType === "user" ? actor.actorSource : undefined,
               actorRunId: actor.runId,
               checkoutRunId: existing.checkoutRunId,
               executionRunId: existing.executionRunId,
@@ -17455,6 +17472,7 @@ export function issueRoutes(
             assigneeAgentId: issue.assigneeAgentId,
             actorType: actor.actorType,
             actorId: actor.actorId,
+            actorSource: actor.actorType === "user" ? actor.actorSource : undefined,
             actorRunId: actor.runId,
             checkoutRunId: issue.checkoutRunId,
             executionRunId: issue.executionRunId,

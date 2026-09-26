@@ -53,6 +53,7 @@ export type AuthorizationActor =
       | "board_key"
       | "agent_key"
       | "agent_jwt"
+      | "local_run"
       | "cloud_tenant"
       | "cloud_control"
       | "none";

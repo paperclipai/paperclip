@@ -1671,6 +1671,75 @@ describe.sequential("issue comment reopen routes", () => {
     ]);
   });
 
+  it("does not implicitly reopen a done issue via POST comments from a run-scoped local_implicit fallback actor", async () => {
+    // A `local_implicit` fallback that carried a run header is a run-scoped
+    // agent request whose run could not be resolved. It must not implicitly
+    // reopen a terminal issue even when the run id differs from the issue's
+    // owning run. A genuine human board request carries no run header and is
+    // covered by the reopen-mechanics tests above.
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      checkoutRunId: "run-owning",
+      executionRunId: "run-owning",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+        runId: "run-different",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "laundered digest" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
+  it("does not implicitly reopen a blocked issue via the PATCH comment path from a laundered local_implicit actor", async () => {
+    // The PATCH update route must apply the same actor-source gate as the POST
+    // comment route. A laundered local-board fallback actor must not move a
+    // terminal issue back to todo without an explicit reopen request.
+    const issue = {
+      ...makeIssue("blocked"),
+      checkoutRunId: "run-owning",
+      executionRunId: "run-owning",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+      }),
+    );
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+        runId: "run-different",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "laundered digest" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
   it("still implicitly reopens a blocked issue via PATCH when the same request clears blockers", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.getRelationSummaries.mockResolvedValue({
@@ -1795,7 +1864,7 @@ describe.sequential("issue comment reopen routes", () => {
         type: "board",
         userId: "local-board",
         companyIds: ["company-1"],
-        source: "local_implicit",
+        source: "session",
         isInstanceAdmin: false,
         runId: "run-different",
       }),

@@ -878,6 +878,85 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  // An agent whose tool call omits its bearer lands on the
+  // `local_trusted` fallback actor (`local-board`, source `local_implicit`).
+  // Such an ambiguous, unauthenticated comment must NOT implicitly reopen a
+  // completed agent-owned issue — that is the infinite wake loop.
+  it("does not implicitly reopen a done agent issue for a local-board fallback comment", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "done",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-launder",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "Closing note from the run (no resume).",
+      authorType: "user",
+      authorUserId: "local-board",
+      createdByRunId: null,
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .set("x-paperclip-run-id", "77777777-7777-4777-8777-777777777777")
+      .send({ body: "Closing note from the run (no resume)." });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockIssueService.addComment).toHaveBeenCalled());
+    // No reopen: svc.update is only called to move the issue to `todo`.
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  // Explicit `resume: true` remains the sanctioned reopen-and-continue
+  // signal and must still reopen a terminal issue exactly once (no wake loop),
+  // even from the same `local-board` fallback actor.
+  it("honors explicit resume once on a done issue from a local-board fallback comment", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "done",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(
+      makeIssue({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        status: "todo",
+      }),
+    );
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-resume",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "Resuming this on purpose.",
+      authorType: "user",
+      authorUserId: "local-board",
+      createdByRunId: null,
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .set("x-paperclip-run-id", "77777777-7777-4777-8777-777777777777")
+      .send({ body: "Resuming this on purpose.", resume: true });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    // Reopened exactly once, to `todo`.
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.update).toHaveBeenCalledWith(existing.id, { status: "todo" });
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        contextSnapshot: expect.objectContaining({ resumeIntent: true }),
+      }),
+    );
+  });
+
   it("tags the wake when a board comment supersedes the last review interaction", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
