@@ -56,6 +56,11 @@ import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import {
+  claudeCliVersionAtLeast,
+  minimumClaudeCliVersionForModel,
+  readBundledClaudeCodeVersion,
+} from "./cli-capabilities.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -378,6 +383,49 @@ export function mapClaudeAcpAuthErrorCode(
   return { ...result, errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE };
 }
 
+/**
+ * Mirror the CLI lane's minimum-version check (`execute.ts`) for the Claude
+ * Code bundled with the local ACP bridge. Without it an unsupported model
+ * fails only as a generic terminal service failure. A remote target, a custom
+ * agentCommand, or CLAUDE_CODE_EXECUTABLE brings its own Claude Code.
+ */
+async function bundledClaudeCodeVersionFailure(
+  ctx: AdapterExecutionContext,
+  config: Record<string, unknown>,
+  target: ReturnType<typeof readAdapterExecutionTarget>,
+): Promise<AdapterExecutionResult | null> {
+  const model = asString(config.model, "");
+  const minimumCliVersion = minimumClaudeCliVersionForModel(model);
+  if (
+    !minimumCliVersion ||
+    target?.kind === "remote" ||
+    firstNonEmptyString(config.agentCommand) ||
+    firstNonEmptyString(parseObject(config.env).CLAUDE_CODE_EXECUTABLE)
+  ) {
+    return null;
+  }
+  const bundledCliVersion = await readBundledClaudeCodeVersion();
+  if (!bundledCliVersion || claudeCliVersionAtLeast(bundledCliVersion, minimumCliVersion)) return null;
+  const errorMessage =
+    `${model} requires Claude Code ${minimumCliVersion} or newer; the ACP lane runs the bundled Claude Code ${bundledCliVersion}. ` +
+    "Set CLAUDE_CODE_EXECUTABLE in the agent env to a newer Claude Code, or set engine=cli, before retrying.";
+  await ctx.onLog("stderr", `[paperclip] ${errorMessage}\n`);
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage,
+    errorCode: "claude_cli_version_incompatible",
+    ...resolveClaudeAcpBillingIdentity(ctx),
+    model,
+    resultJson: {
+      stopReason: "claude_cli_version_incompatible",
+      requiredClaudeCodeVersion: minimumCliVersion,
+      detectedClaudeCodeVersion: bundledCliVersion,
+    },
+  };
+}
+
 export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}): ClaudeAcpExecutor {
   let executor: ClaudeAcpExecutor | null = null;
   return async (ctx) => {
@@ -391,10 +439,10 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       executionTarget: ctx.executionTarget,
       legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
     });
-    const result = await currentExecutor({
-      ...ctx,
-      config: buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env),
-    });
+    const config = buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env);
+    const versionFailure = await bundledClaudeCodeVersionFailure(ctx, config, target);
+    if (versionFailure) return versionFailure;
+    const result = await currentExecutor({ ...ctx, config });
     return mapClaudeAcpAuthErrorCode(result);
   };
 }
