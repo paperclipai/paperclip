@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   REDACTED_COMMAND_TEXT_VALUE,
   redactDiagnosticText,
+  redactTransportCredentials,
 } from "./command-redaction.js";
 
 describe("redactDiagnosticText", () => {
@@ -91,5 +92,73 @@ second-line\" status=401`;
     const output = redactDiagnosticText(input);
     expect(output).not.toContain("MARKERBACKSLASH_B");
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
+
+  it("redacts opaque and fine-grained tokens in git remote userinfo", () => {
+    const opaque = "opaquecompanytokenvalue1234567890abcd";
+    const fineGrained = "github_pat_11AAAAAAA0abcdefghijklmnopqrstuvwxyz";
+    const input = [
+      `remote: https://${opaque}@github.com/paperclipai/paperclip.git`,
+      `https://x-access-token:${opaque}@github.com/org/repo.git`,
+      `https://git:${opaque}@github.com/org/repo.git`,
+      `https://${fineGrained}@github.com/org/repo.git`,
+      String.raw`fatal: unable to access \"https://${opaque}@github.com/org/repo.git/\"`,
+      "To https://github.com/org/repo.git",
+      "git@github.com:org/repo.git",
+      "contact dev@github.com for access",
+    ].join("\n");
+
+    const output = redactTransportCredentials(input);
+
+    expect(output).not.toContain(opaque);
+    expect(output).not.toContain(fineGrained);
+    expect(output).toContain("https://***REDACTED***@github.com/paperclipai/paperclip.git");
+    expect(output).toContain("https://github.com/org/repo.git");
+    expect(output).toContain("git@github.com:org/repo.git");
+    expect(output).toContain("dev@github.com");
+    expect(redactTransportCredentials(output)).toBe(output);
+  });
+
+  it("redacts a tokenized remote that was cut off before the at-sign", () => {
+    const underscored = "opaque_company_token_value_1234567890abcd";
+    const overlong = "a".repeat(64);
+    const hostname = "h".repeat(20);
+    expect(hostname).toHaveLength(20);
+
+    const cutOff = redactTransportCredentials(`remote: https://${underscored}`);
+    expect(cutOff).not.toContain(underscored);
+    expect(cutOff).toContain("https://***REDACTED***");
+
+    const tooLongForDns = redactTransportCredentials(`remote: https://${overlong}`);
+    expect(tooLongForDns).not.toContain(overlong);
+    expect(tooLongForDns).toContain("https://***REDACTED***");
+
+    expect(redactTransportCredentials(`curl https://${hostname}`)).toBe(
+      `curl https://${hostname}`,
+    );
+    expect(redactTransportCredentials("curl https://internal-build-host-01")).toBe(
+      "curl https://internal-build-host-01",
+    );
+    expect(redactTransportCredentials("see https://github.com/org/repo.git")).toBe(
+      "see https://github.com/org/repo.git",
+    );
+  });
+
+  it("redacts Authorization Basic and token schemes", () => {
+    const opaque = "opaquecompanytokenvalue1234567890abcd";
+    const basic = Buffer.from(`git:${opaque}`).toString("base64");
+    const input = [
+      `Authorization: Basic ${basic}`,
+      `Authorization: token ${opaque}`,
+      `Authorization: Bearer ${opaque}`,
+    ].join("\n");
+
+    const output = redactTransportCredentials(input);
+
+    expect(output).not.toContain(opaque);
+    expect(output).not.toContain(basic);
+    expect(output).toContain("Authorization: Basic ***REDACTED***");
+    expect(output).toContain("Authorization: token ***REDACTED***");
+    expect(output).toContain("Authorization: Bearer ***REDACTED***");
   });
 });

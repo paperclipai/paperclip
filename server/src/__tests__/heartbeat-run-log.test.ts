@@ -40,4 +40,31 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
   });
+
+  it("redacts tokenized git remotes before persisting run-log chunks", () => {
+    // `git push -u` retained `https://<token>@github.com/...` in the shell
+    // transcript. Known `ghp_`/`ghu_` prefixes were already scrubbed; opaque
+    // userinfo, fine-grained PATs, and Authorization token/Basic were not.
+    const opaque = "opaquecompanytokenvalue1234567890abcd";
+    const fineGrained = "github_pat_11AAAAAAA0abcdefghijklmnopqrstuvwxyz";
+    const basic = Buffer.from(`git:${opaque}`).toString("base64");
+    const chunk = [
+      `remote: https://${opaque}@github.com/paperclipai/paperclip.git`,
+      `fatal: unable to access 'https://x-access-token:${opaque}@github.com/GULP-GAMES/SayaSync.git/': The requested URL returned error: 403`,
+      `https://${fineGrained}@github.com/org/repo.git`,
+      `Authorization: token ${opaque}`,
+      `Authorization: Basic ${basic}`,
+      `To https://github.com/org/repo.git`,
+      `git@github.com:org/repo.git`,
+    ].join("\n");
+
+    const compacted = compactRunLogChunk(chunk);
+
+    expect(compacted).not.toContain(opaque);
+    expect(compacted).not.toContain(fineGrained);
+    expect(compacted).not.toContain(basic);
+    expect(compacted).toContain("https://***REDACTED***@github.com/paperclipai/paperclip.git");
+    expect(compacted).toContain("https://github.com/org/repo.git");
+    expect(compacted).toContain("git@github.com:org/repo.git");
+  });
 });

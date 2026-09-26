@@ -29,8 +29,24 @@ const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
 );
 const COMMAND_AUTHORIZATION_BEARER_RE =
   /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
+// Credential-bearing remotes and non-Bearer Authorization schemes. Git prints
+// `https://<token>@github.com/...` on `git push -u` / clone failures. Known
+// `ghp_`/`ghu_` prefixes were already scrubbed; opaque userinfo and
+// `github_pat_` were not.
+const COMMAND_AUTHORIZATION_SCHEME_RE =
+  /(\bAuthorization\s*:\s*(?:Bearer|Basic|token)\s+)[^\s"'`]+/gi;
+const COMMAND_URL_USERINFO_RE =
+  /\b(https?:(?:\\*\/){2})([^/\s@\\]+)@/gi;
+// A range or a truncated line can end after `https://<token>` and before `@`.
+// A dotted host such as `https://github.com` is left alone. A single DNS label
+// (no underscore, at most 63 characters) is also a hostname, not userinfo.
+const COMMAND_URL_OPEN_USERINFO_RE =
+  /\b(https?:(?:\\*\/){2})([A-Za-z0-9_-]{20,})$/g;
+const COMMAND_URL_OPEN_USER_TOKEN_RE =
+  /\b(https?:(?:\\*\/){2}[^/\s@\\]*:)([A-Za-z0-9_]{20,})$/g;
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
-const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const COMMAND_GITHUB_TOKEN_RE =
+  /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{16,})\b/g;
 const COMMAND_JWT_RE =
   /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
 const COMMAND_SECRET_HINTS = [
@@ -52,7 +68,51 @@ const COMMAND_SECRET_HINTS = [
   "ghu_",
   "ghs_",
   "ghr_",
+  "github_pat_",
 ] as const;
+
+/**
+ * Strip credential-bearing URL userinfo and Authorization header values.
+ *
+ * This is the narrow scanner safe to run again when reading a log that was
+ * stored before the write-path gate existed. It does not apply the broader
+ * JWT or JSON-field heuristics.
+ */
+export function redactTransportCredentials(
+  text: string,
+  redactedValue = REDACTED_COMMAND_TEXT_VALUE,
+): string {
+  if (!text) return text;
+  const lower = text.toLowerCase();
+  if (
+    !text.includes("@") &&
+    !lower.includes("authorization") &&
+    !lower.includes("https://") &&
+    !lower.includes("http://") &&
+    !lower.includes("github_pat_") &&
+    !lower.includes("ghp_") &&
+    !lower.includes("gho_") &&
+    !lower.includes("ghu_") &&
+    !lower.includes("ghs_") &&
+    !lower.includes("ghr_")
+  ) {
+    return text;
+  }
+  return text
+    .replace(COMMAND_URL_USERINFO_RE, `$1${redactedValue}@`)
+    .replace(COMMAND_URL_OPEN_USER_TOKEN_RE, `$1${redactedValue}`)
+    .replace(COMMAND_URL_OPEN_USERINFO_RE, (match, prefix: string, label: string) =>
+      isPlausibleHostnameLabel(label) ? match : `${prefix}${redactedValue}`,
+    )
+    .replace(COMMAND_AUTHORIZATION_SCHEME_RE, `$1${redactedValue}`)
+    .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue);
+}
+
+/** DNS label: letters, digits, and hyphens, 1–63 chars, no underscore. */
+function isPlausibleHostnameLabel(label: string): boolean {
+  if (label.length < 1 || label.length > 63 || label.includes("_")) return false;
+  return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label);
+}
 
 function maybeContainsSecretText(command: string) {
   const lower = command.toLowerCase();
@@ -66,8 +126,8 @@ export function redactCommandText(
   command: string,
   redactedValue = REDACTED_COMMAND_TEXT_VALUE,
 ): string {
-  if (!maybeContainsSecretText(command)) return command;
-  return command
+  if (!maybeContainsSecretText(command) && !command.includes("@")) return command;
+  return redactTransportCredentials(command, redactedValue)
     .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
     .replace(

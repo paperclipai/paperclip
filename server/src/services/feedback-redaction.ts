@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactTransportCredentials } from "@paperclipai/adapter-utils/command-redaction";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { sanitizeRecord } from "../redaction.js";
 
@@ -114,6 +115,13 @@ export function sanitizeFeedbackText(
   if (output !== input) {
     recordField(state, fieldPath);
     increment(state, "current_user", 1);
+  }
+
+  const transportRedacted = redactTransportCredentials(output);
+  if (transportRedacted !== output) {
+    output = transportRedacted;
+    recordField(state, fieldPath);
+    increment(state, "transport_credential", 1);
   }
 
   for (const pattern of FREE_TEXT_PATTERNS) {

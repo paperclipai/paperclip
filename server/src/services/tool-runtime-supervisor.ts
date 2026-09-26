@@ -3,6 +3,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolAccessAuditEvents, toolRuntimeSlots } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode, ToolRuntimeSlotStatus } from "@paperclipai/shared";
+import { redactTransportCredentials } from "@paperclipai/adapter-utils/command-redaction";
 import { logActivity } from "./activity-log.js";
 
 const ACTIVE_SLOT_STATUSES: ToolRuntimeSlotStatus[] = ["starting", "running", "idle"];
@@ -95,7 +96,7 @@ function dateValue(value: unknown): Date | null {
 }
 
 function redactLogLine(line: string) {
-  return line
+  return redactTransportCredentials(line)
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
     .replace(/\b(sk|pk|ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_=-]{12,}\b/g, "[REDACTED_TOKEN]")
     .replace(/\b[A-Za-z0-9+/]{32,}={0,2}\b/g, "[REDACTED_VALUE]");
@@ -113,8 +114,22 @@ function trimLogs(
   return next;
 }
 
+export function redactStoredSlotLogs(metadata: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(metadata.logs)) return metadata;
+  return {
+    ...metadata,
+    logs: metadata.logs.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.line !== "string") return entry;
+      const line = redactLogLine(record.line);
+      return line === record.line ? entry : { ...record, line };
+    }),
+  };
+}
+
 function slotView(row: typeof toolRuntimeSlots.$inferSelect): ToolRuntimeSlotView {
-  const metadata = asRecord(row.metadata);
+  const metadata = redactStoredSlotLogs(asRecord(row.metadata));
   return {
     id: row.id,
     companyId: row.companyId,

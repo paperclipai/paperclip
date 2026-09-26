@@ -4,7 +4,10 @@ import { workspaceOperations } from "@paperclipai/db";
 import type { WorkspaceOperation, WorkspaceOperationPhase, WorkspaceOperationStatus } from "@paperclipai/shared";
 import { asc, desc, eq, gte, inArray, isNull, lt, or, and } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
+import { redactTransportCredentials } from "@paperclipai/adapter-utils/command-redaction";
+import { readRedactedLogContent } from "./redacted-log-read.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
+import { redactSensitiveText } from "../redaction.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
 
@@ -188,7 +191,7 @@ function toWorkspaceOperation(row: WorkspaceOperationRow): WorkspaceOperation {
     heartbeatRunId: row.heartbeatRunId ?? null,
     issueId: row.issueId ?? null,
     phase: row.phase as WorkspaceOperationPhase,
-    command: row.command ?? null,
+    command: row.command ? redactTransportCredentials(row.command) : null,
     cwd: row.cwd ?? null,
     status: row.status as WorkspaceOperationStatus,
     exitCode: row.exitCode ?? null,
@@ -197,8 +200,8 @@ function toWorkspaceOperation(row: WorkspaceOperationRow): WorkspaceOperation {
     logBytes: row.logBytes ?? null,
     logSha256: row.logSha256 ?? null,
     logCompressed: row.logCompressed,
-    stdoutExcerpt: row.stdoutExcerpt ?? null,
-    stderrExcerpt: row.stderrExcerpt ?? null,
+    stdoutExcerpt: row.stdoutExcerpt ? redactTransportCredentials(row.stdoutExcerpt) : null,
+    stderrExcerpt: row.stderrExcerpt ? redactTransportCredentials(row.stderrExcerpt) : null,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt ?? null,
@@ -474,7 +477,9 @@ export function workspaceOperationService(db: Db) {
           let stderrExcerpt = "";
           const append = async (stream: "stdout" | "stderr" | "system", chunk: string | null | undefined) => {
             if (!chunk) return;
-            const sanitizedChunk = redactCurrentUserText(chunk, currentUserRedactionOptions);
+            const sanitizedChunk = redactSensitiveText(
+              redactCurrentUserText(chunk, currentUserRedactionOptions),
+            );
             if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
             if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
             await logStore.append(handle, {
@@ -698,11 +703,16 @@ export function workspaceOperationService(db: Db) {
       if (!operation) throw notFound("Workspace operation not found");
       if (!operation.logStore || !operation.logRef) throw notFound("Workspace operation log not found");
 
-      const result = await logStore.read(
-        {
-          store: operation.logStore as "local_file",
-          logRef: operation.logRef,
-        },
+      // Same whole-line read-path gate as heartbeat run logs.
+      const result = await readRedactedLogContent(
+        (range) =>
+          logStore.read(
+            {
+              store: operation.logStore as "local_file",
+              logRef: operation.logRef!,
+            },
+            range,
+          ),
         opts,
       );
 
@@ -711,9 +721,6 @@ export function workspaceOperationService(db: Db) {
         store: operation.logStore,
         logRef: operation.logRef,
         ...result,
-        // Workspace-operation log chunks are sanitized before append-time storage.
-        // Returning the stored chunk avoids another whole-string rewrite per poll.
-        content: result.content,
       };
     },
   };

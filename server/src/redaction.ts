@@ -379,6 +379,7 @@ const SECRET_TEXT_HINTS = [
   "ghu_",
   "ghs_",
   "ghr_",
+  "github_pat_",
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
@@ -386,7 +387,9 @@ function maybeContainsSecretText(input: string) {
   const lower = input.toLowerCase();
   return (
     SECRET_TEXT_HINTS.some((hint) => lower.includes(hint)) ||
-    input.includes(".")
+    input.includes(".") ||
+    // `https://<token>@host` has no secret-hint substring when the token is opaque.
+    input.includes("@")
   );
 }
 
