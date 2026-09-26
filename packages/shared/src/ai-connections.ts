@@ -31,9 +31,12 @@ export const AI_PROVIDERS = [
   "openai",
   "openrouter",
   "xai",
+  "greenchclaw",
+  "ollama",
+  "ollama_cloud",
 ] as const;
 export const aiProviderSchema = z.enum(AI_PROVIDERS);
-export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
+export const aiAuthMethodSchema = z.enum(["subscription", "api_key", "gateway", "local"]);
 export type AiProvider = z.infer<typeof aiProviderSchema>;
 export type AiAuthMethod = z.infer<typeof aiAuthMethodSchema>;
 const requirement = { provider: aiProviderSchema, method: aiAuthMethodSchema };
@@ -100,11 +103,45 @@ export const AI_CONNECTION_CAPABILITIES: Record<
       api_key: { adapters: ["opencode_local"], envKey: "OPENROUTER_API_KEY" },
     },
   },
+  // Local model server reached through the OpenCode harness. No vendor
+  // credential: the operator points at their own Ollama endpoint.
+  ollama: {
+    name: "Ollama (local)",
+    methods: {
+      local: {
+        adapters: ["opencode_local"],
+        envKey: "OLLAMA_BASE_URL",
+      },
+    },
+  },
+  // Ollama's hosted service (ollama.com). Same harness, but authenticated with
+  // an API key rather than a local endpoint.
+  ollama_cloud: {
+    name: "Ollama Cloud",
+    methods: {
+      api_key: {
+        adapters: ["opencode_local"],
+        envKey: "OLLAMA_API_KEY",
+      },
+    },
+  },
   xai: {
     name: "Grok",
     methods: {
       subscription: { adapters: ["grok_local"], envKey: "GROK_HOME" },
       api_key: { adapters: ["grok_local"], envKey: "XAI_API_KEY" },
+    },
+  },
+  // Self-hosted / local agent runtimes. No external vendor credential:
+  // the agent runs on a gateway the operator already controls, so the
+  // "gateway" method carries connection details instead of an API key.
+  greenchclaw: {
+    name: "GreenchClaw",
+    methods: {
+      gateway: {
+        adapters: ["openclaw_gateway"],
+        envKey: "GREENCHCLAW_GATEWAY_TOKEN",
+      },
     },
   },
 };
@@ -132,7 +169,11 @@ export function isAiConnectionCompatible(
   return (
     candidates.some((method) => method?.adapters.includes(adapterType)) &&
     (requirement.provider !== "openrouter" ||
-      (typeof model === "string" && model.startsWith("openrouter/")))
+      (typeof model === "string" && model.startsWith("openrouter/"))) &&
+    (requirement.provider !== "ollama" ||
+      (typeof model === "string" && model.startsWith("ollama/"))) &&
+    (requirement.provider !== "ollama_cloud" ||
+      (typeof model === "string" && model.startsWith("ollama/")))
   );
 }
 export type AiConnectionUnavailableReason =
@@ -186,6 +227,25 @@ export const createAiConnectionSchema = z
   .superRefine((v, ctx) => {
     if (!AI_CONNECTION_CAPABILITIES[v.provider].methods[v.method])
       ctx.addIssue({ code: "custom", message: "Unsupported sign-in method" });
+    // The `gateway` method (self-hosted runtimes such as GreenchClaw) carries a
+    // gateway token in the same field an API key uses; it has no sign-in session.
+    if (v.method === "gateway") {
+      if (!v.apiKey || Boolean(v.loginSessionId))
+        ctx.addIssue({
+          code: "custom",
+          message: "Provide the gateway token for this connection",
+        });
+      return;
+    }
+    // The `local` method (e.g. an Ollama endpoint) needs no credential at all.
+    if (v.method === "local") {
+      if (Boolean(v.loginSessionId) || Boolean(v.apiKey))
+        ctx.addIssue({
+          code: "custom",
+          message: "Local connections do not take a credential",
+        });
+      return;
+    }
     if (
       v.method === "api_key"
         ? !v.apiKey || Boolean(v.loginSessionId)
