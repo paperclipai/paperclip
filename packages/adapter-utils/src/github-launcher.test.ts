@@ -20,12 +20,15 @@ describe("managed GitHub launchers", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-pathext-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
     const bin = path.join(root, "managed");
+    const early = path.join(root, "early");
     const real = path.join(root, "real");
     const nodeBin = path.join(root, "node-bin");
-    for (const directory of [bin, real, nodeBin]) await mkdir(directory);
+    for (const directory of [bin, early, real, nodeBin]) await mkdir(directory);
     await symlink(process.execPath, path.join(nodeBin, "node"));
     await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
-    return { root, bin, real, searchPath: `${real}${path.delimiter}${nodeBin}` };
+    // `early` precedes `real`, so a case can put a wrapper ahead of an executable.
+    return { root, bin, early, real,
+      searchPath: [early, real, nodeBin].join(path.delimiter) };
   }
 
   it("resolves a PATHEXT-qualified executable when the extensionless name is absent", async () => {
@@ -39,15 +42,27 @@ describe("managed GitHub launchers", () => {
     expect(result.stdout.trim()).toBe("resolved-through-pathext");
   });
 
-  it("skips a batch wrapper and takes an executable candidate instead", async () => {
-    // spawn() in the shim runs without a shell, and Node cannot start a .cmd or .bat that
-    // way, so a batch candidate must never win over one that can actually launch.
+  it("takes the executable when PATHEXT orders it ahead of a wrapper in the same directory", async () => {
+    // The default PATHEXT puts .EXE before .CMD, so the ordinary Windows install where both
+    // exist side by side must resolve to the executable.
     const fixture = await pathExtFixture();
     await writeFile(path.join(fixture.real, "git.CMD"), "#!/bin/sh\necho batch-wrapper\n", { mode: 0o700 });
     await writeFile(path.join(fixture.real, "git.EXE"), "#!/bin/sh\necho real-executable\n", { mode: 0o700 });
-    const env = { ...process.env, PATH: fixture.searchPath, PATHEXT: ".CMD;.BAT;.EXE" };
+    const env = { ...process.env, PATH: fixture.searchPath, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
     const result = await exec(path.join(fixture.bin, "git"), ["--version"], { cwd: fixture.root, env });
     expect(result.stdout.trim()).toBe("real-executable");
+  });
+
+  it("reports a batch wrapper rather than reaching past it for a later executable", async () => {
+    // spawn() in the shim runs without a shell, so Node cannot start this wrapper. Skipping
+    // it would launch git.EXE from a later directory: a different tool than PATH selects,
+    // with the wrapper's own setup silently bypassed. Fail with the reason instead.
+    const fixture = await pathExtFixture();
+    await writeFile(path.join(fixture.early, "git.CMD"), "#!/bin/sh\necho batch-wrapper\n", { mode: 0o700 });
+    await writeFile(path.join(fixture.real, "git.EXE"), "#!/bin/sh\necho real-executable\n", { mode: 0o700 });
+    const env = { ...process.env, PATH: fixture.searchPath, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+    await expect(exec(path.join(fixture.bin, "git"), ["--version"], { cwd: fixture.root, env }))
+      .rejects.toThrow(/batch wrapper/);
   });
 
   it("keeps resolving the extensionless program when PATHEXT is unset", async () => {

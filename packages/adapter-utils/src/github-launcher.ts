@@ -11,12 +11,10 @@ const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => 
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
 // Windows resolves a bare 'git' through PATHEXT, so probing the extensionless name alone
-// finds nothing: only git.exe is on disk. PATHEXT is unset on POSIX, where the loop below
-// reduces to the single extensionless candidate it has always probed.
-// Batch wrappers are excluded: spawn() below runs without a shell, and Node cannot start a
-// .cmd or .bat that way, so selecting one would trade a not-found error for a launch error.
-const batch = /^\.(cmd|bat)$/i;
-const extensions = (process.env.PATHEXT || '').split(';').map(e => e.trim()).filter(e => e && !batch.test(e));
+// finds nothing: only git.exe is on disk. PATHEXT is unset on POSIX, where the list below
+// reduces to the single extensionless candidate it has always probed. Candidate order
+// follows PATH order, then PATHEXT order inside each directory, as Windows resolves it.
+const extensions = (process.env.PATHEXT || '').split(';').map(e => e.trim()).filter(Boolean);
 const candidates = originalPath.flatMap(p => [
   ...extensions.map(extension => path.join(p, program + extension)),
   path.join(p, program),
@@ -26,6 +24,14 @@ const executable = candidates.find(p => {
 });
 if (!['git', 'gh'].includes(program) || !executable) {
   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
+  process.exit(127);
+}
+// spawn() below runs without a shell and Node cannot start a .cmd or .bat that way. Report
+// the wrapper that PATH actually selects, rather than reaching past it for an executable in
+// a later directory: that would run a different tool than the PATH order asks for and skip
+// whatever setup the wrapper does.
+if (/\.(cmd|bat)$/i.test(executable)) {
+  process.stderr.write('Paperclip: ' + program + ' resolves to the batch wrapper ' + executable + ', which the managed launcher cannot start.\n');
   process.exit(127);
 }
 async function main() {
