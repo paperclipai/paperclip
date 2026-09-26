@@ -257,13 +257,13 @@ export function StatusCardTile({
           <p className="mb-1 text-(length:--text-micro) text-muted-foreground">Showing last good summary:</p>
         ) : null}
         {hasSummary ? (
-          <MarkdownBody className="text-xs leading-6 text-foreground [&_p]:my-0.5">{card.summaryBody!}</MarkdownBody>
+          <MarkdownBody issueReferenceDisplay="chip" className="text-xs leading-6 text-foreground [&_p]:my-0.5">{card.summaryBody!}</MarkdownBody>
         ) : lifecycle === "compiling" ? (
           <p className="text-xs text-muted-foreground">
             You can add instructions and pick an update policy while this runs.
           </p>
         ) : lifecycle === "updating" && draftStream.draft ? (
-          <MarkdownBody className="text-xs leading-6 text-foreground [&_p]:my-0.5">{draftStream.draft}</MarkdownBody>
+          <MarkdownBody issueReferenceDisplay="chip" className="text-xs leading-6 text-foreground [&_p]:my-0.5">{draftStream.draft}</MarkdownBody>
         ) : (
           <p className="text-xs text-muted-foreground">No summary yet.</p>
         )}

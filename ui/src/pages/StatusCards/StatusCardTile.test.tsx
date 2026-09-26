@@ -24,7 +24,9 @@ vi.mock("@/components/useSummaryDraftStream", () => ({
   useSummaryDraftStream: () => ({ runId: null, statusLine: null, draft: null, draftClosed: false, hasStream: false }),
 }));
 vi.mock("@/components/MarkdownBody", () => ({
-  MarkdownBody: ({ children }: { children: string }) => <div data-testid="markdown-body">{children}</div>,
+  MarkdownBody: ({ children, issueReferenceDisplay }: { children: string; issueReferenceDisplay?: "icon" | "chip" }) => (
+    <div data-testid="markdown-body" data-issue-reference-display={issueReferenceDisplay}>{children}</div>
+  ),
 }));
 
 function baseCard(overrides: Partial<StatusCardView>): StatusCardView {
@@ -122,6 +124,7 @@ describe("StatusCardTile lifecycle rendering", () => {
     const el = container.querySelector('[data-testid="status-card-tile"]');
     expect(el?.getAttribute("data-lifecycle")).toBe("fresh");
     expect(container.querySelector('[data-testid="markdown-body"]')?.textContent).toContain("All on track");
+    expect(container.querySelector('[data-testid="markdown-body"]')?.getAttribute("data-issue-reference-display")).toBe("chip");
     expect(container.textContent).toContain("every 15m if changed");
   });
 

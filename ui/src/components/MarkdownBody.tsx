@@ -30,6 +30,7 @@ import {
 } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { IssueStatusBadge } from "./StatusBadge";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
 import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import {
@@ -69,6 +70,8 @@ interface MarkdownBodyProps {
   style?: React.CSSProperties;
   softBreaks?: boolean;
   linkIssueReferences?: boolean;
+  /** Render linked issue references as compact inline links (default) or full status chips. */
+  issueReferenceDisplay?: "icon" | "chip";
   /**
    * Linkify bare case identifiers (`PAP-C7`) to the case detail page. Off by
    * default; enabled on surfaces behind the experimental Cases flag (PAP-12969).
@@ -106,9 +109,11 @@ let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = nul
 function MarkdownIssueLink({
   issuePathId,
   children,
+  display = "icon",
 }: {
   issuePathId: string;
   children: ReactNode;
+  display?: "icon" | "chip";
 }) {
   const { data } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
@@ -125,13 +130,16 @@ function MarkdownIssueLink({
     <Link
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
-      // Boxless inline mention: the unified status glyph + a regular-weight
-      // underlined link, optically centered with the body text.
-      className={cn("paperclip-markdown-issue-ref", "font-normal underline")}
+      // Inline Markdown keeps the compact glyph by default. Summary surfaces
+      // can opt into the existing issue-status chip without changing every
+      // other Markdown reference in the product.
+      className={cn("paperclip-markdown-issue-ref", "font-normal underline", display === "chip" && "inline-flex items-center gap-1.5 no-underline")}
       title={title}
       aria-label={issueLabel}
     >
-      {status ? (
+      {status && display === "chip" ? (
+        <IssueStatusBadge status={status} />
+      ) : status ? (
         <StatusIcon status={status} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
       ) : null}
       {children}
@@ -712,6 +720,7 @@ function MarkdownBodyImpl({
   style,
   softBreaks = true,
   linkIssueReferences = true,
+  issueReferenceDisplay = "icon",
   linkCaseReferences = false,
   enableWikiLinks = false,
   wikiLinkRoot,
@@ -843,7 +852,7 @@ function MarkdownBodyImpl({
       const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
       if (issueRef) {
         return (
-          <MarkdownIssueLink issuePathId={issueRef.issuePathId}>
+          <MarkdownIssueLink issuePathId={issueRef.issuePathId} display={issueReferenceDisplay}>
             {linkChildren}
           </MarkdownIssueLink>
         );
@@ -930,7 +939,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, onImageClick]);
+  }, [theme, linkIssueReferences, issueReferenceDisplay, linkCaseReferences, externalReferenceLookup, resolveImageSrc, onImageClick]);
 
   return (
     <div

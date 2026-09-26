@@ -304,7 +304,7 @@ export function StatusCardDetailDrawer({
               ) : null}
 
               {lifecycle === "updating" && draftStream.draft && !selectedRevision ? (
-                <MarkdownBody className="text-sm leading-7">{draftStream.draft}</MarkdownBody>
+                <MarkdownBody issueReferenceDisplay="chip" className="text-sm leading-7">{draftStream.draft}</MarkdownBody>
               ) : selectedRevision ? (
                 <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
                   <p className="text-xs text-muted-foreground" title={formatDateTime(selectedRevision.startedAt)}>
@@ -312,10 +312,10 @@ export function StatusCardDetailDrawer({
                     {relativeTime(selectedRevision.startedAt)}
                   </p>
                   {selectedRevisionBody ? (
-                    <MarkdownBody className="text-sm leading-7">{selectedRevisionBody}</MarkdownBody>
+                    <MarkdownBody issueReferenceDisplay="chip" className="text-sm leading-7">{selectedRevisionBody}</MarkdownBody>
                   ) : selectedRevision.changeSummary ? (
                     <>
-                      <MarkdownBody className="text-sm leading-7">{selectedRevision.changeSummary}</MarkdownBody>
+                      <MarkdownBody issueReferenceDisplay="chip" className="text-sm leading-7">{selectedRevision.changeSummary}</MarkdownBody>
                       <p className="text-xs text-muted-foreground/70">
                         The full summary text for this revision is unavailable — showing its change summary. The
                         integrated changes below are the live ledger for this revision.
@@ -328,7 +328,7 @@ export function StatusCardDetailDrawer({
                   )}
                 </div>
               ) : hasSummary ? (
-                <MarkdownBody className="text-sm leading-7">{card.summaryBody!}</MarkdownBody>
+                <MarkdownBody issueReferenceDisplay="chip" className="text-sm leading-7">{card.summaryBody!}</MarkdownBody>
               ) : lifecycle === "compiling" ? (
                 <div className="space-y-2 text-sm text-muted-foreground">
                   <p className="flex items-center gap-2">
