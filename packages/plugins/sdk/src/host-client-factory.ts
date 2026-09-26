@@ -129,6 +129,9 @@ export interface HostServices {
     namespace(params: WorkerToHostMethods["db.namespace"][0]): Promise<WorkerToHostMethods["db.namespace"][1]>;
     query(params: WorkerToHostMethods["db.query"][0]): Promise<WorkerToHostMethods["db.query"][1]>;
     execute(params: WorkerToHostMethods["db.execute"][0]): Promise<WorkerToHostMethods["db.execute"][1]>;
+    executeTransaction(
+      params: WorkerToHostMethods["db.executeTransaction"][0],
+    ): Promise<WorkerToHostMethods["db.executeTransaction"][1]>;
   };
 
   /** Provides `entities.upsert`, `entities.list`. */
@@ -397,6 +400,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "db.namespace": "database.namespace.read",
   "db.query": "database.namespace.read",
   "db.execute": "database.namespace.write",
+  "db.executeTransaction": "database.namespace.write",
 
   // Entities — no specific capability required (plugin-scoped by design)
   "entities.upsert": null,
@@ -751,6 +755,9 @@ export function createHostClientHandlers(
     }),
     "db.execute": gated("db.execute", async (params) => {
       return services.db.execute(params);
+    }),
+    "db.executeTransaction": gated("db.executeTransaction", async (params) => {
+      return services.db.executeTransaction(params);
     }),
 
     // Entities
