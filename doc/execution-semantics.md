@@ -366,6 +366,7 @@ An external wait counts as a live or waiting path only when the next move surviv
 - a one-shot issue monitor or other persisted scheduled wake that names the responsible assignee, next check time, and bounded timeout/attempt policy
 - a first-class blocker or `blocked` disposition that names the external owner and concrete action required to unblock the issue
 - a delegated child issue with a responsible owner and its own healthy action path, plus a blocker edge when the source issue must wait for that child; `parentId` alone is not a dependency
+- an active task watchdog on the issue itself whose watchdog agent is same-company and invokable; the watchdog owns the next wake after the issue stops, so liveness recovery, disposition repair, and the successful-run handoff do not wake the issue first. A watchdog on an ancestor issue does not count. A watchdog also does not count when it cannot deliver that wake: its agent cannot run, its agent has on-demand wakes off, a budget hard-stop blocks its agent, or it already reviewed the current stop state and so will not fire again until that state changes
 
 A one-shot issue monitor consumes its persisted `nextCheckAt` when it dispatches the assignee wake. If that monitor-consuming run is lost before it records a new disposition or future monitor, Paperclip restores exactly one bounded continuation using the existing process-loss retry limit; if that continuation is also lost, the normal recovery-action escalation owns the next step instead of creating another monitor loop.
 
@@ -558,7 +559,7 @@ A healthy active-work state means at least one of these is true:
 - there is an active one-shot monitor that will wake the assignee for a future check
 - there is an open explicit recovery action for the lost execution path
 
-An agent-owned `in_progress` issue is stalled when it has no active run, no queued continuation, no persisted monitor, and no explicit recovery surface. An unmanaged local/background watcher does not satisfy any of those conditions. A Paperclip-tracked run that is still running but silent is not automatically stalled; it is handled by the active-run watchdog contract.
+An agent-owned `in_progress` issue is stalled when it has no active run, no queued continuation, no persisted monitor, no armed task watchdog that can deliver the next wake, and no explicit recovery surface. An unmanaged local/background watcher does not satisfy any of those conditions. A Paperclip-tracked run that is still running but silent is not automatically stalled; it is handled by the active-run watchdog contract.
 
 ### `in_review`
 
