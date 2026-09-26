@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -15,6 +15,7 @@ export function Goals() {
   const { selectedCompanyId } = useCompany();
   const { openNewGoal } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Goals" }]);
@@ -24,6 +25,17 @@ export function Goals() {
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const deleteGoal = useMutation({
+    mutationFn: (id: string) => goalsApi.remove(id),
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.goals.list(selectedCompanyId),
+        });
+      }
+    },
   });
 
   if (!selectedCompanyId) {
@@ -55,9 +67,18 @@ export function Goals() {
               New Goal
             </Button>
           </div>
-          <GoalTree goals={goals} goalLink={(goal) => `/goals/${goal.id}`} />
+          <GoalTree
+            goals={goals}
+            goalLink={(goal) => `/goals/${goal.id}`}
+            onDelete={(goal) => {
+              if (window.confirm(`Delete goal "${goal.title}"?`)) {
+                deleteGoal.mutate(goal.id);
+              }
+            }}
+          />
         </>
       )}
     </div>
   );
 }
+
