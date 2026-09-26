@@ -45,6 +45,7 @@ import {
   type SyncOperationTask,
 } from "./sync-operation-schedule.js";
 import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
+import { withWorkspaceRestoreDiagnostics } from "./workspace-restore-diagnostics.js";
 
 const execFile = promisify(execFileCallback);
 const SANDBOX_WORKSPACE_HEAVY_DIR_NAMES = [
@@ -1674,7 +1675,7 @@ export async function prepareSandboxManagedRuntime(input: {
       // tasks never share scratch state.
       if (syncWorkspace) {
         outboundTasks.push(() =>
-          runStepSpan("restore.workspace", async () => {
+          withWorkspaceRestoreDiagnostics("workspace", () => runStepSpan("restore.workspace", async () => {
             // Each repository owns its Git history and merge. The parent baseline also
             // records child files so restart recovery has their original merge inputs.
             for (const repository of repositories) {
@@ -1900,7 +1901,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 }
               }
             });
-          }),
+          }), restoreSink),
         );
       }
 
@@ -1912,15 +1913,17 @@ export async function prepareSandboxManagedRuntime(input: {
         const assetRestore = asset.restore;
         const assetKey = asset.key;
         outboundTasks.push(() =>
-          runStepSpan(`restore.asset.${assetKey}`, async () => {
-            await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
-              await assetRestore({
-                assetDir: path.posix.join(runtimeRootDir, assetKey),
-                readFile: async (remotePath) => toBuffer(await input.client.readFile(remotePath)),
-                tempDir,
+          withWorkspaceRestoreDiagnostics(
+            "asset",
+            () => runStepSpan(`restore.asset.${assetKey}`, async () => {
+              await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
+                await assetRestore({
+                  assetDir: path.posix.join(runtimeRootDir, assetKey),
+                  readFile: async (remotePath) => toBuffer(await input.client.readFile(remotePath)),
+                  tempDir,
+                });
               });
-            });
-          }),
+            }), restoreSink),
         );
       }
 

@@ -9257,6 +9257,65 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        // Retrying an exhausted disposition repair is an explicit retry of the
+        // recorded owner, never permission to reopen a stopped/completed task or
+        // silently retry a new assignee from an old notice. All admission gates
+        // below still apply, even for a board operator.
+        if (
+          outcome === "restored" &&
+          sourceIssueStatus === "todo" &&
+          activeRecoveryAction.kind === "deliberate_wait_without_target"
+        ) {
+          if (
+            lockedIssue.status !== "blocked" ||
+            activeRecoveryAction.ownerType !== "board" ||
+            activeRecoveryAction.wakePolicy?.type !== "board_escalation" ||
+            !activeRecoveryAction.returnOwnerAgentId ||
+            lockedIssue.assigneeAgentId !== activeRecoveryAction.returnOwnerAgentId
+          ) {
+            throw conflict(
+              "This recovery notice no longer matches the task. Refresh the task before choosing its next step.",
+              { code: "disposition_recovery_retry_stale" },
+            );
+          }
+          const sourceOwner = lockedIssue.assigneeAgentId
+            ? await agentsSvc.getById(lockedIssue.assigneeAgentId)
+            : null;
+          if (
+            !sourceOwner ||
+            sourceOwner.companyId !== lockedIssue.companyId ||
+            sourceOwner.status === "paused" ||
+            sourceOwner.status === "terminated"
+          ) {
+            throw conflict(
+              "The assigned agent is unavailable. Resume or review the agent before retrying.",
+              { code: "disposition_recovery_owner_unavailable" },
+            );
+          }
+          const readiness = await svc.getDependencyReadiness(lockedIssue.id, tx);
+          if (readiness.unresolvedBlockerCount > 0) {
+            throw conflict("Resolve the task’s blockers before retrying.", { code: "disposition_recovery_retry_blocked" });
+          }
+          // Interaction creation also locks the source issue. Check the durable
+          // wait inside this transaction so retry cannot bypass a newer question
+          // or confirmation after the notice was rendered.
+          const [pendingInteraction] = await tx
+            .select({ id: issueThreadInteractions.id })
+            .from(issueThreadInteractions)
+            .where(and(
+              eq(issueThreadInteractions.companyId, lockedIssue.companyId),
+              eq(issueThreadInteractions.issueId, lockedIssue.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .limit(1);
+          if (pendingInteraction) {
+            throw conflict(
+              "Respond to the pending question or confirmation before retrying.",
+              { code: "disposition_recovery_interaction_pending" },
+            );
+          }
+        }
+
         if (
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)

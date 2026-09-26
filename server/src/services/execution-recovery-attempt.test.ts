@@ -20,8 +20,26 @@ describe("failure attempts across resource waits", () => {
     expect(executionFailureRetryCount({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2,
       contextSnapshot: { failureRetriesBeforeWorkspaceWait: 0 } })).toBe(2);
   });
-  it("keeps ambiguous historical counts and starts a new incident after productive continuation", () => {
+  it("keeps ambiguous historical counts without treating a historical productive count as failures", () => {
     expect(executionFailureRetryCount({ scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 4 })).toBe(4);
     expect(executionFailureRetryCount({ scheduledRetryReason: "max_turns_continuation", scheduledRetryAttempt: 4 })).toBe(0);
+  });
+});
+
+describe("persisted independent accounting", () => {
+  it.each(["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy"])("%s cannot erase prior infrastructure debits or spend more", scheduledRetryReason => {
+    expect(executionFailureRetryCount({ scheduledRetryReason, scheduledRetryAttempt: 20,
+      contextSnapshot: { executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 1 } },
+    })).toBe(2);
+  });
+  it("never lowers the current failure count from a partial or stale ledger", () => {
+    for (const executionRetryAccounting of [
+      { version: 1, failureRetries: 0, maxTurnContinuations: 1 },
+      { version: 1, failureRetries: -1, maxTurnContinuations: 1 },
+      { version: 1, failureRetries: "0", maxTurnContinuations: 1 },
+      { version: 2, failureRetries: 0, maxTurnContinuations: 1 },
+    ]) expect(executionFailureRetryCount({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2,
+      contextSnapshot: { executionRetryAccounting },
+    })).toBe(2);
   });
 });

@@ -157,6 +157,7 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncDocumentSafely: vi.fn(async () => undefined),
   syncIssueSafely: vi.fn(async () => undefined),
 }));
+const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async () => null) }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
@@ -216,6 +217,7 @@ function registerRouteMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    issueTreeControlService: () => mockIssueTreeControlService,
     ISSUE_LIST_DEFAULT_LIMIT: 100,
     ISSUE_LIST_MAX_LIMIT: 500,
     accessService: () => mockAccessService,
@@ -373,8 +375,12 @@ function createRunContextDb(
     chatBindingQueries,
     transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
-      from: vi.fn((table: Parameters<typeof getTableName>[0]) =>
-        buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions")),
+      from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+        if (getTableName(table) === "issue_thread_interactions") {
+          return { where: vi.fn(() => ({ limit: vi.fn(async () => []) })) };
+        }
+        return buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions");
+      }),
     })),
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
   };
@@ -451,6 +457,7 @@ describe("agent issue mutation checkout ownership", () => {
     // by an earlier test.
     routeModules.value.__clearIssueListResponseCacheForTests();
     vi.clearAllMocks();
+    mockIssueTreeControlService.getActivePauseHoldGate.mockReset().mockResolvedValue(null);
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
     mockAccessService.canUser.mockReset();
@@ -2379,6 +2386,43 @@ describe("agent issue mutation checkout ownership", () => {
         expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
       },
     );
+  });
+
+  describe("retrying an escalated disposition repair", () => {
+    function seedRetry() {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId, status: "active", kind: "deliberate_wait_without_target",
+        ownerType: "board", ownerAgentId: null, returnOwnerAgentId: ownerAgentId,
+        wakePolicy: { type: "board_escalation" },
+      });
+    }
+    it.each(["done", "cancelled", "backlog", "todo", "in_progress"])("rejects a stale retry of a %s task", async status => {
+      seedRetry(); mockIssueService.getById.mockResolvedValue(makeIssue({ status, assigneeAgentId: ownerAgentId }));
+      const res = await request(await createApp(boardActor())).post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "todo" });
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details?.code).toBe("disposition_recovery_retry_stale");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+    it.each(["owner", "budget", "approval", "pause", "run", "blocker", "pausedAgent", "terminatedAgent"])("keeps the %s gate authoritative for a board retry", async gate => {
+      seedRetry();
+      if (gate === "owner") mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: peerAgentId }));
+      if (gate === "budget") mockBudgetService.getInvocationBlock.mockResolvedValue({ scope: "agent", reason: "hard_limit_reached" });
+      if (gate === "approval") mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([{ status: "pending" }]);
+      if (gate === "pause") mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue({ holdId: "hold", mode: "pause" });
+      if (gate === "run") mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId, executionRunId: ownerRunId }));
+      if (gate === "blocker") mockIssueService.getDependencyReadiness.mockResolvedValue({ unresolvedBlockerCount: 1 });
+      if (gate === "pausedAgent" || gate === "terminatedAgent") mockAgentService.getById.mockResolvedValue({ ...makeAgent(ownerAgentId), status: gate === "pausedAgent" ? "paused" : "terminated" });
+      const res = await request(await createApp(boardActor())).post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "todo" });
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
   });
 
   it.each(["done", "in_review"])(

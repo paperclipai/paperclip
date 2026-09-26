@@ -123,6 +123,11 @@ Paid tests never silently skip a missing credential or unsupported artifact.
 
 ## New Paperclip object fixtures
 
+The explicit-only `lifecycle-baseline` suite reuses this registry and existing
+continuation, chat and governed-action flows. Its narrative pairs require actual
+agent/run-attributed comments or exact visible responses. See
+[the live baseline contract](LIFECYCLE-BASELINE.md) for selectors and proof boundaries.
+
 Register new objects in `live-fixtures.ts` with explicit dependencies in
 `FixtureRegistry`. Setup must use a public API. Teardown runs in reverse order
 and is invoked after partial setup failures. Direct database writes and private
@@ -215,3 +220,8 @@ observable active execution; no provider output or database outcome is fabricate
 A worker-crash case sends SIGKILL only to a positively identified running native
 worker PID, then uses the production Retry button. Each gate is released in a
 finally block. Source facts and boundary state are retained with the attempt.
+The lifecycle suite also includes two legacy disposition-repair probes. Their
+first provider turn intentionally omits task disposition, and their second turn
+must be an automatic, causally bound repair that records completion. They use
+public task comments/status APIs and run-detail evidence; no private runtime
+hooks or database mutations are used by the fixture.

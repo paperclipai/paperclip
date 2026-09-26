@@ -1328,6 +1328,57 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("ignores transient invalid visual viewport measurements and keeps the last valid layout", async () => {
+    const visualViewport = new EventTarget() as EventTarget & {
+      height: number;
+      offsetTop: number;
+    };
+    visualViewport.height = 0;
+    visualViewport.offsetTop = 0;
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: visualViewport,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 844,
+    });
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const dialogContent = Array.from(container.querySelectorAll<HTMLDivElement>("div")).find((element) =>
+      element.className.includes("max-h-(--new-issue-dialog-height)"),
+    );
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("");
+    expect(dialogContent?.style.top).toBe("");
+    expect(dialogContent?.style.height).toBe("");
+    expect(dialogContent?.style.translate).toBe("");
+
+    visualViewport.height = 420;
+    visualViewport.offsetTop = 24;
+    await act(async () => {
+      visualViewport.dispatchEvent(new Event("resize"));
+    });
+
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
+    expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
+    expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
+
+    visualViewport.height = 0;
+    visualViewport.offsetTop = Number.NaN;
+    await act(async () => {
+      visualViewport.dispatchEvent(new Event("resize"));
+    });
+
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-offset-top")).toBe("24px");
+    expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
+    expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
+
+    act(() => root.unmount());
+  });
+
   it("hides the priority chip and mobile priority option (PAP-411)", async () => {
     const { root } = renderDialog(container);
     await flush();

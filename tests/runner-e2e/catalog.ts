@@ -1,4 +1,6 @@
+import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks } from "./continuation-cases.js";
+import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-live-cases.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
@@ -910,6 +912,26 @@ const everydayProfiles = [
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
+    id: "continuation-accounting", label: "Continuation accounting baseline", manualOnly: true,
+    description: "Structured productive steps, bounded repair, restart and late gates; comments cannot buy more attempts.",
+    groups: ["local"], environments: [localEnvironment], profiles: codexContinuityProfiles.map(productionStoryProfile),
+    tasks: accountingTasks, expectedMatrixSize: 8,
+    excludedExecutionIds: accountingTasks.filter(t => !t.id.includes("productive")).map(t => `continuation-accounting.runner-codex.local.${t.id}`),
+    definitionMetadata: { version: 4, grading: "accounting-v4-cancellation-evidence", scheduling: "explicit-only", providerTurns: "five productive, three repair, two executed plus one cancelled for Stop" },
+  },
+  {
+    id: "lifecycle-baseline", label: "Lifecycle authority baseline", manualOnly: true,
+    description: "Paired narrative probes plus real stop/resume and governed-action controls; live browser/server/database/provider execution.",
+    groups: ["local"], environments: [localEnvironment],
+    profiles: codexContinuityProfiles.map(productionStoryProfile),
+    tasks: [...lifecycleLiveTasks,
+      ...chatTasks.filter(task => ["clarify-reuse", "stop-new-resume"].includes(task.id)),
+      ...connectionReviewSuite.tasks],
+    expectedMatrixSize: 46,
+    excludedExecutionIds: ["neutral", "challenge"].map(variant => `lifecycle-baseline.runner-codex.local.lifecycle-repair-${variant}`),
+    definitionMetadata: { version: 1, narrativeDigest: lifecycleLiveDefinitionDigest, grading: "durable-state-and-attributed-narrative", scheduling: "explicit-only" },
+  },
+  {
     id: "continuation", label: "Task continuation",
     description: "Human direction, approval boundaries, untrusted evidence, and completed actions across turns.",
     groups: ["local"], environments: [localEnvironment],
@@ -919,7 +941,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       ...["legacy-codex", "legacy-claude"].map(profile => `continuation.${profile}.local.question-tool-documentation`),
       ...["legacy-codex", "legacy-claude", "runner-codex"].map(profile => `continuation.${profile}.local.provider-question-bridge`),
     ],
-    definitionMetadata: { version: 3, grading: "durable-state-and-approval-boundaries", instructions: "production" },
+    definitionMetadata: { version: 4, grading: "durable-state-and-approval-boundaries", instructions: "production" },
   },
   {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,
@@ -1139,6 +1161,8 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 export function validateRunnerCatalog(): MatrixExecution[] {
   const allProfiles = [...runnerProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    ...accountingTasks,
+    ...lifecycleLiveTasks,
     ...continuationTasks,
     ...everydayTasks,
     ...runnerTasks,

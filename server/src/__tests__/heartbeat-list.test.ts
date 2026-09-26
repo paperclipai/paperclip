@@ -264,6 +264,9 @@ describeEmbeddedPostgres("heartbeat list", () => {
         summary: "completed",
         stdout: oversizedStdout,
         nestedHuge: { payload: oversizedNestedPayload },
+        workspaceRestoreFailure: "restore_unsafe_archive",
+        finalResponseRecorded: true,
+        executionBeforeRestore: { errorCode: "model_error", exitCode: 2, timedOut: false },
       },
     });
 
@@ -275,6 +278,9 @@ describeEmbeddedPostgres("heartbeat list", () => {
       truncated: true,
       truncationReason: "oversized_result_json",
       stdoutTruncated: true,
+      workspaceRestoreFailure: "restore_unsafe_archive",
+      finalResponseRecorded: true,
+      executionBeforeRestore: { errorCode: "model_error", exitCode: 2, timedOut: false },
     });
     expect(typeof result?.stdout).toBe("string");
     expect((result?.stdout as string).length).toBeLessThan(oversizedStdout.length);

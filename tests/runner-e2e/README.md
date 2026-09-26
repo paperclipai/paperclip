@@ -83,7 +83,10 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains nine suites, including the explicit-only suites. `core-compatibility` (**Core Runner
+The catalog contains thirteen suites, including the explicit-only everyday and
+[lifecycle baseline](LIFECYCLE-BASELINE.md) suites. The latter adds 46 real-provider
+cells pairing narrative variants and exercising durable lifecycle boundaries;
+it is excluded from `--all`. `core-compatibility` (**Core Runner
 Compatibility**) is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
@@ -380,6 +383,12 @@ access-controlled GitHub Actions artifact. Declared PNG screenshots are also
 published with permanent campaign dashboards; fixture authors must therefore
 keep credentials and other private data out of every captured UI state. SVG is
 active content and is rejected from the packaged evidence entirely.
+
+The standard task and chat evidence collectors read durable run events through the paginated
+public API, including completion events beyond the first 1,000 rows. It rejects
+missing, repeated, or out-of-order sequence numbers and fails capture after
+100 full pages instead of grading a truncated stream. Original incomplete
+captures remain failed evidence; qualifying a fix requires a new live attempt.
 
 Every completed local campaign also writes
 `tests/runner-e2e/results/<campaign>/dashboard.html`. The self-contained page
@@ -1030,3 +1039,5 @@ artifact verifier run on the existing EC2 fleet; no developer laptop Docker
 service is required. Set the optional `max_parallel` dispatch input to `1` for
 keys with low request limits. It can only lower the configured campaign limit.
 Keep subscription qualification separate from API-key results.
+
+The explicit-only eight-cell [continuation accounting baseline](CONTINUATION-ACCOUNTING.md) tests productive work, bounded repair, restart and late gates with real providers.

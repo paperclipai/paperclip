@@ -173,6 +173,13 @@ Use `type: "artifact"`, `provider: "paperclip"`, and metadata containing the
 uploaded `attachmentId`. The server canonicalizes `contentType`, `byteSize`,
 `contentPath`, `openPath`, `downloadPath`, and `originalFilename`.
 
+The optional `executionWorkspaceId` on work-product create and update requests
+must identify an execution workspace in the same company. A project workspace
+ID is a different identifier and cannot be used here. Omit the field when no
+execution workspace is available, or send `null` to clear an existing link.
+Invalid references return `422` without changing the work product or the current
+primary product.
+
 ## Verification
 
 The file-delivery integration suite runs the real helper through queue and

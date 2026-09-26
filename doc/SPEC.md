@@ -432,6 +432,8 @@ No separate "agent API" vs. "board API." Same endpoints, different authorization
 
 Paperclip manages task-linked work artifacts: issue documents (rich-text plans, specs, notes attached to issues) and file attachments. Agents read and write these through the API as part of normal task execution. Full delivery infrastructure (code repos, deployments, production runtime) remains the agent's domain — Paperclip orchestrates the work, not the build pipeline.
 
+Task work mode is explicit persisted state. Requesting a plan in a title or description does not switch the task into planning mode. Standard execution may produce a plan as its requested deliverable; explicit planning mode separately governs plan-only execution and its approval transition.
+
 ### Open Questions
 
 - Real-time updates to the UI — WebSocket? SSE? Polling?

@@ -35,9 +35,9 @@ async function installVisualViewport(page: Page, layoutHeight: number) {
   }, { initialHeight: layoutHeight });
 }
 
-async function renderDialog(page: Page, viewport: ViewportCase) {
+async function renderDialog(page: Page, viewport: ViewportCase, initialVisualHeight = viewport.layoutHeight) {
   await page.setViewportSize({ width: viewport.width, height: viewport.layoutHeight });
-  await installVisualViewport(page, viewport.layoutHeight);
+  await installVisualViewport(page, initialVisualHeight);
   await page.goto(`/iframe.html?id=${STORY_ID}&viewMode=story`, { waitUntil: "load" });
   await page.waitForFunction(() => {
     const body = document.body;
@@ -52,6 +52,95 @@ async function renderDialog(page: Page, viewport: ViewportCase) {
   await expect(dialog).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "Create Task" })).toBeEnabled();
   return dialog;
+}
+
+test("does not collapse the new-task dialog during a transient zero-height visual viewport reading", async ({ page }) => {
+  const viewport = VIEWPORT_CASES[0];
+  const dialog = await renderDialog(page, viewport, 0);
+
+  await expect.poll(async () => dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  })).toEqual({ top: 16, bottom: viewport.layoutHeight - 16 });
+
+  await constrainVisualViewport(page, viewport);
+  await expect.poll(async () => dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  })).toEqual({
+    top: viewport.offsetTop + 16,
+    bottom: viewport.offsetTop + viewport.visualHeight - 16,
+  });
+
+  await page.evaluate(() => {
+    const visualViewport = window.visualViewport as VisualViewport & {
+      height: number;
+      offsetTop: number;
+    };
+    visualViewport.height = 0;
+    visualViewport.offsetTop = Number.NaN;
+    visualViewport.dispatchEvent(new Event("resize"));
+  });
+  await expect.poll(async () => dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  })).toEqual({
+    top: viewport.offsetTop + 16,
+    bottom: viewport.offsetTop + viewport.visualHeight - 16,
+  });
+});
+
+for (const { pickerName, triggerName, query, selectionName } of [
+  {
+    pickerName: "assignee",
+    triggerName: "CodexCoder",
+    query: "QA",
+    selectionName: "QAChecker",
+  },
+  {
+    pickerName: "project",
+    triggerName: "Board UI",
+    query: "Runtime",
+    selectionName: "Agent Runtime",
+  },
+]) {
+  test(`keeps the open ${pickerName} picker inside the mobile visual viewport`, async ({ page }) => {
+    const viewport = VIEWPORT_CASES[0];
+    const dialog = await renderDialog(page, viewport);
+    await constrainVisualViewport(page, viewport);
+
+    const trigger = dialog.getByRole("button", { name: triggerName });
+    await trigger.click();
+    const picker = page.locator("[data-mobile-entity-picker]");
+    await expect(picker).toBeVisible();
+    await expect(picker.locator("input")).toBeFocused();
+
+    const geometry = await picker.evaluate((element) => {
+      const pickerRect = element.getBoundingClientRect();
+      const inputRect = element.querySelector("input")!.getBoundingClientRect();
+      const dialogElement = document.querySelector('[data-slot="dialog-content"]');
+      return {
+        pickerTop: pickerRect.top,
+        pickerBottom: pickerRect.bottom,
+        inputTop: inputRect.top,
+        inputBottom: inputRect.bottom,
+        portalledOutsideDialog: !dialogElement?.contains(element),
+      };
+    });
+    const visibleTop = viewport.offsetTop;
+    const visibleBottom = viewport.offsetTop + viewport.visualHeight;
+    expect(geometry.pickerTop).toBeGreaterThanOrEqual(visibleTop);
+    expect(geometry.pickerBottom).toBeLessThanOrEqual(visibleBottom);
+    expect(geometry.inputTop).toBeGreaterThanOrEqual(visibleTop);
+    expect(geometry.inputBottom).toBeLessThanOrEqual(visibleBottom);
+    expect(geometry.portalledOutsideDialog).toBe(true);
+
+    const searchInput = picker.locator("input");
+    await searchInput.fill(query);
+    await picker.getByRole("button", { name: selectionName }).click();
+    await expect(picker).toBeHidden();
+    await expect(dialog.getByRole("button", { name: selectionName })).toBeVisible();
+  });
 }
 
 async function constrainVisualViewport(page: Page, viewport: ViewportCase) {

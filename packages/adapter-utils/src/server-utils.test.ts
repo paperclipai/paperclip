@@ -2883,6 +2883,17 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("delivers typed disposition repair instructions without liveness classification", () => {
+    const payload = { reason: "issue_disposition_repair", issue: { id: "issue-1", status: "in_progress" },
+      dispositionRepair: { attempt: 1, maxAttempts: 2, sourceRunId: "source-1", instruction: "Record completion or a durable waiting path through the API." } };
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Task disposition repair:");
+    expect(prompt).toContain("- attempt: 1/2");
+    expect(prompt).toContain(payload.dispositionRepair.instruction);
+    expect(prompt).not.toContain("liveness state:");
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload)!)).toMatchObject({ dispositionRepair: payload.dispositionRepair });
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",
