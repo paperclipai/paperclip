@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { readThreadScrollAnchor, threadScrollAnchorDelta, type ThreadScrollAnchor } from "./scroll-anchor";
 import { cn } from "@/lib/utils";
+import type { IssueChatThreadOrder } from "@/lib/issue-chat-messages";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { parseCssTimeMs } from "./motion-tokens";
 import { useTaskChatScrollNavigation } from "./scroll-navigation";
 
@@ -25,6 +26,12 @@ interface TaskMessageScrollerProps {
   children: ReactNode;
   /** Value that changes whenever content that could grow the thread updates. */
   contentKey: unknown;
+  /**
+   * Thread display order. `newest_first` treats the TOP as the live edge:
+   * pinning, content follow, and the jump-to-latest pill all target
+   * scrollTop 0 instead of the bottom.
+   */
+  threadOrder?: IssueChatThreadOrder;
   className?: string;
 }
 
@@ -44,8 +51,9 @@ interface TaskMessageScrollerProps {
  * the glide cancels it and treats the user as unpinned. Content-driven follow
  * while pinned stays instant, so no reflow/jump happens during streaming.
  */
-export function TaskMessageScroller({ children, contentKey, className }: TaskMessageScrollerProps) {
+export function TaskMessageScroller({ children, contentKey, threadOrder = "oldest_first", className }: TaskMessageScrollerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const newestFirst = threadOrder === "newest_first";
   const navigation = useTaskChatScrollNavigation();
   const initialPositionApplied = useRef(false);
   const appliedNavigation = useRef({ key: navigation.key, hash: navigation.hash });
@@ -89,14 +97,16 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
   const isPinned = useCallback(() => {
     const el = ref.current;
     if (!el) return true;
+    if (newestFirst) return el.scrollTop <= PIN_THRESHOLD_PX;
     return el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_THRESHOLD_PX;
-  }, []);
+  }, [newestFirst]);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToLiveEdge = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight; // instant, never smooth
-  }, []);
+    // instant, never smooth; the live edge is the top when newest-first
+    el.scrollTop = newestFirst ? 0 : el.scrollHeight;
+  }, [newestFirst]);
 
   const followViewportResize = useCallback(() => {
     const el = ref.current;
@@ -112,9 +122,9 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
     ) {
       return false;
     }
-    scrollToBottom();
+    scrollToLiveEdge();
     return true;
-  }, [scrollToBottom]);
+  }, [scrollToLiveEdge]);
 
   const rememberAnchor = useCallback(() => {
     const el = ref.current;
@@ -135,13 +145,13 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       pinnedRef.current = true;
       hidePill();
     }
-    if (pinnedRef.current) scrollToBottom();
+    if (pinnedRef.current) scrollToLiveEdge();
     else {
       const delta = threadScrollAnchorDelta(el, anchorRef.current, el.getBoundingClientRect().top);
       if (delta) el.scrollTop += delta;
     }
     rememberAnchor();
-  }, [rememberAnchor, scrollToBottom, hidePill]);
+  }, [rememberAnchor, scrollToLiveEdge, hidePill]);
 
   const handleScroll = useCallback(() => {
     rememberAnchor();
@@ -188,15 +198,15 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
     }
     easingRef.current = true;
     if (typeof el.scrollTo === "function" && !motionDisabled()) {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      el.scrollTo({ top: newestFirst ? 0 : el.scrollHeight, behavior: "smooth" });
     } else {
       // Environments without scrollTo (older jsdom): fall back to instant.
-      el.scrollTop = el.scrollHeight;
+      el.scrollTop = newestFirst ? 0 : el.scrollHeight;
       easingRef.current = false;
       pinnedRef.current = true;
       hidePill();
     }
-  }, [isPinned, hidePill]);
+  }, [isPinned, hidePill, newestFirst]);
 
   // A user gesture during the smooth glide cancels the re-follow: stop
   // treating scroll events as easing and consider the user unpinned.
@@ -296,7 +306,11 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
             pillPhase === "out" ? "tc-scroll-pill-out" : "tc-scroll-pill-in",
           )}
         >
-          <ArrowDown className="h-4 w-4" />
+          {newestFirst ? (
+            <ArrowUp className="h-4 w-4" />
+          ) : (
+            <ArrowDown className="h-4 w-4" />
+          )}
         </button>
       ) : null}
     </div>
