@@ -135,6 +135,23 @@ export function nextStatusCardEvaluationAt(policy: StatusCardRefreshPolicy, now:
   return new Date(now.getTime() + seconds * 1000);
 }
 
+/** Shortest claim age that can be treated as wedged, whatever the policy says. */
+export const STATUS_CARD_MIN_STALE_CLAIM_MS = 30 * 60 * 1000;
+
+/**
+ * How long a generation claim may stay open before the scheduler treats it as
+ * wedged rather than in flight.
+ *
+ * A summary is written by one agent run, so a claim outliving its own refresh
+ * interval by a full cycle cannot still be progressing. The floor keeps a
+ * fast-cadence policy (a reactive card debounces at one minute) from reaping a
+ * generation that is simply slower than its debounce.
+ */
+export function statusCardStaleClaimThresholdMs(policy: StatusCardRefreshPolicy) {
+  const intervalMs = policy.mode === "interval" ? (policy.intervalMinutes ?? 15) * 60 * 1000 : 0;
+  return Math.max(intervalMs, STATUS_CARD_MIN_STALE_CLAIM_MS);
+}
+
 export function chooseStatusCardUpdateKind(input: {
   explicitFull?: boolean;
   hasDocument: boolean;
