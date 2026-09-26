@@ -1731,10 +1731,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     });
                     return;
                   }
-                  mark("adapterConfig", "model", v || undefined);
+                  mark("adapterConfig", "model", v);
                   if (clearUnsupportedEffort) {
-                    mark("adapterConfig", thinkingEffortKey, undefined);
-                    mark("adapterConfig", "reasoningEffort", undefined);
+                    mark("adapterConfig", thinkingEffortKey, "");
+                    mark("adapterConfig", "reasoningEffort", "");
                   }
                 }}
                 open={modelOpen}
@@ -1785,7 +1785,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     onChange={(v) =>
                       isCreate
                         ? set!({ thinkingEffort: v })
-                        : mark("adapterConfig", thinkingEffortKey, v || undefined)
+                        : mark("adapterConfig", thinkingEffortKey, v)
                     }
                     open={thinkingEffortOpen}
                     onOpenChange={setThinkingEffortOpen}
