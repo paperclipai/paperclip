@@ -9,6 +9,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
+import { focusPopupWindow, navigatePopupWindow } from "@/lib/popup-navigation";
 import { queryKeys } from "@/lib/queryKeys";
 import { RemoteMcpConnectionSetup } from "./RemoteMcpConnectionSetup";
 import { remoteMcpProviders, type RemoteMcpProviderId } from "./providers";
@@ -139,8 +140,8 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
         edit({ connectStatus: "sign_in", token: "", headers: [] });
         if (host === "dialog") {
           if (popup.current && !popup.current.closed) {
-            popup.current.location.assign(target.url);
-            popup.current.focus();
+            navigatePopupWindow(popup.current, target.url);
+            focusPopupWindow(popup.current);
           }
         } else navigateTopLevel(target.url);
         return;

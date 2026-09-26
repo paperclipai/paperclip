@@ -42,6 +42,16 @@ describe("rewriteLoopbackUrlPort", () => {
     expect(rewriteLoopbackUrlPort("http://localhost", 3101)).toBe("http://localhost");
   });
 
+  it("preserves explicit port mappings when expectedPort is provided", () => {
+    // Port matches requestedListenPort (3100), and shifted to 3101:
+    expect(rewriteLoopbackUrlPort("http://localhost:3100", 3101, 3100)).toBe("http://localhost:3101/");
+    expect(rewriteLoopbackUrlPort("http://127.0.0.1:3100", 3101, 3100)).toBe("http://127.0.0.1:3101/");
+
+    // Port was explicitly set to a mapped host port (e.g. Docker 3300:3100), must survive untouched:
+    expect(rewriteLoopbackUrlPort("http://localhost:3300", 3101, 3100)).toBe("http://localhost:3300");
+    expect(rewriteLoopbackUrlPort("http://127.0.0.1:8080", 3101, 3100)).toBe("http://127.0.0.1:8080");
+  });
+
   it("passes through empty and unparseable inputs", () => {
     expect(rewriteLoopbackUrlPort(undefined, 3101)).toBeUndefined();
     expect(rewriteLoopbackUrlPort("", 3101)).toBeUndefined();
