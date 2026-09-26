@@ -13458,6 +13458,9 @@ export function issueRoutes(
         }
       }
 
+      // Only this request may finish a mutation that intentionally stops its
+      // own run (for example handing work to a signoff reviewer).
+      const issueMutationStopId = randomUUID();
       if (assigneeWillChange && existing.assigneeAgentId) {
         await stopRunnerGoalForOwnershipChange({
           companyId: existing.companyId,
@@ -13471,7 +13474,7 @@ export function issueRoutes(
             "Cancelled before issue reassignment",
             {
               errorCode: "issue_reassigned",
-              resultJson: { reassignmentStopConfirmed: true },
+              resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
               eventMessage: "run cancelled before issue reassignment",
               eventPayload: { issueId: existing.id },
             },
@@ -13512,7 +13515,7 @@ export function issueRoutes(
             "Cancelled before issue terminalization",
             {
               errorCode: "issue_terminalized",
-              resultJson: { terminalizationStopConfirmed: true },
+              resultJson: { terminalizationStopConfirmed: true, issueMutationStopId },
               eventMessage: "run cancelled before issue terminalization",
               eventPayload: {
                 issueId: existing.id,
@@ -13564,6 +13567,8 @@ export function issueRoutes(
       const issueUpdateData = {
         ...updateFields,
         actorAgentId: actor.agentId ?? null,
+        actorRunId: actor.agentId ? actor.runId : null,
+        actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       };
       const shouldCollectCompletionPublication =

@@ -62,8 +62,8 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
     (mocks.ensureRuntimeInstalledMock as (...args: unknown[]) => unknown)(...args),
   prepareAdapterExecutionTargetRuntime: (...args: unknown[]) =>
     (mocks.prepareRuntimeMock as (...args: unknown[]) => unknown)(...args),
-  readAdapterExecutionTarget: () =>
-    mocks.state.isRemote ? { kind: "remote", transport: "ssh" } : { kind: "local" },
+  readAdapterExecutionTarget: (input: { executionTarget?: unknown }) => input.executionTarget ??
+    (mocks.state.isRemote ? { kind: "remote", transport: "ssh" } : { kind: "local" }),
   resolveAdapterExecutionTargetCommandForLogs: (...args: unknown[]) =>
     (mocks.resolveCommandForLogsMock as (...args: unknown[]) => unknown)(...args),
   resolveAdapterExecutionTargetTimeoutSec: (_target: unknown, timeoutSec: number) => timeoutSec,
@@ -128,6 +128,8 @@ function makeRestoreWorkspace(
 
 function makeSuccessfulRunResult(overrides: Partial<{ sessionId: string }> = {}) {
   return {
+    pid: null,
+    startedAt: new Date().toISOString(),
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -185,6 +187,94 @@ describe("grok_local execute", () => {
 
   afterEach(async () => {
     await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  });
+
+  async function cancellableContext(stop: () => Promise<void>) {
+    const ctx = await makeCtx("remote-cancellation", await makeTempRoot());
+    const controller = new AbortController();
+    const remoteExecute = vi.fn(async () => makeSuccessfulRunResult());
+    ctx.signal = controller.signal;
+    ctx.stopRemoteStartup = vi.fn(stop);
+    ctx.onCancellationReady = vi.fn(async () => {});
+    ctx.executionTarget = { kind: "remote", transport: "sandbox", providerKey: "daytona", remoteCwd: "/remote/workspace",
+      runner: { execute: remoteExecute } };
+    remoteState.isRemote = true;
+    runProcessMock.mockImplementation(async (_runId, target) => {
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      return target.runner.execute({ command: "grok" });
+    });
+    return { ctx, controller, remoteExecute };
+  }
+
+  it("settles remote cancellation only after the sandbox stop receipt, even if the command RPC hangs", async () => {
+    let confirmStop!: () => void;
+    const receipt = new Promise<void>(resolve => { confirmStop = resolve; });
+    const f = await cancellableContext(() => receipt);
+    f.remoteExecute.mockImplementation(() => new Promise(() => {}));
+    let settled = false;
+    const execution = execute(f.ctx).finally(() => { settled = true; });
+    await vi.waitFor(() => expect(f.remoteExecute).toHaveBeenCalledOnce());
+    f.controller.abort(new Error("Interrupted to send queued messages"));
+    await vi.waitFor(() => expect(f.ctx.stopRemoteStartup).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    confirmStop();
+    expect(await execution).toMatchObject({ errorCode: "cancelled",
+      resultJson: { executionCancellation: { state: "acknowledged" } } });
+    expect(runProcessMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps ownership of the command when remote termination cannot be verified", async () => {
+    const f = await cancellableContext(async () => { throw new Error("stop unverified"); });
+    let finishCommand!: (result: ReturnType<typeof makeSuccessfulRunResult>) => void;
+    f.remoteExecute.mockImplementation(() => new Promise(resolve => { finishCommand = resolve; }));
+    let settled = false;
+    const execution = execute(f.ctx).catch(error => error).finally(() => { settled = true; });
+    await vi.waitFor(() => expect(f.remoteExecute).toHaveBeenCalledOnce());
+    f.controller.abort();
+    await vi.waitFor(() => expect(f.ctx.stopRemoteStartup).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    finishCommand(makeSuccessfulRunResult());
+    expect(await execution).toEqual(new Error("stop unverified"));
+    expect(runProcessMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not start Grok when cancellation was requested before registration", async () => {
+    const f = await cancellableContext(async () => {});
+    f.ctx.onCancellationReady = vi.fn(async () => { f.controller.abort(); });
+    expect(await execute(f.ctx)).toMatchObject({ errorCode: "cancelled",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      resultJson: { executionCancellation: { state: "acknowledged" } } });
+    expect(runProcessMock).not.toHaveBeenCalled();
+    expect(prepareRuntimeMock).not.toHaveBeenCalled();
+    expect(f.ctx.stopRemoteStartup).toHaveBeenCalledOnce();
+  });
+
+  it("does not acknowledge an early cancellation when its acquired sandbox cannot stop", async () => {
+    const f = await cancellableContext(async () => { throw new Error("stop unverified"); });
+    f.ctx.onCancellationReady = vi.fn(async () => { f.controller.abort(); });
+    await expect(execute(f.ctx)).rejects.toThrow("stop unverified");
+    expect(runProcessMock).not.toHaveBeenCalled();
+  });
+
+  it("retains workspace recovery evidence when a confirmed stop prevents copy-back", async () => {
+    const f = await cancellableContext(async () => {});
+    prepareRuntimeMock.mockImplementationOnce(async () => ({ workspaceRemoteDir: "/remote/workspace", assetDirs: {},
+      restoreWorkspace: async () => { throw new Error("sandbox stopped during restore"); },
+    }));
+    f.remoteExecute.mockImplementation(() => new Promise(() => {}));
+    const execution = execute(f.ctx);
+    await vi.waitFor(() => expect(f.remoteExecute).toHaveBeenCalledOnce());
+    f.controller.abort();
+    const result = await execution;
+    expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+    expect(result.resultJson?.workspaceRestoreFailure).toBeTruthy();
+  });
+
+  it("does not stop the sandbox after a normal completed turn", async () => {
+    const f = await cancellableContext(async () => {});
+    expect(await execute(f.ctx)).toMatchObject({ exitCode: 0 });
+    f.controller.abort();
+    expect(f.ctx.stopRemoteStartup).not.toHaveBeenCalled();
   });
 
   it("stages Grok-native instructions and skills into the workspace for the run and cleans them up afterward", async () => {
