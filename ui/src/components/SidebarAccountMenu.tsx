@@ -6,15 +6,17 @@ import {
   LogOut,
   Settings,
   type LucideIcon,
-  UserRound,
-  UserRoundPen,
+  UserPlus,
 } from "lucide-react";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { hidesCompanyPage, type DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudInviteUrl } from "@/hooks/useCloudInviteUrl";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useSignOut } from "@/hooks/useSignOut";
+import { userProfilePath } from "@/lib/userProfileLinks";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -23,7 +25,7 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
 
-const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
+const INVITES_PATH = "/company/settings/members?tab=invites";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
 
@@ -40,7 +42,14 @@ interface MenuActionProps {
   icon: LucideIcon;
   onClick?: () => void;
   href?: string;
+  /** Opens `href` in a new tab (docs and other off-product links). */
   external?: boolean;
+  /**
+   * Leaves the app in the current tab with a full navigation. Cloud links
+   * must use this: the cloud harness shadows those paths on tenant hosts, so
+   * the in-app router can never reach them.
+   */
+  topLevel?: boolean;
 }
 
 function deriveInitials(name: string) {
@@ -51,26 +60,13 @@ function deriveInitials(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
-function deriveUserSlug(name: string | null | undefined, email: string | null | undefined, id: string | null | undefined) {
-  const candidates = [name, email?.split("@")[0], email, id];
-  for (const candidate of candidates) {
-    const slug = candidate
-      ?.trim()
-      .toLowerCase()
-      .replace(/['"]/g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    if (slug) return slug;
-  }
-  return "me";
-}
-
 function MenuAction({
   label,
   icon: Icon,
   onClick,
   href,
   external = false,
+  topLevel = false,
 }: MenuActionProps) {
   const className =
     "flex h-(--profile-popover-row-height) w-full items-center gap-(--profile-popover-row-gap) rounded-lg px-2.5 text-left text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) text-foreground transition-colors hover:bg-accent";
@@ -88,6 +84,14 @@ function MenuAction({
     if (external) {
       return (
         <a href={href} target="_blank" rel="noreferrer" className={className} onClick={onClick}>
+          {content}
+        </a>
+      );
+    }
+
+    if (topLevel) {
+      return (
+        <a href={href} className={className} onClick={onClick}>
           {content}
         </a>
       );
@@ -113,7 +117,22 @@ export function SidebarAccountMenu({
   onOpenChange,
   forceExpanded = false,
 }: SidebarAccountMenuProps) {
-  const isCloud = Boolean(useCloudInstance());
+  const cloud = useCloudInstance();
+  const isCloud = Boolean(cloud);
+  // Invites live on the Members page (or in Cloud's People settings). Hide the
+  // shortcut when the hosting operator hides either surface, and until the
+  // health response resolves so a hidden surface never flashes.
+  const { hidden: hiddenSettings, loaded: hiddenSettingsLoaded } = useHiddenSettings();
+  // On Cloud the shortcut exists only for the current stack's owner/admin and
+  // only once the stack metadata is known; the in-app Invites tab is never a
+  // fallback there because it drives a different invitation flow.
+  const cloudInviteUrl = useCloudInviteUrl();
+  const inviteHref = isCloud ? cloudInviteUrl : INVITES_PATH;
+  const showInvite =
+    hiddenSettingsLoaded &&
+    inviteHref !== null &&
+    !hidesCompanyPage(hiddenSettings, "company.members") &&
+    !hidesCompanyPage(hiddenSettings, "company.invites");
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking && !forceExpanded;
@@ -131,7 +150,7 @@ export function SidebarAccountMenu({
   const secondaryLabel =
     session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
   const initials = deriveInitials(displayName);
-  const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
+  const profileHref = userProfilePath(session?.user);
 
   function closeNavigationChrome() {
     setOpen(false);
@@ -168,7 +187,12 @@ export function SidebarAccountMenu({
             sideOffset={10}
             className="min-h-(--profile-popover-min-height) w-(--profile-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
           >
-            <div className="flex h-(--profile-popover-header-height) shrink-0 items-center gap-2.5 px-3.5">
+            <Link
+              to={profileHref}
+              aria-label="View profile"
+              onClick={closeNavigationChrome}
+              className="flex h-(--profile-popover-header-height) shrink-0 items-center gap-2.5 px-3.5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            >
               <Avatar className="size-9">
                 {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
                 <AvatarFallback className="text-xs text-foreground">{initials}</AvatarFallback>
@@ -181,7 +205,7 @@ export function SidebarAccountMenu({
                   {secondaryLabel}
                 </p>
               </div>
-            </div>
+            </Link>
 
             <div className="flex flex-1 flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
               <MenuAction
@@ -190,18 +214,15 @@ export function SidebarAccountMenu({
                 href="/company/settings"
                 onClick={closeNavigationChrome}
               />
-              <MenuAction
-                label="View profile"
-                icon={UserRound}
-                href={profileHref}
-                onClick={closeNavigationChrome}
-              />
-              <MenuAction
-                label="Edit profile"
-                icon={UserRoundPen}
-                href={PROFILE_SETTINGS_PATH}
-                onClick={closeNavigationChrome}
-              />
+              {showInvite && inviteHref ? (
+                <MenuAction
+                  label="Invite"
+                  icon={UserPlus}
+                  href={inviteHref}
+                  topLevel={isCloud}
+                  onClick={closeNavigationChrome}
+                />
+              ) : null}
               <MenuAction
                 label="Documentation"
                 icon={BookOpen}
