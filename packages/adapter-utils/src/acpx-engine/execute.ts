@@ -2118,7 +2118,10 @@ async function buildRuntime(input: {
     // the `--model` CLI flag instead — mirroring the gemini-local adapter's own
     // CLI-lane behavior. Skip if the command already specifies one (e.g. a
     // user-configured agentCommand) to avoid passing --model twice.
-    if (requestedModel && !agentCommandShell.split(/\s+/).includes("--model")) {
+    if (
+      requestedModel &&
+      !agentCommandShell.split(/\s+/).some((arg) => arg === "--model" || arg.startsWith("--model="))
+    ) {
       agentCommandShell = `${agentCommandShell} --model ${shellQuote(requestedModel)}`;
       agentCommand = agentCommand ? `${agentCommand} --model ${requestedModel}` : agentCommand;
     }

@@ -583,6 +583,14 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(gemini.meta[0]?.command).toBe("gemini --acp --model gemini-2.5-pro");
   });
 
+  it("does not append a second --model when a custom Gemini command already sets one", async () => {
+    for (const agentCommand of ["gemini --acp --model gemini-2.5-flash", "gemini --acp --model=gemini-2.5-flash"]) {
+      const gemini = await runExecutor({ agent: "gemini", agentCommand, model: "gemini-2.5-pro" });
+      expect(gemini.configOptions).toEqual([]);
+      expect(gemini.meta[0]?.command).toBe(agentCommand);
+    }
+  });
+
   it("does not inject CODEX_CONFIG or session config when Codex overrides are absent", async () => {
     const { configOptions, meta } = await runExecutor({ agent: "codex" });
 
