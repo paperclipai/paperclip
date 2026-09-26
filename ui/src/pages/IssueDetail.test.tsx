@@ -103,6 +103,7 @@ const mockAccessApi = vi.hoisted(() => ({
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
+  getPreferences: vi.fn(),
 }));
 
 const mockProjectsApi = vi.hoisted(() => ({
@@ -1372,6 +1373,7 @@ describe("IssueDetail", () => {
     });
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
+    mockAuthApi.getPreferences.mockResolvedValue({ keyboardShortcuts: false });
     mockProjectsApi.list.mockResolvedValue([]);
     mockDecisionsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
@@ -2809,8 +2811,10 @@ describe("IssueDetail", () => {
       "issues",
     );
     mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    mockAuthApi.getPreferences.mockResolvedValue({ keyboardShortcuts: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: true,
+      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
 
@@ -2849,8 +2853,10 @@ describe("IssueDetail", () => {
       createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox"),
     );
     mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    mockAuthApi.getPreferences.mockResolvedValue({ keyboardShortcuts: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: true,
+      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
 

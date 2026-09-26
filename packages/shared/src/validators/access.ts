@@ -220,3 +220,14 @@ export const updateCurrentUserProfileSchema = z.object({
 });
 
 export type UpdateCurrentUserProfile = z.infer<typeof updateCurrentUserProfileSchema>;
+
+// Personal preferences are shared across companies, but only the signed-in
+// user can read or change them. companyId supplies the mutation audit context.
+export const currentUserPreferencesSchema = z.object({
+  keyboardShortcuts: z.boolean(),
+});
+export const updateCurrentUserPreferencesSchema = currentUserPreferencesSchema.extend({
+  companyId: z.string().uuid(),
+}).strict();
+export type CurrentUserPreferences = z.infer<typeof currentUserPreferencesSchema>;
+export type UpdateCurrentUserPreferences = z.infer<typeof updateCurrentUserPreferencesSchema>;

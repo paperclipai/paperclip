@@ -160,7 +160,7 @@ function TaskPageData({ children, scenario, withAncestors }: { children: React.R
       }
     }
     client.setQueryData(queryKeys.health, { status: "ok", deploymentMode: "local_trusted", bootstrapStatus: "ready" });
-    client.setQueryData(queryKeys.instance.generalSettings, { keyboardShortcuts: true });
+    client.setQueryData(queryKeys.auth.preferences(storybookAuthSession.user.id), { keyboardShortcuts: true });
     client.setQueryData(queryKeys.access.currentBoardAccess, { companyIds: [] });
     client.setQueryData(queryKeys.issues.listCreatedFromIssue(sourceTask.companyId, sourceTask.id), taskCandidates.filter((row) => row.originRunId && runSources.get(row.originRunId) === sourceTask.id));
     client.setQueryData(queryKeys.issues.listByDescendantRoot(sourceTask.companyId, sourceTask.id), taskCandidates.filter((row) => row.parentId === sourceTask.id));
@@ -178,7 +178,7 @@ function TaskPageData({ children, scenario, withAncestors }: { children: React.R
       const url = new URL(raw, window.location.origin);
       const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
       if (url.pathname === "/api/health") return Response.json({ status: "ok", deploymentMode: "local_trusted", bootstrapStatus: "ready" });
-      if (url.pathname === "/api/instance/settings/general") return Response.json({ keyboardShortcuts: true });
+      if (url.pathname === "/api/auth/preferences") return Response.json({ keyboardShortcuts: true });
       const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
       if (projectMatch && method === "GET") {
         const project = storybookProjects.find((item) => item.id === projectMatch[1] || projectRouteRef(item) === projectMatch[1]);

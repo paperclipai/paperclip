@@ -186,7 +186,7 @@ export function instanceSettingsRoutes(db: Db) {
   );
 
   router.get("/instance/settings/general", async (req, res) => {
-    // General settings (e.g. keyboardShortcuts) are readable by any
+    // General settings (e.g. feedbackDataSharingPreference) are readable by any
     // authenticated org member or instance admin. Only PATCH requires instance-admin.
     assertBoardOrgAccess(req);
     res.json(await svc.getGeneral());

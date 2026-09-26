@@ -4,9 +4,13 @@ import type { Db } from "@paperclipai/db";
 import { authUsers } from "@paperclipai/db";
 import {
   authSessionSchema,
+  currentUserPreferencesSchema,
+  updateCurrentUserPreferencesSchema,
   currentUserProfileSchema,
   updateCurrentUserProfileSchema,
 } from "@paperclipai/shared";
+import { assertCompanyAccess } from "./authz.js";
+import { logActivity } from "../services/activity-log.js";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
@@ -102,6 +106,39 @@ export function authRoutes(db: Db) {
       name: updated.name ?? null,
       image: updated.image ?? null,
     }));
+  });
+
+  router.get("/preferences", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw unauthorized("Board authentication required");
+    }
+    const [user] = await db.select({ keyboardShortcuts: authUsers.keyboardShortcuts })
+      .from(authUsers).where(eq(authUsers.id, req.actor.userId));
+    if (!user) throw unauthorized("Signed-in user not found");
+    res.json(currentUserPreferencesSchema.parse(user));
+  });
+
+  router.patch("/preferences", validate(updateCurrentUserPreferencesSchema), async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw unauthorized("Board authentication required");
+    }
+    const { companyId, keyboardShortcuts } = updateCurrentUserPreferencesSchema.parse(req.body);
+    assertCompanyAccess(req, companyId);
+    const [user] = await db.update(authUsers)
+      .set({ keyboardShortcuts, updatedAt: new Date() })
+      .where(eq(authUsers.id, req.actor.userId))
+      .returning({ keyboardShortcuts: authUsers.keyboardShortcuts });
+    if (!user) throw unauthorized("Signed-in user not found");
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId,
+      action: "user.preferences_updated",
+      entityType: "user",
+      entityId: req.actor.userId,
+      details: { keyboardShortcuts },
+    });
+    res.json(currentUserPreferencesSchema.parse(user));
   });
 
   return router;

@@ -174,6 +174,7 @@ import {
   withdrawIssueThreadInteractionSchema,
   // Auth / profile
   updateCurrentUserProfileSchema,
+  updateCurrentUserPreferencesSchema,
   // Company portability (legacy routes)
   companyPortabilityExportSchema,
   companyPortabilityPreviewSchema,
@@ -6551,6 +6552,22 @@ registry.registerPath({
   tags: ["admin"],
   summary: "List all users (admin)",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/auth/preferences",
+  tags: ["auth"],
+  summary: "Get the signed-in user's personal preferences",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+registry.registerPath({
+  method: "patch",
+  path: "/api/auth/preferences",
+  tags: ["auth"],
+  summary: "Update personal preferences with a company audit context",
+  request: { body: jsonBody(updateCurrentUserPreferencesSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Auth / profile ──────────────────────────────────────────────────────────
