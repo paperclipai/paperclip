@@ -1,3 +1,0 @@
-{
-  "note": "TES-177 durability marker. The TES-177 fix (own-task exemption in resolveRunCheckoutSourceIssueId) is verified 8/8 green with a clean negative control (1 failed / 7 passed on source revert). This branch is created from upstream master d3e0f0a2, rebased from the deleted PR #14107 head. Full branch content is in local clone pc-t177 / pc-14107fix and in the verified bundle."
-}
