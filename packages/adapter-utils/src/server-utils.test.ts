@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
-import { buildSshSpawnTarget } from "./ssh.js";
+import { buildSshSpawnTarget, shellQuote } from "./ssh.js";
 import {
   readPaperclipRuntimeSkillEntries,
   applyPaperclipWorkspaceEnv,
@@ -23,6 +23,7 @@ import {
   materializePaperclipSkillCopy,
   ENV_AGGREGATE_MAX_BYTES,
   ENV_SINGLE_VALUE_MAX_BYTES,
+  SSH_REMOTE_ENV_MAX_BYTES,
   pruneOversizedLaunchEnv,
   pruneOversizedLaunchEnvWithReport,
   budgetSshRemoteEnvWithReport,
@@ -747,12 +748,65 @@ describe("runChildProcess", () => {
 
     // Each value is under the single-value budget but five of them folded
     // into one sh -c argv would exceed the 128 KiB per-argument limit.
-    expect(Object.keys(kept).length).toBeLessThan(5);
-    expect(dropped.length).toBeGreaterThan(0);
+    expect(Object.keys(kept).length).toBe(2);
+    expect(dropped.length).toBe(3);
     const assembled = Object.entries(kept)
       .map(([key, value]) => `${key}='${value}'`)
       .join(" ");
     expect(Buffer.byteLength(assembled)).toBeLessThan(131_072);
+  });
+
+  it("budgets the SSH env block after shell-quote expansion, not raw bytes", () => {
+    // 60,000 raw bytes passes the single-value cap, and raw-byte accounting
+    // would too — but shellQuote expands every quote to `'\''` and the whole
+    // script is quoted again, so the final ssh argument would exceed 128 KiB.
+    const quoteHeavy = "'".repeat(60_000);
+    const { env: kept, dropped } = budgetSshRemoteEnvWithReport({
+      QUOTE_HEAVY: quoteHeavy,
+      SMALL: "kept",
+    });
+
+    expect(dropped).toContain("QUOTE_HEAVY");
+    expect(kept.QUOTE_HEAVY).toBeUndefined();
+    expect(kept.SMALL).toBe("kept");
+
+    // Characterize the final ssh argument against the real assembly the
+    // lanes perform: inner quotes per entry, then one outer shellQuote.
+    const envBlock = Object.entries(kept)
+      .map(([key, value]) => `${key}=${shellQuote(value)}`)
+      .join(" ");
+    const remoteScript = `exec env ${envBlock} sh -c ${shellQuote("echo hi")}`;
+    const finalArg = `sh -c ${shellQuote(remoteScript)}`;
+    expect(Buffer.byteLength(finalArg)).toBeLessThan(131_072);
+  });
+
+  it("keeps a large required SSH value alongside smaller settings that fit", () => {
+    // A required 60 KiB value plus 8 KiB of smaller settings fit under the
+    // budget; neither smallest-first selection nor the old 64 KiB budget
+    // could keep both, and the launch would silently lose the required one.
+    const smaller: Record<string, string> = {};
+    for (let i = 0; i < 8; i++) smaller[`OPTIONAL_${i}`] = "s".repeat(1_000);
+
+    const { env: kept, dropped } = budgetSshRemoteEnvWithReport({
+      REQUIRED_BIG: "x".repeat(60_000),
+      ...smaller,
+    });
+
+    expect(dropped).toEqual([]);
+    expect(kept.REQUIRED_BIG).toBe("x".repeat(60_000));
+    expect(Object.keys(kept).length).toBe(9);
+    expect(
+      Object.entries(kept).reduce(
+        (sum, [key, value]) =>
+          sum +
+          Buffer.byteLength(key) +
+          1 +
+          Buffer.byteLength(value) +
+          2 +
+          4 * (value.split("'").length - 1),
+        0,
+      ),
+    ).toBeLessThanOrEqual(SSH_REMOTE_ENV_MAX_BYTES);
   });
 
   it("does not arm a timeout when timeoutSec is 0", async () => {

@@ -28,6 +28,11 @@ const string = (v: unknown) =>
 // oldest, and disclose the cap so agents fetch older history via the API.
 const CONTINUATION_MESSAGES_MAX_BYTES = 96 * 1024;
 const CONTINUATION_OBJECTIVE_MAX_BYTES = 16 * 1024;
+// Tool receipts accumulate one per completed API action across every prior
+// run; bound them newest-first so long-running tasks cannot regrow the
+// snapshot or prompt without limit.
+const CONTINUATION_COMPLETED_ACTIONS_MAX_BYTES = 64 * 1024;
+const CONTINUATION_COMPLETED_ACTIONS_MAX_COUNT = 200;
 const CONTINUATION_MESSAGE_OVERHEAD_BYTES = 256;
 const CONTINUATION_TRUNCATED_BODY_MARKER =
   "\n[truncated; fetch the source comment for the full body]";
@@ -83,6 +88,28 @@ function capContinuationMessages(
   }
   return { messages: kept, truncated };
 }
+
+function capCompletedActions(
+  actions: NonNullable<ExecutionContinuationEnvelope["completedActions"]>,
+): NonNullable<ExecutionContinuationEnvelope["completedActions"]> {
+  // Receipts are low-trust evidence, not authority: keeping the newest ones
+  // within a budget preserves the actionable context and bounds the envelope.
+  const kept: NonNullable<ExecutionContinuationEnvelope["completedActions"]> =
+    [];
+  let totalBytes = 0;
+  for (let i = actions.length - 1; i >= 0; i--) {
+    const size =
+      Buffer.byteLength(JSON.stringify(actions[i]), "utf8") +
+      CONTINUATION_MESSAGE_OVERHEAD_BYTES;
+    if (kept.length > 0 && (kept.length >= CONTINUATION_COMPLETED_ACTIONS_MAX_COUNT ||
+      totalBytes + size > CONTINUATION_COMPLETED_ACTIONS_MAX_BYTES))
+      break;
+    totalBytes += size;
+    kept.unshift(actions[i]);
+  }
+  return kept;
+}
+
 export function continuationOriginCommentIds(context: unknown): string[] {
   const c = object(context);
   const prior = object(c.executionContinuation);
@@ -354,22 +381,24 @@ export async function buildExecutionContinuation(input: {
       ),
     )
     .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id));
-  const completedActions = priorRuns.flatMap((run) =>
-    Object.entries(object(object(run.result).apiToolReceipts)).flatMap(
-      ([receiptId, receipt]) => {
-        const value = object(receipt);
-        return value.state === "completed" &&
-          typeof value.operationId === "string"
-          ? [
-              {
-                runId: run.id,
-                receiptId,
-                operationId: value.operationId,
-                result: value.result,
-              },
-            ]
-          : [];
-      },
+  const completedActions = capCompletedActions(
+    priorRuns.flatMap((run) =>
+      Object.entries(object(object(run.result).apiToolReceipts)).flatMap(
+        ([receiptId, receipt]) => {
+          const value = object(receipt);
+          return value.state === "completed" &&
+            typeof value.operationId === "string"
+            ? [
+                {
+                  runId: run.id,
+                  receiptId,
+                  operationId: value.operationId,
+                  result: value.result,
+                },
+              ]
+            : [];
+        },
+      ),
     ),
   );
   const reconciliations = await db

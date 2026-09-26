@@ -91,8 +91,41 @@ export function pruneOversizedLaunchEnv(
 // The SSH lanes fold the whole remote environment into a single `sh -c`
 // argv string, so the assembled env block has the per-string limit too.
 // Budget the assembled `KEY=VALUE` block (quoting included) so several
-// medium values cannot jointly exceed the per-argument exec limit.
-export const SSH_REMOTE_ENV_MAX_BYTES = 64 * 1024;
+// medium values cannot jointly exceed the per-argument exec limit. The
+// budget bounds the final post-quoting bytes and leaves the rest of the
+// 128 KiB per-argument limit (MAX_ARG_STRLEN) for profile lines, the quoted
+// remote command, and ssh overhead.
+export const SSH_REMOTE_ENV_MAX_BYTES = 96 * 1024;
+
+// ssh.ts's shellQuote wraps the value in single quotes and expands each
+// embedded quote to `'\''`; the whole script is quoted once more at launch,
+// so every inner quote costs another 3 bytes in the final argument. Mirror
+// both expansions exactly: raw-byte accounting undercounts quote-heavy
+// values by up to 4x and lets the assembled argument blow the limit.
+function countSingleQuotes(value: string): number {
+  let count = 0;
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) === 39) count++;
+  }
+  return count;
+}
+
+function shellQuotedBytes(value: string): number {
+  return Buffer.byteLength(value) + 2 + 4 * countSingleQuotes(value);
+}
+
+// Bytes an entry adds to the final `sh -c '<script>'` ssh argument: the
+// inner-quoted `KEY=VALUE` plus the outer re-quote's expansion of each inner
+// quote (+3 bytes) and one entry separator.
+function sshEnvEntryFinalBytes(key: string, value: string): number {
+  return (
+    Buffer.byteLength(key) +
+    1 +
+    shellQuotedBytes(value) +
+    3 * (2 + countSingleQuotes(value)) +
+    1
+  );
+}
 
 export function budgetSshRemoteEnvWithReport(
   env: Record<string, string> | NodeJS.ProcessEnv,
@@ -102,17 +135,16 @@ export function budgetSshRemoteEnvWithReport(
   let totalBytes = 0;
   const candidates = Object.entries(pruned)
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    // Keep the smallest entries first so the most configuration survives.
+    // Keep the largest entries first: a payload-carrying value must not be
+    // crowded out by smaller optional settings when both would fit.
     .sort(
       (a, b) =>
-        Buffer.byteLength(`${a[0]}=${a[1]}`) -
-          Buffer.byteLength(`${b[0]}=${b[1]}`) ||
+        sshEnvEntryFinalBytes(b[0], b[1]) -
+          sshEnvEntryFinalBytes(a[0], a[1]) ||
         (a[0] < b[0] ? -1 : 1),
     );
   for (const [key, value] of candidates) {
-    // shellQuote wraps the value in single quotes and escapes embedded
-    // quotes; ~8 bytes of overhead per entry bounds the worst case.
-    const entryBytes = Buffer.byteLength(`${key}=${value}`) + 8;
+    const entryBytes = sshEnvEntryFinalBytes(key, value);
     if (totalBytes + entryBytes > SSH_REMOTE_ENV_MAX_BYTES) {
       dropped.push(key);
       continue;
