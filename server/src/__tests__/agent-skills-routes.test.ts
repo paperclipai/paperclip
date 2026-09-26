@@ -1310,6 +1310,43 @@ describe.sequential("agent skill routes", () => {
     expect(mockApprovalService.create).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects hire instructions when adapterConfig already selects an instruction bundle", async () => {
+    const app = await createApp(createDb(true));
+    const res = await request(app)
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Ambiguous hire",
+        role: "general",
+        adapterType: "codex_local",
+        adapterConfig: { agentsMdPath: "/srv/agents/AGENTS.md" },
+        instructionsBundle: { files: { "AGENTS.md": "Use the supplied instructions." } },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("instructionsBundle cannot be combined with adapterConfig.agentsMdPath");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects direct-create instructions when adapterConfig already selects an instruction bundle", async () => {
+    const app = await createApp(createDb(false));
+    const res = await request(app)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Ambiguous agent",
+        role: "general",
+        adapterType: "codex_local",
+        adapterConfig: { instructionsEntryFile: "AGENTS.md" },
+        instructionsBundle: { files: { "AGENTS.md": "Use the supplied instructions." } },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("instructionsBundle cannot be combined with adapterConfig.instructionsEntryFile");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
+  });
+
   it("includes canonical desired skills in hire approvals", async () => {
     const db = createDb(true);
 
