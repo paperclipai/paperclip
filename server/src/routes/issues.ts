@@ -275,6 +275,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
+  type IssueDependencyReadiness,
   type IssuePostCommitAction,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -6522,11 +6523,54 @@ export function issueRoutes(
     return false;
   }
 
+  // Shared by the PATCH and comment routes. The comment body cannot carry
+  // blockedByIssueIds, so the advice names the PATCH route for both.
+  const BLOCKED_ISSUE_REMEDIATION =
+    "Send PATCH /api/issues/:id with a blockedByIssueIds set that drops the blockers you no longer depend on, in the same write as the status change. A blocker you keep must reach done with a finalized workspace.";
+
+  /**
+   * Readiness is computed from stored edges. A write that carries a replacement
+   * `blockedByIssueIds` set must be judged against that post-replacement set so
+   * a same-write clear is not refused. Edges the write keeps retain their
+   * unresolved/finalize state; edges the write adds are treated as unresolved
+   * because readiness has no up-to-date status for them yet.
+   */
+  function applyReplacementBlockerSet(
+    readiness: IssueDependencyReadiness,
+    nextBlockedByIssueIds?: string[],
+  ): Pick<
+    IssueDependencyReadiness,
+    "unresolvedBlockerIssueIds" | "pendingFinalizeBlockerIssueIds"
+  > {
+    let unresolvedBlockerIssueIds = readiness.unresolvedBlockerIssueIds;
+    let pendingFinalizeBlockerIssueIds =
+      readiness.pendingFinalizeBlockerIssueIds ?? [];
+    if (nextBlockedByIssueIds) {
+      const requested = new Set(nextBlockedByIssueIds);
+      const existing = new Set(readiness.blockerIssueIds);
+      const addedStillUnresolved = [...new Set(nextBlockedByIssueIds)].filter(
+        (blockerIssueId) => !existing.has(blockerIssueId),
+      );
+      unresolvedBlockerIssueIds = [
+        ...unresolvedBlockerIssueIds.filter((id) => requested.has(id)),
+        ...addedStillUnresolved,
+      ];
+      pendingFinalizeBlockerIssueIds = pendingFinalizeBlockerIssueIds.filter(
+        (id) => requested.has(id),
+      );
+    }
+    return { unresolvedBlockerIssueIds, pendingFinalizeBlockerIssueIds };
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
     issue: Parameters<typeof decideIssueAccess>[1],
-    options: { resumeIntent?: boolean } = {},
+    options: {
+      resumeIntent?: boolean;
+      /** Replacement blocker set carried by the current request body, if any. */
+      nextBlockedByIssueIds?: string[];
+    } = {},
   ) {
     if (
       await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
@@ -6575,12 +6619,16 @@ export function issueRoutes(
 
     if (issue.status === "blocked") {
       const readiness = await svc.getDependencyReadiness(issue.id);
-      if (readiness.unresolvedBlockerCount > 0) {
+      const { unresolvedBlockerIssueIds, pendingFinalizeBlockerIssueIds } =
+        applyReplacementBlockerSet(readiness, options.nextBlockedByIssueIds);
+      if (unresolvedBlockerIssueIds.length > 0) {
         res.status(409).json({
           error: "Issue follow-up blocked by unresolved blockers",
           details: {
             issueId: issue.id,
-            unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+            unresolvedBlockerIssueIds,
+            pendingFinalizeBlockerIssueIds,
+            remediation: BLOCKED_ISSUE_REMEDIATION,
           },
         });
         return false;
@@ -12855,6 +12903,9 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const isClosed = isClosedIssueStatus(existing.status);
       const isBlocked = existing.status === "blocked";
+      const replacementBlockerIds = Array.isArray(req.body.blockedByIssueIds)
+        ? (req.body.blockedByIssueIds as string[])
+        : undefined;
       const normalizedAssigneeAgentId =
         await normalizeIssueAssigneeAgentReference(
           existing.companyId,
@@ -12949,6 +13000,7 @@ export function issueRoutes(
         resumeRequested === true &&
         !(await assertExplicitResumeIntentAllowed(req, res, existing, {
           resumeIntent: true,
+          nextBlockedByIssueIds: replacementBlockerIds,
         }))
       )
         return;
@@ -12962,7 +13014,11 @@ export function issueRoutes(
         req.actor.type === "agent" &&
         reopenRequested === true
       ) {
-        if (!(await assertExplicitResumeIntentAllowed(req, res, existing)))
+        if (
+          !(await assertExplicitResumeIntentAllowed(req, res, existing, {
+            nextBlockedByIssueIds: replacementBlockerIds,
+          }))
+        )
           return;
       }
       await assertIssueEnvironmentSelection(
@@ -13012,7 +13068,9 @@ export function issueRoutes(
       if (
         resumeRequested !== true &&
         agentStatusTransitionRequiresResumeAuthority &&
-        !(await assertExplicitResumeIntentAllowed(req, res, existing))
+        !(await assertExplicitResumeIntentAllowed(req, res, existing, {
+          nextBlockedByIssueIds: replacementBlockerIds,
+        }))
       ) {
         return;
       }
@@ -13057,19 +13115,33 @@ export function issueRoutes(
       const updateReferenceSummaryBefore = titleOrDescriptionChanged
         ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
         : null;
-      const hasUnresolvedFirstClassBlockers =
+      const blockerReadinessAfterReplacement =
         isBlocked && effectiveMoveToTodoRequested
-          ? (await svc.getDependencyReadiness(existing.id))
-              .unresolvedBlockerCount > 0
-          : false;
+          ? applyReplacementBlockerSet(
+              await svc.getDependencyReadiness(existing.id),
+              replacementBlockerIds,
+            )
+          : null;
+      const hasUnresolvedFirstClassBlockers =
+        blockerReadinessAfterReplacement != null &&
+        blockerReadinessAfterReplacement.unresolvedBlockerIssueIds.length > 0;
       if (
         resumeRequested === true &&
         isBlocked &&
-        hasUnresolvedFirstClassBlockers
+        blockerReadinessAfterReplacement != null &&
+        blockerReadinessAfterReplacement.unresolvedBlockerIssueIds.length > 0
       ) {
-        res
-          .status(409)
-          .json({ error: "Issue follow-up blocked by unresolved blockers" });
+        res.status(409).json({
+          error: "Issue follow-up blocked by unresolved blockers",
+          details: {
+            issueId: existing.id,
+            unresolvedBlockerIssueIds:
+              blockerReadinessAfterReplacement.unresolvedBlockerIssueIds,
+            pendingFinalizeBlockerIssueIds:
+              blockerReadinessAfterReplacement.pendingFinalizeBlockerIssueIds,
+            remediation: BLOCKED_ISSUE_REMEDIATION,
+          },
+        });
         return;
       }
       let interruptedRunId: string | null = null;
@@ -17460,19 +17532,30 @@ export function issueRoutes(
             executionRunId: issue.executionRunId,
           }) ||
           shouldResumeInProgressScheduledRetry);
-      const hasUnresolvedFirstClassBlockers =
+      const blockerReadinessAfterReplacement =
         isBlocked && effectiveMoveToTodoRequested
-          ? (await svc.getDependencyReadiness(issue.id))
-              .unresolvedBlockerCount > 0
-          : false;
+          ? applyReplacementBlockerSet(await svc.getDependencyReadiness(issue.id))
+          : null;
+      const hasUnresolvedFirstClassBlockers =
+        blockerReadinessAfterReplacement != null &&
+        blockerReadinessAfterReplacement.unresolvedBlockerIssueIds.length > 0;
       if (
         resumeRequested === true &&
         isBlocked &&
-        hasUnresolvedFirstClassBlockers
+        blockerReadinessAfterReplacement != null &&
+        blockerReadinessAfterReplacement.unresolvedBlockerIssueIds.length > 0
       ) {
-        res
-          .status(409)
-          .json({ error: "Issue follow-up blocked by unresolved blockers" });
+        res.status(409).json({
+          error: "Issue follow-up blocked by unresolved blockers",
+          details: {
+            issueId: issue.id,
+            unresolvedBlockerIssueIds:
+              blockerReadinessAfterReplacement.unresolvedBlockerIssueIds,
+            pendingFinalizeBlockerIssueIds:
+              blockerReadinessAfterReplacement.pendingFinalizeBlockerIssueIds,
+            remediation: BLOCKED_ISSUE_REMEDIATION,
+          },
+        });
         return;
       }
       if (

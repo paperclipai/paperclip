@@ -1708,6 +1708,117 @@ describe.sequential("issue comment reopen routes", () => {
     expect(patch.status).toBe("todo");
   });
 
+  // Regression for the blocked-status resume guard computing readiness from the
+  // pre-update edge set: a PATCH that clears every unresolved blocker in the same
+  // write it moves the issue out of `blocked` must be allowed.
+  it("allows a same-write blocker clear to move a blocked issue to todo", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [],
+      blocks: [],
+    });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("blocked"),
+        ...patch,
+      }),
+    );
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo", blockedByIssueIds: [] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    const patch = mockIssueService.update.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(patch.status).toBe("todo");
+    expect(patch.blockedByIssueIds).toEqual([]);
+  });
+
+  it("still blocks a blocked issue whose kept blocker is pending finalize, and names it", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [],
+      blocks: [],
+    });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "todo",
+        blockedByIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Issue follow-up blocked by unresolved blockers",
+    );
+    expect(res.body.details.unresolvedBlockerIssueIds).toEqual([
+      "33333333-3333-4333-8333-333333333333",
+    ]);
+    expect(res.body.details.pendingFinalizeBlockerIssueIds).toEqual([
+      "33333333-3333-4333-8333-333333333333",
+    ]);
+    expect(res.body.details.remediation).toContain(
+      "PATCH /api/issues/:id with a blockedByIssueIds set",
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("still blocks a same-write clear that adds a new blocker", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [],
+      blocks: [],
+    });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "todo",
+        blockedByIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Issue follow-up blocked by unresolved blockers",
+    );
+    expect(res.body.details.unresolvedBlockerIssueIds).toEqual([
+      "33333333-3333-4333-8333-333333333333",
+    ]);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("does not implicitly reopen closed issues via POST comments when no agent is assigned", async () => {
     mockIssueService.getById.mockResolvedValue({
       ...makeIssue("done"),
