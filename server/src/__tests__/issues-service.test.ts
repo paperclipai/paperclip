@@ -7010,11 +7010,30 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
   });
 
   it("keeps live checkout owners protected with a 409 conflict", async () => {
-    const seeded = await seedOwnershipIssue({ checkoutStatus: "running" });
+    // A live holder of a *different* agent is a real cross-agent lock and must stay protected.
+    // The same-agent live sibling case is deliberately allowed through: the assignee has to be
+    // able to write its own issue. See issue-same-agent-live-sibling-checkout.test.ts.
+    const seeded = await seedOwnershipIssue({
+      checkoutStatus: "running",
+      assigneeMatchesActor: false,
+    });
 
     await expect(
       svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
     ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("admits a live sibling run of the assignee agent", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "running" });
+
+    const ownership = await svc.assertCheckoutOwner(
+      seeded.issueId,
+      seeded.actorAgentId,
+      seeded.actorRunId,
+    );
+
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+    expect(ownership.adoptedFromRunId).toBe(seeded.staleRunId);
   });
 
   it("does not let terminal actor runs adopt stale checkout ownership", async () => {
