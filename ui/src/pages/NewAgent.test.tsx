@@ -533,6 +533,17 @@ describe("New agent setup", () => {
     expect(JSON.stringify(api.testEnvironment.mock.calls)).not.toContain("example-test-secret");
     expect(JSON.stringify(api.hire.mock.calls)).not.toContain("example-test-secret");
   });
+  it("defaults to host sign-in for OpenCode without attaching an OpenRouter AI connection", async () => {
+    await render("opencode_local");
+    const model = "zai/GLM-5.1_F";
+    await fill("Model", model);
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toEqual(expect.objectContaining({
+      adapterType: "opencode_local",
+      adapterConfig: expect.objectContaining({ model }),
+    }));
+    expect(api.hire.mock.calls[0][1].runtimeConfig?.aiConnection).toBeUndefined();
+  });
   it.each(["codex", "claude", "opencode"])(
     "uses the correct native %s runner",
     async (runner) => {
