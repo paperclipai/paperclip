@@ -11,7 +11,7 @@ import {
   resolveNativeRunnerRequirement,
 } from "./dev-runner-native-binary.mjs";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
-import { applyRepoRootEnvFile } from "./dev-runner-env-file.mjs";
+import { applyRepoRootEnvFile, resolveInstanceEnvPath } from "./dev-runner-env-file.mjs";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
@@ -175,8 +175,17 @@ const env: NodeJS.ProcessEnv = {
 
 // The server runs with cwd `server/`, so it never loads a repo-root `.env`.
 // Without this, secrets like BETTER_AUTH_SECRET set only there are silently
-// missing from local agent runs (#13816).
-applyRepoRootEnvFile(env, repoRoot, { log: (line) => console.log(line) });
+// missing from local agent runs (#13816). Precedence stays shell > instance
+// `.env` > repo-root `.env`, and each (re)start re-reads the file.
+const serverCwd = path.join(repoRoot, "server");
+const instanceEnvPath = resolveInstanceEnvPath({ serverCwd });
+
+function withRepoRootEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return applyRepoRootEnvFile(baseEnv, repoRoot, {
+    instanceEnvPath,
+    log: (line: string) => console.log(line),
+  }).env;
+}
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
@@ -720,7 +729,7 @@ async function startServerChild() {
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    { stdio: "inherit", env: withRepoRootEnv(env), shell: process.platform === "win32" },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
