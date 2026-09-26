@@ -25,14 +25,34 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function envPlainString(value: unknown): string | null {
+  if (typeof value === "string") return asString(value);
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (record.type === "plain") return asString(record.value);
+  }
+  return null;
+}
+
+/**
+ * Resolve the Hermes home directory.
+ *
+ * Honors `HERMES_HOME` from the adapter config env — the selector Hermes
+ * itself documents for non-default deployments (containers, mounted volumes,
+ * per-agent profile directories). Falls back to `$HOME/.hermes` when
+ * `HERMES_HOME` is not set, so default deployments keep the previous
+ * behaviour. Secret bindings are never resolved here.
+ */
 function resolveHermesHome(config: Record<string, unknown>): string {
   const env =
     typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
       ? (config.env as Record<string, unknown>)
       : {};
+  const hermesHome = envPlainString(env.HERMES_HOME);
+  if (hermesHome) return path.resolve(hermesHome);
   const configuredHome = asString(env.HOME);
-  const hermesHome = asString(env.HERMES_HOME);
-  return hermesHome ? path.resolve(hermesHome) : path.join(configuredHome ? path.resolve(configuredHome) : os.homedir(), ".hermes");
+  const userHome = configuredHome ? path.resolve(configuredHome) : os.homedir();
+  return path.join(userHome, ".hermes");
 }
 
 interface SkillFrontmatter {
@@ -90,7 +110,7 @@ async function scanHermesSkills(
       }
     }
   } catch {
-    // ~/.hermes/skills/ doesn't exist — no skills available
+    // The Hermes skills home doesn't exist — no skills available
   }
 
   return entries.sort((a, b) => a.key.localeCompare(b.key));
@@ -140,7 +160,7 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promis
   const desiredSet = new Set(desiredSkills);
   const availableByKey = new Map(paperclipEntries.map((e) => [e.key, e]));
 
-  // 2. Scan Hermes's own skills from ~/.hermes/skills/
+  // 2. Scan Hermes's own skills from the resolved Hermes home
   const hermesSkillEntries = await scanHermesSkills(hermesSkillsHome);
   const hermesKeys = new Set(hermesSkillEntries.map((e) => e.key));
 
