@@ -121,9 +121,11 @@ So the practical answer is to **shrink the artifact rather than lengthen the
 downtime**:
 
 - Exclude the regenerable paths from the data-directory tar — repo clones and
-  worktrees, build/compiler caches, install stores, temp dirs, and the backup
-  directory itself. Keep `instances/<id>/secrets`, the company and project
-  workspaces, `data/run-logs`, `data/storage`, `skills`, and `config.json`.
+  worktrees, build/compiler caches, install stores, temp dirs, the backup
+  directory itself, and any `.pre-restore-*` left by a restore (step 6 below
+  removes it, but a producer that excludes it is not at the mercy of that).
+  Keep `instances/<id>/secrets`, the company and project workspaces,
+  `data/run-logs`, `data/storage`, `skills`, and `config.json`.
 - Once the tar is small, quiescing becomes affordable, and a frequent cadence
   becomes meaningful. Until then a frequent cadence mostly re-copies caches.
 - If the filesystem supports snapshots (LVM, ZFS, btrfs), snapshot the data
@@ -209,8 +211,9 @@ docker inspect -f '{{range .Mounts}}{{.Type}} {{.Source}} -> {{.Destination}}{{"
 
 ## Restoring
 
-The order below never leaves the deployment without a database, and keeps a
-one-command rollback available until the very end. Read it through before
+The order below keeps a one-command rollback available at every step, and
+there is no moment where the deployment has no database named `paperclip`:
+the database swap in step 5 is a single transaction. Read it through before
 starting.
 
 ### 0. Before you touch anything
@@ -275,17 +278,37 @@ contain are left behind, so you end up with a mix of two generations that looks
 like a successful restore. Move the old contents aside first, and keep them until
 you are done.
 
+Where the old tree can go depends on the layout. When it has to stay *inside*
+the data directory (a named volume, or a host path that is its own mount point)
+it goes under a **timestamped** `.pre-restore-<ts>` directory, for two reasons
+that only bite later:
+
+- A fixed name collides on the next restore. `mv` into an already populated
+  `.pre-restore/instances` fails on a non-empty destination after the other
+  entries have already moved, and the volume is left half dismantled.
+- **The rollback copy is inside the tree every later backup tars.** Until
+  step 6 removes it, each new artifact carries the whole previous deployment —
+  its size, and its data, retained for as long as those artifacts are kept. The
+  timestamp makes the leftover visible in a listing rather than easy to forget.
+
+```sh
+PRE=".pre-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
 **A named volume** has no host path: do the whole thing in a
 throwaway container bound to the volume. Move aside inside the volume, so the
 move is a same-filesystem rename and stays instant even at a hundred gigabytes:
 
 ```sh
-docker run --rm -v "$VOL":/paperclip -v "$PWD":/artifacts:ro alpine sh -c '
-  mkdir -p /paperclip/.pre-restore &&
-  find /paperclip -mindepth 1 -maxdepth 1 -not -name .pre-restore \
-    -exec mv -t /paperclip/.pre-restore {} + &&
+docker run --rm -v "$VOL":/paperclip -v "$PWD":/artifacts:ro -e PRE="$PRE" alpine sh -c '
+  mkdir "/paperclip/$PRE" &&
+  find /paperclip -mindepth 1 -maxdepth 1 -not -name ".pre-restore-*" \
+    -exec mv -t "/paperclip/$PRE" {} + &&
   tar -xzf /artifacts/paperclip-<ts>.tar.gz -C /paperclip --strip-components=1'
 ```
+
+`mkdir` without `-p` is deliberate: it refuses to reuse a directory, so a
+second run in the same second cannot merge into the first.
 
 **A host path** splits on whether it is its own mount point — a bind mount or an
 attached volume cannot be renamed, only emptied:
@@ -297,11 +320,15 @@ findmnt -T "$PC_DATA"    # does TARGET equal $PC_DATA itself?
 *If it is a mount point*, move aside inside the mount, for the same reason:
 
 ```sh
-sudo mkdir -p "$PC_DATA/.pre-restore"
-sudo find "$PC_DATA" -mindepth 1 -maxdepth 1 -not -name .pre-restore \
-  -exec mv -t "$PC_DATA/.pre-restore" {} +
+sudo mkdir "$PC_DATA/$PRE"
+sudo find "$PC_DATA" -mindepth 1 -maxdepth 1 -not -name ".pre-restore-*" \
+  -exec mv -t "$PC_DATA/$PRE" {} +
 sudo tar -xzf paperclip-<ts>.tar.gz -C "$PC_DATA" --strip-components=1
 ```
+
+If a `.pre-restore-*` from an earlier restore is already there, it is excluded
+from the move and left where it is; decide what to do with it in step 6 along
+with the new one.
 
 *If it is an ordinary directory*, stage beside it and swap:
 
@@ -356,7 +383,7 @@ compare against the image's user rather than your shell's.
 
 Restore into a **new** database first. This is the difference between a restore
 and a gamble: if the dump is bad you find out before destroying anything, and the
-switch at the end is two renames with instant rollback.
+switch at the end is two renames in one transaction, with instant rollback.
 
 A plain `pg_dump` artifact — no `--clean`, no `--create` — contains `CREATE`
 statements and no `DROP`s, so **it only loads into an empty database**. Pointed at
@@ -432,25 +459,60 @@ held.
 **Then check the run logs, which the SQL cannot.** `restore-verify.sql` runs
 inside the database; the NDJSON transcripts are files in the data directory. A
 database-only restore — or a data-directory archive extracted one level off —
-passes every check above with every transcript dangling. This is the only step
-that exercises both artifacts at once:
+passes every check above with every transcript dangling. And a transcript that
+is *present* can still be torn: the tar walked a live tree, so a run that was
+writing at that moment is captured mid-line. This is the only step that
+exercises both artifacts at once, and it compares content, not just presence:
+when the server finalizes a run it records the transcript's exact size and
+SHA-256 on the row (`log_bytes`, `log_sha256`), and the checker hashes each
+restored file against them.
 
 ```sh
-"${PSQL[@]}" -d paperclip_restored -Atqc \
-  "select log_ref || E'\t' || created_at from heartbeat_runs
-    where log_store = 'local_file' and log_ref is not null" \
-| scripts/restore-verify-logs.sh "$PC_DATA"
+"${PSQL[@]}" -d paperclip_restored -Atq -F "$(printf '\t')" -c \
+  "select log_ref, created_at, log_bytes, log_sha256 from heartbeat_runs
+    where log_store = 'local_file' and log_ref is not null" > run-log-refs.tsv
+"${PSQL[@]}" -d paperclip_restored -Atq -c \
+  "select count(*) from heartbeat_runs
+    where log_store = 'local_file' and log_ref is not null"   # note the number
+scripts/restore-verify-logs.sh "$PC_DATA" --expect <that number> < run-log-refs.tsv
 ```
+
+Write the refs to a file; do not pipe `psql` straight into the checker. When
+`psql` runs through `docker exec` or `docker compose exec`, output piped into a
+reader that falls behind — and this one hashes a file per row — has been
+measured arriving short with exit 0 and nothing on stderr: 5942 of 6457 rows,
+different each run. A short list is checked and passes. `--expect` holds the
+checker to the count the database reported, so a truncated list fails as
+truncated.
 
 ```
 run-log base: /paperclip/instances/default/data/run-logs
-run-log check PASSED — 6323 ref(s) checked, all present (1092 zero-byte, which the source also had)
+run-log check PASSED — 6368 ref(s) checked, all present, 6070 verified against the database digest, 287 unverifiable (no digest in the database: run never finalized) (1096 zero-byte, which the source also had)
 ```
 
-It checks every ref, not a sample — a few thousand `stat` calls take seconds,
-and a sample turns the result into a coin toss. Zero-byte transcripts are
-normal: a run killed before its first line leaves one, and a faithful restore
-brings it back empty. Only *missing* files fail.
+It checks every ref, not a sample — hashing a gigabyte of transcripts takes
+well under a minute, and a sample turns the result into a coin toss. Read the
+three numbers:
+
+- **Verified** is the count that matters. Every one of those files is
+  byte-for-byte what the server had when it closed the run, so it opens.
+- **Unverifiable** are runs the server never finalized — in flight when the
+  dump was taken, or killed before finalize — so the database holds no digest
+  to compare against. They are the *only* runs a live tar can tear, and the
+  source already holds torn files for exactly these (measured: 37 of 288 on one
+  deployment), so the check reports them rather than failing on them. With the
+  database dumped before the tree is tarred, every *finalized* run's file is
+  complete in the tar; if this number is large relative to the deployment's
+  concurrency, the dump and the tar were taken far apart.
+- **Zero-byte** is normal: a run killed before its first line leaves one, and a
+  faithful restore brings it back empty.
+
+Any **content mismatch** fails, with no tolerance flag: a healthy source has
+none (measured: 0 of 6070), so one means the files are from a different
+generation than the dump, or the tree was tarred *before* the dump and a run
+finished in between. Input that carries no digests at all — the two-column
+query from an older version of this page — fails too, because presence alone
+is not the check; `--allow-unverified` accepts it knowingly.
 
 **Missing refs need reading, not just counting.** A deployment can carry a few
 dangling refs of its own — a run whose transcript was lost at the source long
@@ -474,51 +536,69 @@ mounted, or copy the refs out and check them there.
 
 ### 5. Swap the database in and start up
 
+The swap is two renames:
+
+```sql
+ALTER DATABASE paperclip          RENAME TO paperclip_prior;
+ALTER DATABASE paperclip_restored RENAME TO paperclip;
+```
+
 A rename needs no active connections on the database being renamed, which is why
-Paperclip is still stopped. It also **cannot run inside a transaction**, so these
-two statements cannot be made atomic — which is the whole hazard here, and why
-they are run one at a time with the error check in between.
+Paperclip is still stopped. Typed as two separate statements, there is a moment
+between them with no database named `paperclip`, and anything that stops you
+there — the second rename failing, a Ctrl-C, the SSH session dropping — leaves
+the deployment stranded; starting Paperclip in that state either fails or
+initializes an empty database over the top. `ALTER DATABASE … RENAME` is
+transactional, though, so the helper runs both in one transaction and that
+moment never exists outside it:
 
 ```sh
-"${PSQL[@]}" -d postgres -v ON_ERROR_STOP=1 -c \
-  'ALTER DATABASE paperclip RENAME TO paperclip_prior'
-
-"${PSQL[@]}" -d postgres -v ON_ERROR_STOP=1 -c \
-  'ALTER DATABASE paperclip_restored RENAME TO paperclip'
+scripts/restore-swap-db.sh -- "${PSQL[@]}"
 ```
 
-`ON_ERROR_STOP=1` matters as much here as it did in step 3, for a different
-reason. Feed both statements to one psql without it and a failure on the second
-is reported and then ignored: the exit status is 0, and the deployment is left
-with **no database named `paperclip` at all** — the live one renamed away, the
-restored one not renamed in. Starting Paperclip then either fails or initializes
-an empty database over the top.
+```
+paperclip renamed to paperclip_prior
+paperclip_restored renamed to paperclip
+SWAP COMPLETE: paperclip is the restored database, paperclip_prior is the rollback copy. Present: paperclip paperclip_prior
+```
 
-If the second rename does fail — the usual cause is a connection still attached
-to `paperclip_restored`, often a psql from step 4 you left open — put the
-original back before doing anything else:
+What it does, in order:
+
+1. **Refuses before renaming anything** if `paperclip` or `paperclip_restored`
+   is missing, or if `paperclip_prior` already exists (the rollback copy of an
+   earlier restore — drop or rename it first; the helper never overwrites a
+   rollback point).
+2. **Terminates every other connection** to the live and the restored
+   database, and says how many. A psql from step 4 left open is the usual
+   reason the second rename fails; removing the cause beats handling the
+   failure.
+3. **Runs `BEGIN`, both renames, `COMMIT` in one session.** A failed rename,
+   an interrupt, a dropped connection, a killed client or power loss before
+   `COMMIT` rolls the transaction back on the server, and both names are what
+   they were; the helper says `did not commit, so nothing was renamed`. The
+   test suite kills the session between the two renames and checks exactly
+   that.
+4. **Reads the catalog back** and prints what is there, so `SWAP COMPLETE` is
+   a statement about the cluster, not about what was attempted.
+
+If a swap was ever typed by hand as two statements and stopped between them,
+the helper recognises the state — `paperclip` absent, `paperclip_prior`
+present — and refuses; put the original back with one command, then retry:
 
 ```sh
-"${PSQL[@]}" -d postgres -c \
-  "select pid, datname, application_name from pg_stat_activity
-    where datname in ('paperclip_restored', 'paperclip_prior')"
-
-"${PSQL[@]}" -d postgres -v ON_ERROR_STOP=1 -c \
-  'ALTER DATABASE paperclip_prior RENAME TO paperclip'   # back to where you started
+scripts/restore-swap-db.sh --rollback -- "${PSQL[@]}"
 ```
 
-Then close the stray connection and retry the pair. Verify before you start
-anything:
+Verify before you start anything:
 
 ```sh
 "${PSQL[@]}" -d postgres -Atqc \
   "select datname from pg_database where datname like 'paperclip%'"
 ```
 
-It must list `paperclip` and `paperclip_prior`. If `paperclip` is absent, do not
-start the server — you are in the stranded state above. Otherwise start Paperclip. It applies any
-migrations newer than the dump on boot, which is expected and is why the
-migration journal had to come back intact.
+It must list `paperclip` and `paperclip_prior`. Then start Paperclip. It
+applies any migrations newer than the dump on boot, which is expected and is why
+the migration journal had to come back intact.
 
 ```sh
 paperclipai service start    # or the compose/container start you resolved above
@@ -532,11 +612,31 @@ free.
 
 - Sign in and confirm the board reads: companies, agents, issues, comments, and
   a run's history with its log opening. Step 4 checked the same join from the
-  outside; this is the first time the server itself does it.
+  outside; this is the first time *this* server does it. (If you ran
+  `restore-smoke.sh --boot` on these artifacts beforehand, a server has
+  already served them once — see the captured run under "Testing artifacts" below — and
+  this is confirmation rather than discovery.)
 - Clear runs left `running` by step 1.
 - Re-check that scheduled work is where you expect it rather than all firing at
   once on catch-up.
-- Take a fresh backup. The restored deployment has no backup of its own yet.
+- **Remove the old tree once you are satisfied.** For a named volume or a
+  mount point it is `$PC_DATA/.pre-restore-<ts>`, *inside* the directory every
+  backup tars: until it is gone, each new artifact carries the whole previous
+  deployment inside it — several times the size, and old data retained for as
+  long as those artifacts are kept — and a later restore has a second
+  `.pre-restore-*` to sort out. For an ordinary directory it is
+  `$PC_DATA.old`, beside the tree and outside the tar, so it costs disk but
+  nothing else. Move either off the box if you want to keep it; do not leave
+  it where it is.
+
+  ```sh
+  sudo rm -rf "$PC_DATA"/.pre-restore-*
+  # named volume:
+  docker run --rm -v "$VOL":/paperclip alpine sh -c 'rm -rf /paperclip/.pre-restore-*'
+  ```
+
+- Take a fresh backup — after the step above, or it carries the old tree. The
+  restored deployment has no backup of its own yet.
 
 ## Testing artifacts without touching a deployment
 
@@ -546,7 +646,8 @@ throwaway PostgreSQL and exits non-zero on the first failure, which makes it
 something you can put on a timer:
 
 ```sh
-scripts/restore-smoke.sh --db db-<ts>.sql.gz --volume paperclip-<ts>.tar.gz
+scripts/restore-smoke.sh --db db-<ts>.sql.gz --volume paperclip-<ts>.tar.gz \
+  --boot ghcr.io/paperclipai/paperclip:<the tag you run>
 ```
 
 It needs `docker` and `tar`; psql runs inside the container, so the host needs no
@@ -560,23 +661,71 @@ PostgreSQL client. In order it checks:
    `--strip-components=1`;
 5. the secrets master key is in it, at mode `0600`;
 6. every run-log file the restored database points at is present in the
-   extracted tree — `--max-missing <n>` tolerates the source's own known
-   dangling refs, as in step 4 above.
+   extracted tree **and is the file the server finalized** — size and SHA-256
+   compared with what the database recorded, so a transcript the tar caught
+   mid-write fails rather than passing as present. `--max-missing <n>`
+   tolerates the source's own known dangling refs, as in step 4 above; a
+   content mismatch is never tolerated;
+7. with `--boot`, the Paperclip image starts against the restored database and
+   the extracted tree and its health endpoint reports `ok` — which means the
+   migrations newer than the dump applied, the secrets and auth stack came up
+   on the restored key, and the server is answering;
+8. still with `--boot`, a throwaway agent API key is minted *in the restored
+   database only* — a random token whose SHA-256 goes into `agent_api_keys`
+   the way the server stores its own keys, so nothing valid on the source is
+   created or used — and the server signs it in: the agent's company, agents
+   and issues come back through the API, and one of that agent's finalized run
+   logs is served by the server that owns it: the file step 6 verified on
+   disk, read back the way the UI reads it, and its first NDJSON line parses.
 
 Steps 4 to 6 are the ones a database-only test cannot reach, and they are where
 the silent failures live: an archive extracted one level off, a master key that
-was never in the artifact, transcripts that did not come back. Without
-`--volume` the script says so in its own output rather than implying a clean
-bill of health.
+was never in the artifact, transcripts that did not come back, or came back
+torn. Steps 7 and 8 are the ones no file-level test can reach: a Paperclip of
+the version you run actually serving the restored board. Without `--volume` or
+`--boot`, the script says in its own output what it did *not* check
+rather than implying a clean bill of health.
+
+The booted server is a full copy of the source board — its agents, routines
+and connectors included — so the script runs it on a Docker network with no
+route out: it can reach the throwaway database and nothing else, and it gets a
+fresh auth secret rather than the source's. It writes only into the extracted
+copy, which is deleted on exit unless you pass `--keep`.
 
 `POSTGRES_USER=paperclip` inside the script is what makes the dump's
 `OWNER TO`/`GRANT` statements resolve, and it makes that role a superuser so
 `CREATE EXTENSION` succeeds.
 
-**What this does not cover.** It proves the artifacts restore and that the two
-halves agree; it does not boot a Paperclip server against the result. The last
-mile — signing in, opening a run's log through the UI — is step 6 of the restore
-above and stays manual.
+**What this does not cover.** A browser session: signing in through the UI is
+the one thing left to do by hand after `--boot` passes, and it is a check of
+the login flow rather than of the artifacts. Everything else in restore step 6
+is exercised here.
+
+### A captured run
+
+Artifacts taken from a live deployment while its agents were running — the
+database dump first (215 MB gzipped, 30 s), then a tar of the data directory
+(2.3 GB, 3 min) — and restored with:
+
+```sh
+scripts/restore-smoke.sh --db db-20260925T135541Z.sql.gz \
+  --volume paperclip-20260925T135541Z.tar.gz --max-missing 11 \
+  --boot ghcr.io/paperclipai/paperclip:nightly
+```
+
+| step | result |
+|---|---|
+| `gzip -t`, both artifacts | ok |
+| load into clean `postgres:17-alpine`, `ON_ERROR_STOP=1` | ok |
+| `restore-verify.sql` | 7/7 `PASS` — 2 companies, 21 agents, 16 projects, 3140 issues, 10776 comments, 6629 runs, 66952 run events, 284 migrations, no orphans, sequences ahead |
+| master key | present, mode 600 |
+| run logs | 6394 refs, row count matched the database; 6096 byte-identical to the recorded digest, 287 unverifiable (never finalized), 0 mismatches, 11 missing — the 11 the source itself lacks, all from one window a month before the backup |
+| server boot | `/api/health` ok on the restored database and tree, 284 migrations |
+| sign-in and board | minted key signed in as an agent; its company, 13 agents and the first page of issues (500) served |
+| run log through the API | a finalized run's transcript served, first NDJSON line parses |
+
+`RESTORE SMOKE PASSED (database + data directory + server boots + board
+served)`, exit 0.
 
 ## Giving a customer their data back
 

@@ -8,6 +8,7 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/restore-smoke.sh --db db-<ts>.sql.gz [--volume paperclip-<ts>.tar.gz]
+#                            [--boot <paperclip image>]
 #
 # Options:
 #   --db <file>          gzipped pg_dump artifact (required)
@@ -20,7 +21,21 @@ set -euo pipefail
 #                        to the number the *source* deployment is known to
 #                        lack (see restore-verify-logs.sh), never to whatever
 #                        makes the check pass
-#   --keep               leave the container and extracted tree behind
+#   --boot <ref>         after the artifact checks, start this Paperclip server
+#                        image against the restored database and the extracted
+#                        tree and require its health endpoint to report ok.
+#                        Needs --volume. The clone runs on a Docker network
+#                        with no route out, so its heartbeats, routines and
+#                        connectors can reach nothing but the throwaway
+#                        database. It then mints a throwaway agent API key
+#                        in the restored database (never the source's), signs
+#                        in with it, lists the board and reads one finalized
+#                        run log through the API — restore step 6, done by the
+#                        server rather than by hand
+#   --boot-timeout <s>   seconds to wait for the booted server, default 300;
+#                        migrations newer than the dump apply during this
+#   --keep               leave the containers, network and extracted tree
+#                        behind
 #
 # Needs docker and tar on the host; psql runs inside the container, so the host
 # needs no PostgreSQL client. Exits non-zero on the first failure.
@@ -29,10 +44,12 @@ DB_ARTIFACT=""
 VOLUME_ARTIFACT=""
 PG_IMAGE="postgres:17-alpine"
 MAX_MISSING=0
+BOOT_IMAGE=""
+BOOT_TIMEOUT=300
 KEEP=0
 
 usage() {
-  sed -n '3,29p' "$0" >&2
+  sed -n '3,45p' "$0" >&2
   exit 2
 }
 
@@ -42,6 +59,8 @@ while [ $# -gt 0 ]; do
     --volume) [ $# -ge 2 ] || usage; VOLUME_ARTIFACT="$2"; shift 2 ;;
     --image)  [ $# -ge 2 ] || usage; PG_IMAGE="$2"; shift 2 ;;
     --max-missing) [ $# -ge 2 ] || usage; MAX_MISSING="$2"; shift 2 ;;
+    --boot)   [ $# -ge 2 ] || usage; BOOT_IMAGE="$2"; shift 2 ;;
+    --boot-timeout) [ $# -ge 2 ] || usage; BOOT_TIMEOUT="$2"; shift 2 ;;
     --keep)   KEEP=1; shift ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
@@ -54,9 +73,18 @@ if [ -n "$VOLUME_ARTIFACT" ] && [ ! -f "$VOLUME_ARTIFACT" ]; then
   echo "FAIL: no such file: $VOLUME_ARTIFACT" >&2
   exit 1
 fi
+if [ -n "$BOOT_IMAGE" ] && [ -z "$VOLUME_ARTIFACT" ]; then
+  echo "--boot needs --volume: the server cannot start without the data directory" >&2
+  usage
+fi
+case "$BOOT_TIMEOUT" in
+  ''|*[!0-9]*) echo "--boot-timeout must be a whole number of seconds" >&2; usage ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONTAINER="restore-smoke-$$"
+APP_CONTAINER="$CONTAINER-app"
+NETWORK="$CONTAINER-net"
 EXTRACT_DIR=""
 
 # The trap's own status must not leak into the script's exit code: bash reports
@@ -65,12 +93,17 @@ EXTRACT_DIR=""
 # passing database-only run into exit 1.
 cleanup() {
   if [ "$KEEP" -eq 1 ]; then
-    echo "--keep: container $CONTAINER and ${EXTRACT_DIR:-(no extract dir)} left in place"
+    echo "--keep: container $CONTAINER${BOOT_IMAGE:+, container $APP_CONTAINER, network $NETWORK} and ${EXTRACT_DIR:-(no extract dir)} left in place"
     return 0
   fi
+  docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  docker network rm "$NETWORK" >/dev/null 2>&1 || true
   if [ -n "$EXTRACT_DIR" ]; then
-    rm -rf "$EXTRACT_DIR"
+    # The archive carries read-only directories (skill bundles are 0555), and
+    # rm cannot unlink inside them until they are writable again.
+    chmod -R u+w "$EXTRACT_DIR" 2>/dev/null || true
+    rm -rf "$EXTRACT_DIR" "$EXTRACT_DIR.refs"
   fi
   return 0
 }
@@ -172,12 +205,195 @@ fi
 # 7. The run logs the restored database points at. This is the one check that
 #    needs both artifacts at once, and the one nothing else performs. Every
 #    ref, not a sample: a sample makes the outcome a coin toss on a deployment
-#    that has a few source-side dangling refs of its own.
-step "run-log reachability (every ref, tolerance $MAX_MISSING)"
-docker exec -i "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -c \
-  "select log_ref || E'\t' || created_at from heartbeat_runs
-    where log_store = 'local_file' and log_ref is not null" \
-  | "$SCRIPT_DIR/restore-verify-logs.sh" "$EXTRACT_DIR" --max-missing "$MAX_MISSING"
+#    that has a few source-side dangling refs of its own. log_bytes and
+#    log_sha256 are what the server recorded at finalize; the checker compares
+#    the extracted file against them, so a transcript the tar captured
+#    mid-write fails here instead of passing as "present".
+step "run-log reachability and content (every ref, tolerance $MAX_MISSING missing)"
+#    The rows go to a file first and the checker is held to the database's
+#    count: `docker exec` piped into a reader that falls behind has been
+#    measured dropping rows with exit 0, and a short list passes.
+refs_file="$EXTRACT_DIR.refs"
+docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -F "$(printf '\t')" -c \
+  "select log_ref, created_at, log_bytes, log_sha256 from heartbeat_runs
+    where log_store = 'local_file' and log_ref is not null" > "$refs_file"
+ref_count="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -c \
+  "select count(*) from heartbeat_runs where log_store = 'local_file' and log_ref is not null")"
+"$SCRIPT_DIR/restore-verify-logs.sh" "$EXTRACT_DIR" --max-missing "$MAX_MISSING" \
+  --expect "$ref_count" < "$refs_file"
+
+if [ -z "$BOOT_IMAGE" ]; then
+  echo
+  echo "RESTORE SMOKE PASSED (database + data directory)"
+  echo "No --boot given, so no server was started against the result. The"
+  echo "artifacts restore and agree with each other; whether a Paperclip of"
+  echo "this version boots on them and serves the board was not checked."
+  exit 0
+fi
+
+# 8. A server. Everything above is a statement about files and rows; this is
+#    the one about a deployment: the image starts against the restored
+#    database and tree, applies whatever migrations are newer than the dump,
+#    brings the auth stack up, and answers. It runs on an --internal network:
+#    the clone is a full copy of the source board, and its heartbeats,
+#    routines and connectors would otherwise act on the world as the source.
+#    Inside that network it can reach the throwaway database and nothing else.
+step "boot $BOOT_IMAGE against the restored database and tree"
+
+instance_dir=""
+instance_count=0
+for dir in "$EXTRACT_DIR"/instances/*/; do
+  [ -d "$dir" ] || continue
+  instance_count=$((instance_count + 1))
+  instance_dir="$dir"
+done
+if [ "$instance_count" -ne 1 ]; then
+  echo "FAIL: expected exactly one instances/<id> in the archive, found $instance_count" >&2
+  exit 1
+fi
+instance_id="$(basename "$instance_dir")"
+
+docker network create --internal "$NETWORK" >/dev/null
+docker network connect "$NETWORK" "$CONTAINER"
+
+# The tree is mounted as the container's PAPERCLIP_HOME, owned by the caller,
+# so the image's entrypoint is told to run as the caller's uid/gid rather than
+# chown the extract. DATABASE_URL points at the restored database and
+# overrides whatever connection string the restored config.json carries — that
+# one names the source's database. The auth secret is fresh: it signs browser
+# sessions, and reusing the source's here would be the only way this run
+# could mint credentials valid on the source.
+auth_secret="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+docker run -d --name "$APP_CONTAINER" --network "$NETWORK" \
+  -v "$EXTRACT_DIR":/paperclip \
+  -e PAPERCLIP_HOME=/paperclip \
+  -e PAPERCLIP_INSTANCE_ID="$instance_id" \
+  -e PAPERCLIP_CONFIG="/paperclip/instances/$instance_id/config.json" \
+  -e DATABASE_URL="postgres://paperclip:restore-smoke@$CONTAINER:5432/paperclip" \
+  -e BETTER_AUTH_SECRET="$auth_secret" \
+  -e USER_UID="$(id -u)" -e USER_GID="$(id -g)" \
+  "$BOOT_IMAGE" >/dev/null
+
+# Probes run inside the app container with its own node: the host needs
+# nothing beyond docker and tar, and the API key travels on stdin, never in a
+# process list. Each probe prints one tab-separated line or fails with the
+# HTTP status and body.
+PROBE_JS='
+const fs = require("node:fs");
+const mode = process.env.PROBE;
+const arg = process.env.PROBE_ARG || "";
+const key = fs.readFileSync(0, "utf8").trim();
+const headers = key ? { authorization: "Bearer " + key } : {};
+async function get(path) {
+  const res = await fetch("http://localhost:3100" + path, { headers });
+  const text = await res.text();
+  if (!res.ok) throw new Error("HTTP " + res.status + " " + path + ": " + text.slice(0, 300));
+  return JSON.parse(text);
+}
+(async () => {
+  if (mode === "health") {
+    const j = await get("/api/health");
+    console.log(String(j.status) + "\t" + String(j.commit ?? ""));
+  } else if (mode === "me") {
+    const j = await get("/api/agents/me");
+    console.log(j.id + "\t" + j.companyId + "\t" + j.name);
+  } else if (mode === "company") {
+    const [company, agents, issues] = await Promise.all([
+      get("/api/companies/" + arg),
+      get("/api/companies/" + arg + "/agents"),
+      get("/api/companies/" + arg + "/issues"),
+    ]);
+    console.log(company.name + "\t" + agents.length + "\t" + issues.length);
+  } else if (mode === "log") {
+    const j = await get("/api/heartbeat-runs/" + arg + "/log?offset=0&limitBytes=65536");
+    const content = String(j.content ?? "");
+    if (!content) throw new Error("the API returned an empty log for run " + arg);
+    const first = JSON.parse(content.split("\n")[0]);
+    console.log(Buffer.byteLength(content) + "\t" + (first.ts ?? "") + "\t" + (first.stream ?? ""));
+  } else {
+    throw new Error("unknown probe " + mode);
+  }
+})().catch((err) => { console.error(err.message); process.exit(1); });
+'
+SMOKE_KEY=""
+probe() {
+  printf '%s' "$SMOKE_KEY" \
+    | docker exec -i -e PROBE="$1" -e PROBE_ARG="${2:-}" "$APP_CONTAINER" node -e "$PROBE_JS"
+}
+
+health=""
+for _ in $(seq 1 "$BOOT_TIMEOUT"); do
+  if ! docker inspect -f '{{.State.Running}}' "$APP_CONTAINER" 2>/dev/null | grep -q true; then
+    echo "FAIL: $APP_CONTAINER exited. Container log:" >&2
+    docker logs "$APP_CONTAINER" 2>&1 | tail -40 >&2
+    exit 1
+  fi
+  health="$(probe health 2>/dev/null || true)"
+  case "$health" in
+    ok*) break ;;
+  esac
+  sleep 1
+done
+case "$health" in
+  ok*) ;;
+  *)
+    echo "FAIL: /api/health did not report ok within ${BOOT_TIMEOUT}s (last: '${health:-no answer}'). Container log:" >&2
+    docker logs "$APP_CONTAINER" 2>&1 | tail -40 >&2
+    exit 1
+    ;;
+esac
+echo "health: ${health%%$'\t'*}, commit ${health#*$'\t'}"
+echo "migrations: $(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -c \
+  "select count(*) from drizzle.__drizzle_migrations") applied (the dump's, plus any the image is newer by)"
+
+# 9. The board, through the server. The key is minted here, in the restored
+#    database only: an agent that has a finalized local run log gets a fresh
+#    random token whose SHA-256 goes into agent_api_keys, exactly as the
+#    server stores its own keys, on behalf of an active user member of its
+#    company (the server refuses agent keys with no responsible user). Nothing
+#    valid on the source is created or used. Then one of that agent's own run logs, served by the server that
+#    owns it: the file the digest check verified on disk, read back the way
+#    the UI reads it.
+step "sign in and read the board through the restored server"
+smoke_agent="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -F "$(printf '\t')" -c \
+  "select r.agent_id, a.company_id, r.id, m.principal_id
+     from heartbeat_runs r
+     join agents a on a.id = r.agent_id
+     join lateral (
+       select principal_id from company_memberships
+        where company_id = a.company_id and principal_type = 'user' and status = 'active'
+        order by (membership_role = 'owner') desc, created_at limit 1
+     ) m on true
+    where r.log_store = 'local_file' and r.log_ref is not null
+      and r.log_sha256 is not null and r.log_bytes > 0
+      and a.status not in ('terminated', 'pending_approval')
+    order by r.created_at desc limit 1")"
+if [ -z "$smoke_agent" ]; then
+  echo "FAIL: no active agent with a finalized local run log and an active user in its company to sign in as" >&2
+  exit 1
+fi
+agent_id="$(echo "$smoke_agent" | cut -f1)"
+run_id="$(echo "$smoke_agent" | cut -f3)"
+SMOKE_KEY="restore-smoke-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+printf "insert into agent_api_keys (agent_id, company_id, name, key_hash, responsible_user_id)
+  values ('%s', '%s', 'restore-smoke', encode(sha256(convert_to('%s', 'UTF8')), 'hex'), '%s');\n" \
+  "$agent_id" "$(echo "$smoke_agent" | cut -f2)" "$SMOKE_KEY" "$(echo "$smoke_agent" | cut -f4)" \
+  | docker exec -i "$CONTAINER" psql -U paperclip -d paperclip -q --no-psqlrc -v ON_ERROR_STOP=1 >/dev/null
+
+me="$(probe me)"
+agent_id="${me%%$'\t'*}"
+rest="${me#*$'\t'}"
+company_id="${rest%%$'\t'*}"
+agent_name="${rest#*$'\t'}"
+echo "signed in as agent '$agent_name' ($agent_id), company $company_id"
+
+board="$(probe company "$company_id")"
+company_name="${board%%$'\t'*}"
+rest="${board#*$'\t'}"
+echo "company '$company_name': ${rest%%$'\t'*} agents, ${rest#*$'\t'} issues listed"
+
+served="$(probe log "$run_id")"
+echo "run $run_id: log served through the API, ${served%%$'\t'*} bytes read, first event at $(echo "$served" | cut -f2) on $(echo "$served" | cut -f3), NDJSON parses"
 
 echo
-echo "RESTORE SMOKE PASSED (database + data directory)"
+echo "RESTORE SMOKE PASSED (database + data directory + server boots + board served)"
