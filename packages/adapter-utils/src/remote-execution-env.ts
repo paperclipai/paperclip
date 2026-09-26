@@ -42,33 +42,91 @@ export const ENV_AGGREGATE_MAX_BYTES = 1024 * 1024;
 // in every real deployment.
 const ENV_AGGREGATE_PROTECTED_KEYS = new Set(["PATH", "HOME"]);
 
-export function pruneOversizedLaunchEnv(
+export function pruneOversizedLaunchEnvWithReport(
   env: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
+): { env: NodeJS.ProcessEnv; dropped: string[] } {
   const entries = Object.entries(env).filter(
     (entry): entry is [string, string] => typeof entry[1] === "string",
   );
+  const dropped: string[] = [];
   const kept: NodeJS.ProcessEnv = {};
+  // execve counts UTF-8 bytes, not JavaScript characters: account in bytes.
   let totalBytes = 0;
   for (const [key, value] of entries) {
-    if (Buffer.byteLength(value) > ENV_SINGLE_VALUE_MAX_BYTES) continue;
+    const valueBytes = Buffer.byteLength(value);
+    if (valueBytes > ENV_SINGLE_VALUE_MAX_BYTES) {
+      dropped.push(key);
+      continue;
+    }
     kept[key] = value;
-    totalBytes += key.length + value.length + 1;
+    totalBytes += Buffer.byteLength(key) + valueBytes + 1;
   }
-  if (totalBytes <= ENV_AGGREGATE_MAX_BYTES) return kept;
-  const dropOrder = entries
-    .filter(([key, value]) => key in kept && !ENV_AGGREGATE_PROTECTED_KEYS.has(key))
+  if (totalBytes > ENV_AGGREGATE_MAX_BYTES) {
+    const dropOrder = entries
+      .filter(
+        ([key, value]) =>
+          key in kept && !ENV_AGGREGATE_PROTECTED_KEYS.has(key),
+      )
+      .sort(
+        (a, b) =>
+          Buffer.byteLength(b[1]) - Buffer.byteLength(a[1]) ||
+          (a[0] < b[0] ? -1 : 1),
+      );
+    for (const [key, value] of dropOrder) {
+      if (totalBytes <= ENV_AGGREGATE_MAX_BYTES) break;
+      delete kept[key];
+      dropped.push(key);
+      totalBytes -= Buffer.byteLength(key) + Buffer.byteLength(value) + 1;
+    }
+  }
+  return { env: kept, dropped };
+}
+
+export function pruneOversizedLaunchEnv(
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return pruneOversizedLaunchEnvWithReport(env).env;
+}
+
+// The SSH lanes fold the whole remote environment into a single `sh -c`
+// argv string, so the assembled env block has the per-string limit too.
+// Budget the assembled `KEY=VALUE` block (quoting included) so several
+// medium values cannot jointly exceed the per-argument exec limit.
+export const SSH_REMOTE_ENV_MAX_BYTES = 64 * 1024;
+
+export function budgetSshRemoteEnvWithReport(
+  env: Record<string, string> | NodeJS.ProcessEnv,
+): { env: Record<string, string>; dropped: string[] } {
+  const { env: pruned, dropped } = pruneOversizedLaunchEnvWithReport(env);
+  const kept: Record<string, string> = {};
+  let totalBytes = 0;
+  const candidates = Object.entries(pruned)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    // Keep the smallest entries first so the most configuration survives.
     .sort(
       (a, b) =>
-        Buffer.byteLength(b[1]) - Buffer.byteLength(a[1]) ||
+        Buffer.byteLength(`${a[0]}=${a[1]}`) -
+          Buffer.byteLength(`${b[0]}=${b[1]}`) ||
         (a[0] < b[0] ? -1 : 1),
     );
-  for (const [key, value] of dropOrder) {
-    if (totalBytes <= ENV_AGGREGATE_MAX_BYTES) break;
-    delete kept[key];
-    totalBytes -= key.length + value.length + 1;
+  for (const [key, value] of candidates) {
+    // shellQuote wraps the value in single quotes and escapes embedded
+    // quotes; ~8 bytes of overhead per entry bounds the worst case.
+    const entryBytes = Buffer.byteLength(`${key}=${value}`) + 8;
+    if (totalBytes + entryBytes > SSH_REMOTE_ENV_MAX_BYTES) {
+      dropped.push(key);
+      continue;
+    }
+    kept[key] = value;
+    totalBytes += entryBytes;
   }
-  return kept;
+  return { env: kept, dropped };
+}
+
+export function budgetSshRemoteEnv(
+  env: Record<string, string> | NodeJS.ProcessEnv,
+): Record<string, string> {
+  return budgetSshRemoteEnvWithReport(env).env;
 }
 
 export function sanitizeRemoteExecutionEnv(

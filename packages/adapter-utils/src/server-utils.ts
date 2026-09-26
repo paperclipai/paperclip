@@ -7,13 +7,18 @@ import path from "node:path";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
   pruneOversizedLaunchEnv,
+  pruneOversizedLaunchEnvWithReport,
   sanitizeRemoteExecutionEnv,
 } from "./remote-execution-env.js";
 
 export {
   ENV_AGGREGATE_MAX_BYTES,
   ENV_SINGLE_VALUE_MAX_BYTES,
+  SSH_REMOTE_ENV_MAX_BYTES,
+  budgetSshRemoteEnv,
+  budgetSshRemoteEnvWithReport,
   pruneOversizedLaunchEnv,
+  pruneOversizedLaunchEnvWithReport,
 } from "./remote-execution-env.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
@@ -4627,10 +4632,23 @@ export async function runChildProcess(
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = pruneOversizedLaunchEnv({
+    const {
+      env: prunedRawMerged,
+      dropped: droppedEnvKeys,
+    } = pruneOversizedLaunchEnvWithReport({
       ...sanitizeInheritedPaperclipEnv(process.env),
       ...opts.env,
     });
+    if (droppedEnvKeys.length) {
+      onLogError(
+        new Error(
+          `oversized launch env guard dropped ${droppedEnvKeys.length} variable(s): ${droppedEnvKeys.join(", ")}`,
+        ),
+        runId,
+        "runChildProcess env guard dropped oversized environment values",
+      );
+    }
+    const rawMerged: NodeJS.ProcessEnv = prunedRawMerged;
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".

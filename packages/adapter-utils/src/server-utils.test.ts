@@ -24,6 +24,8 @@ import {
   ENV_AGGREGATE_MAX_BYTES,
   ENV_SINGLE_VALUE_MAX_BYTES,
   pruneOversizedLaunchEnv,
+  pruneOversizedLaunchEnvWithReport,
+  budgetSshRemoteEnvWithReport,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -695,7 +697,7 @@ describe("runChildProcess", () => {
 
   it("prunes oversized values while protecting PATH and HOME in the aggregate pass", () => {
     const protectedPath = "/usr/bin";
-    const pruned = pruneOversizedLaunchEnv({
+    const { env: pruned, dropped } = pruneOversizedLaunchEnvWithReport({
       PATH: protectedPath,
       HOME: "/home/agent",
       FILLER_A: "a".repeat(600_000),
@@ -706,6 +708,7 @@ describe("runChildProcess", () => {
     expect(pruned.HOME).toBe("/home/agent");
     expect(pruned.FILLER_A).toBeUndefined();
     expect(pruned.FILLER_B).toBeUndefined();
+    expect(dropped.sort()).toEqual(["FILLER_A", "FILLER_B"]);
   });
 
   it("prunes any single env value over the byte budget regardless of key prefix", () => {
@@ -718,6 +721,38 @@ describe("runChildProcess", () => {
     expect(pruned.UNPREFIXED_BIG).toBeUndefined();
     expect(pruned.MULTI_BYTE).toBeUndefined();
     expect(pruned.SMALL).toBe("kept");
+  });
+
+  it("counts multibyte values in UTF-8 bytes for the aggregate budget", () => {
+    // 18 values at 60,000 UTF-8 bytes each: character counting would see
+    // 540,000 chars and keep everything; byte counting sees 1,080,000 bytes.
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 18; i++) env[`MB_VAR_${i}`] = "é".repeat(30_000);
+
+    const { env: pruned, dropped } = pruneOversizedLaunchEnvWithReport(env);
+
+    expect(dropped.length).toBeGreaterThan(0);
+    const totalBytes = Object.entries(pruned).reduce(
+      (sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(typeof value === "string" ? value : "") + 1,
+      0,
+    );
+    expect(totalBytes).toBeLessThanOrEqual(ENV_AGGREGATE_MAX_BYTES);
+  });
+
+  it("bounds the assembled SSH remote env block under the per-argument limit", () => {
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 5; i++) env[`SSH_VAR_${i}`] = "z".repeat(40_000);
+
+    const { env: kept, dropped } = budgetSshRemoteEnvWithReport(env);
+
+    // Each value is under the single-value budget but five of them folded
+    // into one sh -c argv would exceed the 128 KiB per-argument limit.
+    expect(Object.keys(kept).length).toBeLessThan(5);
+    expect(dropped.length).toBeGreaterThan(0);
+    const assembled = Object.entries(kept)
+      .map(([key, value]) => `${key}='${value}'`)
+      .join(" ");
+    expect(Buffer.byteLength(assembled)).toBeLessThan(131_072);
   });
 
   it("does not arm a timeout when timeoutSec is 0", async () => {
