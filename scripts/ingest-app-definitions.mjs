@@ -936,6 +936,7 @@ const categoryBySlug = {
   resend: "communication",
   sanity: "content",
   sentry: "developer",
+  serply: "data",
   similarweb: "analytics",
   stripe: "commerce",
   supabase: "data",
@@ -1022,6 +1023,12 @@ const apiKeySpec = {
     placeholder: "Paste the base64-encoded key ID and secret",
   },
   sanity: { name: "Authorization", prefix: "Bearer ", placeholder: "sk..." },
+  // Serply's hosted MCP server takes the raw key in X-Api-Key, not a bearer.
+  serply: {
+    name: "X-Api-Key",
+    prefix: null,
+    placeholder: "Paste your Serply API key",
+  },
   similarweb: {
     name: "api-key",
     prefix: null,
@@ -1367,6 +1374,17 @@ const specialMethodsFor = (entry) => {
         tenantFields,
         warnings: [entry.prerequisite, warning],
         requiredResourceFilters: ["project"],
+      }),
+    ];
+  }
+  if (entry.slug === "serply") {
+    // Keys are issued in the Serply dashboard after sign-up, not in the docs.
+    return [
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        consoleLinks: {
+          keys: "https://app.serply.io/users/sign_up",
+          docs: entry.docsUrl,
+        },
       }),
     ];
   }

@@ -354,6 +354,12 @@
       "localAsset": "/brands/apps/shopify.svg"
     },
     {
+      "slug": "serply",
+      "provider": "Serply",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/serply.svg"
+    },
+    {
       "slug": "similarweb",
       "provider": "Similarweb",
       "catalogVisible": false,
