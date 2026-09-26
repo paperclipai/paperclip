@@ -86,6 +86,24 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
   });
 
+  it("names the path that actually works when the header is already present", () => {
+    // TES-43: the run header was sent on every request, including the one that
+    // succeeded. Telling the agent to resend the header it already sent, and
+    // naming only a comment path that is refused by the same code, is a dead end.
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
+    expect(copy.sanctionedPath).toContain("checkout");
+    expect(copy.sanctionedPath).toContain("documents");
+  });
+
+  it("does not assert the request arrived without a run", () => {
+    // The denial also fires when the run is present and correct but is not bound
+    // to a source issue. Asserting a missing run sends an operator hunting for
+    // a run id that was never absent.
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
+    expect(copy.description).not.toContain("arrived without a valid run");
+    expect(copy.description).toContain("could not be attributed");
+  });
+
   it("tells a spoof attempt that the write itself was fine", () => {
     const copy = describeIssueWriteDenial("issue_write_attribution_spoof_rejected", {
       actorLabel: "Fable",

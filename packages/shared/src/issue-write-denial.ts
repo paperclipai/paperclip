@@ -251,14 +251,23 @@ export function describeIssueWriteDenial(
         tone: "boundary",
         boundary: "Heartbeat run context",
         title: "Cross-issue writes need a run to attribute them to",
+        // This denial fires in two distinct situations, so the copy must not
+        // assert either one: the request carried no run id, or it carried a run
+        // that has no source issue (neither a snapshot issue nor a checkout on
+        // the target). Claiming "arrived without a valid run" sent an operator
+        // hunting for a run id that was present and correct.
         description:
           `Every agent comment and task update is attributed to a heartbeat run so the ` +
           `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
-        whoCanAct: `${actor}, once the request carries its own run id.`,
+          `This request could not be attributed to a run that is already bound to a ` +
+          `source issue, so it could not be contained.`,
+        whoCanAct: `${actor}, once the request is attributable to its own run.`,
         sanctionedPath:
-          `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
+          `Check out the issue you are writing to (\`POST /api/issues/{id}/checkout\`) so the ` +
+          `run is bound to it, or send the \`X-Paperclip-Run-Id\` header with your current ` +
+          `run (\`$PAPERCLIP_RUN_ID\`). Comments are refused with this same code, so a ` +
+          `document write (\`PUT /api/issues/{id}/documents/{key}\`) can be used to record ` +
+          `the evidence in the meantime.`,
 
       };
 

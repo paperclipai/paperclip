@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -41,6 +41,31 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
   return null;
+}
+
+/**
+ * Attributes a write to an issue from the issue's own server-written run
+ * binding, for runs whose context snapshot carries no issue at all.
+ *
+ * A timer or on-demand run is dispatched with no source issue, so
+ * `readRunSourceIssueId` returns null and the guard used to refuse every comment
+ * and update — including writes to the agent's own board work, which is not
+ * cross-issue influence. `checkout` is the platform's own run-to-issue binding
+ * and it writes `issues.checkoutRunId` / `issues.executionRunId`, not the
+ * snapshot, so a checkout the server accepted could never satisfy the guard.
+ * That disagreement is the defect this closes.
+ *
+ * The binding is server-written, so a mismatch means the run never checked out
+ * and attribution must not be borrowed from whoever holds the lock.
+ */
+export function resolveIssueBoundSourceIssueId(
+  binding: { checkoutRunId?: string | null; executionRunId?: string | null } | null | undefined,
+  runId: string,
+  targetIssueId: string,
+): string | null {
+  if (!binding) return null;
+  if (binding.checkoutRunId !== runId && binding.executionRunId !== runId) return null;
+  return targetIssueId;
 }
 
 export function evaluateCrossIssueInfluenceLimit(input: {
@@ -109,7 +134,20 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    const sourceIssueId =
+      readRunSourceIssueId(run.contextSnapshot) ??
+      (await tx
+        .select({
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.targetIssueId),
+          eq(issues.companyId, input.companyId),
+        ))
+        .for("update")
+        .then((rows) => resolveIssueBoundSourceIssueId(rows[0] ?? null, input.runId, input.targetIssueId)));
     if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
       sourceIssueId === input.targetIssueId ||

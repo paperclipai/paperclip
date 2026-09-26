@@ -5,11 +5,13 @@ import {
   crossIssueInfluenceLimitError,
   evaluateCrossIssueInfluenceLimit,
   observeCrossIssueInfluence,
+  resolveIssueBoundSourceIssueId,
 } from "../services/cross-issue-influence-limit.ts";
 
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  issueBinding: Record<string, unknown> | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -22,16 +24,25 @@ function counterDb(
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          // The guard takes two row locks: first the heartbeat run, then the
+          // target issue's server-written run binding. Only the first selects
+          // carry the run columns.
+          const selectsRun = Object.keys(selection).includes("contextSnapshot");
           return {
             for: () => ({
-              then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
-                id: "11111111-1111-4111-8111-111111111111",
-                companyId: "22222222-2222-4222-8222-222222222222",
-                agentId: "33333333-3333-4333-8333-333333333333",
-                responsibleUserId: "user-1",
-                contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
-                ...runOverrides,
-              }]),
+              then: (resolve: (rows: unknown[]) => unknown) => {
+                if (selectsRun) {
+                  return resolve(runOverrides === null ? [] : [{
+                    id: "11111111-1111-4111-8111-111111111111",
+                    companyId: "22222222-2222-4222-8222-222222222222",
+                    agentId: "33333333-3333-4333-8333-333333333333",
+                    responsibleUserId: "user-1",
+                    contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
+                    ...runOverrides,
+                  }]);
+                }
+                return resolve(issueBinding === null ? [{ checkoutRunId: null, executionRunId: null }] : [issueBinding]);
+              },
             }),
           };
         },
@@ -208,6 +219,65 @@ describe("cross-issue influence limit rollout", () => {
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
     })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+    expect(fake.inserted).toEqual([]);
+  });
+});
+
+describe("resolveIssueBoundSourceIssueId", () => {
+  const RUN = "11111111-1111-4111-8111-111111111111";
+  const ISSUE = "22222222-2222-4222-8222-222222222222";
+  const OTHER_RUN = "33333333-3333-4333-8333-333333333333";
+  const RUN_CALL = {
+    companyId: "22222222-2222-4222-8222-222222222222",
+    runId: RUN,
+    agentId: "33333333-3333-4333-8333-333333333333",
+    targetIssueId: ISSUE,
+    kind: "comment",
+  } as const;
+
+  it("attributes the write when the run holds the checkout", () => {
+    expect(resolveIssueBoundSourceIssueId({ checkoutRunId: RUN, executionRunId: RUN }, RUN, ISSUE)).toBe(ISSUE);
+  });
+
+  it("attributes the write when only the checkout is bound", () => {
+    expect(resolveIssueBoundSourceIssueId({ checkoutRunId: RUN, executionRunId: null }, RUN, ISSUE)).toBe(ISSUE);
+  });
+
+  it("attributes the write when only the execution run is bound", () => {
+    expect(resolveIssueBoundSourceIssueId({ checkoutRunId: null, executionRunId: RUN }, RUN, ISSUE)).toBe(ISSUE);
+  });
+
+  it("refuses when a different run owns the issue", () => {
+    // The binding is server-written, so a mismatch means this run never checked
+    // out. Attribution must not be borrowed from whoever holds the lock.
+    expect(
+      resolveIssueBoundSourceIssueId({ checkoutRunId: OTHER_RUN, executionRunId: OTHER_RUN }, RUN, ISSUE),
+    ).toBeNull();
+  });
+
+  it("refuses when the issue has no run binding at all", () => {
+    expect(resolveIssueBoundSourceIssueId(null, RUN, ISSUE)).toBeNull();
+    expect(resolveIssueBoundSourceIssueId({ checkoutRunId: null, executionRunId: null }, RUN, ISSUE)).toBeNull();
+  });
+
+  // TES-43: a timer run is dispatched with no source issue, so the snapshot
+  // carries nothing. Before this fallback the guard refused every comment and
+  // status write for the whole fleet even after the run's own checkout was
+  // accepted — the checkout path is the one that has to be exercised.
+  it("admits a checkout-bound run whose snapshot names no issue", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, { checkoutRunId: RUN, executionRunId: RUN });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, RUN_CALL)).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("still refuses a snapshot-less run that never checked the issue out", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, { checkoutRunId: OTHER_RUN, executionRunId: OTHER_RUN });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, RUN_CALL)).rejects.toMatchObject({
       status: 403,
       details: { code: "cross_issue_influence_run_context_required" },
     });

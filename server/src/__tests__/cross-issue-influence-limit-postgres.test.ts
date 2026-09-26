@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -32,6 +33,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -112,5 +114,125 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+  });
+
+  // TES-43. A timer run is dispatched with no source issue, so the snapshot
+  // carries nothing. Against a real database the run lock, the issue lookup, and
+  // the `.for("update")` locking all have to hold, not just the pure helper.
+  it("attributes a checkout-bound run whose snapshot names no issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    // Exactly what svc.checkout writes for the run that owns this issue.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "TES-43",
+      title: "checkout-bound heartbeat run",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+    });
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: issueId,
+      targetIssueIdentifier: "TES-43",
+      kind: "comment",
+    })).resolves.toBeNull();
+  });
+
+  it("still refuses a snapshot-less run that never checked the issue out", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const otherRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    // Another run holds the lock. Attribution must not be borrowed from it.
+    // The FK on issues.checkout_run_id requires it to be a real run row.
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "TES-43",
+      title: "issue checked out by a different run",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: otherRunId,
+      executionRunId: otherRunId,
+    });
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: issueId,
+      targetIssueIdentifier: "TES-43",
+      kind: "comment",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
   });
 });
