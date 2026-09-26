@@ -889,8 +889,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   async function seedStrandedIssueFixture(input: {
-    status: "todo" | "in_progress";
+    status: "todo" | "in_progress" | "blocked";
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
+    unblockDescriptor?: Record<string, unknown> | null;
+    blockedTransitionAt?: Date | null;
     retryReason?:
       | "assignment_recovery"
       | "issue_continuation_needed"
@@ -1028,6 +1030,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         title: "Recover stranded assigned work",
         status: input.status,
         priority: "medium",
+        unblockDescriptor: (input.unblockDescriptor ?? null) as never,
+        blockedTransitionAt: (input.blockedTransitionAt ?? null) as never,
         assigneeAgentId: input.assignToUser ? null : agentId,
         assigneeUserId: input.assignToUser ? "user-1" : null,
         checkoutRunId: input.status === "in_progress" ? runId : null,
@@ -13636,6 +13640,102 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       owner: "board",
       action: recoveryAction.nextAction,
     });
+    expect(issue?.blockedTransitionAt).toBeInstanceOf(Date);
+  });
+
+  async function seedExhaustedDispositionRepair(input: {
+    unblockDescriptor?: Record<string, unknown> | null;
+    blockedTransitionAt?: Date | null;
+  }) {
+    // `escalateDispositionRepair` is reached from `reconcileActiveRecoveryActions`
+    // for a card that is ALREADY blocked: the sweep's candidate query filters to
+    // todo/in_progress/in_review, so it never selects a blocked card. The repair
+    // action is therefore the entry point, and it is queried with no status
+    // filter at all - its only gate is done/cancelled.
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "succeeded",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+      unblockDescriptor: input.unblockDescriptor ?? null,
+      blockedTransitionAt: input.blockedTransitionAt ?? null,
+    });
+    // Exhaust the bounded repair budget so the next reconcile escalates rather
+    // than queueing another attempt for the same unchanged source state.
+    const [action] = await db
+      .insert(issueRecoveryActions)
+      .values({
+        companyId,
+        sourceIssueId: issueId,
+        kind: "deliberate_wait_without_target",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: agentId,
+        previousOwnerAgentId: agentId,
+        returnOwnerAgentId: agentId,
+        cause: "deliberate_wait_without_target",
+        fingerprint: `disposition_repair:v1:${issueId}`,
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          retryAgentId: agentId,
+          attempt: 5,
+          maxAttempts: 5,
+          baseBackoffMs: 0,
+          jitterMs: 0,
+        },
+        nextAction: "Inspect the original run and choose a recovery action.",
+        attemptCount: 5,
+        maxAttempts: 5,
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      })
+      .returning();
+    return { companyId, agentId, issueId, runId, action: action! };
+  }
+
+  it("does not displace an existing agent-owned unblock descriptor on the disposition-repair block", async () => {
+    // KEE-250 follow-up. `escalateDispositionRepair` used to write a board-owned
+    // descriptor unconditionally. `deliverAgentUnblockNotification` wakes
+    // agent-owned descriptors only, so downgrading one silently stopped waking
+    // the agent who was already responsible.
+    const agentOwnedDescriptor = {
+      owner: { agentId: randomUUID() },
+      action: "Original owner must resolve the checkout conflict.",
+    };
+    const { issueId } = await seedExhaustedDispositionRepair({
+      unblockDescriptor: agentOwnedDescriptor,
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    // The card is still blocked, and still transitioned, so it remains findable
+    // by board attention; it simply must not overwrite the existing owner path.
+    expect(issue?.blockedTransitionAt).toBeInstanceOf(Date);
+    expect(issue?.unblockDescriptor).toEqual(agentOwnedDescriptor);
+  });
+
+  it("still attaches a board-owned descriptor on the disposition-repair block when the card has none", async () => {
+    const { issueId } = await seedExhaustedDispositionRepair({});
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    // Guarding must not reintroduce the original defect: a `blocked` card with
+    // no blocker and no descriptor is invisible to every view and owner queue.
+    expect(issue?.unblockDescriptor).toMatchObject({ owner: "board" });
     expect(issue?.blockedTransitionAt).toBeInstanceOf(Date);
   });
 

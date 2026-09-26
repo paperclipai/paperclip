@@ -36,6 +36,7 @@ import {
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount, executionRetryAttemptCount, accountingForScheduledRetry } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
+import { boardDescriptorForBlock } from "./recovery/blocked-descriptor.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
@@ -105,7 +106,6 @@ import {
   type IssueExecutionMonitorClearReason,
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
-  type IssueUnblockDescriptor,
   type RequestConfirmationResult,
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
@@ -26935,6 +26935,7 @@ export function heartbeatService(
               assigneeAgentId: issues.assigneeAgentId,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
+              unblockDescriptor: issues.unblockDescriptor,
               createdAt: issues.createdAt,
             })
             .from(issues)
@@ -27613,6 +27614,16 @@ export function heartbeatService(
                 `- Reason: ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE}`,
                 `- Next action: ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION}`,
               ].join("\n");
+              // Do not displace a valid descriptor this path did not create.
+              // The unblockable-card guarantee still holds either way: the card
+              // is still `blocked`, `blockedTransitionAt` is still recorded (the
+              // transition really is happening, and board attention requires it),
+              // and when an agent- or user-owned descriptor survives it remains
+              // the wake route to whoever is already responsible.
+              const worktreeUnblockDescriptor = boardDescriptorForBlock({
+                existing: issue.unblockDescriptor,
+                action: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+              });
               await tx
                 .update(issues)
                 .set({
@@ -27622,10 +27633,9 @@ export function heartbeatService(
                   // a descriptor and a blockedTransitionAt, the card would be
                   // blocked with no way for anything to ever find or wake it
                   // (board attention requires isProspectiveBlockedTransition).
-                  unblockDescriptor: {
-                    owner: "board",
-                    action: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
-                  } satisfies IssueUnblockDescriptor,
+                  ...(worktreeUnblockDescriptor
+                    ? { unblockDescriptor: worktreeUnblockDescriptor }
+                    : {}),
                   blockedTransitionAt: now,
                   checkoutRunId: null,
                   executionRunId: null,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boardDescriptorForBlock } from "./blocked-descriptor.js";
+import { boardDescriptorForBlock, repairedBlockedTransitionAt } from "./blocked-descriptor.js";
 
 /**
  * A recovery path that creates a `blocked` card must attach a descriptor, or the
@@ -47,5 +47,38 @@ describe("boardDescriptorForBlock", () => {
       owner: "board",
       action: "Padded action.",
     });
+  });
+});
+
+/**
+ * `issuesSvc.update` stamps `blockedTransitionAt` only on a real
+ * `not blocked -> blocked` transition. A card that is already `blocked` with a
+ * null or pre-rollout timestamp keeps it, and `isProspectiveBlockedTransition`
+ * then returns false, so the card stays invisible to board attention.
+ */
+describe("repairedBlockedTransitionAt", () => {
+  const now = new Date("2026-09-26T00:00:00.000Z");
+
+  it("stamps a card that is blocked with no timestamp", () => {
+    expect(repairedBlockedTransitionAt({ status: "blocked", blockedTransitionAt: null, now })).toEqual(now);
+  });
+
+  it("stamps a card whose timestamp predates the routable rollout", () => {
+    expect(
+      repairedBlockedTransitionAt({
+        status: "blocked",
+        blockedTransitionAt: new Date("2026-01-01T00:00:00.000Z"),
+        now,
+      }),
+    ).toEqual(now);
+  });
+
+  it("leaves a card that is blocked with a valid timestamp alone", () => {
+    const valid = new Date("2026-09-01T00:00:00.000Z");
+    expect(repairedBlockedTransitionAt({ status: "blocked", blockedTransitionAt: valid, now })).toBeNull();
+  });
+
+  it("returns null for a card that is not blocked, so a real transition keeps its own stamp", () => {
+    expect(repairedBlockedTransitionAt({ status: "in_progress", blockedTransitionAt: null, now })).toBeNull();
   });
 });

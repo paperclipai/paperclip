@@ -22,7 +22,7 @@ import {
   type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
-import { boardDescriptorForBlock } from "./recovery/blocked-descriptor.js";
+import { boardDescriptorForBlock, repairedBlockedTransitionAt } from "./recovery/blocked-descriptor.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -499,12 +499,28 @@ export async function settleUnrecoverableExecutions(
             existing: task.unblockDescriptor,
             action: unblockAction,
           });
+          // This is a raw `tx.update(issues)`, so it bypasses the stamp and clear
+          // logic in `issuesSvc.update`. A card that is already `blocked` with a
+          // null or pre-rollout `blockedTransitionAt` - exactly what the
+          // pre-KEE-250 recovery path produced - would keep that value, and
+          // `isProspectiveBlockedTransition` would then return false, leaving a
+          // card that is `blocked` with a descriptor but still invisible to
+          // board attention. That is the original defect of this issue, so the
+          // timestamp is repaired here too.
+          const repairedTransitionAt = repairedBlockedTransitionAt({
+            status: task.status,
+            blockedTransitionAt: task.blockedTransitionAt,
+            now,
+          });
           const [projected] = await tx
             .update(issues)
             .set({
               status: "blocked",
               ...(unblockDescriptor ? { unblockDescriptor } : {}),
-              blockedTransitionAt: task.status === "blocked" ? task.blockedTransitionAt : now,
+              blockedTransitionAt:
+                task.status === "blocked"
+                  ? (repairedTransitionAt ?? task.blockedTransitionAt)
+                  : now,
               executionRunId: null,
               checkoutRunId: null,
               updatedAt: now,

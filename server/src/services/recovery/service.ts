@@ -6,6 +6,7 @@ import {
   LEGACY_DISPOSITION_REPAIR_INSTRUCTION, type LegacyDispositionEpisode,
 } from "./legacy-continuation.js";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
+import { boardDescriptorForBlock, repairedBlockedTransitionAt } from "./blocked-descriptor.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import {
@@ -35,7 +36,6 @@ import {
   requiresExecutionReconciliation,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
-  type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -2735,13 +2735,25 @@ export function recoveryService(
   }) {
     // Same invisible-card hazard as the primary escalation path below: a
     // `blocked` card with no blocker and no unblockDescriptor is unfindable.
+    // Same displacement hazard as well: never overwrite a valid descriptor
+    // this path did not create.
+    const strandedUnblockDescriptor = boardDescriptorForBlock({
+      existing: input.issue.unblockDescriptor,
+      action:
+        "Board operator: this stranded-recovery issue's own recovery attempt failed. Inspect the run evidence, then explicitly retry, reassign, or intentionally resolve the task.",
+    });
+    // This path can also run against an already-blocked card, in which case
+    // `issuesSvc.update` does not stamp `blockedTransitionAt` and the card stays
+    // invisible to board attention.
+    const strandedBlockedTransitionAt = repairedBlockedTransitionAt({
+      status: input.issue.status,
+      blockedTransitionAt: input.issue.blockedTransitionAt,
+      now: new Date(),
+    });
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
-      unblockDescriptor: {
-        owner: "board",
-        action:
-          "Board operator: this stranded-recovery issue's own recovery attempt failed. Inspect the run evidence, then explicitly retry, reassign, or intentionally resolve the task.",
-      } satisfies IssueUnblockDescriptor,
+      ...(strandedUnblockDescriptor ? { unblockDescriptor: strandedUnblockDescriptor } : {}),
+      ...(strandedBlockedTransitionAt ? { blockedTransitionAt: strandedBlockedTransitionAt } : {}),
     });
     if (!updated) return null;
 
@@ -3592,13 +3604,31 @@ export function recoveryService(
         ),
       );
 
+    // A card already `blocked` with a valid descriptor is owned by someone
+    // else. Do not displace it with a board-owned descriptor, or the agent- or
+    // user-owned unblock path is lost and whoever is already responsible stops
+    // being woken. This path is reachable for an already-blocked card:
+    // `reconcileDispositionRepair` returns early only for done/cancelled.
+    const dispositionUnblockDescriptor = boardDescriptorForBlock({
+      existing: input.issue.unblockDescriptor,
+      action:
+        "Inspect the evidence and choose whether to repair, retry the original owner, explicitly reassign, or resolve the source issue.",
+    });
+    // This path can run against a card that is *already* blocked, in which case
+    // `issuesSvc.update` does not stamp `blockedTransitionAt`. Without it
+    // `isProspectiveBlockedTransition` stays false and the card is invisible to
+    // board attention even with a valid descriptor.
+    const dispositionBlockedTransitionAt = repairedBlockedTransitionAt({
+      status: input.issue.status,
+      blockedTransitionAt: input.issue.blockedTransitionAt,
+      now,
+    });
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
-      unblockDescriptor: {
-        owner: "board",
-        action:
-          "Inspect the evidence and choose whether to repair, retry the original owner, explicitly reassign, or resolve the source issue.",
-      } satisfies IssueUnblockDescriptor,
+      ...(dispositionUnblockDescriptor ? { unblockDescriptor: dispositionUnblockDescriptor } : {}),
+      ...(dispositionBlockedTransitionAt
+        ? { blockedTransitionAt: dispositionBlockedTransitionAt }
+        : {}),
     });
     if (!updated) return null;
     const sourceAssigneePreserved =
@@ -3958,9 +3988,16 @@ export function recoveryService(
     // Recovery must never create that state, so a board-owned descriptor
     // (carrying the same operator action already computed for the recovery
     // action) rides along on the same write that flips the status.
-    const unblockDescriptor: IssueUnblockDescriptor | null =
+    // The invisibility guard alone is not sufficient: this path must also not
+    // displace a valid descriptor it did not create, or the agent- or
+    // user-owned unblock path is severed and whoever is already responsible
+    // stops being woken. Both conditions must hold to write one.
+    const unblockDescriptor =
       !isProviderQuotaWait && blockerIds.length === 0
-        ? { owner: "board", action: recoveryAction.nextAction }
+        ? boardDescriptorForBlock({
+            existing: input.issue.unblockDescriptor,
+            action: recoveryAction.nextAction,
+          })
         : null;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
