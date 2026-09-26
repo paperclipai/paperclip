@@ -46,9 +46,15 @@ export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  "agy_local",
 ]);
 
 export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement> = {
+  agy_local: {
+    supportsSessionResume: true,
+    nativeContextManagement: "confirmed",
+    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+  },
   claude_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",

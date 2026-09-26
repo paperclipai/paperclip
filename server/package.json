@@ -53,6 +53,7 @@
     "@discordjs/ws": "1.2.3",
     "@grpc/grpc-js": "1.14.4",
     "@opentelemetry/api": "^1.9.0",
+    "@paperclipai/adapter-agy-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-cloud": "workspace:*",
