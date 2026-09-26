@@ -161,6 +161,11 @@ export type TaskWatchdogClassifierResult =
     liveIssueIds: string[];
   }
   | {
+    state: "complete";
+    reason: string;
+    includedIssueIds: string[];
+  }
+  | {
     state: "pending_first_run";
     reason: string;
     includedIssueIds: string[];
@@ -419,6 +424,17 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       reason: "At least one issue in the watched subtree has a live run, queued wake, or scheduled retry.",
       includedIssueIds: includedIds,
       liveIssueIds: uniqueLiveIssueIds,
+    };
+  }
+
+  // A subtree whose every issue is terminal has no stopped work to recover: the
+  // stopped-leaf set is empty by construction, so hashing it would mint a fresh
+  // fingerprint and re-wake the reusable watchdog forever.
+  if (included.every((issue) => isTerminalIssueStatus(issue.status))) {
+    return {
+      state: "complete",
+      reason: "Every issue in the watched subtree is terminal, so there is no stopped work to recover.",
+      includedIssueIds: includedIds,
     };
   }
 
@@ -1652,7 +1668,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       allowed: false as const,
       reason: classification.state === "stopped"
         ? "Task-watchdog review is stale because the watched subtree stop fingerprint changed; refresh the source state before mutating it."
-        : "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
+        : "Task-watchdog review is stale because the watched subtree is complete, or now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
       classification,
     };
   }
@@ -1750,6 +1766,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         live: 0,
         pendingFirstRun: 0,
         alreadyReviewed: 0,
+        complete: 0,
         skipped: 0,
         watchdogIssueIds: [] as string[],
       };
@@ -1769,6 +1786,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           result.pendingFirstRun += 1;
         } else if (evaluated.state === "already_reviewed") {
           result.alreadyReviewed += 1;
+        } else if (evaluated.state === "complete") {
+          result.complete += 1;
         } else {
           result.skipped += 1;
         }
@@ -1786,6 +1805,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         checked: 0,
         triggered: 0,
         pendingFirstRun: 0,
+        complete: 0,
         skipped: 0,
         watchdogIssueIds: [] as string[],
       };
@@ -1797,6 +1817,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           result.watchdogIssueIds.push(evaluated.watchdogIssueId);
         } else if (evaluated.state === "pending_first_run") {
           result.pendingFirstRun += 1;
+        } else if (evaluated.state === "complete") {
+          result.complete += 1;
         } else if (
           evaluated.state === "watchdog_review_open" ||
           evaluated.state === "watchdog_live" ||
