@@ -4537,12 +4537,46 @@ export function issueThreadInteractionService(
     },
 
     expireConnectionIntentsForOwnershipChange: async (issue: { id: string; companyId: string }) => {
-      const expired = await db.update(issueThreadInteractions).set({
-        status: "expired", result: { version: 1, outcome: "expired", reason: "The task was reassigned before the connection request was answered, so the AI account is still not connected. Reconnect the account or choose an available connection." },
-        resolvedAt: now(), updatedAt: now(),
-      }).where(and(eq(issueThreadInteractions.companyId, issue.companyId), eq(issueThreadInteractions.issueId, issue.id),
-        eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"))).returning();
-      if (expired.length) await db.delete(toolOauthStates).where(inArray(toolOauthStates.interactionId, expired.map((row) => row.id)));
+      // A pending connection_intent asks for either an AI account or a tool
+      // account, and the two leave different things broken. One bulk write gave
+      // every row the AI wording, so an expired Notion request told the reader
+      // the AI account was missing. Read the pending rows first and name the
+      // subject each row actually asked for.
+      const pending = await db
+        .select({ id: issueThreadInteractions.id, payload: issueThreadInteractions.payload })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "connection_intent"),
+          eq(issueThreadInteractions.status, "pending"),
+        ));
+      const expired: typeof issueThreadInteractions.$inferSelect[] = [];
+      for (const row of pending) {
+        const payload = row.payload as { purpose?: string; serviceName?: string } | null;
+        const subject = payload?.purpose === "ai"
+          ? "the AI account"
+          : `the ${payload?.serviceName?.trim() || "requested"} connection`;
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "expired",
+              reason: `The task was reassigned before the connection request was answered, so ${subject} is still not connected. Reconnect it or choose an available connection.`,
+            },
+            resolvedAt: now(),
+            updatedAt: now(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, row.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (updated) expired.push(updated);
+      }
+      if (expired.length) await db.delete(toolOauthStates).where(inArray(toolOauthStates.interactionId, expired.map((item) => item.id)));
       return expired;
     },
     expirePendingInteractionsForTerminalIssue: async (

@@ -201,7 +201,10 @@ export function ConnectionIntentInteractionBody({
               body:
                 resultOutcome === "superseded"
                   ? "This request was replaced. Use the latest connection card instead."
-                  : "This request is no longer active.",
+                  : // The server stores the reason an expiry happened and what to
+                    // do next; without it the card only says the request is gone.
+                    interaction.result?.reason?.trim()
+                    || "This request is no longer active.",
             }
           : null;
   const StatusIcon = status?.icon;

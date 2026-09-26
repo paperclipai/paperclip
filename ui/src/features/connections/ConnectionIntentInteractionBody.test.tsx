@@ -206,6 +206,18 @@ describe("ConnectionIntentInteractionBody states and audience", () => {
     expect(document.body.textContent).toContain(expected);
   });
 
+  it("shows the stored reason on an expired request", () => {
+    // The server writes what actually expired the request and what to do next.
+    // A generic "no longer active" line left the reader with no next step.
+    const reason = "The task was reassigned before the connection request was answered, so the Notion connection is still not connected. Reconnect it or choose an available connection.";
+    renderBody({
+      ...terminal("expired", "expired"),
+      result: { version: 1, outcome: "expired", reason },
+    } as ConnectionIntentInteraction);
+    expect(document.body.textContent).toContain(reason);
+    expect(document.body.textContent).not.toContain("This request is no longer active.");
+  });
+
   it("shows non-addressees only the waiting state and never loads setup", () => {
     renderBody(pendingConnectionIntentInteraction, "other-user");
     expect(document.body.textContent).toContain("Waiting for Carol");

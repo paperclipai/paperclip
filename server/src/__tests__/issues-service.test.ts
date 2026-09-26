@@ -641,6 +641,17 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         requestingAgentId: agentId, requestingAgentName: "ConnectionRequester", phase: "authorizing",
       },
     }).returning();
+    // A second pending request on the same issue asks for an AI account. The
+    // expiry must tell the two apart: only the AI one blocks the run.
+    const [aiInteraction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: issue.id, kind: "connection_intent", status: "pending",
+      createdByAgentId: agentId, addresseeUserId: "local-board",
+      payload: {
+        version: 1, purpose: "ai", serviceSlug: "connection:claude_local",
+        serviceName: "Claude", requestingAgentId: agentId,
+        requestingAgentName: "ConnectionRequester", phase: "authorizing",
+      },
+    }).returning();
     const oauthState = randomUUID();
     await db.insert(toolOauthStates).values({
       state: oauthState, companyId, connectionId: connection!.id, issueId: issue.id,
@@ -659,9 +670,18 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         result: {
           version: 1,
           outcome: "expired",
-          reason: "The task was reassigned before the connection request was answered, so the AI account is still not connected. Reconnect the account or choose an available connection.",
+          reason: "The task was reassigned before the connection request was answered, so the Notion connection is still not connected. Reconnect it or choose an available connection.",
         },
         resolvedAt: expect.any(Date),
+      })]);
+    await expect(db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, aiInteraction!.id)))
+      .resolves.toEqual([expect.objectContaining({
+        status: "expired",
+        result: {
+          version: 1,
+          outcome: "expired",
+          reason: "The task was reassigned before the connection request was answered, so the AI account is still not connected. Reconnect it or choose an available connection.",
+        },
       })]);
     await expect(db.select().from(toolOauthStates).where(eq(toolOauthStates.state, oauthState))).resolves.toEqual([]);
   });
