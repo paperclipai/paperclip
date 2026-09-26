@@ -112,32 +112,43 @@ export type TaskWatchdogStoppedLeaf = {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   blockerIssueIds: string[];
+  // Volatile ids, kept for the human-readable review comment/UI only.
   pendingInteractionIds: string[];
   pendingApprovalIds: string[];
+  // Stable, id-free human-wait signature used by the material fingerprint.
+  pendingInteractionKinds: string[];
+  pendingApproval: boolean;
   updatedAt: string;
   latestCommentAt: string | null;
   latestDocumentAt: string | null;
   latestWorkProductAt: string | null;
 };
 
-export type TaskWatchdogMaterialLeaf = Pick<
-  TaskWatchdogStoppedLeaf,
-  | "issueId"
-  | "status"
-  | "assigneeAgentId"
-  | "assigneeUserId"
-  | "blockerIssueIds"
-  | "pendingInteractionIds"
-  | "pendingApprovalIds"
->;
+// The material fingerprint deliberately captures human waits by their *stable*
+// shape — the kinds of pending interactions and whether an approval is pending —
+// rather than the volatile per-request ids. A leaf that stays "blocked on a
+// human" must keep the same fingerprint even when the agent (in response to a
+// watchdog review) resolves one interaction/approval and opens another of the
+// same kind. Keying on ids caused self-inflicted churn: every new question or
+// approval minted a fresh fingerprint and re-woke the agent on a leaf that was
+// already, validly, waiting on a human. See JAC-3989.
+export type TaskWatchdogMaterialLeaf = {
+  issueId: string;
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  blockerIssueIds: string[];
+  pendingInteractionKinds: string[];
+  pendingApproval: boolean;
+};
 
 export type TaskWatchdogWaitsByIssueId = Record<string, {
-  pendingInteractionIds: string[];
-  pendingApprovalIds: string[];
+  pendingInteractionKinds: string[];
+  pendingApproval: boolean;
 }>;
 
 export type TaskWatchdogStopSnapshot = {
-  version: 2;
+  version: 3;
   fingerprint: string;
   materialLeaves: TaskWatchdogMaterialLeaf[];
   waitsByIssueId: TaskWatchdogWaitsByIssueId;
@@ -147,6 +158,12 @@ type TaskWatchdogPendingInteractionsByIssueId = Record<string, Array<{
   id: string;
   kind: string | null;
 }>>;
+
+// Human-readable approval ids per issue, surfaced to the woken agent so it can
+// link back to the exact approval. Kept out of the fingerprint on purpose: the
+// fingerprint only tracks approval *presence* so re-requesting/revising an
+// approval (a new id) does not churn a leaf that is still waiting on a human.
+type TaskWatchdogPendingApprovalsByIssueId = Record<string, string[]>;
 
 export type TaskWatchdogClassifierResult =
   | {
@@ -174,6 +191,7 @@ export type TaskWatchdogClassifierResult =
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
     stopSnapshot: TaskWatchdogStopSnapshot;
     pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
+    pendingApprovalsByIssueId: TaskWatchdogPendingApprovalsByIssueId;
   }
   | {
     state: "stopped";
@@ -183,6 +201,7 @@ export type TaskWatchdogClassifierResult =
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
     stopSnapshot: TaskWatchdogStopSnapshot;
     pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
+    pendingApprovalsByIssueId: TaskWatchdogPendingApprovalsByIssueId;
   };
 
 export type TaskWatchdogClassifierInput = {
@@ -290,6 +309,8 @@ function pathIssueIds(paths: TaskWatchdogClassifierPath[] | undefined, companyId
   );
 }
 
+// Human-readable list of the pending human waits on an issue (still keyed on the
+// volatile ids so the review comment/UI can link to the exact interaction).
 function waitingPathIds(
   paths: TaskWatchdogClassifierWaitingPath[] | undefined,
   companyId: string,
@@ -301,6 +322,37 @@ function waitingPathIds(
     .sort();
 }
 
+// Placeholder used when a pending interaction has no declared kind, so the
+// fingerprint still reflects "an unclassified human wait exists" rather than
+// collapsing to no wait at all.
+const UNKNOWN_INTERACTION_KIND = "unknown";
+
+// Stable, id-free signature of the interaction waits on an issue: the sorted
+// set of *kinds* of pending interactions. Swapping one pending interaction for
+// another of the same kind (the common self-inflicted case where an agent
+// answers a review by opening a fresh question) leaves this unchanged.
+function pendingInteractionKinds(
+  paths: TaskWatchdogClassifierWaitingPath[] | undefined,
+  companyId: string,
+  issueId: string,
+) {
+  const kinds = (paths ?? [])
+    .filter((path) => path.companyId === companyId && path.issueId === issueId)
+    .map((path) => path.kind ?? UNKNOWN_INTERACTION_KIND);
+  return [...new Set(kinds)].sort();
+}
+
+// Whether an issue has any pending approval. A specific approval id is volatile
+// (revising or re-requesting mints a new one), so the fingerprint only tracks
+// presence — the leaf is either waiting on a human approval or it is not.
+function hasPendingApproval(
+  paths: TaskWatchdogClassifierWaitingPath[] | undefined,
+  companyId: string,
+  issueId: string,
+) {
+  return (paths ?? []).some((path) => path.companyId === companyId && path.issueId === issueId);
+}
+
 function stableStopFingerprint(input: {
   companyId: string;
   watchedIssueId: string;
@@ -308,7 +360,7 @@ function stableStopFingerprint(input: {
   waitsByIssueId: TaskWatchdogWaitsByIssueId;
 }) {
   const payload = JSON.stringify({
-    version: 2,
+    version: 3,
     companyId: input.companyId,
     watchedIssueId: input.watchedIssueId,
     materialLeaves: input.materialLeaves,
@@ -324,8 +376,8 @@ function materialLeaf(leaf: TaskWatchdogStoppedLeaf): TaskWatchdogMaterialLeaf {
     assigneeAgentId: leaf.assigneeAgentId,
     assigneeUserId: leaf.assigneeUserId,
     blockerIssueIds: leaf.blockerIssueIds,
-    pendingInteractionIds: leaf.pendingInteractionIds,
-    pendingApprovalIds: leaf.pendingApprovalIds,
+    pendingInteractionKinds: leaf.pendingInteractionKinds,
+    pendingApproval: leaf.pendingApproval,
   };
 }
 
@@ -333,7 +385,7 @@ function parseStopSnapshot(value: unknown): TaskWatchdogStopSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<TaskWatchdogStopSnapshot>;
   if (
-    candidate.version !== 2 ||
+    candidate.version !== 3 ||
     typeof candidate.fingerprint !== "string" ||
     !Array.isArray(candidate.materialLeaves) ||
     !candidate.waitsByIssueId ||
@@ -473,16 +525,22 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     .sort((left, right) => left.id.localeCompare(right.id));
   const waitsByIssueId = Object.fromEntries(nonTerminalIssues
     .map((issue) => [issue.id, {
-      pendingInteractionIds: waitingPathIds(input.pendingInteractions, input.watchdog.companyId, issue.id),
-      pendingApprovalIds: waitingPathIds(input.pendingApprovals, input.watchdog.companyId, issue.id),
+      pendingInteractionKinds: pendingInteractionKinds(input.pendingInteractions, input.watchdog.companyId, issue.id),
+      pendingApproval: hasPendingApproval(input.pendingApprovals, input.watchdog.companyId, issue.id),
     }] as const)
-    .filter(([, waits]) => waits.pendingInteractionIds.length > 0 || waits.pendingApprovalIds.length > 0));
+    .filter(([, waits]) => waits.pendingInteractionKinds.length > 0 || waits.pendingApproval));
   const pendingInteractionsByIssueId = Object.fromEntries(nonTerminalIssues
     .map((issue) => [issue.id, (input.pendingInteractions ?? [])
       .filter((path) => path.companyId === input.watchdog.companyId && path.issueId === issue.id)
       .map((path) => ({ id: path.id ?? `${path.status}:${path.issueId}`, kind: path.kind ?? null }))
       .sort((left, right) => left.id.localeCompare(right.id))] as const)
     .filter(([, waits]) => waits.length > 0));
+  const pendingApprovalsByIssueId = Object.fromEntries(nonTerminalIssues
+    .map((issue) => [
+      issue.id,
+      waitingPathIds(input.pendingApprovals, input.watchdog.companyId, issue.id),
+    ] as const)
+    .filter(([, approvalIds]) => approvalIds.length > 0));
 
   const leaves = included
     .filter((issue) => (includedChildrenByParentId.get(issue.id) ?? []).length === 0)
@@ -498,6 +556,8 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       blockerIssueIds: [...new Set(blockersByIssueId.get(issue.id) ?? [])].sort(),
       pendingInteractionIds: waitingPathIds(input.pendingInteractions, input.watchdog.companyId, issue.id),
       pendingApprovalIds: waitingPathIds(input.pendingApprovals, input.watchdog.companyId, issue.id),
+      pendingInteractionKinds: pendingInteractionKinds(input.pendingInteractions, input.watchdog.companyId, issue.id),
+      pendingApproval: hasPendingApproval(input.pendingApprovals, input.watchdog.companyId, issue.id),
       updatedAt: issueUpdatedAtIso(issue),
       latestCommentAt: optionalIso(issue.latestCommentAt),
       latestDocumentAt: optionalIso(issue.latestDocumentAt),
@@ -511,7 +571,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     waitsByIssueId,
   });
   const currentStopSnapshot: TaskWatchdogStopSnapshot = {
-    version: 2,
+    version: 3,
     fingerprint: stopFingerprint,
     materialLeaves,
     waitsByIssueId,
@@ -529,6 +589,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       stoppedLeaves: leaves,
       stopSnapshot: currentStopSnapshot,
       pendingInteractionsByIssueId,
+      pendingApprovalsByIssueId,
     };
   }
 
@@ -540,6 +601,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     stoppedLeaves: leaves,
     stopSnapshot: currentStopSnapshot,
     pendingInteractionsByIssueId,
+    pendingApprovalsByIssueId,
   };
 }
 
@@ -657,7 +719,7 @@ function stoppedFingerprintMetadata(input: {
   resumed: boolean;
 }) {
   const pendingWaitCount = Object.values(input.waitsByIssueId).reduce(
-    (count, waits) => count + waits.pendingInteractionIds.length + waits.pendingApprovalIds.length,
+    (count, waits) => count + waits.pendingInteractionKinds.length + (waits.pendingApproval ? 1 : 0),
     0,
   );
   return {
@@ -693,9 +755,7 @@ function watchdogWakeContext(input: {
       watchedIssueTitle: input.sourceIssue.title,
       stopFingerprint: input.classification.stopFingerprint,
       pendingInteractions: input.classification.pendingInteractionsByIssueId,
-      pendingApprovals: Object.fromEntries(Object.entries(input.classification.stopSnapshot.waitsByIssueId)
-        .filter(([, waits]) => waits.pendingApprovalIds.length > 0)
-        .map(([issueId, waits]) => [issueId, waits.pendingApprovalIds])),
+      pendingApprovals: input.classification.pendingApprovalsByIssueId,
       capabilities: {
         targetScope: {
           watchedIssueId: input.sourceIssue.id,
