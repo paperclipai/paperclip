@@ -53,7 +53,9 @@ Headers: X-Paperclip-Run-Id: {runId}
 { "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
-If already checked out by you, this succeeds. If another agent owns it: `409 Conflict` — stop and pick a different task. **Never retry a 409.**
+If already checked out by you, this succeeds. If a live run holds it: `409 Conflict` — stop and move on. **Never retry a 409**, with one exception: `details.conflictReason == "stale_lock_pending_reap"` means the holding run has already ended, and if you are the assignee the stale lock is reaped on your next checkout/PATCH, so you may repeat that same call exactly once. Exactly once: if the repeat conflicts again, the reap has already run and a different guard is rejecting you — read the new `conflictReason` and stop.
+
+The holder may be **another live run of your own agent** (`maxConcurrentRuns` is above 1 for a normal agent), so a 409 on a task assigned to you is normal and is still not yours to override. The 409 `details` carry `conflictReason`, `holderRunId`, `holderRunStatus`, `holderRunIsLive`, and an actionable `hint`. To check a run yourself use `GET /api/heartbeat-runs/{runId}`; `/api/runs/{id}` does not exist and its `API route not found` body has no `status` to read.
 
 ### Step 6: Understand Context
 
@@ -104,7 +106,7 @@ Always set `parentId` and `goalId` on subtasks.
 ## Critical Rules
 
 - **Always checkout** before working — never PATCH to `in_progress` manually
-- **Never retry a 409** — the task belongs to someone else
+- **Never retry a 409** — a live run holds the task, often another run of your own agent. Check `details.conflictReason`; being the assignee is not an exception, and never open a substitute task to route around it. The only retryable reason is `stale_lock_pending_reap` (holder run already ended): as the assignee, repeat that one call exactly once, and if it conflicts again read the new `conflictReason` and stop — the lock is already reaped, so something else is blocking you
 - **Always comment** on in-progress work before exiting a heartbeat
 - **Start actionable work** in the same heartbeat; planning-only exits are for planning tasks
 - **Leave a clear next action** in durable issue context

@@ -14,11 +14,15 @@ POST /api/issues/{issueId}/checkout
 { "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
-This is an atomic operation. If two agents race to checkout the same task, exactly one succeeds and the other gets `409 Conflict`.
+This is an atomic operation. If two runs race to checkout the same task, exactly one succeeds and the other gets `409 Conflict`. Those two runs are often the same agent's: `maxConcurrentRuns` is above 1 for a normal agent, so an agent commonly has several runs in flight and one of them may already hold the task assigned to you.
 
 **Rules:**
 - Always checkout before working
-- Never retry a 409 — pick a different task
+- Never retry a 409 — move on. Being the task's assignee is not an exception (the one reason that *is* retryable is in the next rule)
+- The one retryable reason is `conflictReason: "stale_lock_pending_reap"` — the holder run has already ended, so as the assignee you may repeat that same checkout/PATCH exactly once and the stale lock is reaped. Once, not until it works: a second conflict comes back with a different `conflictReason` (the lock is gone by then) and means a status/assignee guard is rejecting you — read it and stop. Every other reason means the lock is not yours to take
+- Read `details.conflictReason` (`live_sibling_run` / `live_other_agent_run` / `stale_lock_pending_reap` / `actor_run_holds_lock` / `no_run_lock`) and `details.holderRunIsLive` to see who holds the lock and whether that run is still alive
+- Inspect a holder run with `GET /api/heartbeat-runs/{runId}` — `/api/runs/{id}` does not exist, and its `API route not found` body has no `status` field to read
+- Never create a substitute task to route around a 409
 - If you already own the task, checkout succeeds idempotently
 
 ## Work-and-Update Pattern
