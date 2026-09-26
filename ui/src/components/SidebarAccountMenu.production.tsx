@@ -12,9 +12,10 @@ import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudInviteUrl } from "@/hooks/useCloudInviteUrl";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useSignOut } from "@/hooks/useSignOut";
-import { cloudStackInviteUrl } from "@/lib/cloudLinks";
+import { userProfilePath } from "@/lib/userProfileLinks";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -55,20 +56,6 @@ function deriveInitials(name: string) {
     return `${parts[0]?.[0] ?? ""}${parts[parts.length - 1]?.[0] ?? ""}`.toUpperCase();
   }
   return name.slice(0, 2).toUpperCase();
-}
-
-function deriveUserSlug(name: string | null | undefined, email: string | null | undefined, id: string | null | undefined) {
-  const candidates = [name, email?.split("@")[0], email, id];
-  for (const candidate of candidates) {
-    const slug = candidate
-      ?.trim()
-      .toLowerCase()
-      .replace(/['"]/g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    if (slug) return slug;
-  }
-  return "me";
 }
 
 function MenuAction({
@@ -137,13 +124,16 @@ export function SidebarAccountMenu({
   // shortcut when the hosting operator hides either surface, and until the
   // health response resolves so a hidden surface never flashes.
   const { hidden: hiddenSettings, loaded: hiddenSettingsLoaded } = useHiddenSettings();
+  // On Cloud the shortcut exists only for the current stack's owner/admin and
+  // only once the stack metadata is known; the in-app Invites tab is never a
+  // fallback there because it drives a different invitation flow.
+  const cloudInviteUrl = useCloudInviteUrl();
+  const inviteHref = isCloud ? cloudInviteUrl : INVITES_PATH;
   const showInvite =
     hiddenSettingsLoaded &&
+    inviteHref !== null &&
     !hidesCompanyPage(hiddenSettings, "company.members") &&
     !hidesCompanyPage(hiddenSettings, "company.invites");
-  // Cloud manages human invitations itself; fall back to the in-app Members
-  // page when the stack slug is unknown, since that page links out as well.
-  const cloudInviteUrl = isCloud ? cloudStackInviteUrl(cloud?.cloudBaseUrl, cloud?.stackSlug) : null;
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -161,7 +151,7 @@ export function SidebarAccountMenu({
   const secondaryLabel =
     session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
   const initials = deriveInitials(displayName);
-  const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
+  const profileHref = userProfilePath(session?.user);
 
   function closeNavigationChrome() {
     setOpen(false);
@@ -219,13 +209,13 @@ export function SidebarAccountMenu({
             </Link>
 
             <div className="mt-4 space-y-1">
-              {showInvite ? (
+              {showInvite && inviteHref ? (
                 <MenuAction
                   label="Invite"
                   description="Invite people to your organization."
                   icon={UserPlus}
-                  href={cloudInviteUrl ?? INVITES_PATH}
-                  topLevel={Boolean(cloudInviteUrl)}
+                  href={inviteHref}
+                  topLevel={isCloud}
                   onClick={closeNavigationChrome}
                 />
               ) : null}

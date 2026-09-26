@@ -75,6 +75,23 @@ async function flushReact() {
   });
 }
 
+/** Stack portfolio with the acme-labs stack current at the given Cloud role. */
+function cloudStacksPortfolio(role: string) {
+  return {
+    stacks: [
+      {
+        displayName: "Acme Labs",
+        stackSlug: "acme-labs",
+        primaryHost: "acme-labs.example.test",
+        lifecycleState: "active",
+        sleepState: "awake",
+        role,
+        isCurrent: true,
+      },
+    ],
+  };
+}
+
 describe("SidebarAccountMenu", () => {
   let container: HTMLDivElement;
 
@@ -239,8 +256,10 @@ describe("SidebarAccountMenu", () => {
     // profile page itself.
     expect(popover?.textContent).not.toContain("View profile");
     expect(popover?.textContent).not.toContain("Edit profile");
+    // The link resolves by user id, not display name: names are not unique,
+    // and the profile endpoint returns the first member whose slug matches.
     const profileHeaderLink = popover?.querySelector<HTMLAnchorElement>('a[aria-label="View profile"]');
-    expect(profileHeaderLink?.getAttribute("href")).toBe("/u/jane-example");
+    expect(profileHeaderLink?.getAttribute("href")).toBe("/u/user-1");
     expect(profileHeaderLink?.textContent).toContain("Jane Example");
     expect(profileHeaderLink?.textContent).toContain("jane@example.com");
     expect(popover?.querySelector('a[href="/company/settings/instance/profile"]')).toBeNull();
@@ -311,6 +330,7 @@ describe("SidebarAccountMenu", () => {
         cloudBaseUrl: "https://cloud.example.test",
       },
     });
+    queryClient.setQueryData(queryKeys.cloud.stacks, cloudStacksPortfolio("owner"));
 
     await act(async () => {
       root.render(
@@ -340,7 +360,7 @@ describe("SidebarAccountMenu", () => {
     );
     expect(inviteLink?.hasAttribute("target")).toBe(false);
     expect(popover?.querySelector('a[href="/company/settings/members?tab=invites"]')).toBeNull();
-    expect(popover?.querySelector('a[aria-label="View profile"]')?.getAttribute("href")).toBe("/u/jane-example");
+    expect(popover?.querySelector('a[aria-label="View profile"]')?.getAttribute("href")).toBe("/u/user-1");
     expect(popover?.textContent).not.toContain("Edit profile");
 
     const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
@@ -355,6 +375,89 @@ describe("SidebarAccountMenu", () => {
     expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
     expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
     expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("offers no cloud invite shortcut to members below stack admin (%#)", async (AccountMenu) => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+      cloud: {
+        managed: true,
+        managedBy: "paperclip-cloud",
+        stackSlug: "acme-labs",
+        cloudBaseUrl: "https://cloud.example.test",
+      },
+    });
+    // Company roles can differ from Cloud roles; the Members page only offers
+    // the Cloud invite link to the current stack's owner/admin, so the menu
+    // must match rather than send a plain member to People settings.
+    queryClient.setQueryData(queryKeys.cloud.stacks, cloudStacksPortfolio("member"));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <AccountMenu deploymentMode="authenticated" open />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    expect(popover?.textContent).not.toContain("Invite");
+    expect(popover?.querySelector('a[href^="https://cloud.example.test/"]')).toBeNull();
+    expect(popover?.querySelector('a[href="/company/settings/members?tab=invites"]')).toBeNull();
+    expect(popover?.querySelector('a[aria-label="View profile"]')).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("never falls back to in-app invites when cloud stack metadata is missing (%#)", async (AccountMenu) => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    // Managed instance whose health block lacks the stack slug: the portfolio
+    // has no current stack either, so no Cloud People URL can be built. The
+    // in-app Invites tab drives a different flow and must not appear instead.
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+      cloud: {
+        managed: true,
+        managedBy: "paperclip-cloud",
+        stackSlug: null,
+        cloudBaseUrl: "https://cloud.example.test",
+      },
+    });
+    queryClient.setQueryData(queryKeys.cloud.stacks, { stacks: [] });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <AccountMenu deploymentMode="authenticated" open />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    expect(popover?.textContent).not.toContain("Invite");
+    expect(popover?.querySelector('a[href="/company/settings/members?tab=invites"]')).toBeNull();
+    expect(popover?.textContent).toContain("Documentation");
 
     await act(async () => {
       root.unmount();
