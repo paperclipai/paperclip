@@ -10,6 +10,7 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  issueRow: Record<string, unknown> | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -22,6 +23,13 @@ function counterDb(
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          if (Object.keys(selection).includes("assigneeAgentId")) {
+            return {
+              limit: () => ({
+                then: (resolve: (rows: unknown[]) => unknown) => resolve(issueRow ? [issueRow] : []),
+              }),
+            };
+          }
           return {
             for: () => ({
               then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
@@ -29,6 +37,7 @@ function counterDb(
                 companyId: "22222222-2222-4222-8222-222222222222",
                 agentId: "33333333-3333-4333-8333-333333333333",
                 responsibleUserId: "user-1",
+                status: "running",
                 contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
                 ...runOverrides,
               }]),
@@ -209,8 +218,105 @@ describe("cross-issue influence limit rollout", () => {
       kind: "update",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: {
+        code: "cross_issue_influence_run_context_required",
+        reason: "no_context_source_and_target_unbound",
+      },
     });
     expect(fake.inserted).toEqual([]);
   });
+});
+
+describe("cross-issue influence limit on a run with no source issue", () => {
+  const base = {
+    companyId: "22222222-2222-4222-8222-222222222222",
+    runId: "11111111-1111-4111-8111-111111111111",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    targetIssueId: "55555555-5555-4555-8555-555555555555",
+  } as const;
+  const noSource = { contextSnapshot: {} };
+
+  it("lets the assignee write to its own issue instead of forcing a duplicate ticket", async () => {
+    const fake = counterDb(0, noSource, {
+      id: base.targetIssueId,
+      assigneeAgentId: base.agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, { ...base, kind: "comment" }))
+      .resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+    expect(fake.observedCount).toBe(0);
+  });
+
+  it("still refuses the same write against an issue the agent is not assigned to", async () => {
+    const fake = counterDb(0, noSource, {
+      id: base.targetIssueId,
+      assigneeAgentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, { ...base, kind: "comment" }))
+      .rejects.toMatchObject({
+        status: 403,
+        details: {
+          code: "cross_issue_influence_run_context_required",
+          reason: "no_context_source_and_target_unbound",
+        },
+      });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("keeps the cap on a sibling issue the agent also owns when it does have a source issue", async () => {
+    // The assignee exemption is scoped to the fail-closed branch. A run that
+    // already has a source issue writing to a *different* issue is counted
+    // against the cap exactly as before, assignee or not.
+    const fake = counterDb(0, { contextSnapshot: { issueId: "66666666-6666-4666-8666-666666666666" } }, {
+      id: base.targetIssueId,
+      assigneeAgentId: base.agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, { ...base, kind: "comment" }))
+      .resolves.toMatchObject({ count: 1, allowed: true });
+    expect(fake.observedCount).toBe(1);
+  });
+
+  it("exempts a no-source run that the target is bound to", async () => {
+    for (const binding of ["checkoutRunId", "executionRunId"] as const) {
+      const fake = counterDb(0, noSource, {
+        id: base.targetIssueId,
+        assigneeAgentId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        [binding]: base.runId,
+      });
+
+      await expect(observeCrossIssueInfluence(fake.db as never, { ...base, kind: "comment" }))
+        .resolves.toBeNull();
+      expect(fake.inserted).toEqual([]);
+    }
+  });
+
+  it.each(["succeeded", "failed", "cancelled", "timed_out", "interrupted"] as const)(
+    "does not trust a %s run's stale binding on the target",
+    async (status) => {
+      const fake = counterDb(0, { ...noSource, status }, {
+        id: base.targetIssueId,
+        assigneeAgentId: null,
+        checkoutRunId: base.runId,
+        executionRunId: base.runId,
+      });
+
+      await expect(observeCrossIssueInfluence(fake.db as never, { ...base, kind: "comment" }))
+        .rejects.toMatchObject({
+          status: 403,
+          details: { reason: "no_context_source_and_target_unbound" },
+        });
+      expect(fake.inserted).toEqual([]);
+    },
+  );
 });
