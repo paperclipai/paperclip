@@ -4741,6 +4741,26 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     (candidate) =>
       candidate.metadata?.nativeRuntimeAssignmentDigest === assignmentDigest,
   );
+  // Gateways created before the agent binding existed have a null agentId, and
+  // named-gateway auth only rejects another agent's run token when it is set.
+  // The assignment digest includes the agent id, so a reused gateway is this
+  // agent's own: bind it here instead of waiting for the assignment to change.
+  if (gateway && !gateway.agentId) {
+    await input.db
+      .update(toolMcpGateways)
+      .set({ agentId: input.agent.id, updatedAt: new Date() })
+      .where(
+        and(
+          eq(toolMcpGateways.id, gateway.id),
+          isNull(toolMcpGateways.agentId),
+        ),
+      );
+    [gateway] = await input.db
+      .select()
+      .from(toolMcpGateways)
+      .where(eq(toolMcpGateways.id, gateway.id))
+      .limit(1);
+  }
   if (!gateway) {
     const slug = `native-${input.agent.id.replaceAll("-", "").slice(0, 12)}-${assignmentDigest.slice(0, 16)}`;
     try {
@@ -4752,6 +4772,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
           description: "Run-scoped Paperclip Runner MCP gateway.",
           profileId: profile!.id,
           defaultProfileMode: "gateway_only",
+          agentId: input.agent.id,
           metadata: {
             nativeRuntimeAssignmentDigest: assignmentDigest,
             agentId: input.agent.id,
