@@ -834,12 +834,53 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   }
 
   let repoRoot: string | null = null;
+  let directoryIsNotGitRepository = false;
   try {
     repoRoot = (await runGit(["rev-parse", "--show-toplevel"], workspacePath)).stdout.trim() || null;
   } catch (error) {
-    warnings.push(
-      `Could not inspect git status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    const stderr =
+      typeof error === "object" && error !== null && "stderr" in error
+        ? String((error as { stderr?: unknown }).stderr ?? "")
+        : "";
+    directoryIsNotGitRepository =
+      /not a git repository/i.test(message) || /not a git repository/i.test(stderr);
+    if (!(directoryIsNotGitRepository && workspace.providerType === "local_fs")) {
+      warnings.push(
+        `Could not inspect git status for "${workspacePath}": ${message}`,
+      );
+    }
+  }
+
+  if (
+    !repoRoot
+    && directoryIsNotGitRepository
+    && workspace.providerType === "local_fs"
+  ) {
+    // A local_fs workspace is a plain directory by design. Git is not its
+    // delivery mechanism, so "not a git repository" is a successful
+    // inspection with no git state, not an inspection failure. Reporting it
+    // as a failure kept the terminality reaper from ever archiving these
+    // rows (#13874). Any other git failure (a missing binary, for example)
+    // still fails closed below.
+    return {
+      git: {
+        repoRoot: null,
+        workspacePath,
+        branchName: workspace.branchName,
+        baseRef: workspace.baseRef,
+        hasDirtyTrackedFiles: false,
+        hasUntrackedFiles: false,
+        dirtyEntryCount: 0,
+        untrackedEntryCount: 0,
+        aheadCount: null,
+        behindCount: null,
+        isMergedIntoBase: null,
+        createdByRuntime,
+      },
+      warnings,
+      statusInspectionSucceeded: true,
+    };
   }
 
   let branchName = workspace.branchName;
@@ -1459,6 +1500,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       cooldownAnchor,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
       workspaceHeadSha,
+      // A local_fs workspace whose directory is not (or no longer) a git
+      // repository has no delivery surface: there is nothing to merge because
+      // git never tracked it. The reaper treats that as "nothing to deliver"
+      // and archives on the issue-tree terminality check alone (#13874).
+      nothingToDeliver:
+        workspace.providerType === "local_fs"
+        && git !== null
+        && git.repoRoot === null,
     };
   }
 
@@ -2644,6 +2693,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         if (
           assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
+          && !assessment.nothingToDeliver
         ) {
           result.skippedUndelivered += 1;
           continue;

@@ -4223,7 +4223,11 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 
   const cleaned =
     !workspacePath ||
-    !(await directoryExists(workspacePath));
+    !(await directoryExists(workspacePath)) ||
+    // A user-owned local_fs directory outlives the archival by design: only
+    // runtime-created directories may be removed. There was no artifact left
+    // to clean, so the archival succeeded.
+    (input.workspace.providerType === "local_fs" && !createdByRuntime);
 
   return {
     cleanedPath: workspacePath,
