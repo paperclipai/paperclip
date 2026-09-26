@@ -1795,6 +1795,32 @@ describe("TaskChatComposer", () => {
     });
   });
 
+  it("sends with a valid client request ID when crypto.randomUUID is unavailable", async () => {
+    // Plain-http LAN/tailnet origins are insecure contexts: browsers expose
+    // getRandomValues there but not randomUUID. The send button must still post.
+    vi.stubGlobal("crypto", {
+      getRandomValues: (bytes: Uint8Array) => {
+        for (let index = 0; index < bytes.length; index += 1) bytes[index] = (index * 37 + 11) & 0xff;
+        return bytes;
+      },
+    });
+    try {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey="task-insecure" />);
+      typeText("Sent over plain http");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledTimes(1);
+      expect(onAdd.mock.calls[0][0]).toBe("Sent over plain http");
+      expect(onAdd.mock.calls[0][4]).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
+      expect(editable().textContent).toBe("");
+      expect(loadDraftSubmission("task-insecure")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("gives separate identical chat submissions separate receipt identities", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" />);
