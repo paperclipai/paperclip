@@ -5,8 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { authRoutes } from "../routes/auth.js";
 import { errorHandler } from "../middleware/index.js";
 
-const logActivity = vi.hoisted(() => vi.fn());
-vi.mock("../services/activity-log.js", () => ({ logActivity, publishActivity: vi.fn() }));
+const { logActivity, publishActivity } = vi.hoisted(() => ({ logActivity: vi.fn(), publishActivity: vi.fn() }));
+vi.mock("../services/activity-log.js", () => ({ logActivity, publishActivity }));
 
 const companyId = "11111111-1111-4111-8111-111111111111";
 const actorExpectedId = "user-1";
@@ -92,6 +92,20 @@ describe("personal keyboard shortcut preferences", () => {
     logActivity.mockRejectedValueOnce(new Error("audit unavailable"));
     expect((await request(app).patch("/api/auth/preferences").send({ companyId, expectedUserId: "user-1", keyboardShortcuts: true })).status).toBe(500);
     expect(users.get("user-1")?.keyboardShortcuts).toBe(false);
+  });
+
+  it("reports a committed save as successful when activity publication fails", async () => {
+    const { app, users } = setup(board);
+    logActivity.mockImplementationOnce(async (_db, _input, publications) => {
+      publications.push({ companyId, payload: {} });
+    });
+    publishActivity.mockImplementationOnce(() => { throw new Error("subscriber unavailable"); });
+    const saved = await request(app).patch("/api/auth/preferences")
+      .send({ companyId, expectedUserId: "user-1", keyboardShortcuts: true });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toEqual({ keyboardShortcuts: true });
+    expect(users.get("user-1")?.keyboardShortcuts).toBe(true);
+    expect(publishActivity).toHaveBeenCalledOnce();
   });
 
   it("supports the local trusted board identity", async () => {

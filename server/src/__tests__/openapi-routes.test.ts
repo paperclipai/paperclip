@@ -956,3 +956,10 @@ describe("heartbeat run ID OpenAPI contract", () => {
     expect(checked).toBe(12);
   });
 });
+
+it("documents the account binding required for preference reads", () => {
+  const operation = buildOpenApiSpec().paths["/api/auth/preferences"]?.get;
+  expect(operation?.parameters).toEqual(expect.arrayContaining([
+    expect.objectContaining({ name: "expectedUserId", in: "query", required: true }),
+  ]));
+});

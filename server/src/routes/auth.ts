@@ -12,6 +12,7 @@ import {
 import { hasCompanyAccess } from "./authz.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../services/activity-log.js";
 import { forbidden, unauthorized } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
 
@@ -146,7 +147,15 @@ export function authRoutes(db: Db) {
       }, publications);
       return updated;
     });
-    for (const publication of publications) publishActivity(publication);
+    for (const publication of publications) {
+      try {
+        publishActivity(publication);
+      } catch (err) {
+        // The preference and audit row are committed; notification failure must
+        // not tell the caller that its durable save failed.
+        logger.warn({ err, companyId, userId }, "Could not publish user preference activity");
+      }
+    }
     res.json(currentUserPreferencesSchema.parse(user));
   });
 

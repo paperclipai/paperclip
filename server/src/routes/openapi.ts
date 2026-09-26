@@ -6559,6 +6559,7 @@ registry.registerPath({
   path: "/api/auth/preferences",
   tags: ["auth"],
   summary: "Get the signed-in user's personal preferences",
+  request: { query: z.object({ expectedUserId: z.string().min(1) }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 registry.registerPath({
