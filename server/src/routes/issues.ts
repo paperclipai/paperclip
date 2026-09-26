@@ -275,6 +275,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
+  lockIssueReparentDomain,
   type IssuePostCommitAction,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -13537,6 +13538,9 @@ export function issueRoutes(
         updateFields.parentId === undefined
           ? existing.parentId
           : (updateFields.parentId as string | null);
+      const reparentRequested =
+        updateFields.parentId !== undefined &&
+        updateFields.parentId !== existing.parentId;
       const shouldRelayStop =
         Boolean(nextParentId) &&
         existing.status !== updateFields.status &&
@@ -13715,6 +13719,14 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            if (reparentRequested) {
+              // Take the reparent domain lock before the review-policy check
+              // below, which locks this issue's row. Locking the row first and
+              // the advisory lock second inverts the order a service-owned
+              // reparent uses, and Postgres breaks that cycle by killing one of
+              // the two updates.
+              await lockIssueReparentDomain(tx, existing.companyId);
+            }
             if (
               reviewPolicySensitiveMutationRequested &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))

@@ -1925,6 +1925,53 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
   if (parent?.conversationAgentId) throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
 }
 
+/** The transaction surface the reparent domain lock needs. */
+export type ReparentLockTx = {
+  execute(query: ReturnType<typeof sql>): Promise<unknown>;
+};
+
+function reparentDomainLockKey(companyId: string) {
+  return `issue-reparent:${companyId}`;
+}
+
+/**
+ * Serialize every reparent in a company behind one transaction-scoped advisory
+ * lock. Two concurrent reparents can otherwise each pass the pre-write cycle
+ * check and then commit edges that form a cycle (A -> B and B -> A).
+ *
+ * The lock must be taken before any row lock in the same transaction. A caller
+ * that locks the issue row first (the PATCH route's review-policy check) and
+ * then waits here while another reparent holds the lock and waits for that same
+ * row deadlocks, and Postgres kills one of the two updates. So the PATCH route
+ * calls this at the top of its transaction, and the issue service only blocks
+ * here when it owns the transaction. Reasserting the lock is free: the same
+ * transaction already holds it.
+ */
+export async function lockIssueReparentDomain(
+  tx: ReparentLockTx,
+  companyId: string,
+) {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${reparentDomainLockKey(companyId)}, 0))`,
+  );
+}
+
+/**
+ * Take the reparent domain lock only if it is already free. Used inside a
+ * transaction the caller owns, where an issue row lock may already be held:
+ * waiting there would risk the deadlock described above, so the caller gets a
+ * retryable rejection instead.
+ */
+export async function tryLockIssueReparentDomain(
+  tx: ReparentLockTx,
+  companyId: string,
+): Promise<boolean> {
+  const rows = (await tx.execute(
+    sql`select pg_try_advisory_xact_lock(hashtextextended(${reparentDomainLockKey(companyId)}, 0)) as locked`,
+  )) as Array<{ locked?: boolean }>;
+  return rows[0]?.locked === true;
+}
+
 /**
  * Reject a parent reassignment that would form a cycle. A cyclic parentId makes
  * every recursive issue-tree walk (cost rollups, the workspace reaper) loop or
@@ -10881,16 +10928,16 @@ export function issueService(db: Db) {
 
       const runUpdate = async (tx: any) => {
         if (data.parentId && data.parentId !== existing.parentId) {
-          // Two concurrent reparents can each pass the pre-write cycle check
-          // and then commit edges that form a cycle (A -> B and B -> A). The
-          // write boundary serializes them: every reparent in the company
-          // takes one transaction-scoped advisory lock before any row lock,
-          // so the lock order is uniform and cannot deadlock, then re-checks
-          // the parent chain. Under READ COMMITTED the second reparent sees
-          // the first one's committed edge and fails the check cleanly.
-          await tx.execute(
-            sql`select pg_advisory_xact_lock(hashtextextended(${`issue-reparent:${existing.companyId}`}, 0))`,
-          );
+          // Own transaction: block on the domain lock, which is taken before
+          // any row lock here. Caller-owned transaction: an issue row may
+          // already be locked, so take the lock only if it is free and reject
+          // a contended reparent instead of risking a deadlock.
+          if (dbOrTx === db) await lockIssueReparentDomain(tx, existing.companyId);
+          else if (!(await tryLockIssueReparentDomain(tx, existing.companyId))) {
+            throw unprocessable(
+              "Another reparent in this company is still writing. Retry the update.",
+            );
+          }
           await assertNoParentCycle(tx, existing.companyId, existing.id, data.parentId);
         }
         // The receipt baseline must be read under the same row lock as the
