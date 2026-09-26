@@ -219,6 +219,8 @@ vi.mock("@paperclipai/db", () => ({
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
   runDatabaseBackup: vi.fn(),
+  pruneDatabaseBackups: vi.fn(() => 0),
+  DEFAULT_BACKUP_TIMEOUT_SECONDS: 60 * 60,
   authUsers: {},
   companies: {},
   companyMemberships: {},
