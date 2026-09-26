@@ -1,6 +1,12 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import {
+  __providerQuotaInternals,
+  execute,
+  mapFinalResultForTest,
+  parseSseFramesForTest,
+  resolveSessionKey,
+} from "./execute.js";
 import { testEnvironment } from "./test.js";
 
 function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
@@ -763,5 +769,224 @@ describe("mapFinalResultForTest", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
+  });
+
+  it("promotes provider-quota exhaustion in terminal failed events to a backoff-friendly result", () => {
+    const now = new Date("2026-09-04T00:00:00Z").getTime();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-quota",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "Codex provider quota exhausted (429); retry after 4825s. Credentials still valid.",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBe(new Date(now + 4825 * 1000).toISOString());
+  });
+
+  it("falls back to a 60s cool-down when the quota message omits an explicit retry-after", () => {
+    const now = new Date("2026-09-04T00:00:00Z").getTime();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-quota-no-hint",
+        status: "failed",
+        payload: { status: "failed", error: "HTTP 429: The usage limit has been reached" },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBe(new Date(now + 60 * 1000).toISOString());
+  });
+
+  it("degrades an out-of-range retry hint in a terminal failed event to the fallback cool-down instead of throwing", () => {
+    const now = new Date("2026-09-04T00:00:00Z").getTime();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-quota-absurd",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "Codex provider quota exhausted (429); retry after 9999999999999999s.",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBe(new Date(now + 60 * 1000).toISOString());
+  });
+
+  it("leaves unrelated terminal failures untouched", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-other",
+        status: "failed",
+        payload: { status: "failed", error: "internal boom" },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBeUndefined();
+    expect(result.retryNotBefore).toBeUndefined();
+  });
+});
+
+describe("parseHermesRetryAfterHeader", () => {
+  const { parseHermesRetryAfterHeader } = __providerQuotaInternals;
+
+  it("interprets delta-seconds values as an absolute future ISO datetime", () => {
+    const now = new Date("2026-09-04T00:00:00Z").getTime();
+    expect(parseHermesRetryAfterHeader("120", now)).toBe(new Date(now + 120_000).toISOString());
+  });
+
+  it("parses HTTP-date values into an ISO datetime", () => {
+    expect(parseHermesRetryAfterHeader("Fri, 04 Sep 2026 00:02:00 GMT")).toBe(
+      new Date("2026-09-04T00:02:00Z").toISOString(),
+    );
+  });
+
+  it("returns null for empty, missing, or malformed values", () => {
+    expect(parseHermesRetryAfterHeader(null)).toBeNull();
+    expect(parseHermesRetryAfterHeader(undefined)).toBeNull();
+    expect(parseHermesRetryAfterHeader("")).toBeNull();
+    expect(parseHermesRetryAfterHeader("   ")).toBeNull();
+    expect(parseHermesRetryAfterHeader("not-a-date")).toBeNull();
+  });
+
+  it("returns null instead of throwing for finite values beyond the Date range", () => {
+    const now = new Date("2026-09-04T00:00:00Z").getTime();
+    expect(() => parseHermesRetryAfterHeader("9999999999999999", now)).not.toThrow();
+    expect(parseHermesRetryAfterHeader("9999999999999999", now)).toBeNull();
+    expect(parseHermesRetryAfterHeader("99999999999999999999999", now)).toBeNull();
+  });
+});
+
+describe("extractQuotaSignalFromBody", () => {
+  const { extractQuotaSignalFromBody } = __providerQuotaInternals;
+
+  it("reads the upstream message from the shapes the gateway uses", () => {
+    expect(extractQuotaSignalFromBody("HTTP 429: The usage limit has been reached")).toBe(
+      "HTTP 429: The usage limit has been reached",
+    );
+    expect(extractQuotaSignalFromBody({ text: "quota exhausted (429)" })).toBe("quota exhausted (429)");
+    expect(extractQuotaSignalFromBody({ error: "quota exhausted (429)" })).toBe("quota exhausted (429)");
+    expect(extractQuotaSignalFromBody({ error: { message: "quota exhausted (429)" } })).toBe(
+      "quota exhausted (429)",
+    );
+    expect(extractQuotaSignalFromBody({ message: "quota exhausted (429)" })).toBe("quota exhausted (429)");
+    expect(extractQuotaSignalFromBody({ detail: "quota exhausted (429)" })).toBe("quota exhausted (429)");
+  });
+
+  it("returns null for empty or unrelated bodies", () => {
+    expect(extractQuotaSignalFromBody(null)).toBeNull();
+    expect(extractQuotaSignalFromBody(undefined)).toBeNull();
+    expect(extractQuotaSignalFromBody("")).toBeNull();
+    expect(extractQuotaSignalFromBody({})).toBeNull();
+    expect(extractQuotaSignalFromBody([])).toBeNull();
+    expect(extractQuotaSignalFromBody({ error: 42 })).toBeNull();
+  });
+});
+
+describe("detectProviderQuotaExhaustion", () => {
+  const { detectProviderQuotaExhaustion } = __providerQuotaInternals;
+
+  it("returns null for messages that do not match a known quota signature", () => {
+    expect(detectProviderQuotaExhaustion(null)).toBeNull();
+    expect(detectProviderQuotaExhaustion("")).toBeNull();
+    expect(detectProviderQuotaExhaustion("random failure")).toBeNull();
+  });
+
+  it("degrades an out-of-range retry hint to the fallback cool-down instead of throwing", () => {
+    const now = new Date("2026-09-04T00:00:00Z").getTime();
+    const message = "Codex provider quota exhausted (429); retry after 9999999999999999s.";
+    expect(() => detectProviderQuotaExhaustion(message, now)).not.toThrow();
+    expect(detectProviderQuotaExhaustion(message, now)).toEqual({
+      errorCode: "hermes_gateway_rate_limited",
+      errorFamily: "provider_quota",
+      retryNotBefore: new Date(now + 60 * 1000).toISOString(),
+    });
+  });
+
+  it("extracts an explicit retry-after from the Codex quota message", () => {
+    const now = new Date("2026-09-04T00:00:00Z").getTime();
+    const result = detectProviderQuotaExhaustion(
+      "Codex provider quota exhausted (429); retry after 1653s. Credentials still valid.",
+      now,
+    );
+    expect(result).toEqual({
+      errorCode: "hermes_gateway_rate_limited",
+      errorFamily: "provider_quota",
+      retryNotBefore: new Date(now + 1653 * 1000).toISOString(),
+    });
+  });
+});
+
+describe("execute: direct HTTP 429 classification", () => {
+  const now = new Date("2026-09-04T00:00:00Z").getTime();
+
+  function run429(init: { body?: string; headers?: Record<string, string> }) {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const fetchMock = vi.fn(async () =>
+      new Response(init.body ?? "", {
+        status: 429,
+        headers: { "content-type": "application/json", ...(init.headers ?? {}) },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return execute(makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 }));
+  }
+
+  it("keeps a headerless 429 with no upstream quota signal as transient gateway throttling", async () => {
+    const result = await run429({});
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.retryNotBefore).toBeNull();
+  });
+
+  it("keeps a headerless 429 whose body only describes gateway throttling as transient_upstream", async () => {
+    const result = await run429({ body: JSON.stringify({ error: "Too many requests to the gateway, slow down" }) });
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.retryNotBefore).toBeNull();
+  });
+
+  it("promotes a headerless 429 to provider_quota when the body carries the upstream quota signature", async () => {
+    const result = await run429({
+      body: JSON.stringify({ error: "Codex provider quota exhausted (429); retry after 120s. Credentials still valid." }),
+    });
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBe(new Date(now + 120 * 1000).toISOString());
+  });
+
+  it("honours the retry-after header on a 429 and leaves the family as transient_upstream", async () => {
+    const result = await run429({ headers: { "retry-after": "30" } });
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.retryNotBefore).toBe(new Date(now + 30 * 1000).toISOString());
+  });
+
+  it("does not reject execute() when the retry-after header is beyond the Date range", async () => {
+    const result = await run429({ headers: { "retry-after": "9999999999999999" } });
+    expect(result.exitCode).toBe(1);
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.retryNotBefore).toBeNull();
   });
 });
