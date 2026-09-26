@@ -10,7 +10,7 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { verifiedRuntimeExecutableHandoff } from "./verified-runtime-executable.js";
 
@@ -121,6 +121,8 @@ export interface AcpxProviderLifetimeLease {
   readonly lifetimeFenceFds: readonly [number, number];
   /** Validate the guardian while the provider-lifetime quorum is still held. */
   activateLifetimeOwner(pid: number): Promise<void>;
+  /** Publish a private credential snapshot before acknowledging a warm turn. */
+  checkpoint?(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -180,6 +182,7 @@ export async function stageManagedCodexCredential(input: {
   agentHomeDirectory: string;
   environment?: NodeJS.ProcessEnv;
   sourcePath?: string;
+  returnPath?: string;
 }): Promise<ManagedCodexCredentialLease> {
   const home = await resolvePrivateAgentHome(input.agentHomeDirectory);
   // Join an older failed close before claiming the next generation. This
@@ -229,6 +232,7 @@ async function stageClaimedManagedCodexCredential(
   input: {
     environment?: NodeJS.ProcessEnv;
     sourcePath?: string;
+    returnPath?: string;
   },
   home: string,
   ownerGeneration: CredentialLeaseGeneration,
@@ -277,6 +281,16 @@ async function stageClaimedManagedCodexCredential(
     throw new Error(
       "Managed Codex credential source must be an external absolute path",
     );
+  }
+
+  if (input.returnPath !== undefined) {
+    if (!hasManagedFile || !isAbsolute(input.returnPath) ||
+        resolve(input.returnPath) === destination ||
+        resolve(input.returnPath) === resolve(input.sourcePath!) ||
+        dirname(resolve(input.returnPath)) !== dirname(resolve(input.sourcePath!))) {
+      throw new Error("Managed Codex credential return must be a separate file beside its source");
+    }
+    await resolvePrivateAgentHome(dirname(input.returnPath));
   }
 
   if (hasApiKey) {
@@ -331,6 +345,7 @@ async function stageClaimedManagedCodexCredential(
     hasInlineJson ? "inline_json" : "managed_file",
     ownerGeneration,
     lock,
+    input.returnPath,
   );
 }
 
@@ -653,6 +668,7 @@ function credentialLease(
   mode: ManagedCodexCredentialMode,
   ownerGeneration: CredentialLeaseGeneration,
   lock: CredentialHomeLock,
+  returnPath?: string,
 ): ManagedCodexCredentialLease {
   // Do not admit a provider if kernel ownership was lost while its credential
   // was being staged.
@@ -660,6 +676,25 @@ function credentialLease(
   let closed = false;
   let closeAttempt: Promise<void> | null = null;
   let lifetimeOwnerAttempt: Promise<void> | null = null;
+  let exportAttempt: Promise<void> | null = null;
+  const exportCredential = (): Promise<void> => {
+    if (returnPath === undefined) return Promise.resolve();
+    exportAttempt ??= (async () => {
+      lock.assertHeld();
+      const returnHome = await resolvePrivateAgentHome(dirname(returnPath));
+      const bytes = await readManagedCredential(path);
+      try {
+        validateCredentialDocument(bytes);
+        // The home lease and exportAttempt serialize this session's exports.
+        // Recover an interrupted exclusive-create without following symlinks.
+        await removeReplaceableCredential(`${returnPath}.staging`);
+        await writeCredential(returnPath, `${returnPath}.staging`, returnHome, bytes);
+      } finally {
+        bytes.fill(0);
+      }
+    })().finally(() => { exportAttempt = null; });
+    return exportAttempt;
+  };
   return Object.freeze({
     path,
     mode,
@@ -677,6 +712,10 @@ function credentialLease(
       } finally {
         if (lifetimeOwnerAttempt === attempt) lifetimeOwnerAttempt = null;
       }
+    },
+    async checkpoint(): Promise<void> {
+      if (closed || closeAttempt !== null) throw new Error("Managed Codex credential lease is closing");
+      await exportCredential();
     },
     async close(): Promise<void> {
       if (closed) return;
@@ -696,6 +735,11 @@ function credentialLease(
           closed = true;
           return;
         }
+        lock.assertHeld();
+        // Join a turn checkpoint, then capture the final stopped-provider state.
+        await exportAttempt?.catch(() => undefined);
+        // Failed export retains the only refreshed copy and its lease for retry.
+        await exportCredential();
         try {
           lock.assertHeld();
           await removeCredential(path, home);

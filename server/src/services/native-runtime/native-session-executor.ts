@@ -283,6 +283,8 @@ const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
   "tmp",
   ".tmp",
   "auth.json",
+  "auth.json.returned",
+  "auth.json.returned.staging",
   "config.toml",
 ] as const;
 const RUNNERD_CONTROL_PLANE_STATE_SCHEMA =
@@ -5273,6 +5275,9 @@ export function resolveNativeHarnessPersistenceProfile(
     directories: [
       { name: "runner", location: "runner", excludeEntries: [] },
       ...(providerDirectory ? [providerDirectory] : []),
+      ...(execution.provider.kind === "acpx" && execution.provider.agent === "codex"
+        ? [{ name: "codex-home" as const, location: "filesystem" as const, excludeEntries: CODEX_HOME_NON_PERSISTENT_ENTRIES }]
+        : []),
     ],
   };
 }
@@ -12650,10 +12655,13 @@ async function createRunnerdBackendWithinSessionClaim(
   });
   const boundManagedSessions = new WeakSet<NativeSession>();
   const wrapManagedSession = (session: NativeSession): NativeSession => {
-    if (!input.managedAiCredentialHome || input.execution.provider.kind !== "codex" || boundManagedSessions.has(session)) return session;
+    const acpxCodex = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "codex";
+    if (!input.managedAiCredentialHome || !(input.execution.provider.kind === "codex" || acpxCodex) || boundManagedSessions.has(session)) return session;
     boundManagedSessions.add(session);
-    const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", "auth.json") : null;
-    const localAuth = join(root, "codex-home", "auth.json");
+    const authName = acpxCodex && !effectiveRunnerEnvironment.CODEX_API_KEY && !effectiveRunnerEnvironment.OPENAI_API_KEY
+      ? "auth.json.returned" : "auth.json";
+    const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", authName) : null;
+    const localAuth = join(root, "codex-home", authName);
     return bindManagedNativeCredentialTurn(session, {
       copyBack: async () => {
         await copyBackCodexAuth({
@@ -12668,8 +12676,13 @@ async function createRunnerdBackendWithinSessionClaim(
         });
       },
       remove: async () => {
-        rmSync(localAuth, { force: true });
-        if (remoteAuth && remoteCommandRunner) await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", remoteAuth], bypassSession: true, timeoutMs: 10000 });
+        for (const name of ["auth.json", "auth.json.returned"] as const) {
+          rmSync(join(root, "codex-home", name), { force: true });
+          if (remoteRunnerFilesystemRoot && remoteCommandRunner) {
+            const removed = await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", posix.join(remoteRunnerFilesystemRoot, "codex-home", name)], bypassSession: true, timeoutMs: 10000 });
+            if (removed.exitCode !== 0 || removed.timedOut) throw new Error("AI credential cleanup failed");
+          }
+        }
       },
     });
   };

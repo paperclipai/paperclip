@@ -207,6 +207,8 @@ export interface OpenAcpxRuntimeHostOptions {
   runtimeContext?: NativeRuntimeContextSnapshot | null;
   environment?: NodeJS.ProcessEnv;
   managedCodexCredentialSourcePath?: string;
+  /** Private per-session return slot; the caller owns the authoritative merge. */
+  managedCodexCredentialReturnPath?: string;
   expectedIdentity?: AcpxExpectedSessionIdentity;
   /** Revalidate a pinned recovery workspace through provider admission. */
   assertWorkspaceHeld?: () => void;
@@ -319,7 +321,7 @@ export class AcpxRuntimeHost {
     options.assertWorkspaceHeld?.();
     if (
       options.agent !== "codex" &&
-      options.managedCodexCredentialSourcePath !== undefined
+      (options.managedCodexCredentialSourcePath !== undefined || options.managedCodexCredentialReturnPath !== undefined)
     ) {
       throw new Error(
         "Managed Codex credentials require the Codex ACPX profile",
@@ -398,6 +400,7 @@ export class AcpxRuntimeHost {
               agentHomeDirectory: sandbox.agentHomeDirectory,
               environment: options.environment,
               sourcePath: options.managedCodexCredentialSourcePath,
+              returnPath: options.managedCodexCredentialReturnPath,
             }),
           resource: "credential",
           releaseLate: (lateCredential) => lateCredential.close(),
@@ -673,6 +676,10 @@ export class AcpxRuntimeHost {
       })
       .catch(() => undefined);
     return turn;
+  }
+
+  async checkpointCredential(): Promise<void> {
+    await this.#credential?.checkpoint?.();
   }
 
   async interruptActiveTurn(reason: string): Promise<void> {

@@ -233,6 +233,10 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
                 "fixture-token-never-returned-in-test-output",
             )
             .env("UNRELATED_EVAL_SECRET", "must-not-cross-boundary")
+            .env(
+                "PAPERCLIP_ACPX_CODEX_AUTH_FILE",
+                "/private/session/auth.json",
+            )
             .status()
             .unwrap();
         assert!(status.success(), "isolated gateway environment test failed");
@@ -260,6 +264,14 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
             "assigned gateway credential was dropped"
         );
         assert_eq!(response["hasUnrelatedSecret"], false);
+        assert_eq!(
+            response["codexAuthFile"],
+            if agent == "codex" {
+                json!("/private/session/auth.json")
+            } else {
+                serde_json::Value::Null
+            }
+        );
         sidecar.shutdown().unwrap();
     }
 }

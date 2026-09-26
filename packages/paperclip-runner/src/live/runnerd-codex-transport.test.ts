@@ -1646,6 +1646,25 @@ it("uses file-backed AWS workload identity without forwarding access keys or Pap
   expect(environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
 });
 
+it("derives the ACPX credential path from the Runner home", () => {
+  const input = {
+    provider: "acpx" as const,
+    options: { acpxAgent: "codex" as const, environment: { PAPERCLIP_ACPX_CODEX_AUTH_FILE: "/attacker/auth.json" } },
+    identity: { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" },
+    codexHome: "/private/session/codex-home", runtimeContextPath: "/private/context", hasRuntimeContext: false,
+    acpxSidecarPath: "/verified/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
+  };
+  expect(createCapabilityRunnerdProviderEnvironment(input).PAPERCLIP_ACPX_CODEX_AUTH_FILE).toBe("/private/session/codex-home/auth.json");
+  expect(createCapabilityRunnerdProviderEnvironment({ ...input, options: { ...input.options, environment: { OPENAI_API_KEY: "explicit-key" } } }).PAPERCLIP_ACPX_CODEX_AUTH_FILE).toBeUndefined();
+  expect(createCapabilityRunnerdProviderEnvironment({ ...input, options: { ...input.options, acpxAgent: "claude" } }).PAPERCLIP_ACPX_CODEX_AUTH_FILE).toBeUndefined();
+  vi.stubEnv("OPENAI_API_KEY", "inherited-key");
+  try {
+    expect(createCapabilityRunnerdProviderEnvironment({ ...input, options: { acpxAgent: "codex" } }).PAPERCLIP_ACPX_CODEX_AUTH_FILE).toBeUndefined();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
 it.each([
   {
     agent: "pi" as const,

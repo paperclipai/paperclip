@@ -3098,6 +3098,10 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
       input.options.acpxSidecarPath ??
       resolve(packageRoot, "dist", "cli", "acpx-runtime-sidecar.cjs");
     const providerPackageAuthority = acpxProviderPackageAuthority(sidecarPath);
+    const spawnEnvironment = createSanitizedAcpxSpawnInput(
+      input.options.environment,
+      input.options.acpxAgent ?? "codex",
+    ).env;
     // This is the trusted runner/sidecar boundary. The provider sandbox still
     // uses createSanitizedAcpxSpawnInput and does not inherit gateway tokens.
     const assignedGateway = input.options.acpxAgent === "pi"
@@ -3106,11 +3110,13 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
       ...(assignedGateway ? {
         PAPERCLIP_NATIVE_MCP_TOKEN: assignedGateway.token,
       } : {}),
-      ...createSanitizedAcpxSpawnInput(
-        input.options.environment,
-        input.options.acpxAgent ?? "codex",
-      ).env,
+      ...spawnEnvironment,
       ...commonIdentity,
+      ...((input.options.acpxAgent ?? "codex") === "codex" &&
+      !spawnEnvironment.CODEX_API_KEY &&
+      !spawnEnvironment.OPENAI_API_KEY
+        ? { PAPERCLIP_ACPX_CODEX_AUTH_FILE: resolve(input.codexHome, "auth.json") }
+        : {}),
       // The verified sidecar bundle cannot use import.meta.url while Node
       // executes it through /proc/self/fd. Anchor its closed provider package
       // lookups at the package that owns the already-authenticated bundle.
@@ -4340,7 +4346,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (provider === "aws_agentcore") {
       mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     }
-    if (provider === "codex") {
+    if (
+      provider === "codex" ||
+      (provider === "acpx" && (this.options.acpxAgent ?? "codex") === "codex")
+    ) {
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
         codexHome: localCodexHome,
@@ -4350,7 +4359,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         apiKey:
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
-        nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        nativeMcp: provider === "codex"
+          ? nativeMcpLaunchBinding(this.options.environment) : null,
       });
     }
     const opencodeProxyPath =
@@ -5234,7 +5244,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (provider === "aws_agentcore")
       mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-    if (provider === "codex") {
+    if (
+      provider === "codex" ||
+      (provider === "acpx" && (this.options.acpxAgent ?? "codex") === "codex")
+    ) {
       await releaseMaterializedNativeRuntimeSkills(
         resolve(localCodexHome, "skills"),
       );
@@ -5247,7 +5260,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         apiKey:
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
-        nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        nativeMcp: provider === "codex"
+          ? nativeMcpLaunchBinding(this.options.environment) : null,
       });
     }
     const adoptedRunner = this.options.adoptExistingRunner;

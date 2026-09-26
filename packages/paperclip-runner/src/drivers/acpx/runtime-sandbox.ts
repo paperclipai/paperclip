@@ -398,6 +398,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     await writePrivateFile(
       join(agentHomeDirectory, "config.toml"),
       [
+        'cli_auth_credentials_store = "file"',
         // Codex shell snapshots serialize the provider process environment.
         // The ACPX sidecar receives a short-lived managed credential only so
         // it can authenticate the provider; that value must never become

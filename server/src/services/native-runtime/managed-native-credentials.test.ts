@@ -101,11 +101,26 @@ describe("managed native credential turns", () => {
     await closing;
   });
 
-  it("removes stopped-provider credentials even when refresh copy-back fails", async () => {
+  it("retries failed deletion without repeating a successful credential merge", async () => {
+    const session = { close: async () => {} } as unknown as NativeSession;
+    const copyBack = vi.fn(async () => {});
+    const remove = vi.fn(async () => {}).mockRejectedValueOnce(new Error("remote deletion failed"));
+    bindManagedNativeCredentialTurn(session, { copyBack, remove });
+    await expect(session.close({ reason: "completed" })).rejects.toThrow("remote deletion failed");
+    await session.close({ reason: "retry" });
+    expect(copyBack).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains stopped-provider credentials until a failed copy-back succeeds", async () => {
     const session = { close: async () => {} } as unknown as NativeSession;
     const remove = vi.fn(async () => {});
-    bindManagedNativeCredentialTurn(session, { copyBack: async () => { throw new Error("copy-back failed"); }, remove });
+    const copyBack = vi.fn(async () => {}).mockRejectedValueOnce(new Error("copy-back failed"));
+    bindManagedNativeCredentialTurn(session, { copyBack, remove });
     await expect(session.close({ reason: "completed" })).rejects.toThrow("copy-back failed");
+    expect(remove).not.toHaveBeenCalled();
+    await session.close({ reason: "retry" });
+    expect(copyBack).toHaveBeenCalledTimes(2);
     expect(remove).toHaveBeenCalledOnce();
   });
 });

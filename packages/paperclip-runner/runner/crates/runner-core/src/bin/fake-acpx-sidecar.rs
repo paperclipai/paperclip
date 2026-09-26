@@ -148,6 +148,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "url": std::env::var("PAPERCLIP_NATIVE_MCP_URL").ok(),
                             "hasToken": std::env::var("PAPERCLIP_NATIVE_MCP_TOKEN").is_ok(),
                             "hasUnrelatedSecret": std::env::var("UNRELATED_EVAL_SECRET").is_ok(),
+                            "codexAuthFile": std::env::var("PAPERCLIP_ACPX_CODEX_AUTH_FILE").ok(),
                         }
                     }),
                 )?;

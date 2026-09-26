@@ -265,6 +265,10 @@ async function dispatch(
         systemInstructions: params.systemInstructions,
         runtimeContext: params.runtimeContext,
         environment: process.env,
+        managedCodexCredentialSourcePath: params.agent === "codex"
+          ? process.env.PAPERCLIP_ACPX_CODEX_AUTH_FILE : undefined,
+        managedCodexCredentialReturnPath: params.agent === "codex" && process.env.PAPERCLIP_ACPX_CODEX_AUTH_FILE
+          ? `${process.env.PAPERCLIP_ACPX_CODEX_AUTH_FILE}.returned` : undefined,
         expectedIdentity: params.expectedIdentity,
         semanticTools: {
           tools: params.tools,
@@ -544,6 +548,7 @@ async function pumpTurn(
       );
     }
     const result = await runtimeTurn.result;
+    await activeHost.checkpointCredential();
     try {
       const usage = persistedAcpxTurnUsage(
         usageBefore,

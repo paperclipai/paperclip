@@ -97,7 +97,11 @@ impl AcpxSidecarTransport {
     ) -> Result<Self, LocalRunnerError> {
         let credential_keys: &[&str] = match agent {
             "claude" => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-            "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "codex" => &[
+                "OPENAI_API_KEY",
+                "CODEX_API_KEY",
+                "PAPERCLIP_ACPX_CODEX_AUTH_FILE",
+            ],
             _ => {
                 return Err(LocalRunnerError::invalid(
                     "ACPX sidecar credentials require a qualified claude or codex agent",
