@@ -1807,6 +1807,8 @@ export interface IssueFilters {
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
+  projectIds?: readonly string[];
+  assigneeAgentIds?: readonly string[];
   workspaceId?: string;
   executionWorkspaceId?: string;
   parentId?: string;
@@ -6251,6 +6253,10 @@ async function blockedInboxIssueConditions(
     conditions.push(unreadForUserCondition(companyId, unreadForUserId));
   if (filters?.projectId)
     conditions.push(eq(issues.projectId, filters.projectId));
+  if (filters?.projectIds && filters.projectIds.length > 0)
+    conditions.push(inArray(issues.projectId, [...filters.projectIds]));
+  if (filters?.assigneeAgentIds && filters.assigneeAgentIds.length > 0)
+    conditions.push(inArray(issues.assigneeAgentId, [...filters.assigneeAgentIds]));
   if (filters?.workspaceId) {
     conditions.push(
       or(
@@ -7934,6 +7940,12 @@ export function issueService(db: Db) {
       }
       if (filters?.projectId)
         conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.projectIds && filters.projectIds.length > 0)
+        conditions.push(inArray(issues.projectId, [...filters.projectIds]));
+      if (filters?.assigneeAgentIds && filters.assigneeAgentIds.length > 0)
+        conditions.push(
+          inArray(issues.assigneeAgentId, [...filters.assigneeAgentIds]),
+        );
       if (filters?.workspaceId) {
         conditions.push(
           or(
@@ -8201,6 +8213,12 @@ export function issueService(db: Db) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       if (filters?.projectId)
         conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.projectIds && filters.projectIds.length > 0)
+        conditions.push(inArray(issues.projectId, [...filters.projectIds]));
+      if (filters?.assigneeAgentIds && filters.assigneeAgentIds.length > 0)
+        conditions.push(
+          inArray(issues.assigneeAgentId, [...filters.assigneeAgentIds]),
+        );
       if (filters?.workspaceId) {
         conditions.push(
           or(

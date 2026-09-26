@@ -235,6 +235,7 @@ import {
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { isTaskBridgeKeyActor } from "./task-bridge-scope.js";
 import {
   formatAttachmentSize,
   GENERIC_ATTACHMENT_CONTENT_TYPES,
@@ -4961,14 +4962,6 @@ export function issueRoutes(
     });
     if (decision.allowed) return;
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
-  }
-
-  function isTaskBridgeKeyActor(req: Request) {
-    return (
-      req.actor.type === "agent" &&
-      req.actor.source === "agent_key" &&
-      req.actor.keyScope?.kind === "task_bridge"
-    );
   }
 
   function isSkillTestScopedActor(req: Request) {
