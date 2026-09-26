@@ -4982,16 +4982,49 @@ export function agentRoutes(
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
-    if (req.actor.type !== "board") {
-      throw forbidden("Only board-authenticated callers can manage instructions path or bundle configuration");
+    if (req.actor.type !== "board" && req.actor.type !== "agent") {
+      throw forbidden("Only board-authenticated callers or the agent itself can manage instructions path or bundle configuration");
     }
 
     const id = req.params.id as string;
+
+    // Agents can only update their own instructions path
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      throw forbidden("Agents can only manage their own instructions path");
+    }
+
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
 
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+
+    // Agents may only set instructions-path-related adapter config keys and managed paths
+    if (req.actor.type === "agent") {
+      const requestedKey = asNonEmptyString(req.body.adapterConfigKey);
+      const defaultKey = resolveInstructionsPathKey(existing.adapterType);
+      const effectiveKey = requestedKey ?? defaultKey;
+      if (effectiveKey && !KNOWN_INSTRUCTIONS_PATH_KEYS.has(effectiveKey)) {
+        throw forbidden(
+          "Agents can only update instructions-path-related adapter configuration",
+        );
+      }
+      // Reject absolute paths — agents may only use relative managed paths
+      if (req.body.path && path.isAbsolute(req.body.path)) {
+        throw forbidden(
+          "Agents can only set managed (relative) instructions paths",
+        );
+      }
+      // Reject path traversal — normalize and reject if it escapes the managed root
+      if (req.body.path) {
+        const normalized = path.posix.normalize(req.body.path.replaceAll("\\", "/")).replace(/^\/+/, "");
+        if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
+          throw forbidden(
+            "Agents can only set managed (relative) instructions paths within the bundle root",
+          );
+        }
+      }
+    }
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
