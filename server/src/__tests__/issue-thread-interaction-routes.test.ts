@@ -99,6 +99,14 @@ const mockCrossIssueInfluence = vi.hoisted(() => ({
   priorCount: 0,
   inserted: [] as Array<Record<string, unknown>>,
 }));
+// The guard issues three selects in one transaction, and the selection keys
+// are what tell them apart: contextSnapshot is the run row, count is the
+// observation counter, and a bare { id } is the ordered checkout-source lookup.
+// Only the checkout lookup calls orderBy, and the real query orders by
+// issues.id, so a fake that ignored orderBy would hand back the wrong source.
+const mockCrossIssueCheckedOut = vi.hoisted(() => ({
+  issues: [] as Array<{ id: string }>,
+}));
 const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) => unknown) => callback({
   select: (selection: Record<string, unknown>) => ({
     from: () => ({
@@ -110,17 +118,25 @@ const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) 
           };
         }
         const run = mockRunAttribution.value;
+        const rows = Object.keys(selection).includes("contextSnapshot")
+          ? (run
+            ? [{
+                id: run.runId ?? null,
+                companyId: run.companyId ?? null,
+                agentId: run.agentId ?? null,
+                responsibleUserId: run.responsibleUserId ?? null,
+                contextSnapshot: { issueId: mockCrossIssueInfluence.sourceIssueId },
+              }]
+            : [])
+          : [...mockCrossIssueCheckedOut.issues].sort((a, b) => (a.id < b.id ? -1 : 1));
         return {
+          orderBy: () => ({
+            for: () => ({
+              then: (resolve: (rows: unknown[]) => unknown) => resolve(rows),
+            }),
+          }),
           for: () => ({
-            then: (resolve: (rows: unknown[]) => unknown) => resolve(run
-              ? [{
-                  id: run.runId ?? null,
-                  companyId: run.companyId ?? null,
-                  agentId: run.agentId ?? null,
-                  responsibleUserId: run.responsibleUserId ?? null,
-                  contextSnapshot: { issueId: mockCrossIssueInfluence.sourceIssueId },
-                }]
-              : []),
+            then: (resolve: (rows: unknown[]) => unknown) => resolve(rows),
           }),
         };
       },
@@ -581,6 +597,9 @@ describe.sequential("issue thread interaction routes", () => {
     mockCrossIssueInfluence.sourceIssueId = ISSUE_ID;
     mockCrossIssueInfluence.priorCount = 0;
     mockCrossIssueInfluence.inserted.length = 0;
+    // No issue is checked out to the run unless a test says so, so the guard
+    // falls back to the run's persisted contextSnapshot as the source.
+    mockCrossIssueCheckedOut.issues = [];
     // Keep cold route imports in setup rather than the HTTP assertion timeout.
     await loadAppModules();
   }, 60_000);

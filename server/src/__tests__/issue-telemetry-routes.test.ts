@@ -17,6 +17,17 @@ const mockAgentService = vi.hoisted(() => ({
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
+  // The guard resolves a run's checkout source with
+  // where().orderBy(issues.id).for("update"), so this double has to carry
+  // orderBy between where and for or the route throws a TypeError and 500s.
+  // This suite models no checkout, so the source lookup resolves no rows and
+  // the guard falls back to the run row's contextSnapshot.
+  orderBy: () => ({
+    for: () => ({
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([]).then(onFulfilled, onRejected),
+    }),
+  }),
   for: () => ({
     then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
       Promise.resolve([{
@@ -36,12 +47,15 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
       permissions: null,
     }]).then(onFulfilled, onRejected),
 })));
+const mockDbInsertValues = vi.hoisted(() => vi.fn(async (_value: Record<string, unknown>) => undefined));
+const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: mockDbInsertValues })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+  // The guard records its observation with tx.insert(activityLog).values(...).
+  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect; insert: typeof mockDbInsert }) => Promise<unknown>) =>
+    callback({ select: mockDbSelect, insert: mockDbInsert })),
 }));
 const mockRunnerGoalService = vi.hoisted(() => ({
   projection: vi.fn(async () => null),
@@ -181,7 +195,15 @@ describe("issue telemetry routes", () => {
     }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    // where().orderBy(issues.id).for("update") is the guard's checkout-source
+    // query; without orderBy on this double every agent write 500s.
     mockDbSelectWhere.mockImplementation(() => ({
+      orderBy: () => ({
+        for: () => ({
+          then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+            Promise.resolve([]).then(onFulfilled, onRejected),
+        }),
+      }),
       for: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
           Promise.resolve([{
