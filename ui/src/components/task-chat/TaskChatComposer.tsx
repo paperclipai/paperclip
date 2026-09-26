@@ -71,6 +71,8 @@ import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 import type { RunnerGoalCapability } from "@paperclipai/shared";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
+import { useOptionalToastActions } from "@/context/ToastContext";
+import { randomUuidOrFallback } from "@/lib/random-uuid";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPausedTakeover";
@@ -414,6 +416,7 @@ export function TaskChatComposer({
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
   const stopControl = useComposerStop(onStop, stopPending);
+  const toastActions = useOptionalToastActions();
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
   const [reviewError, setReviewError] = useState(false);
@@ -661,7 +664,7 @@ export function TaskChatComposer({
 
   /** Upload an image and return its URL for inline `![](src)` markdown. */
   async function uploadInlineImage(file: File): Promise<string> {
-    const id = crypto.randomUUID();
+    const id = randomUuidOrFallback();
     setAttachments((prev) => [
       ...prev,
       {
@@ -962,6 +965,7 @@ export function TaskChatComposer({
     setBody("");
     setSubmitting(true);
     let attemptId: string | null = null;
+    let dispatched = false;
     try {
       if (queuedEdit) {
         if (!onSaveQueuedEdit) return;
@@ -978,7 +982,7 @@ export function TaskChatComposer({
         setBody(submittedBody);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = randomUuidOrFallback();
       if (draftKey) {
         saveDraft(draftKey, submittedBody);
         saveDraftSubmission(draftKey, { attemptId, reviewed: false });
@@ -1003,6 +1007,7 @@ export function TaskChatComposer({
         pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds };
         changeBody(bodyRef.current);
       }
+      dispatched = true;
       await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
       // Navigation does not invalidate the server receipt. Settle the captured
       // task before checking whether this composer is still on screen.
@@ -1042,6 +1047,20 @@ export function TaskChatComposer({
       }
       if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
+      // The Board mutation owns durable error handling, including its error
+      // toast, once the send is dispatched. Only errors before dispatch (for
+      // example the attempt-id failure this guards against) would otherwise
+      // leave the composer silently restored with no sign nothing was sent.
+      if (!dispatched && !(error instanceof CommentSubmissionUnknownError)) {
+        toastActions?.pushToast({
+          title: "Message not sent",
+          body:
+            error instanceof Error
+              ? error.message
+              : "The message could not be sent. It was restored to the composer.",
+          tone: "error",
+        });
+      }
     } finally {
       if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
       setSubmitting(false);

@@ -2345,26 +2345,37 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null },
   ) => {
     if (!conversationIssueId) return;
-    if (reassignment) {
-      await issuesApi.update(conversationIssueId, {
-        comment: body,
-        assigneeAgentId: reassignment.assigneeAgentId,
-        assigneeUserId: reassignment.assigneeUserId,
-        ...(reopen ? { status: "todo" } : {}),
-      });
-    } else {
-      const queuedRunId = conversationRunningRun?.id ?? null;
-      const comment = await issuesApi.addComment(conversationIssueId, body, reopen);
-      if (queuedRunId) {
-        setLocallyQueuedConversationCommentRunIds((current) => {
-          const next = new Map(current);
-          next.set(comment.id, queuedRunId);
-          return next;
+    try {
+      if (reassignment) {
+        await issuesApi.update(conversationIssueId, {
+          comment: body,
+          assigneeAgentId: reassignment.assigneeAgentId,
+          assigneeUserId: reassignment.assigneeUserId,
+          ...(reopen ? { status: "todo" } : {}),
         });
+      } else {
+        const queuedRunId = conversationRunningRun?.id ?? null;
+        const comment = await issuesApi.addComment(conversationIssueId, body, reopen);
+        if (queuedRunId) {
+          setLocallyQueuedConversationCommentRunIds((current) => {
+            const next = new Map(current);
+            next.set(comment.id, queuedRunId);
+            return next;
+          });
+        }
       }
+      await invalidateConversation();
+    } catch (error) {
+      // This caller bypasses the Board mutation layer, so it must own the
+      // error toast itself; the composer still restores the draft.
+      pushToast({
+        title: "Message not sent",
+        body: error instanceof Error ? error.message : "The message could not be sent.",
+        tone: "error",
+      });
+      throw error;
     }
-    await invalidateConversation();
-  }, [conversationIssueId, conversationRunningRun?.id, invalidateConversation]);
+  }, [conversationIssueId, conversationRunningRun?.id, invalidateConversation, pushToast]);
 
   const updateConversationWorkMode = useCallback(async (workMode: IssueWorkMode) => {
     if (!conversationIssueId) return;

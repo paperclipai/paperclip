@@ -70,6 +70,7 @@ import {
   type ComposerDraftSubmission,
 } from "../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { randomUuidOrFallback } from "../lib/random-uuid";
 import {
   buildIssueChatMessages,
   formatDurationWords,
@@ -4672,6 +4673,7 @@ const IssueChatComposer = forwardRef<
   forwardedRef,
 ) {
   const stopControl = useComposerStop(onStop, stopPending);
+  const toastActions = useOptionalToastActions();
   // Initialize before StrictMode's mount cleanup can flush an empty value over
   // the stored draft. The effect below handles subsequent task-key changes.
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
@@ -4987,6 +4989,7 @@ const IssueChatComposer = forwardRef<
     bodyRef.current = "";
     setBody("");
     let attemptId: string | null = null;
+    let dispatched = false;
     try {
       if (workModeChanged && onWorkModeChange) {
         await onWorkModeChange(pendingWorkMode);
@@ -4997,7 +5000,7 @@ const IssueChatComposer = forwardRef<
         setBody(trimmed);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = randomUuidOrFallback();
       if (draftKey) {
         saveDraft(draftKey, trimmed);
         saveDraftSubmission(draftKey, { attemptId, reviewed: false });
@@ -5005,7 +5008,9 @@ const IssueChatComposer = forwardRef<
         changeBody(bodyRef.current);
       }
       // assistant-ui thread.append is fire-and-forget. Await the actual Board
-      // mutation; it already owns optimistic echo and durable error handling.
+      // mutation; it already owns optimistic echo and durable error handling,
+      // including the error toast once the send is dispatched.
+      dispatched = true;
       const sendPromise = onSend(
         submittedBody, reopen, reassignment,
         attachmentIds.length ? attachmentIds : undefined, attemptId,
@@ -5038,6 +5043,20 @@ const IssueChatComposer = forwardRef<
       const restoredBody = nextDraft ? `${trimmed}\n\n${nextDraft}` : trimmed;
       if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
+      // The Board mutation owns durable error handling, including its error
+      // toast, once the send is dispatched. Only errors before dispatch (for
+      // example the attempt-id failure this guards against) would otherwise
+      // leave the composer silently restored with no sign nothing was sent.
+      if (!dispatched && !(error instanceof CommentSubmissionUnknownError)) {
+        toastActions?.pushToast({
+          title: "Message not sent",
+          body:
+            error instanceof Error
+              ? error.message
+              : "The message could not be sent. It was restored to the composer.",
+          tone: "error",
+        });
+      }
     } finally {
       if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
       setSubmitting(false);
