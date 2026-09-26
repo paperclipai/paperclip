@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
-import { pruneOversizedLaunchEnv } from "./remote-execution-env.js";
+import { budgetSshRemoteEnvWithReport } from "./remote-execution-env.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
@@ -1205,13 +1205,18 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
-    // The whole remote env is folded into one `sh -c` argv string, so an
-    // oversized value would push the launch over the OS exec limits.
-    const envEntries = Object.entries(
-      pruneOversizedLaunchEnv(options.env ?? {}),
-    )
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-    for (const [key] of envEntries) {
+    // The whole remote env is folded into one `sh -c` argv string, so the
+    // assembled env block needs a per-argument byte budget as well.
+    const { env: launchEnv, dropped } = budgetSshRemoteEnvWithReport(
+      options.env ?? {},
+    );
+    if (dropped.length) {
+      console.warn(
+        { droppedKeys: dropped },
+        "dropped oversized SSH remote env values before launch",
+      );
+    }
+    for (const [key] of Object.entries(launchEnv)) {
       if (!isValidShellEnvKey(key)) {
         throw new Error(`Invalid SSH environment variable key: ${key}`);
       }
@@ -1228,7 +1233,9 @@ export async function runSshCommand(
     // .bash_profile typically sources .bashrc itself; only source .bashrc
     // directly when no .bash_profile exists, so a host that adds nvm in
     // .bashrc still resolves node without a double-run of the setup.
-    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
+    const envArgs = Object.entries(launchEnv).map(
+      ([key, value]) => `${key}=${shellQuote(value)}`,
+    );
     const remoteScript = [
       'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
@@ -1271,9 +1278,15 @@ export async function buildSshSpawnTarget(input: {
   args: string[];
   cleanup: () => Promise<void>;
 }> {
-  // The whole remote env is folded into a single `sh -c` argv string, so an
-  // oversized value would push the launch over the OS exec limits (E2BIG).
-  const launchEnv = pruneOversizedLaunchEnv(input.env);
+  // The whole remote env is folded into a single `sh -c` argv string, so the
+  // assembled env block needs a per-argument byte budget as well (E2BIG).
+  const { env: launchEnv, dropped } = budgetSshRemoteEnvWithReport(input.env);
+  if (dropped.length) {
+    console.warn(
+      { droppedKeys: dropped },
+      "dropped oversized SSH remote env values before launch",
+    );
+  }
   for (const key of Object.keys(launchEnv)) {
     if (!isValidShellEnvKey(key)) {
       throw new Error(`Invalid SSH environment variable key: ${key}`);

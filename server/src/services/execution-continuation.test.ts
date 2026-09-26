@@ -148,7 +148,7 @@ const support = await getEmbeddedPostgresTestSupport();
         id: randomUUID(),
         companyId,
         issueId: capIssueId,
-        authorType: "user",
+        authorType: "user" as const,
         authorUserId: "local-board",
         body: `chunk ${i}: ${"x".repeat(60_000)}`,
         createdAt: new Date(Date.now() + i * 1000),
@@ -182,6 +182,83 @@ const support = await getEmbeddedPostgresTestSupport();
         );
         expect(prompt).toContain("task history truncated");
         expect(prompt).toContain("fallbackFetchNeeded");
+      } finally {
+        await db.delete(issueComments).where(eq(issueComments.issueId, capIssueId));
+        await db.delete(issues).where(eq(issues.id, capIssueId));
+        await db.delete(agents).where(eq(agents.id, capAgentId));
+      }
+    });
+    it("caps a single oversized newest comment instead of bypassing the budget", async () => {
+      const capIssueId = randomUUID();
+      const capAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: capAgentId, companyId, name: "CapOne", role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: capIssueId, companyId, title: "CapOne", status: "in_progress",
+        assigneeAgentId: capAgentId,
+      });
+      const hugeCommentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: hugeCommentId,
+        companyId,
+        issueId: capIssueId,
+        authorType: "user",
+        authorUserId: "local-board",
+        body: `huge: ${"y".repeat(150_000)}`,
+        createdAt: new Date(),
+      });
+      try {
+        const envelope = await buildExecutionContinuation({
+          db, companyId, issueId: capIssueId, agentId: capAgentId,
+          context: { wakeReason: "issue_assigned" }, summary: null,
+          exposeLowTrustRaw: false,
+        });
+        expect(envelope.messages).toHaveLength(1);
+        expect(envelope.messages[0].bodyTruncated).toBe(true);
+        expect(Buffer.byteLength(envelope.messages[0].body, "utf8")).toBeLessThanOrEqual(96 * 1024);
+        expect(envelope.truncated).toBe(true);
+        expect(envelope.fallbackFetchNeeded).toBe(true);
+      } finally {
+        await db.delete(issueComments).where(eq(issueComments.issueId, capIssueId));
+        await db.delete(issues).where(eq(issues.id, capIssueId));
+        await db.delete(agents).where(eq(agents.id, capAgentId));
+      }
+    });
+
+    it("caps the objective so a large latest request stays bounded", async () => {
+      const capIssueId = randomUUID();
+      const capAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: capAgentId, companyId, name: "CapObj", role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: capIssueId, companyId, title: "CapObj", status: "in_progress",
+        assigneeAgentId: capAgentId,
+      });
+      const objectiveCommentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: objectiveCommentId,
+        companyId,
+        issueId: capIssueId,
+        authorType: "user",
+        authorUserId: "local-board",
+        body: `objective: ${"d".repeat(120_000)}`,
+        createdAt: new Date(),
+      });
+      try {
+        const envelope = await buildExecutionContinuation({
+          db, companyId, issueId: capIssueId, agentId: capAgentId,
+          context: { wakeReason: "issue_assigned" }, summary: null,
+          exposeLowTrustRaw: false,
+        });
+        expect(envelope.objective.startsWith("objective: ")).toBe(true);
+        expect(Buffer.byteLength(envelope.objective, "utf8")).toBeLessThanOrEqual(16 * 1024 + 200);
+        expect(envelope.objective).toContain("objective truncated");
+        expect(envelope.truncated).toBe(true);
+        expect(envelope.fallbackFetchNeeded).toBe(true);
       } finally {
         await db.delete(issueComments).where(eq(issueComments.issueId, capIssueId));
         await db.delete(issues).where(eq(issues.id, capIssueId));

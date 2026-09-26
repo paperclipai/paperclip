@@ -17,6 +17,8 @@ export interface ExecutionContinuationEnvelope {
     /** Run-authored Local CLI comments retain user attribution but are not human direction. */
     createdByRunId?: string | null;
     body: string;
+    /** True when the cap sliced this body to fit the continuation budget. */
+    bodyTruncated?: boolean;
     createdAt: string;
     updatedAt: string;
     deleted: boolean;
