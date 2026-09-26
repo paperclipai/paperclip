@@ -131,6 +131,25 @@ describe("claude_local auth classification precedence", () => {
     expect(result.errorCode).toBe("claude_auth_required");
   });
 
+  it("does not seal claude_auth_required on an unparsed run that exits zero", async () => {
+    // Unparsed path with a clean exit: the login marker comes from the raw
+    // stream, and nothing else says the run failed. This is the case the
+    // exit-code gate exists for, so it must fail if that gate is removed.
+    runAdapterExecutionTargetProcess.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "checked the client config: rejectUnauthorized stays on, please run /login was only in the docs",
+      stderr: "",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBeNull();
+  });
+
   it("still reports claude_auth_required when the CLI prints a login prompt and exits non-zero", async () => {
     // No parsed result event at all: the unparsed path, gated on the exit code.
     runAdapterExecutionTargetProcess.mockResolvedValue({
