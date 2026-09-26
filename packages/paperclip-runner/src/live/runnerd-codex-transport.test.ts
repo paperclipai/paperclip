@@ -4255,9 +4255,19 @@ it("steers the active provider turn through the durable PRP command path", async
   }
 }, 30_000);
 
-it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
+it.each([
+  "held-ack",
+  "lost-ack",
+  "lost-ack-activation-first",
+  "rejected-attach",
+] as const)(
   "preserves old warm-attach authority and event ownership across %s",
   async (mode) => {
+    // Both lost-ack modes lose the old authority's ACK after its commit. The
+    // activation-first variant also holds the attach observer back until the
+    // runner's new-authority connection has replaced the old core state, which
+    // is the order a fast runner sometimes wins on its own.
+    const lostAck = mode === "lost-ack" || mode === "lost-ack-activation-first";
     const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-ack-"));
     const callsPath = join(stateDirectory, "calls.log");
     const cores: DurablePrpControlPlane[] = [];
@@ -4302,7 +4312,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
               heldEvent = structuredClone(event);
               enteredCommit();
               await commitGate;
-              if (mode === "lost-ack") {
+              if (lostAck) {
                 // The external durable effect exists, but this connection
                 // disappears before its local cursor/ACK can be published.
                 throw new Error(
@@ -4392,14 +4402,39 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
       const oldIdentity = structuredClone(core.store.state.identity);
       const runnerPid = bundle.evidence().runnerPid;
       providerPid = bundle.evidence().codexPid;
+      // The old authority retires at whichever comes first: the attach
+      // observer's rotateRunIdentity call, or the runner's new-authority
+      // connection replacing the core state with the new identity's. A fast
+      // runner can win that race, and a snapshot taken at the rotation call is
+      // then already the new authority's empty state.
+      let retiredState: typeof core.store.state | null = null;
+      const retire = () => {
+        retiredState ??= structuredClone(core.store.state);
+      };
       const rotations: (typeof core.store.state)[] = [];
       const rotate = core.rotateRunIdentity.bind(core);
       vi.spyOn(core, "rotateRunIdentity").mockImplementation(
         (identity, template) => {
+          retire();
           rotations.push(structuredClone(core.store.state));
           return rotate(identity, template);
         },
       );
+      const commitState = core.store.commit.bind(core.store);
+      vi.spyOn(core.store, "commit").mockImplementation((candidate) => {
+        if (candidate.identity.runId !== core.store.state.identity.runId) retire();
+        return commitState(candidate);
+      });
+      if (mode === "lost-ack-activation-first") {
+        const getCommand = core.getCommand.bind(core);
+        vi.spyOn(core, "getCommand").mockImplementation((commandId) => {
+          const command = getCommand(commandId);
+          return command?.type === "run.attach" &&
+            core.store.state.identity.runId === oldIdentity.runId
+            ? undefined
+            : command;
+        });
+      }
       if (mode === "rejected-attach") {
         const queue = core.queueCommand.bind(core);
         vi.spyOn(core, "queueCommand").mockImplementation(
@@ -4462,17 +4497,29 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
             ?.status,
         ).toBe("pending");
         expect(rotations).toHaveLength(0);
-        if (mode === "lost-ack") core.disconnectActiveRunner();
+        if (lostAck) core.disconnectActiveRunner();
         releaseCommit();
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
-        const retired = rotations[0]!;
+        expect(retiredState).not.toBeNull();
+        const retired = retiredState!;
         const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-        )!;
-        expect(attachedEvent.logicalEffectCount).toBe(1);
+        );
+        expect(
+          attachedEvent,
+          `held run.attached ${heldEvent!.sourceEventId} in the retired state: ` +
+            JSON.stringify({
+              ackedSourceSeq: retired.ackedSourceSeq,
+              connectionCount: retired.connectionCount,
+              tail: retired.committedEvents
+                .slice(-6)
+                .map((entry) => [entry.sourceSeq, entry.eventType]),
+            }),
+        ).toBeDefined();
+        expect(attachedEvent!.logicalEffectCount).toBe(1);
         expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
-          attachedEvent.sourceSeq,
+          attachedEvent!.sourceSeq,
         );
         expect(
           retired.committedEvents.slice(-4).map((entry) => entry.eventType),
@@ -4487,7 +4534,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
             (entry) => entry.envelope.runId === oldIdentity.runId,
           ),
         ).toBe(true);
-        if (mode === "lost-ack") {
+        if (lostAck) {
           expect(retired.connectionCount).toBeGreaterThanOrEqual(2);
           expect(effects.get(heldEvent!.sourceEventId)?.deliveries).toBe(2);
         } else {
