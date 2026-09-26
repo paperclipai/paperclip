@@ -83,6 +83,22 @@ describe("managed AI connections", () => {
     } finally { await Promise.all([subRun.cleanup(), apiRun.cleanup()]); }
   });
 
+  it("puts a Claude subscription document in a rotatable credential file and leaves the token env var empty", async () => {
+    // Claude Code rotates the short-lived access token inside this document.
+    // The run must read it from a file the CLI can rewrite. An environment
+    // variable cannot be rotated, so the credential would freeze at sign-in.
+    const userId = "claude-document-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const document = JSON.stringify({ claudeAiOauth: { accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: 1000 } });
+    await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Claude document", loginSessionId: "fixture", allAgents: true, agentIds: [] }, document);
+    const run = await prepareManagedAiRuntime(db, { ...input, binding: { provider: "anthropic", method: "subscription", mode: "responsible_user" } as const, responsibleUserId: userId, config: { env: {} } });
+    try {
+      const env = run.config.env as Record<string, string>;
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("");
+      expect(await readFile(path.join(env.CLAUDE_CONFIG_DIR, ".credentials.json"), "utf8")).toBe(document);
+    } finally { await run.cleanup(); }
+  });
+
   it("has one provider default across methods, retains unavailable defaults and honors explicit account methods", async () => {
     const userId = "provider-default-user";
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
