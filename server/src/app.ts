@@ -178,6 +178,8 @@ import {
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
+import { githubPrFeedbackRoutes } from "./routes/github-pr-feedback.js";
+import { githubPrFeedbackService } from "./services/github-pr-feedback.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -595,6 +597,12 @@ export async function createApp(
   // before Paperclip persists or acts on any event.
   const emailChannels = emailChannelService(db, { heartbeat: connectionIntentHeartbeat, storage: opts.storageService, publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl });
   app.use(emailWebhookRoutes(emailChannels));
+  // Before chatWebhookRoutes: this path has the chat route's two-segment shape.
+  app.use(
+    githubPrFeedbackRoutes(
+      githubPrFeedbackService(db, { heartbeat: connectionIntentHeartbeat }),
+    ),
+  );
   app.use(chatWebhookRoutes(chatChannels));
   // The instance validates single-use registration state and its trusted
   // current origin. This exact GET is the only public setup return.
