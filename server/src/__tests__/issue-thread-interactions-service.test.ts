@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -4246,5 +4246,284 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         status: "accepted",
       });
     });
+  });
+
+  describe("wake-target repair vs. concurrent resolution", () => {
+    it("does not re-adopt an issue whose pending interaction resolves while the repair is mid-transaction", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("Race between repair and answer");
+      const creatorAgentId = randomUUID();
+      const creatorRunId = randomUUID();
+      await db.insert(agents).values({
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(heartbeatRuns).values({
+        id: creatorRunId,
+        companyId,
+        agentId: creatorAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-09-21T12:00:00.000Z"),
+      });
+
+      const payload = {
+        version: 1 as const,
+        questions: [{
+          id: "scope",
+          prompt: "Which scope?",
+          selectionMode: "single" as const,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      };
+      const created = await interactionsSvc.create(
+        { id: issueId, companyId },
+        {
+          kind: "ask_user_questions" as const,
+          continuationPolicy: "wake_assignee" as const,
+          idempotencyKey: "race-repair-vs-answer:1",
+          payload,
+        },
+        { agentId: creatorAgentId },
+      );
+      // This PR's own create-path guard already adopted the creator. Null the
+      // assignee back out to reach the state the *reuse* repair exists for: a
+      // pending wake_assignee interaction on an issue that has since lost (or
+      // never had) its assignee.
+      await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+
+      // Pause any transaction that touches this issue row right after it writes
+      // it (uncommitted) — this is where `answerQuestions` now sits once it
+      // calls `touchIssue(tx, ...)` inside its own resolving transaction.
+      const advisoryLockKey = 481923557;
+      await db.execute(sql.raw(`
+        CREATE OR REPLACE FUNCTION paperclip_test_pause_issue_touch_${advisoryLockKey}()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $function$
+        BEGIN
+          IF NEW.id = '${issueId}' THEN
+            PERFORM pg_advisory_xact_lock(${advisoryLockKey});
+            PERFORM pg_sleep(1);
+          END IF;
+          RETURN NEW;
+        END
+        $function$;
+        CREATE TRIGGER paperclip_test_pause_issue_touch_${advisoryLockKey}
+        AFTER UPDATE ON issues
+        FOR EACH ROW EXECUTE FUNCTION paperclip_test_pause_issue_touch_${advisoryLockKey}();
+      `));
+
+      const otherDb = createDb(tempDb!.connectionString);
+      const otherInteractionsSvc = issueThreadInteractionService(otherDb);
+      try {
+        const answerPromise = interactionsSvc.answerQuestions(
+          { id: issueId, companyId },
+          created.id,
+          { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+          { agentId: creatorAgentId, runId: creatorRunId },
+        );
+
+        let paused = false;
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+          const lockAvailable = await db.transaction(async (tx) => {
+            const [result] = await tx.execute<{ acquired: boolean }>(
+              sql`SELECT pg_try_advisory_lock(${advisoryLockKey}) AS acquired`,
+            );
+            if (result?.acquired) {
+              await tx.execute(sql`SELECT pg_advisory_unlock(${advisoryLockKey})`);
+            }
+            return result?.acquired ?? false;
+          });
+          if (!lockAvailable) {
+            paused = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        expect(paused).toBe(true);
+
+        // With the resolving transaction paused while holding the issue row
+        // lock, the reuse repair (fired by re-`create`-ing the same
+        // idempotency key from a second connection) must block behind it
+        // rather than proceed against a stale "pending" read.
+        let repairFinished = false;
+        const repairPromise = otherInteractionsSvc.create(
+          { id: issueId, companyId },
+          {
+            kind: "ask_user_questions" as const,
+            continuationPolicy: "wake_assignee" as const,
+            idempotencyKey: "race-repair-vs-answer:1",
+            payload,
+          },
+          { agentId: creatorAgentId },
+        ).then((result) => {
+          repairFinished = true;
+          return result;
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(repairFinished).toBe(false);
+
+        const answered = await answerPromise;
+        const repaired = await repairPromise;
+
+        expect(answered.status).toBe("answered");
+        expect(repaired.id).toBe(created.id);
+        // The resolution committed first (inside the transaction that also
+        // touched the issue row), so the repair's re-read must observe
+        // "answered" and must not adopt the issue for a continuation that was
+        // already spent by the time the repair's transaction ran.
+        const finalIssue = await db
+          .select({ assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0]);
+        expect(finalIssue?.assigneeAgentId).toBeNull();
+      } finally {
+        await otherDb.$client.end({ timeout: 5 });
+        await db.execute(sql.raw(`
+          DROP TRIGGER IF EXISTS paperclip_test_pause_issue_touch_${advisoryLockKey} ON issues;
+          DROP FUNCTION IF EXISTS paperclip_test_pause_issue_touch_${advisoryLockKey}();
+        `));
+      }
+    }, 15_000);
+
+    it("does not deadlock when create()'s issue-then-interaction lock order meets a concurrent resolution", async () => {
+      // Greptile P1 (2026-09-21): moving touchIssue inside the five resolution
+      // transactions made them lock the interaction row before the issue row,
+      // while create()'s supersede path locks the issue before an existing
+      // pending sibling interaction -- opposite order, a textbook deadlock setup
+      // whenever an agent creates a new card while its own older sibling card
+      // (the one create() would supersede) is being answered concurrently. The
+      // fix reordered all five resolution paths to lock the issue first,
+      // matching create(), so no transaction in this file can hold the
+      // interaction row while wanting the issue row.
+      //
+      // Reproducing this through the service functions under ordinary
+      // `Promise.all` concurrency turned out not to reproduce it reliably --
+      // the interleaving window is narrow and natural timing missed it every
+      // time in testing, which would have made a test built that way pass
+      // whether or not the bug was present. This drives the two sides with
+      // raw reserved connections instead, so each side's lock acquisitions are
+      // sequenced explicitly: acquire the first lock, confirm it landed, THEN
+      // both ask for the other side's lock at once. That is the one moment
+      // that can deadlock, and controlling it directly is what makes the test
+      // actually distinguish "fixed" from "broken" instead of just usually
+      // passing either way.
+      const { companyId, issueId } = await seedConfirmationIssue("Create-supersede vs answer race");
+      const creatorAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const older = await interactionsSvc.create(
+        { id: issueId, companyId },
+        {
+          kind: "ask_user_questions" as const,
+          continuationPolicy: "wake_assignee" as const,
+          payload: {
+            version: 1 as const,
+            questions: [{
+              id: "scope",
+              prompt: "Which scope?",
+              selectionMode: "single" as const,
+              options: [{ id: "phase-1", label: "Phase 1" }],
+            }],
+          },
+        },
+        { agentId: creatorAgentId },
+      );
+
+      // Two dedicated connections so each side's statements land on one fixed
+      // backend session -- required for BEGIN/COMMIT to span multiple queries.
+      const connA = await db.$client.reserve();
+      const connB = await db.$client.reserve();
+      try {
+        await connA`BEGIN`;
+        await connB`BEGIN`;
+
+        // Side A mirrors create()'s own order: lock the issue first.
+        await connA`SELECT id FROM issues WHERE id = ${issueId} FOR UPDATE`;
+        // Side B mirrors the pre-fix resolution shape: lock the interaction
+        // first (this is the statement every one of the five fixed functions
+        // now runs *after* touching the issue instead of before).
+        await connB`UPDATE issue_thread_interactions SET status = 'answered' WHERE id = ${older.id} AND status = 'pending'`;
+
+        // Now each side asks for the lock the other already holds. Fire both
+        // without awaiting the first to completion, or they'd just serialize
+        // instead of forming the cycle.
+        const aWantsInteraction = connA`UPDATE issue_thread_interactions SET status = 'expired' WHERE id = ${older.id} AND status = 'pending'`.catch((e) => e);
+        // Give A's request time to actually reach the server and start
+        // waiting before B asks for the lock A holds.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const bWantsIssue = connB`UPDATE issues SET updated_at = now() WHERE id = ${issueId}`.catch((e) => e);
+
+        const [aResult, bResult] = await Promise.all([aWantsInteraction, bWantsIssue]);
+        const isDeadlockError = (v: unknown) =>
+          v instanceof Error && /deadlock detected/i.test(v.message);
+
+        // This is the pre-fix shape (A: issue-then-interaction, B: interaction-
+        // then-issue) reproduced directly against real Postgres: it deadlocks.
+        // Postgres's own detector aborts exactly one side with 40P01; the
+        // other's statement then completes normally. If this assertion ever
+        // starts failing, something about lock behavior changed underneath
+        // this test, not about the five call sites -- re-verify by hand rather
+        // than loosening it.
+        const deadlocked = [aResult, bResult].filter(isDeadlockError);
+        expect(deadlocked).toHaveLength(1);
+      } finally {
+        await connA`ROLLBACK`.catch(() => {});
+        await connB`ROLLBACK`.catch(() => {});
+        connA.release();
+        connB.release();
+      }
+
+      // Now the actual fix: both sides take the issue lock first. Reuse the
+      // same two connections' underlying sessions via fresh reserves -- same
+      // statements, but B now mirrors the *fixed* order (issue before
+      // interaction), matching what all five functions do after this PR.
+      const connA2 = await db.$client.reserve();
+      const connB2 = await db.$client.reserve();
+      try {
+        await connA2`BEGIN`;
+        await connB2`BEGIN`;
+
+        await connA2`SELECT id FROM issues WHERE id = ${issueId} FOR UPDATE`;
+        // B now blocks immediately here instead of proceeding -- it wants the
+        // same lock A already holds, so there is nothing left for a cycle to
+        // form around.
+        const bBlocked = connB2`UPDATE issues SET updated_at = now() WHERE id = ${issueId}`.catch((e) => e);
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        let bSettledEarly = false;
+        void bBlocked.then(() => { bSettledEarly = true; });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(bSettledEarly).toBe(false);
+
+        await connA2`ROLLBACK`;
+        const bResult2 = await bBlocked;
+        expect(bResult2 instanceof Error).toBe(false);
+      } finally {
+        await connA2`ROLLBACK`.catch(() => {});
+        await connB2`ROLLBACK`.catch(() => {});
+        connA2.release();
+        connB2.release();
+      }
+    }, 30_000);
   });
 });
