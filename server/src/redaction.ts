@@ -34,9 +34,26 @@ const AUDIT_COUNT_PAYLOAD_KEYS = new Set([
   "postTokens",
 ]);
 
+/**
+ * Numeric model budgets. The names contain "token", but the values are limits,
+ * not credentials. A non-numeric value on the same key is still redacted.
+ */
+const NUMERIC_TOKEN_LIMIT_KEYS = new Set([
+  "maxOutputTokens",
+  "maxRawInputTokens",
+]);
+
 function isAuditCountField(key: string, value: unknown): boolean {
   return (
     AUDIT_COUNT_PAYLOAD_KEYS.has(key) &&
+    typeof value === "number" &&
+    Number.isFinite(value)
+  );
+}
+
+function isNumericTokenLimitField(key: string, value: unknown): boolean {
+  return (
+    NUMERIC_TOKEN_LIMIT_KEYS.has(key) &&
     typeof value === "number" &&
     Number.isFinite(value)
   );
@@ -892,7 +909,8 @@ export function sanitizeRecord(
     if (
       SECRET_PAYLOAD_KEY_RE.test(key) &&
       !AUDIT_REASON_PAYLOAD_KEY_RE.test(key) &&
-      !isAuditCountField(key, value)
+      !isAuditCountField(key, value) &&
+      !isNumericTokenLimitField(key, value)
     ) {
       if (isSecretRefBinding(value)) {
         redacted[key] = sanitizeValue(value);

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
@@ -7,14 +9,19 @@ import {
   activityLog,
   budgetPolicies,
   companies,
+  companyMemberships,
   createDb,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { errorHandler } from "../middleware/index.js";
+import { agentRoutes } from "../routes/agents.js";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -42,6 +49,8 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     await db.delete(activityLog);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -155,6 +164,53 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       runtimeConfig: { maxConcurrentRuns: 1 },
       budgetMonthlyCents: 1234,
       metadata: { source: "hire-form" },
+    });
+  });
+
+  it("keeps requested hire config when board approval applies the stored payload", async () => {
+    const companyId = await seedCompany();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit" };
+      next();
+    });
+    app.use("/api", agentRoutes(db));
+    app.use(errorHandler);
+
+    const runtimeConfig = {
+      heartbeat: { sessionCompaction: { maxRawInputTokens: 2_000_000 } },
+    };
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Pending Coder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: { command: "echo safe", apiToken: "live-hire-token" },
+        runtimeConfig,
+        metadata: { source: "hire-form" },
+      });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+
+    const agentId = response.body.agent.id as string;
+    const [storedApproval] = await db.select().from(approvals).where(eq(approvals.id, response.body.approval.id));
+    expect(storedApproval?.payload).toMatchObject({
+      adapterConfig: { command: "echo safe", apiToken: "live-hire-token" },
+      runtimeConfig,
+    });
+    expect(response.body.approval.payload.runtimeConfig).toMatchObject(runtimeConfig);
+    expect(response.body.approval.payload.adapterConfig.apiToken).toBe(REDACTED_EVENT_VALUE);
+    expect(response.body.approval.payload.adapterConfig.command).toBe("echo safe");
+
+    await approvalService(db).approve(storedApproval!.id, "local-board", "Approved hire");
+
+    const [saved] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(saved?.status).toBe("idle");
+    expect(saved?.runtimeConfig).toMatchObject(runtimeConfig);
+    expect(saved?.adapterConfig).toMatchObject({
+      command: "echo safe",
+      apiToken: "live-hire-token",
     });
   });
 });
