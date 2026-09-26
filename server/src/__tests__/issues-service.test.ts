@@ -656,7 +656,11 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await expect(db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id)))
       .resolves.toEqual([expect.objectContaining({
         status: "expired",
-        result: { version: 1, outcome: "expired", reason: "The task assignment changed" },
+        result: {
+          version: 1,
+          outcome: "expired",
+          reason: "The task was reassigned before the connection request was answered, so the AI account is still not connected. Reconnect the account or choose an available connection.",
+        },
         resolvedAt: expect.any(Date),
       })]);
     await expect(db.select().from(toolOauthStates).where(eq(toolOauthStates.state, oauthState))).resolves.toEqual([]);

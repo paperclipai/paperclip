@@ -4538,7 +4538,7 @@ export function issueThreadInteractionService(
 
     expireConnectionIntentsForOwnershipChange: async (issue: { id: string; companyId: string }) => {
       const expired = await db.update(issueThreadInteractions).set({
-        status: "expired", result: { version: 1, outcome: "expired", reason: "The task assignment changed" },
+        status: "expired", result: { version: 1, outcome: "expired", reason: "The task was reassigned before the connection request was answered, so the AI account is still not connected. Reconnect the account or choose an available connection." },
         resolvedAt: now(), updatedAt: now(),
       }).where(and(eq(issueThreadInteractions.companyId, issue.companyId), eq(issueThreadInteractions.issueId, issue.id),
         eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"))).returning();
