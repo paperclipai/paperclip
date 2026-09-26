@@ -31,38 +31,101 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
-const mockDbSelectForRows = vi.hoisted(() => [
-  {
-    id: "55555555-5555-4555-8555-555555555555",
-    companyId: "company-1",
-    agentId: "33333333-3333-4333-8333-333333333333",
-    contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-    permissions: null,
-  },
-]);
-const mockDbSelectThen = vi.hoisted(() => (
-  onFulfilled: (rows: unknown[]) => unknown,
-  onRejected?: (reason: unknown) => unknown,
-) => Promise.resolve(mockDbSelectForRows).then(onFulfilled, onRejected));
-// The guard's checkout-source query runs where().orderBy().for("update"), so this
-// double has to carry orderBy between where and for or the route throws a TypeError.
+/**
+ * The guard issues two different reads inside one transaction: the
+ * `heartbeatRuns` row (locked `for update`) that carries the run's source
+ * issue, and the `activityLog` `count()` that is the prior cross-issue count.
+ * A single undifferentiated row for both means the counter query reads a run
+ * id where it wants a count, so a test can pass while same-issue attribution
+ * and the cap are both broken. Dispatch on the table handed to `.from()`.
+ */
+type MockInfluenceState = {
+  runRow: Record<string, unknown> | null;
+  priorCount: number;
+  pendingRows: unknown[];
+  inserted: Record<string, unknown> | null;
+};
+const mockInfluenceState = vi.hoisted(() => ({
+  value: {
+    runRow: null,
+    priorCount: 0,
+    pendingRows: [],
+    inserted: null,
+  } as MockInfluenceState,
+}));
+const mockHeartbeatRunRow = vi.hoisted(() => ({
+  id: "55555555-5555-4555-8555-555555555555",
+  companyId: "company-1",
+  agentId: "33333333-3333-4333-8333-333333333333",
+  responsibleUserId: null,
+  contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+  permissions: null,
+}));
+
+/**
+ * The guard issues two different reads inside one transaction: the
+ * `heartbeatRuns` row (locked `for update`) carrying the run's source issue,
+ * and the `activityLog` `count()` that is the prior cross-issue count. A single
+ * undifferentiated row for both means the counter query reads a run id where
+ * it wants a count, so a test passes while same-issue attribution and the cap
+ * are both broken. Dispatch on the table handed to `.from()` — `count()`
+ * selects no columns, so the table identity is the only signal available.
+ */
+const mockDbResolve = vi.hoisted(() => vi.fn(
+  (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+    Promise.resolve()
+      .then(() => mockInfluenceState.value.pendingRows)
+      .then(onFulfilled, onRejected),
+));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  orderBy: () => ({ for: () => ({ then: mockDbSelectThen }) }),
-  for: () => ({ then: mockDbSelectThen }),
-  then: mockDbSelectThen,
+  // The guard's checkout-source query runs where().orderBy().for("update"), so
+  // this double has to carry orderBy between where and for or the route throws.
+  orderBy: () => ({ for: () => ({ then: mockDbResolve }) }),
+  for: () => ({ then: mockDbResolve }),
+  then: mockDbResolve,
 })));
-const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+const mockDbSelectFrom = vi.hoisted(() => vi.fn((table: unknown) => {
+  const tableName = (table as { [Symbol.for("drizzle:Name")]?: string } | null)?.[
+    Symbol.for("drizzle:Name")
+  ];
+  if (tableName === "activity_log") {
+    mockInfluenceState.value.pendingRows = [{ count: mockInfluenceState.value.priorCount }];
+  } else if (tableName === "heartbeat_runs") {
+    mockInfluenceState.value.pendingRows = mockInfluenceState.value.runRow === null
+      ? []
+      : [mockInfluenceState.value.runRow];
+  } else if (tableName === "issues") {
+    // `findCurrentSerializedWatchdogChild` on the child-create path. No
+    // sibling watchdog child exists in these tests.
+    mockInfluenceState.value.pendingRows = [];
+  } else if (tableName === "agents") {
+    // `resolveActorSourceTrustForIssue` reads the acting agent on a
+    // child-create write. `null` sourceTrust leaves trust unelevated.
+    mockInfluenceState.value.pendingRows = [{
+      id: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      sourceTrust: null,
+    }];
+  } else {
+    throw new Error(`mock db double has no rows configured for table ${String(tableName)}`);
+  }
+  return { where: mockDbSelectWhere };
+}));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
-const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => undefined) })));
+const mockDbInsert = vi.hoisted(() => vi.fn(() => ({
+  values: (values: Record<string, unknown>) => {
+    mockInfluenceState.value.inserted = values;
+    return Promise.resolve(undefined);
+  },
+})));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
   insert: mockDbInsert,
-  // The cross-issue guard records its observation with tx.insert(...).values(...),
-  // so the transaction double has to expose insert alongside select.
   transaction: vi.fn(async (callback: (tx: {
     select: typeof mockDbSelect;
     insert: typeof mockDbInsert;
-  }) => Promise<unknown>) => callback({ select: mockDbSelect, insert: mockDbInsert })),
+  }) => Promise<unknown>) =>
+    callback({ select: mockDbSelect, insert: mockDbInsert })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -218,13 +281,9 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
-    mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
-    mockDbSelectWhere.mockImplementation(() => ({
-      orderBy: () => ({ for: () => ({ then: mockDbSelectThen }) }),
-      for: () => ({ then: mockDbSelectThen }),
-      then: mockDbSelectThen,
-    }));
+    mockInfluenceState.value.runRow = { ...mockHeartbeatRunRow };
+    mockInfluenceState.value.priorCount = 0;
+    mockInfluenceState.value.inserted = null;
     mockIssueService.createChild.mockResolvedValue({
       issue: {
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -1196,5 +1255,80 @@ describe("issue execution policy routes", () => {
         details: expect.not.objectContaining({ externalRef: expect.anything() }),
       }),
     );
+  });
+
+  describe("cross-issue influence counter", () => {
+    async function patchTargetIssue() {
+      return request(await createApp({
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .patch("/api/issues/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        .send({ title: "Cross-issue title" });
+    }
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue({
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        companyId: "company-1",
+        status: "in_progress",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+        createdByUserId: "local-board",
+        identifier: "PAP-1002",
+        title: "Other issue",
+        executionPolicy: null,
+        executionState: null,
+      });
+    });
+
+    it("counts from the activity log rather than reading the prior count as zero", async () => {
+      // The undifferentiated double read the run row for this query and saw a
+      // missing counter as 0, so a PATCH could pass at any real prior count.
+      mockInfluenceState.value.priorCount = 20;
+
+      const res = await patchTargetIssue();
+
+      expect(res.status).toBe(429);
+      expect(res.body.details).toMatchObject({
+        code: "cross_issue_influence_cap_exceeded",
+        cap: 20,
+        count: 21,
+      });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows a cross-issue write below the cap", async () => {
+      mockInfluenceState.value.priorCount = 19;
+
+      const res = await patchTargetIssue();
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalled();
+      // Attribution comes from the run row's source issue, not the target.
+      expect(mockInfluenceState.value.inserted).toMatchObject({
+        action: "issue.cross_issue_influence_observed",
+        details: expect.objectContaining({
+          sourceIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          targetIssueId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          count: 20,
+          cap: 20,
+          allowed: true,
+        }),
+      });
+    });
+
+    it("refuses a write with no matching run row instead of guessing the source issue", async () => {
+      mockInfluenceState.value.runRow = null;
+
+      const res = await patchTargetIssue();
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({
+        code: "cross_issue_influence_run_context_required",
+      });
+    });
   });
 });
