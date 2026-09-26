@@ -8082,12 +8082,23 @@ export function issueRoutes(
     // whole board. Left unchecked it reaches the service as "", which the
     // service cannot distinguish from an absent filter, and the caller gets
     // every issue in the company instead of a validation error.
-    if (req.query.identifier !== undefined) {
-      if (typeof req.query.identifier !== "string") {
+    //
+    // `key` is an accepted alias. An earlier report used that name, and an
+    // alias that answers with the whole board is the trap this filter exists
+    // to close, so the two names must not mean different things.
+    const rawIdentifierFilter = req.query.identifier ?? req.query.key;
+    if (req.query.identifier !== undefined && req.query.key !== undefined) {
+      res.status(400).json({
+        error: "identifier and key cannot be combined; key is an alias for identifier",
+      });
+      return;
+    }
+    if (rawIdentifierFilter !== undefined) {
+      if (typeof rawIdentifierFilter !== "string") {
         res.status(400).json({ error: "identifier must be a string" });
         return;
       }
-      if (req.query.identifier.trim().length === 0) {
+      if (rawIdentifierFilter.trim().length === 0) {
         res.status(400).json({ error: "identifier must not be empty" });
         return;
       }
@@ -8132,7 +8143,7 @@ export function issueRoutes(
       includeLiveDescendantSummary: includeLiveDescendantSummary === true,
       hasPlanDocument,
       q: req.query.q as string | undefined,
-      identifier: req.query.identifier as string | undefined,
+      identifier: rawIdentifierFilter as string | undefined,
       limit,
       offset,
       sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,

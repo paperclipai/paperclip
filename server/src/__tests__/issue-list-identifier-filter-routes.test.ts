@@ -210,4 +210,69 @@ describeEmbeddedPostgres("issue list routes identifier filter", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual([]);
   });
+
+  it("accepts `key` as an alias for `identifier`", async () => {
+    const target = { id: randomUUID(), identifier: "TES-8", title: "Target" };
+    const other = { id: randomUUID(), identifier: "TES-88", title: "Other" };
+    const companyId = await seedCompanyWithIssues([target, other]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ key: "TES-8" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([target.id]);
+  });
+
+  it("rejects a blank `key` rather than returning the whole board", async () => {
+    const only = { id: randomUUID(), identifier: "TES-1", title: "Only" };
+    const companyId = await seedCompanyWithIssues([only]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ key: "" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toMatch(/identifier/);
+  });
+
+  it("rejects `identifier` and `key` together instead of picking one", async () => {
+    const target = { id: randomUUID(), identifier: "TES-8", title: "Target" };
+    const other = { id: randomUUID(), identifier: "TES-88", title: "Other" };
+    const companyId = await seedCompanyWithIssues([target, other]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ identifier: "TES-8", key: "TES-88" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toMatch(/alias/i);
+  });
+
+  it("keeps q a substring match so it cannot silently take over identifier's job", async () => {
+    const short = { id: randomUUID(), identifier: "TES-1", title: "Short" };
+    const longer = { id: randomUUID(), identifier: "TES-100", title: "Longer" };
+    const companyId = await seedCompanyWithIssues([short, longer]);
+
+    const app = createApp(companyId);
+    const byQ = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ q: "TES-1" });
+    const byIdentifier = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ identifier: "TES-1" });
+
+    expect(byQ.status, JSON.stringify(byQ.body)).toBe(200);
+    expect(byIdentifier.status, JSON.stringify(byIdentifier.body)).toBe(200);
+    // The point of the issue: q is a substring and returns both, identifier is
+    // exact and returns one. If these ever converge, `q` has taken over
+    // `identifier`'s job and a caller asking for one issue gets a list.
+    expect(byQ.body.length).toBeGreaterThan(byIdentifier.body.length);
+    expect(byIdentifier.body.map((issue: { id: string }) => issue.id)).toEqual([
+      short.id,
+    ]);
+  });
 });

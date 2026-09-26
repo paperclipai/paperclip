@@ -1,4 +1,5 @@
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
+import { ISSUE_LIST_QUERY_PARAMS } from "../services/issues.js";
 import {
   experimentalApiPaths,
   experimentalApiQueries,
@@ -338,6 +339,35 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   return schema;
 }
 
+/**
+ * Read a `.describe()` off a Zod schema.
+ *
+ * Zod 4 exposes the description as a `.description` property on the schema and
+ * in the global registry, not on `_def`. Zod 3 stored it on `_def`. Read both so
+ * the helper is correct across the versions this file has to survive, and follow
+ * the optional/default/catch wrappers, which sit outside the annotated schema.
+ */
+function readSchemaDescription(schema: z.ZodTypeAny): string | undefined {
+  const candidate = schema as unknown as { description?: unknown };
+  if (typeof candidate.description === "string" && candidate.description.length > 0) {
+    return candidate.description;
+  }
+  const def = zodDef(schema);
+  if (typeof def.description === "string" && def.description.length > 0) {
+    return def.description;
+  }
+  if (
+    def.type === "optional" ||
+    def.type === "default" ||
+    def.type === "catch" ||
+    def.type === "nullable" ||
+    def.type === "readonly"
+  ) {
+    return readSchemaDescription(def.innerType as z.ZodTypeAny);
+  }
+  return undefined;
+}
+
 function isOptionalSchema(schema: z.ZodTypeAny): boolean {
   const def = zodDef(schema);
   if (
@@ -568,12 +598,21 @@ function parametersFromSchema(
   const objectSchema = unwrapSchema(schema);
   if (zodTypeName(objectSchema) !== "object") return [];
   const shape = zodDef(objectSchema).shape as Record<string, z.ZodTypeAny>;
-  return Object.entries(shape).map(([name, value]) => ({
-    name,
-    in: location,
-    required: location === "path" ? true : !isOptionalSchema(value),
-    schema: zodToOpenApiSchema(value),
-  }));
+  return Object.entries(shape).map(([name, value]) => {
+    const schema = zodToOpenApiSchema(value);
+    // Carry a Zod `.describe()` through to the parameter. Without this, a
+    // parameter that needs a caveat — `identifier` is exact, `q` is a substring
+    // — documents the name but not the behavior, which is how a caller ends up
+    // using the wrong one.
+    const description = readSchemaDescription(value);
+    return {
+      name,
+      in: location,
+      required: location === "path" ? true : !isOptionalSchema(value),
+      ...(description ? { description } : {}),
+      schema: description ? { ...schema, description } : schema,
+    };
+  });
 }
 
 class OpenAPIRegistry {
@@ -3803,16 +3842,54 @@ registry.registerPath({
 
 // ─── Issues ──────────────────────────────────────────────────────────────────
 
+/**
+ * The documented query surface of `GET /api/companies/{companyId}/issues`.
+ *
+ * Built from `ISSUE_LIST_QUERY_PARAMS` in the issue service — the same constant
+ * the route uses — so a parameter cannot appear in one and not the other. The
+ * spec previously declared only `view`; the other 34 accepted names were
+ * undiscoverable, which is how `identifier` looked plausible in the first place.
+ *
+ * `.passthrough()` is kept: the handler still ignores names it does not know, and
+ * rejecting them is a separate change.
+ */
+const issueListQuerySchema = z
+  .object(
+    Object.fromEntries(
+      Object.entries(ISSUE_LIST_QUERY_PARAMS).map(([name, accepted]) => [
+        name,
+        z
+          .string()
+          .optional()
+          .describe(
+            name === "identifier" || name === "key"
+              ? `Exact issue identifier, such as TES-85. Case-insensitive. Not a prefix: TES-1 does not match TES-100. \`key\` is an accepted alias. Accepted values: ${accepted}.`
+              : name === "q"
+                ? "Substring search over issue text. Not an exact lookup: q=TES-8 also returns TES-85. Use `identifier` for an exact match. Accepted values: " +
+                  accepted +
+                  "."
+                : `Accepted values: ${accepted}.`,
+          ),
+      ]),
+    ),
+  )
+  // The handler still tolerates names it does not read; rejecting them is a
+  // separate change. Documenting the accepted set is the part that can be
+  // done here without changing behaviour.
+  .passthrough();
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract. Use `identifier` for an exact single-issue lookup; `q` is a substring match and also returns `TES-85` for `TES-8`.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+    // Generated from ISSUE_LIST_QUERY_PARAMS so the documented list and the
+    // list the handler actually reads cannot drift apart.
+    query: issueListQuerySchema,
   },
   responses: {
     200: r.ok(),

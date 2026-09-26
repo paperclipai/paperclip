@@ -208,6 +208,62 @@ const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 const MAX_CHAT_PRESENTATION_ATTACHMENTS = 20;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
+
+/**
+ * The query parameters `GET /api/companies/{companyId}/issues` actually reads,
+ * with the type each one accepts. This is the single source for both the OpenAPI
+ * parameter list and the runtime rejection of unknown names, so a name cannot be
+ * documented without being implemented, or implemented without being documented.
+ *
+ * `identifier` and its alias `key` are exact matches. `q` is a substring match and
+ * is not a substitute: `?q=TES-8` also returns `TES-85`.
+ */
+export const ISSUE_LIST_QUERY_PARAMS = {
+  view: "compact",
+  identifier: "string",
+  key: "alias of identifier",
+  q: "string",
+  status: "string",
+  assigneeAgentId: "uuid or 'null'",
+  assigneeUserId: "string",
+  participantAgentId: "string",
+  touchedByUserId: "string",
+  inboxArchivedByUserId: "string",
+  unreadForUserId: "string",
+  projectId: "string",
+  workspaceId: "string",
+  executionWorkspaceId: "string",
+  parentId: "string",
+  parentIssueId: "alias of parentId",
+  descendantOf: "string",
+  createdFromIssueId: "string",
+  labelId: "string",
+  originKind: "string",
+  originKindPrefix: "string",
+  originId: "string",
+  limit: "positive integer",
+  offset: "non-negative integer",
+  sortField: "'updated' or 'id'",
+  sortDir: "'asc' or 'desc'",
+  afterId: "string",
+  updatedSince: "ISO 8601 timestamp",
+  attention: "'blocked'",
+  hasPlanDocument: "true or false",
+  includeRoutineExecutions: "true",
+  excludeRoutineExecutions: "true",
+  includePluginOperations: "true",
+  includeBlockedBy: "true",
+  includeBlockedInboxAttention: "true",
+  includeLiveDescendantSummary: "true",
+} as const satisfies Record<string, string>;
+
+export type IssueListQueryParamName = keyof typeof ISSUE_LIST_QUERY_PARAMS;
+
+/** The names a caller may send, in sorted order, for an error payload. */
+export const ISSUE_LIST_QUERY_PARAM_NAMES: readonly string[] = Object.freeze(
+  Object.keys(ISSUE_LIST_QUERY_PARAMS).sort(),
+);
+
 export const ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS = 100;
 export const ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS = 50;
 export const ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS = 50;
