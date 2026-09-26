@@ -1,0 +1,24 @@
+{
+  "name": "@paperclip/adapter-openshell-direct",
+  "version": "0.1.0",
+  "description": "Paperclip adapter for running agents in NVIDIA OpenShell sandboxes via direct gRPC",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.0",
+    "@grpc/proto-loader": "^0.7.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "@paperclipai/adapter-utils": "*"
+  },
+  "private": true
+}
