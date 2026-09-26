@@ -316,6 +316,25 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Pull the id a lookup asked for back out of its compiled WHERE clause, so the
+ * owner-lookup fixture can answer about the *requested* target rather than
+ * always about the calling run's agent. The compiled query keeps bound
+ * parameters under `Params`, so this reads the value out rather than trying to
+ * parse SQL text.
+ */
+function ownerLookupRequestedId(condition: unknown): string | null {
+  if (condition === undefined || condition === null) return null;
+  const params = (condition as { queryChunks?: { value?: unknown }[] }).queryChunks;
+  if (!Array.isArray(params)) return null;
+  for (const chunk of params) {
+    if (chunk && typeof chunk === "object" && typeof chunk.value === "string" && chunk.value.length > 0) {
+      return chunk.value;
+    }
+  }
+  return null;
+}
+
 function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
@@ -357,11 +376,13 @@ function createRunContextDb(
   const firstRun = runRows[0] ?? {};
   const runAgentId = typeof firstRun.agentId === "string" ? firstRun.agentId : ownerAgentId;
   const runAgentCompanyId = typeof firstRun.agentCompanyId === "string" ? firstRun.agentCompanyId : companyId;
+  let whereCondition: SQL | undefined;
   const rowsForSelection = async (
     selection: Record<string, unknown>,
     chatBindingQuery = false,
     settledRecoveryQuery = false,
     ownerLookupQuery = false,
+    ownerLookupWhere?: unknown,
   ) => {
     if (chatBindingQuery) return chatBindings;
     // An unknown selector has no settled recovery receipt. Returning the
@@ -372,7 +393,14 @@ function createRunContextDb(
     // the generic agent row below, which always resolves — so a test could not
     // exercise the "must belong to the issue company" / "active member" denials.
     if (ownerLookupQuery) {
-      return memberRows ?? [{ id: runAgentId, companyId: runAgentCompanyId }];
+      if (memberRows) return memberRows;
+      // Resolve against the id the query actually asked for. Returning the
+      // calling run's agent regardless of the target would let a positive
+      // cross-agent test pass even when the named peer has no row at all, which
+      // is the regression this fixture exists to catch.
+      const requestedId = ownerLookupRequestedId(ownerLookupWhere);
+      if (requestedId && requestedId !== runAgentId) return [];
+      return [{ id: runAgentId, companyId: runAgentCompanyId }];
     }
     const keys = Object.keys(selection);
     if (keys.includes("entityId")) return [];
@@ -390,19 +418,28 @@ function createRunContextDb(
     settledRecoveryQuery = false,
     ownerLookupQuery = false,
   ) => {
+    const rows = () =>
+      rowsForSelection(
+        selection,
+        chatBindingQuery,
+        settledRecoveryQuery,
+        ownerLookupQuery,
+        whereCondition,
+      );
     const whereResult = {
       orderBy: vi.fn(async () => []),
       limit: vi.fn(() => ({
-        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery, ownerLookupQuery)),
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rows()),
       })),
       for: vi.fn(() => ({
-        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery, ownerLookupQuery)),
+        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rows()),
       })),
-      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery, ownerLookupQuery)),
+      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rows()),
     };
     const query = {
       innerJoin: vi.fn(() => query),
       where: vi.fn((condition: SQL) => {
+        whereCondition = condition;
         if (chatBindingQuery) chatBindingQueries.push(new PgDialect().sqlToQuery(condition));
         return whereResult;
       }),
