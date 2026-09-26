@@ -31,6 +31,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_assignee_run_lock",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
+  "cross_issue_influence_unattributed_run",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -254,12 +255,33 @@ export function describeIssueWriteDenial(
         description:
           `Every agent comment and task update is attributed to a heartbeat run so the ` +
           `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
-        whoCanAct: `${actor}, once the request carries its own run id.`,
+          `The run id on this request was malformed, or named a run that does not exist, ` +
+          `so the write could not be contained.`,
+        whoCanAct: `${actor}, once the request carries a run id this server can resolve.`,
         sanctionedPath:
           `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
+          `and retry. If it is already set, the run is not one this server knows — start a new run.`,
 
+      };
+
+    case "cross_issue_influence_unattributed_run":
+      return {
+        code,
+        status: 403,
+        tone: "attribution",
+        boundary: "Run-to-task attribution",
+        title: "This run is not bound to a task, so this write cannot be attributed",
+        description:
+          `The run was found and your identity on it checked out, but nothing ties it to a ` +
+          `task: its context snapshot carries no task id, and ${issue} is not checked out to ` +
+          `this run. The cross-issue cap counts writes per source task, so a write that cannot ` +
+          `name its source cannot be counted. This is not a missing \`X-Paperclip-Run-Id\` — the ` +
+          `header was read and accepted before this refusal.`,
+        whoCanAct: `${actor}: check out ${issue} (or the task you actually woke on) so the run is ` +
+          `bound to it, or write from a run that was started for that task.`,
+        sanctionedPath:
+          `Check out the task you are working on — \`POST /api/issues/{id}/checkout\` — ` +
+          `which binds this run to it, then retry. Resending the run header will not help.`,
       };
 
     case "issue_write_attribution_spoof_rejected":
