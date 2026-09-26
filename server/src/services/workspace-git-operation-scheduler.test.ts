@@ -192,6 +192,29 @@ describe("WorkspaceGitOperationScheduler", () => {
     expect(scheduler.snapshot().inFlightCount).toBe(0);
   });
 
+  it("runs a bypassed read separately instead of joining an in-flight scan", async () => {
+    const workspace = await makeWorkspace();
+    const gate = deferred<void>();
+    let calls = 0;
+    const runner: WorkspaceGitRunner = async () => {
+      calls += 1;
+      await gate.promise;
+      return { stdout: "fresh", stderr: "" };
+    };
+    const scheduler = createWorkspaceGitOperationScheduler({ runner, defaultCacheTtlMs: 0 });
+
+    const inFlight = scheduler.run(scanInput(workspace, "same"));
+    await vi.waitFor(() => expect(scheduler.snapshot().inFlightCount).toBe(1));
+    const bypass = scheduler.run({ ...scanInput(workspace, "same"), bypassSingleFlight: true });
+    await vi.waitFor(() => expect(calls).toBe(2));
+    expect(scheduler.snapshot().totals.singleFlightJoins).toBe(0);
+
+    gate.resolve();
+    const results = await Promise.all([inFlight, bypass]);
+    expect(results.map((result) => result.singleFlightJoined)).toEqual([false, false]);
+    expect(scheduler.snapshot().inFlightCount).toBe(0);
+  });
+
   it("serves cached results until TTL expiry and evicts least-recently-used entries", async () => {
     const firstWorkspace = await makeWorkspace("same-name");
     const secondWorkspace = await makeWorkspace("same-name");
