@@ -16906,6 +16906,38 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
+  // A run is bound to an issue when its context carries the issue as either
+  // `issueId` or `taskId`; both spellings are in use, which is why the rest of
+  // this file resolves a run's issue the same way. Reading only one of them
+  // would classify a bound run as taskless and defer it as if it were a timer
+  // wake.
+  function readRunIssueId(contextSnapshot: unknown) {
+    const context = parseObject(contextSnapshot);
+    return (
+      readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId)
+    );
+  }
+
+  // Admission has to know *what* the running runs are working on, not only how
+  // many there are: every run of an agent resolves the same workspace
+  // directory, so a run with no issue context can duplicate and overwrite the
+  // work of a live issue-bound run. Same predicate as countRunningRunsForAgent,
+  // widened to the two columns the admission check reads.
+  async function listRunningRunsForAgent(agentId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      );
+  }
+
   async function withChatControlRecoveryGate(
     run: typeof heartbeatRuns.$inferSelect,
     stage: "claim" | "dispatch",
@@ -19812,12 +19844,22 @@ export function heartbeatService(
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
-      const runningCount = await countRunningRunsForAgent(agentId);
+      const runningRuns = await listRunningRunsForAgent(agentId);
+      const runningCount = runningRuns.length;
       const availableSlots = Math.max(
         0,
         policy.maxConcurrentRuns - runningCount,
       );
       if (availableSlots <= 0) return [];
+      // Every run of an agent resolves the same workspace directory, so a
+      // taskless run admitted alongside an issue-bound run is a second process
+      // writing one tree — and it holds no issue checkout, so it cannot even
+      // report what it did there. While an issue-bound run is live, leave
+      // taskless runs queued: the run-drain path re-enters admission when the
+      // bound run finishes, so they are deferred, not dropped.
+      const hasIssueBoundRunningRun = runningRuns.some((run) =>
+        Boolean(readRunIssueId(run.contextSnapshot)),
+      );
 
       const queuedRuns = await db
         .select()
@@ -19905,11 +19947,22 @@ export function heartbeatService(
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
+      // The snapshot above cannot see a bound run claimed earlier in this same
+      // pass, and with two free slots one pass can claim a bound run and then a
+      // taskless run behind it — the same two-processes-one-tree hazard. Track
+      // what this pass has already claimed, not just what was running when it
+      // started.
+      let hasIssueBoundLiveRun = hasIssueBoundRunningRun;
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
+        const queuedIssueId = readRunIssueId(queuedRun.contextSnapshot);
+        if (hasIssueBoundLiveRun && !queuedIssueId) continue;
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
-        if (claimed) claimedRuns.push(claimed);
+        if (claimed) {
+          claimedRuns.push(claimed);
+          if (queuedIssueId) hasIssueBoundLiveRun = true;
+        }
       }
       if (claimedRuns.length === 0) return [];
 
