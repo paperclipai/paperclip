@@ -3968,7 +3968,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("hides the reopen control and infers reopen for closed agent-assigned issue replies", async () => {
+  it("hides the reopen control and does not infer reopen for closed agent-assigned issue replies", async () => {
     const root = createRoot(container);
     const onAdd = vi.fn().mockResolvedValue(undefined);
 
@@ -4013,7 +4013,8 @@ describe("IssueChatThread", () => {
       submitButton?.click();
     });
 
-    expect(onAdd).toHaveBeenCalledWith("Please pick this back up", true, undefined, undefined, expect.any(String));
+    // A plain completion note must not send reopen intent for terminal work.
+    expect(onAdd).toHaveBeenCalledWith("Please pick this back up", undefined, undefined, undefined, expect.any(String));
 
     act(() => {
       root.unmount();

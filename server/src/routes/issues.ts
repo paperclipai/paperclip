@@ -191,7 +191,10 @@ import {
   type QueuedCommentIssueContext,
 } from "../modules/wake-queue/index.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
-import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
+import {
+  assertCanResolveProposal,
+  assertSecretDefinitionAdmin as assertActorSecretDefinitionAdmin,
+} from "../services/secret-proposal-authorization.js";
 import {
   buildDocumentReviewContext,
   buildPlanReviewContext,
@@ -2314,11 +2317,12 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (
-    !isClosedIssueStatus(input.issueStatus) &&
-    input.issueStatus !== "blocked"
-  )
-    return false;
+  // A plain comment may only implicitly resume work that is explicitly waiting:
+  // a `blocked` issue ("please continue"). `done` and `cancelled` are terminal,
+  // so reopening them requires an explicit `reopen: true`/`resume: true`, which
+  // the caller ORs in before consulting this helper. A plain completion note
+  // must not silently revert finished work to todo.
+  if (input.issueStatus !== "blocked") return false;
   if (
     typeof input.assigneeAgentId !== "string" ||
     input.assigneeAgentId.length === 0
@@ -16184,6 +16188,7 @@ export function issueRoutes(
               throw notFound("Secret proposal not found");
             }
             await secretProposals.approve(issue.companyId, proposal.id, {
+              cascade: true,
               resolvedByUserId,
               assertCanResolve: (lockedProposal, txDb) =>
                 assertCanResolveProposal({
@@ -16191,6 +16196,8 @@ export function issueRoutes(
                   actor: req.actor,
                   companyId: issue.companyId,
                   proposal: lockedProposal,
+                  assertSecretDefinitionAdmin: () =>
+                    assertActorSecretDefinitionAdmin(req.actor, issue.companyId),
                 }),
             });
             await notifySecretProposalResolution({

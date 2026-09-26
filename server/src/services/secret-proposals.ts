@@ -495,7 +495,7 @@ export function createSecretProposalsService(db: Db) {
             .where(eq(companySecrets.id, proposal.secretId)).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
       proposal.secretProposalId
-        ? db.select({ proposedName: companySecretProposals.proposedName }).from(companySecretProposals)
+        ? db.select({ proposedName: companySecretProposals.proposedName, status: companySecretProposals.status }).from(companySecretProposals)
             .where(eq(companySecretProposals.id, proposal.secretProposalId)).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
     ]);
@@ -511,6 +511,7 @@ export function createSecretProposalsService(db: Db) {
       ...safe,
       secretName: secret?.name ?? null,
       secretProposalName: secretProposal?.proposedName ?? null,
+      secretProposalStatus: secretProposal?.status ?? null,
       proposedBy: withAgentAppearance(proposer),
       target: target ? withAgentAppearance(target) : null,
       originIssue,
@@ -748,6 +749,7 @@ export function createSecretProposalsService(db: Db) {
             throw conflict(`Binding proposal requires pending secret proposal ${dependency.id}; retry with cascade=true`);
           }
           assertNotExpired(dependency);
+          await input.assertCanResolve?.(dependency, txDb);
           const created = await applySecretApproval(txDb, dependency, input);
           await markApproved(txDb, dependency, {
             resolvedByUserId: input.resolvedByUserId,

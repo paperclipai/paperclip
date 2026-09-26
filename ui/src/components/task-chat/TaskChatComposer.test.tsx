@@ -959,13 +959,32 @@ describe("TaskChatComposer", () => {
     expect(send.classList).toContain("disabled:opacity-100");
   });
 
-  it("passes reopen=true when the issue resumes-to-todo and the assignee is an agent", async () => {
+  it("does not pass reopen=true for a done issue with an agent assignee", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(
       <TaskChatComposer
         onAdd={onAdd}
         workMode="standard"
         issueStatus="done"
+        currentAssigneeValue="agent:a1"
+      />,
+    );
+
+    typeText("wake up");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+
+    // A plain completion note must not send reopen intent for terminal work.
+    expect(onAdd).toHaveBeenCalledWith("wake up", undefined, undefined, undefined, expect.any(String));
+  });
+
+  it("passes reopen=true for a blocked issue with an agent assignee", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TaskChatComposer
+        onAdd={onAdd}
+        workMode="standard"
+        issueStatus="blocked"
         currentAssigneeValue="agent:a1"
       />,
     );
