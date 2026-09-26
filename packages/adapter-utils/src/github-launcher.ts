@@ -10,7 +10,15 @@ const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
-const executable = originalPath.map(p => path.join(p, program)).find(p => {
+// Windows resolves a bare 'git' through PATHEXT, so probing the extensionless name alone
+// finds nothing: only git.exe is on disk. PATHEXT is unset on POSIX, where the loop below
+// reduces to the single extensionless candidate it has always probed.
+const extensions = (process.env.PATHEXT || '').split(';').map(e => e.trim()).filter(Boolean);
+const candidates = originalPath.flatMap(p => [
+  ...extensions.map(extension => path.join(p, program + extension)),
+  path.join(p, program),
+]);
+const executable = candidates.find(p => {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
 });
 if (!['git', 'gh'].includes(program) || !executable) {

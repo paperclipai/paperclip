@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, symlink, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,44 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+
+  // A launcher directory that holds only the shims, plus an isolated directory carrying
+  // nothing but a node symlink. The shebang needs node on PATH, and borrowing a real
+  // system bin directory would put a genuine extensionless git there as well, which is
+  // exactly the candidate these cases must not find.
+  async function pathExtFixture() {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-pathext-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed");
+    const real = path.join(root, "real");
+    const nodeBin = path.join(root, "node-bin");
+    for (const directory of [bin, real, nodeBin]) await mkdir(directory);
+    await symlink(process.execPath, path.join(nodeBin, "node"));
+    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    return { root, bin, real, searchPath: `${real}${path.delimiter}${nodeBin}` };
+  }
+
+  it("resolves a PATHEXT-qualified executable when the extensionless name is absent", async () => {
+    // Windows carries git.EXE on disk and never the extensionless name, so a lookup that
+    // probes only path.join(dir, 'git') resolves nothing and the shim's own not-found
+    // guard fires with exit 127 - every managed git call in an agent run fails.
+    const fixture = await pathExtFixture();
+    await writeFile(path.join(fixture.real, "git.EXE"), "#!/bin/sh\necho resolved-through-pathext\n", { mode: 0o700 });
+    const env = { ...process.env, PATH: fixture.searchPath, PATHEXT: ".COM;.EXE;.BAT" };
+    const result = await exec(path.join(fixture.bin, "git"), ["--version"], { cwd: fixture.root, env });
+    expect(result.stdout.trim()).toBe("resolved-through-pathext");
+  });
+
+  it("keeps resolving the extensionless program when PATHEXT is unset", async () => {
+    // POSIX regression guard: with no PATHEXT the candidate list must collapse to the one
+    // extensionless entry the lookup has always probed.
+    const fixture = await pathExtFixture();
+    await writeFile(path.join(fixture.real, "git"), "#!/bin/sh\necho resolved-without-pathext\n", { mode: 0o700 });
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: fixture.searchPath };
+    delete env.PATHEXT;
+    const result = await exec(path.join(fixture.bin, "git"), ["--version"], { cwd: fixture.root, env });
+    expect(result.stdout.trim()).toBe("resolved-without-pathext");
+  });
   it.each(["repository", "command"])("uses explicit %s identity for local commits without managed credentials", async (identitySource) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-local-identity-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

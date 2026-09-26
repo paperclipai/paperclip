@@ -1707,7 +1707,11 @@ export async function prepareGitHubOperationLaunchers(input: {
   const directory = githubOperationLauncherDirectory(input);
   const configDirectory = path.posix.join(directory, "gh-config");
   const basePath = await githubOperationLauncherBasePath(remote, input.env);
-  const managedPath = basePath ? `${directory}:${basePath}` : directory;
+  // A remote basePath is the remote shell's own PATH, read over sh, and it is written
+  // into POSIX profiles on that host, so it stays ':'-joined whatever this controller
+  // runs. The local basePath is this host's PATH, which Windows delimits with ';'.
+  const pathDelimiter = remote ? ":" : path.delimiter;
+  const managedPath = basePath ? `${directory}${pathDelimiter}${basePath}` : directory;
   // Login shells may reorder PATH through /etc/profile or path_helper. Restore
   // the managed launchers after startup without loading a host user's profile.
   // Empty merge overrides clear host identity before launch, but Git treats
