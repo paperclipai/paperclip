@@ -117,6 +117,7 @@ import {
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
   resolvePinnedIssueWorkspaceStrategyType,
+  unpersistableGatedExecutionWorkspaceFields,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -10636,10 +10637,25 @@ export function issueService(db: Db) {
       // Warm sandbox continuity is runtime bookkeeping, independent of the
       // opt-in UI for creating isolated worktrees. Public updates still obey
       // the feature gate; only the internal shared-workspace binding bypasses it.
-      if (!isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
-        delete issueData.executionWorkspaceSettings;
+      //
+      // The gate withholds isolation; it does not pin a task to an isolated
+      // posture it already holds. A baseline value in any of the three fields
+      // removes configuration rather than introducing any, so it is written
+      // instead of discarded — which is what makes clearing a stale binding and
+      // downgrading a stale isolated posture work. The project picker posts
+      // `executionWorkspaceId: null` on every project change, and the blanket
+      // strip left the task pointing at the previous project's workspace while
+      // answering 200, so the move then failed reference validation.
+      //
+      // The route refuses exactly the complement of what survives here, so a
+      // request that answers 200 is a request that lands.
+      // See `unpersistableGatedExecutionWorkspaceFields`.
+      const gatedExecutionWorkspaceWrite =
+        !isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace;
+      if (gatedExecutionWorkspaceWrite) {
+        for (const field of unpersistableGatedExecutionWorkspaceFields(issueData)) {
+          delete issueData[field];
+        }
       }
 
       if (issueData.status) {
@@ -11059,8 +11075,19 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        // A settings write on a reused workspace is synced onto that workspace's
+        // own config, and `buildReusedExecutionWorkspaceConfigPatchFromIssueSettings`
+        // emits an explicit `null` for every key it knows. While the gate is off
+        // the only settings values that reach the row are the gate's baseline —
+        // `null`, a bare `shared_workspace` mode, `networkEgress` — none of which
+        // names a config key, so the sync would not update the workspace but
+        // erase its `provisionCommand`, `teardownCommand`, `environmentId` and
+        // `workspaceRuntime` over a request that mentioned none of them. Any task
+        // that has run once carries the binding this would fire on, so the sync
+        // is suppressed for exactly the writes the gate reshaped.
         if (
           issueData.executionWorkspaceSettings !== undefined &&
+          !gatedExecutionWorkspaceWrite &&
           nextExecutionWorkspaceId &&
           nextExecutionWorkspacePreference === "reuse_existing"
         ) {
