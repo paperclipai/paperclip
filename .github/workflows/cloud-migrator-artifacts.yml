@@ -79,7 +79,7 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: migrator-artifacts/manifest.json
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6
         with:
           role-to-assume: arn:aws:iam::078455283791:role/paperclip-cloud-migrator-github
           aws-region: us-east-1
