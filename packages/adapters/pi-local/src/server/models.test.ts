@@ -22,12 +22,12 @@ describe("pi models", () => {
     ).rejects.toThrow("Pi requires `adapterConfig.model`");
   });
 
-  it("rejects when discovery cannot run for configured model", async () => {
+  it("falls back to configured model when discovery cannot run", async () => {
     process.env.PAPERCLIP_PI_COMMAND = "__paperclip_missing_pi_command__";
-    await expect(
-      ensurePiModelConfiguredAndAvailable({
-        model: "xai/grok-4",
-      }),
-    ).rejects.toThrow();
+    const models = await ensurePiModelConfiguredAndAvailable({
+      model: "xai/grok-4",
+    });
+    expect(models).toHaveLength(1);
+    expect(models[0].id).toBe("xai/grok-4");
   });
 });
