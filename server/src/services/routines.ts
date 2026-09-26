@@ -35,6 +35,7 @@ import type {
   Routine,
   RoutineDetail,
   RoutineDescriptionDocument,
+  RoutineHealth,
   RoutineListItem,
   RoutineManagedByPlugin,
   RoutineRevision,
@@ -1146,6 +1147,71 @@ export function routineService(
     return map;
   }
 
+  function computeRoutineHealth(
+    runs: { status: string; failureReason: string | null; triggeredAt: Date }[],
+  ): RoutineHealth {
+    if (runs.length === 0) {
+      return { state: "unknown", reason: null, since: null, consecutiveFailures: 0 };
+    }
+    if (runs[0].status !== "failed") {
+      return { state: "ok", reason: null, since: null, consecutiveFailures: 0 };
+    }
+    let consecutiveFailures = 0;
+    let since = runs[0].triggeredAt;
+    for (const run of runs) {
+      if (run.status !== "failed") break;
+      consecutiveFailures += 1;
+      since = run.triggeredAt;
+    }
+    return {
+      state: "failing",
+      reason: runs[0].failureReason ?? "Execution failed",
+      since,
+      consecutiveFailures,
+    };
+  }
+
+  async function listRoutineRunHealthByRoutineIds(companyId: string, routineIds: string[]) {
+    if (routineIds.length === 0) return new Map<string, RoutineHealth>();
+    // Last 25 runs per routine via a LATERAL join, so a streak of failures is
+    // bounded the same way getDetail()'s recentRuns already is.
+    const rows = (await db.execute(sql`
+      SELECT r.id AS routine_id, rr.status AS status, rr.failure_reason AS failure_reason, rr.triggered_at AS triggered_at
+      FROM ${routines} AS r
+      CROSS JOIN LATERAL (
+        SELECT status, failure_reason, triggered_at
+        FROM ${routineRuns}
+        WHERE routine_runs.routine_id = r.id AND routine_runs.company_id = r.company_id
+        ORDER BY routine_runs.created_at DESC
+        LIMIT 25
+      ) rr
+      WHERE r.company_id = ${companyId} AND r.id IN (${sql.join(routineIds.map((id) => sql`${id}`), sql`, `)})
+      ORDER BY r.id, rr.triggered_at DESC
+    `)) as unknown as Iterable<{
+      routine_id: string;
+      status: string;
+      failure_reason: string | null;
+      triggered_at: Date | string;
+    }>;
+
+    const grouped = new Map<string, { status: string; failureReason: string | null; triggeredAt: Date }[]>();
+    for (const row of rows) {
+      const list = grouped.get(row.routine_id) ?? [];
+      list.push({
+        status: String(row.status),
+        failureReason: row.failure_reason,
+        triggeredAt: row.triggered_at instanceof Date ? row.triggered_at : new Date(row.triggered_at),
+      });
+      grouped.set(row.routine_id, list);
+    }
+
+    const map = new Map<string, RoutineHealth>();
+    for (const routineId of routineIds) {
+      map.set(routineId, computeRoutineHealth(grouped.get(routineId) ?? []));
+    }
+    return map;
+  }
+
   async function listLiveIssueByRoutineIds(companyId: string, routineIds: string[]) {
     if (routineIds.length === 0) return new Map<string, RoutineListItem["activeIssue"]>();
     const executionBoundRows = await db
@@ -2065,11 +2131,12 @@ export function routineService(
         .where(and(...conditions))
         .orderBy(desc(routines.updatedAt), asc(routines.title));
       const routineIds = rows.map((row) => row.id);
-      const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine, managedByRoutine] = await Promise.all([
+      const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine, managedByRoutine, healthByRoutine] = await Promise.all([
         listTriggersForRoutineIds(companyId, routineIds),
         listLatestRunByRoutineIds(companyId, routineIds),
         listLiveIssueByRoutineIds(companyId, routineIds),
         listManagedRoutineMetadata(routineIds),
+        listRoutineRunHealthByRoutineIds(companyId, routineIds),
       ]);
       return rows.map((row) => ({
         ...row,
@@ -2087,6 +2154,7 @@ export function routineService(
         })),
         lastRun: latestRunByRoutine.get(row.id) ?? null,
         activeIssue: activeIssueByRoutine.get(row.id) ?? null,
+        health: healthByRoutine.get(row.id) ?? { state: "unknown", reason: null, since: null, consecutiveFailures: 0 },
       }));
     },
 
@@ -2191,6 +2259,7 @@ export function routineService(
         })) as RoutineTrigger[],
         recentRuns,
         activeIssue,
+        health: computeRoutineHealth(recentRuns),
       };
     },
 
