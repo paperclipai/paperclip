@@ -440,6 +440,109 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("records an unblock descriptor when a relation-less stranded issue is parked", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "adapter failed",
+      errorCode: "adapter_failed",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun,
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+
+    // A relation-less park has nothing to route to, so the descriptor is the only
+    // thing that can wake anyone.
+    expect(await db.select().from(issueRelations).where(eq(issueRelations.issueId, sourceIssue.id)))
+      .toHaveLength(0);
+    expect(updatedIssue).toMatchObject({
+      status: "blocked",
+      // The action's own next step, not prose invented at the park site.
+      unblockDescriptor: { owner: "board", action: action!.nextAction },
+    });
+    // The escalation deliberately declines to wake the failed owner (`no_takeover`),
+    // so the descriptor must not name that agent.
+    expect(updatedIssue?.unblockDescriptor?.owner).not.toEqual({ agentId: coderId });
+    // Arming bookkeeping the unblock notifier reads; a set `blockedOwnerNotifiedAt`
+    // would suppress the wake.
+    expect(updatedIssue?.blockedTransitionAt).toBeInstanceOf(Date);
+    expect(updatedIssue?.blockedOwnerNotifiedAt).toBeNull();
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  // An agent-owned descriptor is reachable here: `preserveExistingOwner` keeps the
+  // owner of an active action, so a stranded park can inherit one. It still must not
+  // be written as agent-owned. `deliverAgentUnblockNotification` has exactly one
+  // caller -- the issue PATCH route, guarded by `if (enteringBlocked)` -- so a
+  // descriptor written by this background service wakes nobody, and the blocked
+  // inbox lists `board`-owned descriptors only. An agent-owned one would name an
+  // owner that nothing notifies and nothing displays.
+  it("parks with a board-owned descriptor even when an agent owner is preserved", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "process_lost",
+      fingerprint: "stranded-park-owner",
+      nextAction: "Repair the execution path.",
+      wakePolicy: { type: "bounded_recovery_owner", ownerAgentId: managerId, attempt: 1, maxAttempts: 5 },
+      attemptCount: 1,
+      maxAttempts: 5,
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "process lost",
+        errorCode: "process_lost",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    // The preserved owner stays on the action, so the routing decision survives.
+    expect(action?.ownerAgentId).toBe(managerId);
+    expect(updatedIssue?.unblockDescriptor).toEqual({
+      owner: "board",
+      action: action!.nextAction,
+    });
+    // The deliverable path, and only that one.
+    expect(updatedIssue?.unblockDescriptor?.owner).not.toEqual({ agentId: managerId });
+  });
+
   // Model the production payload: `requestedRef` keeps the operator spelling,
   // and the fingerprint carries the canonical remote ref. Two equivalent
   // spellings of one remote branch share `identityRef`, so they share one
