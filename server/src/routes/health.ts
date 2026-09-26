@@ -123,6 +123,7 @@ export function healthRoutes(
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
+    authDisableSignUp?: boolean;
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
@@ -131,6 +132,7 @@ export function healthRoutes(
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
     authReady: true,
+    authDisableSignUp: false,
     companyDeletionEnabled: true,
   },
 ) {
@@ -396,6 +398,9 @@ export function healthRoutes(
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
+        features: {
+          authDisableSignUp: opts.authDisableSignUp ?? false,
+        },
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
@@ -421,6 +426,7 @@ export function healthRoutes(
       bootstrapStatus,
       bootstrapInviteActive,
       features: {
+        authDisableSignUp: opts.authDisableSignUp ?? false,
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       serverInfo,
