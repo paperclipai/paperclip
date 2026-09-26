@@ -53,13 +53,20 @@ set -euo pipefail
 # dump. A tar from an earlier backup run can sit at or past the stale floor,
 # end on a line boundary, and still lack events the dump preceded — nothing
 # in the file tells the two apart. So the producer writes the dump artifact's
-# sha256 to <data-dir>/.backup-generation after the dump is complete and
-# before the tar starts:
+# sha256 to <data-dir>/.backup-generation after the dump is complete, and
+# names that marker as the tar's first member:
 #
 #   sha256sum db-<ts>.sql.gz > "$PAPERCLIP_HOME/.backup-generation"
+#   tar -czf paperclip-<ts>.tar.gz -C "$(dirname "$PAPERCLIP_HOME")" \
+#     "$(basename "$PAPERCLIP_HOME")/.backup-generation" <kept paths>
 #
-# and --dump-sha256 holds the restored marker to the dump being restored. A
-# marker naming any other dump, or none, fails before any ref is checked.
+# --dump-sha256 holds the archive's first member to the dump being restored.
+# First matters: the marker is one mutable file, and a tar that walks the
+# tree for hours can reach it after a later backup run rewrote it, having
+# already read its transcripts before that run's dump. What the tar read
+# before any transcript is its first member, so that is the one checked. A
+# first member that is not the marker, or names any other dump, fails before
+# any ref is checked; so does a restored tree whose marker names another.
 # Without --dump-sha256 an unfinalized transcript is unbounded and fails
 # unless --allow-unbound is given. Finalized runs need no marker: a
 # transcript from another generation does not match their digest.
@@ -77,7 +84,8 @@ set -euo pipefail
 # Usage:
 #   restore-verify-logs.sh <data-dir> [--run-logs-dir <dir>] [--max-missing <n>]
 #                          [--max-torn <n>] [--expect <n>] [--allow-empty]
-#                          [--allow-unverified] [--dump-sha256 <hex>]
+#                          [--allow-unverified]
+#                          [--dump-sha256 <hex> --archive <file>]
 #                          [--allow-unbound]
 #
 # <data-dir> is PAPERCLIP_HOME (the restored data directory) or an instance
@@ -112,20 +120,24 @@ set -euo pipefail
 # restored (`sha256sum db-<ts>.sql.gz`). <data-dir> must then be the root the
 # data-directory archive extracted to, which is where .backup-generation is.
 #
+# --archive <file>: the data-directory archive <data-dir> was extracted from.
+# Required with --dump-sha256; its first member is the marker checked.
+#
 # --allow-unbound: accept unfinalized transcripts with no generation marker
 # checked, and say so on the PASSED line. For artifacts from a producer that
 # does not write the marker; it is the old guarantee, stated as such.
 #
 # --allow-unverified: accept input with no digest columns at all (the
 # two-column form) and report presence only. Without it, such input fails, so
-# a PASSED line always means content was compared.
+# a PASSED line always means content was compared. It does not waive the
+# marker: a row with no digest is unfinalized as far as this script knows.
 #
 # Exits non-zero if more than --max-missing refs are missing (default 0), more
 # than --max-torn unfinalized transcripts are torn (default 0), or any ref's
 # content differs from its recorded digest, so it gates a script.
 
 usage() {
-  echo "usage: $0 <data-dir> [--run-logs-dir <dir>] [--max-missing <n>] [--max-torn <n>] [--expect <n>] [--allow-empty] [--allow-unverified] [--dump-sha256 <hex>] [--allow-unbound]" >&2
+  echo "usage: $0 <data-dir> [--run-logs-dir <dir>] [--max-missing <n>] [--max-torn <n>] [--expect <n>] [--allow-empty] [--allow-unverified] [--dump-sha256 <hex> --archive <file>] [--allow-unbound]" >&2
   exit 2
 }
 
@@ -137,6 +149,7 @@ EXPECT=""
 ALLOW_EMPTY=0
 ALLOW_UNVERIFIED=0
 DUMP_SHA=""
+ARCHIVE=""
 ALLOW_UNBOUND=0
 
 while [ $# -gt 0 ]; do
@@ -185,6 +198,11 @@ while [ $# -gt 0 ]; do
         *[!0-9a-f]*) echo "--dump-sha256 needs a sha256 hex digest, got: $2" >&2; usage ;;
       esac
       [ "${#DUMP_SHA}" -eq 64 ] || { echo "--dump-sha256 needs a sha256 hex digest, got: $2" >&2; usage; }
+      shift 2
+      ;;
+    --archive)
+      [ $# -ge 2 ] || usage
+      ARCHIVE="$2"
       shift 2
       ;;
     --allow-unbound)
@@ -238,6 +256,8 @@ fi
 generation_proven=0
 if [ -n "$DUMP_SHA" ]; then
   [ -n "$DATA_DIR" ] || { echo "--dump-sha256 needs <data-dir>, the root the archive extracted to" >&2; usage; }
+  [ -n "$ARCHIVE" ] || { echo "--dump-sha256 needs --archive, the data-directory tar: its first member is the marker checked" >&2; usage; }
+  [ -f "$ARCHIVE" ] || { echo "FAIL: archive not found: $ARCHIVE" >&2; exit 1; }
   marker="$DATA_DIR/.backup-generation"
   if [ ! -f "$marker" ]; then
     echo "FAIL: no .backup-generation marker in $DATA_DIR; nothing was checked." >&2
@@ -254,6 +274,33 @@ if [ -n "$DUMP_SHA" ]; then
     echo "      marker names ${marker_sha:-(empty)}" >&2
     echo "      The tar belongs to a different backup run. Restore the tar written" >&2
     echo "      by the same run as the dump." >&2
+    exit 1
+  fi
+  # The tree's marker is the last copy the tar read. The first member is the
+  # copy it read before any transcript, and only that one orders the tar
+  # after the dump. head closes the listing early; tar's SIGPIPE is fine,
+  # an unreadable archive leaves the name empty and fails below.
+  first_member="$(set +o pipefail; tar -tzf "$ARCHIVE" 2>/dev/null | head -n 1)"
+  # At the root, or under exactly one top-level directory: the level the
+  # runbook's --strip-components=1 extracts to <data-dir>.
+  if ! [[ "${first_member#./}" =~ ^([^/]+/)?\.backup-generation$ ]]; then
+    echo "FAIL: .backup-generation is not the first member of $ARCHIVE; nothing was checked." >&2
+    echo "      first member is ${first_member:-(none: unreadable archive)}" >&2
+    echo "      Unless the tar reads the marker before any transcript, a backup run" >&2
+    echo "      that started later can rewrite it mid-walk, and the tar carries that" >&2
+    echo "      run's name over transcripts read before its dump." >&2
+    exit 1
+  fi
+  first_sha="$(set +o pipefail; tar -xzOf "$ARCHIVE" "$first_member" 2>/dev/null | head -n 1)"
+  first_sha="${first_sha%% *}"
+  first_sha="$(printf '%s' "$first_sha" | tr 'A-F' 'a-f')"
+  if [ "$first_sha" != "$DUMP_SHA" ]; then
+    echo "FAIL: the data-directory tar was not started after this dump; nothing was checked." >&2
+    echo "      restoring dump   $DUMP_SHA" >&2
+    echo "      first member names ${first_sha:-(empty)}" >&2
+    echo "      The tar started before this dump finished — a different backup run," >&2
+    echo "      possibly one still walking the tree when this dump was written." >&2
+    echo "      Restore the tar written by the same run as the dump." >&2
     exit 1
   fi
   generation_proven=1
@@ -462,7 +509,7 @@ fi
 # known to hold what the dump preceded if the tar is known to follow it.
 unbound=0
 if [ "$generation_proven" -ne 1 ]; then
-  unbound=$((floored + unverified + torn - presence_only))
+  unbound=$((floored + unverified + torn))
 fi
 if [ "$unbound" -gt 0 ] && [ "$ALLOW_UNBOUND" -ne 1 ]; then
   echo "FAIL: $unbound unfinalized transcript(s) cannot be bounded: nothing proves this" >&2

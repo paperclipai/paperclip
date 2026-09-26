@@ -42,7 +42,8 @@ set -euo pipefail
 #                        marker (its producer does not write one), so nothing
 #                        ties it to --db and in-flight transcripts cannot be
 #                        bounded; accept that, and say so. Without it the
-#                        marker must name the sha256 of --db
+#                        marker must be the tar's first member and name the
+#                        sha256 of --db
 #   --boot-timeout <s>   seconds to wait for the booted server, default 300;
 #                        migrations newer than the dump apply during this
 #   --keep               leave the containers, network and extracted tree
@@ -253,8 +254,9 @@ fi
 #    the extracted file against them, so a transcript the tar captured
 #    mid-write fails here instead of passing as "present". last_output_bytes
 #    is the floor for a run still in flight at the dump, and the tar's
-#    .backup-generation marker, held to --db's own sha256, proves the tar was
-#    taken after this dump and so holds every byte those runs wrote before it.
+#    .backup-generation marker — its first member, held to --db's own sha256 —
+#    proves the tar started after this dump and so holds every byte those
+#    runs wrote before it.
 step "run-log reachability and content (every ref, tolerance $MAX_MISSING missing, $MAX_TORN torn)"
 #    The rows go to a file first and the checker is held to the database's
 #    count: `docker exec` piped into a reader that falls behind has been
@@ -270,7 +272,7 @@ if [ "$ALLOW_UNBOUND" -eq 1 ]; then
   generation_args=(--allow-unbound)
 else
   dump_sha="$(sha256sum "$DB_ARTIFACT")"
-  generation_args=(--dump-sha256 "${dump_sha%% *}")
+  generation_args=(--dump-sha256 "${dump_sha%% *}" --archive "$VOLUME_ARTIFACT")
 fi
 "$SCRIPT_DIR/restore-verify-logs.sh" "$EXTRACT_DIR" --max-missing "$MAX_MISSING" \
   --max-torn "$MAX_TORN" --expect "$ref_count" "${generation_args[@]}" < "$refs_file"

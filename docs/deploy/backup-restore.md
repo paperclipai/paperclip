@@ -77,11 +77,14 @@ control, and it is worth getting right:
 - Reversed — tar first, dump last — the database can reference files created
   after the tar was made, and those references are dangling on restore. That is
   the failure mode that looks like data loss.
-- **Between the two, write the pairing marker.** Once the dump file is complete
-  and before the tar starts:
+- **Between the two, write the pairing marker, and tar it first.** Once the
+  dump file is complete, write its sha256 into the data directory and name
+  that file as the tar's first member:
 
   ```sh
   sha256sum db-<ts>.sql.gz > "$PC_DATA/.backup-generation"
+  tar -czf paperclip-<ts>.tar.gz -C "$(dirname "$PC_DATA")" \
+    "$(basename "$PC_DATA")/.backup-generation" <kept paths>
   ```
 
   The tar then carries the name of the dump it followed, and the restore check
@@ -89,6 +92,14 @@ control, and it is worth getting right:
   a claim about the producer that nothing in the artifacts can confirm: a
   data-directory tar from an earlier backup run, paired with this run's dump,
   looks the same file by file.
+
+  *First* is what makes the marker mean anything. It is one mutable file, and
+  a tar that walks the tree for an hour can reach it after the next backup
+  run has rewritten it — carrying that run's name over transcripts it read
+  before that run's dump. The first member is what the tar read before any
+  transcript, so it names a dump that finished before every transcript was
+  read, whatever else was running. The restore check reads the first member
+  from the archive and fails a tar whose first member is anything else.
 
 This ordering removes the *systematic* direction of failure. It does not make the
 pair a point-in-time image, and two residual risks survive it:
@@ -158,24 +169,39 @@ artifacts better. Before a tier is sold on a producer, the producer does all
 of these, and a restore of its output passes `scripts/restore-smoke.sh`
 without `--allow-unbound`:
 
-1. **Dump the database first**, as one `pg_dump`, and fail the run if it fails.
-2. **Write the pairing marker** — the dump artifact's sha256 to
-   `<data-dir>/.backup-generation` — after the dump is complete and before the
-   tar starts.
-3. **Tar the kept paths only** (the list above), so the tar takes minutes.
-4. **Ship all three or none.** A run that loses one artifact ships nothing and
+1. **Run one backup at a time.** Hold an exclusive lock for the whole run and
+   fail, loudly, if it is already held — do not queue:
+
+   ```sh
+   exec 9>/var/lock/paperclip-backup.lock
+   flock -n 9 || { echo "a backup run is still in progress" >&2; exit 1; }
+   ```
+
+   A tar can take hours, and a timer fires on the hour regardless. Two runs at
+   once share one `.backup-generation`, compete for the disk, and a slow tar
+   overlaps every later run until one fails. A skipped run is an alert; an
+   overlapped one is not.
+2. **Dump the database first**, as one `pg_dump`, and fail the run if it fails.
+3. **Write the pairing marker** — the dump artifact's sha256 to
+   `<data-dir>/.backup-generation` — after the dump is complete, and **name
+   it as the tar's first member** (the snippet above). The restore check
+   fails a tar whose first member is anything else, so this one is verified
+   from the artifact rather than taken on trust; it holds even if step 1 is
+   ever broken.
+4. **Tar the kept paths only** (the list above), so the tar takes minutes.
+5. **Ship all three or none.** A run that loses one artifact ships nothing and
    fails loudly, so a gap is an alert rather than an old artifact silently
    paired with a new one.
 
-Those four make an artifact set whose run history is proven complete on
+Those five make an artifact set whose run history is proven complete on
 restore. They do not make the data-directory tar an image of one instant; for
 that, a tier also needs quiescing or a snapshot (above). So:
 
 | Tier | Needs |
 |---|---|
-| Weekly, or any cadence on the database dump alone | 1 and 4 |
-| Any cadence on the full artifact set | 1 to 4 |
-| Hourly on the full artifact set, described as consistent | 1 to 4, plus quiescing or a filesystem snapshot |
+| Weekly, or any cadence on the database dump alone | 1, 2 and 5 |
+| Any cadence on the full artifact set | 1 to 5 |
+| Hourly on the full artifact set, described as consistent | 1 to 5, plus quiescing or a filesystem snapshot |
 
 Until a producer meets the row a tier is sold under, the tier should not be
 scheduled, and should not be described as if the schedule were the guarantee.
@@ -523,7 +549,8 @@ restored file against them.
   "select count(*) from heartbeat_runs
     where log_store = 'local_file' and log_ref is not null"   # note the number
 scripts/restore-verify-logs.sh "$PC_DATA" --expect <that number> \
-  --dump-sha256 "$(sha256sum db-<ts>.sql.gz | cut -d' ' -f1)" < run-log-refs.tsv
+  --dump-sha256 "$(sha256sum db-<ts>.sql.gz | cut -d' ' -f1)" \
+  --archive paperclip-<ts>.tar.gz < run-log-refs.tsv
 ```
 
 Write the refs to a file; do not pipe `psql` straight into the checker. When
@@ -558,11 +585,13 @@ numbers:
   from the minute before the dump is recorded nowhere in the dump, and no
   per-file check can bound it — a tar from an earlier backup run can hold a
   file past the floor that still lacks those events. What bounds it is the
-  pairing marker: `--dump-sha256` holds `.backup-generation` in the restored
-  tree to the dump being restored, which proves the tar read every transcript
-  after the dump finished, and a transcript is append-only, so it holds
-  everything written before. A marker naming another dump, or none, fails
-  before any ref is checked. Without `--dump-sha256`, unfinalized transcripts
+  pairing marker: `--dump-sha256` holds the archive's first member,
+  `.backup-generation` (`--archive` names the archive), to the dump being
+  restored, which proves the tar read every transcript after the dump
+  finished, and a transcript is append-only, so it holds everything written
+  before. A first member that is not the marker, or names another dump, fails
+  before any ref is checked — so does a tar that read the marker again after
+  a later backup run rewrote it. Without `--dump-sha256`, unfinalized transcripts
   fail as **unbounded**; `--allow-unbound` accepts them for artifacts from a
   producer that writes no marker, and the PASSED line says they were not
   bounded. Finalized runs need no marker: their digests pin the generation
@@ -591,7 +620,9 @@ none (measured: 0 of 6070), so one means the files are from a different
 generation than the dump, or the tree was tarred *before* the dump and a run
 finished in between. Input that carries no digests at all — the two-column
 query from an older version of this page — fails too, because presence alone
-is not the check; `--allow-unverified` accepts it knowingly.
+is not the check; `--allow-unverified` accepts it knowingly. It does not
+waive the pairing marker: a row with no digest is unfinalized as far as the
+checker knows, so it needs `--dump-sha256` or `--allow-unbound` as well.
 
 **Missing refs need reading, not just counting.** A deployment can carry a few
 dangling refs of its own — a run whose transcript was lost at the source long
@@ -747,8 +778,8 @@ container, so the host needs no PostgreSQL client. In order it checks:
    extracted tree **and is the file the server finalized** — size and SHA-256
    compared with what the database recorded — and every unfinalized one ends
    on a line boundary, so a transcript the tar caught mid-write fails rather
-   than passing as present. The tar's `.backup-generation` marker must name
-   the sha256 of `--db`, so an unfinalized transcript is known to hold
+   than passing as present. The tar's first member must be its
+   `.backup-generation` marker, naming the sha256 of `--db`, so an unfinalized transcript is known to hold
    everything the dump preceded; `--allow-unbound` accepts a tar from a
    producer that writes no marker, and says so. `--max-missing <n>` and
    `--max-torn <n>` tolerate the source's own known dangling and torn
@@ -832,14 +863,20 @@ from server restarts a month before the backup.
 served)`, exit 0.
 
 The pairing was then exercised on the same deployment with a producer that
-follows the contract: the dump (30 s), `sha256sum` of it into
-`.backup-generation`, then a tar of the run logs, secrets and `config.json`
-(33 s). `restore-smoke.sh` without `--allow-unbound` passed: 6513 refs, 6217
-byte-identical to the recorded digest, 261 unfinalized at or past their
-recorded length, 1 with none, 23 torn and 11 missing (the source's own), and
-`data directory taken after dump 6714371ba771`. The same dump paired with the
-previous day's tar — a real earlier-generation artifact — failed at the marker
-before any ref was checked, exit 1.
+follows the contract: under `flock`, the dump (30 s), `sha256sum` of it into
+`.backup-generation`, then a tar with that marker as its first member followed
+by the run logs, secrets and `config.json` (33 s). `restore-smoke.sh` without
+`--allow-unbound` passed: 6516 refs, 6220 byte-identical to the recorded
+digest, 261 unfinalized at or past their recorded length, 1 with none, 23 torn
+and 11 missing (the source's own), and `data directory taken after dump
+f483d74bb5f2`.
+
+Two pairings that must not pass were run against real artifacts too. The same
+dump with the previous day's tar — an earlier-generation artifact — failed at
+the marker before any ref was checked, exit 1. So did a tar shaped like an
+overlapping run's: first member naming an earlier dump, a later copy naming
+this one. Extracted, that tree's marker names this dump, and the checker
+before first-member checking passed it; now it fails, exit 1.
 
 ## Giving a customer their data back
 
