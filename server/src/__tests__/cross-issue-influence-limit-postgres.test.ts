@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -31,6 +32,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -112,5 +114,296 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+  });
+
+  it("treats a timer run's active checkout as its source issue context", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const checkedOutIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Foreman",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // Timer heartbeat run: no issueId/taskId in its context snapshot.
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: checkedOutIssueId,
+        companyId,
+        title: "Checked-out issue",
+        identifier: "CAP-10",
+        checkoutRunId: runId,
+        executionLockedAt: new Date(),
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        title: "Unrelated issue",
+        identifier: "CAP-11",
+      },
+    ]);
+
+    // Same-issue write against the checked-out issue: exempt, not counted.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: checkedOutIssueId,
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toBeNull();
+
+    // Cross-issue write: attributed to the checked-out issue and counted.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: otherIssueId,
+      targetIssueIdentifier: "CAP-11",
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, count: 1, mode: "enforce" });
+
+    const recorded = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.details).toMatchObject({
+      sourceIssueId: checkedOutIssueId,
+      targetIssueId: otherIssueId,
+    });
+  });
+
+  it("does not exempt a write when caller-supplied identifier matches bound issue but target ID differs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const checkedOutIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Foreman",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: checkedOutIssueId,
+        companyId,
+        title: "Checked-out issue",
+        identifier: "CAP-10",
+        checkoutRunId: runId,
+        executionLockedAt: new Date(),
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        title: "Unrelated issue",
+        identifier: "CAP-11",
+      },
+    ]);
+
+    // Caller provides targetIssueId of unrelated issue, but targetIssueIdentifier of the bound issue.
+    // Must NOT be exempt; must count against the limit.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: otherIssueId,
+      targetIssueIdentifier: "CAP-10",
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, count: 1, mode: "enforce" });
+
+    const recorded = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.details).toMatchObject({
+      sourceIssueId: checkedOutIssueId,
+      targetIssueId: otherIssueId,
+    });
+  });
+
+  it("does not exempt a stale terminal binding while a current binding exists", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const activeIssueId = randomUUID();
+    const terminalIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Foreman",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    // Recovery/retry paths can leave a finished issue referencing a run that
+    // has moved on to other work: the active binding and the stale terminal
+    // binding coexist until the finishing sweep clears the stale one.
+    await db.insert(issues).values([
+      {
+        id: activeIssueId,
+        companyId,
+        title: "Active issue",
+        identifier: "CAP-20",
+        checkoutRunId: runId,
+        executionLockedAt: new Date(),
+      },
+      {
+        id: terminalIssueId,
+        companyId,
+        title: "Finished issue",
+        identifier: "CAP-21",
+        status: "done",
+        checkoutRunId: runId,
+        executionLockedAt: new Date(Date.now() - 60_000),
+      },
+    ]);
+
+    // The active binding still owns same-issue writes.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: activeIssueId,
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toBeNull();
+
+    // The stale terminal binding is not ownership: the write counts against
+    // the cap and is attributed to the run's current binding.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: terminalIssueId,
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, count: 1, mode: "enforce" });
+
+    const recorded = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.details).toMatchObject({
+      sourceIssueId: activeIssueId,
+      targetIssueId: terminalIssueId,
+    });
+  });
+
+  it("fails closed when a snapshot-less run's only binding is terminal", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const terminalIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Foreman",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    await db.insert(issues).values({
+      id: terminalIssueId,
+      companyId,
+      title: "Finished issue",
+      identifier: "CAP-22",
+      status: "cancelled",
+      checkoutRunId: runId,
+      executionLockedAt: new Date(),
+    });
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: terminalIssueId,
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
   });
 });

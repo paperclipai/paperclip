@@ -1,6 +1,6 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, desc, eq, notInArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -109,9 +109,40 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
-    if (
+      let sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+      if (!sourceIssueId) {
+        // A timer heartbeat run starts without issue context. The issue it
+        // actively checks out or is executing is its legitimate source issue
+        // (same ownership rule as status cards): writes there are same-issue,
+        // writes elsewhere count against the per-run cross-issue cap. Only a
+        // current, non-terminal binding counts as ownership — recovery and
+        // retry paths can leave a finished issue referencing a run that has
+        // moved on, and a stale terminal binding must not hand out uncounted
+        // writes (Greptile P1 on the binding fallback).
+        const boundIssues = await tx
+          .select({ id: issues.id, identifier: issues.identifier })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, input.companyId),
+            or(
+              eq(issues.checkoutRunId, input.runId),
+              eq(issues.executionRunId, input.runId),
+            ),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ))
+          .orderBy(desc(issues.executionLockedAt), desc(issues.updatedAt));
+      if (boundIssues.length === 0) throw crossIssueInfluenceRunContextError();
+      const matchingBound = boundIssues.find((row) => row.id === input.targetIssueId);
+      if (
+        matchingBound &&
+        (!input.targetIssueIdentifier ||
+          !matchingBound.identifier ||
+          matchingBound.identifier.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      ) {
+        return null;
+      }
+      sourceIssueId = boundIssues[0].id;
+    } else if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
     ) {
