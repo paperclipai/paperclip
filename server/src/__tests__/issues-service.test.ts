@@ -2387,6 +2387,62 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     );
   });
 
+  it("falls back to updated_at for rows written before the last_activity_at backfill", async () => {
+    const companyId = randomUUID();
+    const backfilledIssueId = randomUUID();
+    const unbackfilledIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    // A row the migration has not reached yet keeps a NULL last_activity_at.
+    // The trigger that would otherwise maintain the column is what we are
+    // deliberately standing in front of, so it is disabled for the insert.
+    await db.execute(
+      sql`ALTER TABLE ${issues} DISABLE TRIGGER paperclip_issue_last_activity_trigger`,
+    );
+    try {
+      await db.insert(issues).values({
+        id: unbackfilledIssueId,
+        companyId,
+        title: "Written before the backfill",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-03-27T12:00:00.000Z"),
+      });
+    } finally {
+      await db.execute(
+        sql`ALTER TABLE ${issues} ENABLE TRIGGER paperclip_issue_last_activity_trigger`,
+      );
+    }
+    const [unbackfilled] = await db
+      .select({ lastActivityAt: issues.lastActivityAt })
+      .from(issues)
+      .where(eq(issues.id, unbackfilledIssueId));
+    expect(unbackfilled?.lastActivityAt).toBeNull();
+
+    await db.insert(issues).values({
+      id: backfilledIssueId,
+      companyId,
+      title: "Maintained by the trigger",
+      status: "todo",
+      priority: "medium",
+      updatedAt: new Date("2026-03-27T11:00:00.000Z"),
+    });
+
+    // The unbackfilled row still sorts on its updated_at, ahead of a maintained
+    // row with an older one.
+    const result = await svc.list(companyId, {});
+    expect(result.map((issue) => issue.id)).toEqual([
+      unbackfilledIssueId,
+      backfilledIssueId,
+    ]);
+  });
+
   it("paginates earlier comments in descending order from an anchor comment", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
