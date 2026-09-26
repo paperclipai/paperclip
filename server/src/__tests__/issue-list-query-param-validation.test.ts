@@ -132,6 +132,21 @@ describeEmbeddedPostgres("issue list query parameter validation", () => {
     expect(res.body.error).toContain(`Did you mean '${suggestion}'?`);
   });
 
+  // A suggestion that names a parameter the handler would then reject is worse
+  // than no suggestion: the caller fixes the call and gets refused again.
+  it("never suggests a parameter that is itself rejected", async () => {
+    const companyId = await seedCompany();
+    const app = createApp(companyId);
+
+    const first = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ taskId: randomUUID() });
+
+    expect(first.status, JSON.stringify(first.body)).toBe(400);
+    expect(first.body.supported).not.toContain("id");
+    expect(first.body.error).not.toContain("Did you mean 'id'");
+  });
+
   it("rejects an unrecognised status instead of returning an empty list", async () => {
     const companyId = await seedCompany();
     const app = createApp(companyId);
@@ -232,6 +247,10 @@ describeEmbeddedPostgres("issue list query parameter validation", () => {
     const companyId = await seedCompany();
     const app = createApp(companyId);
 
+    // `attention=blocked` is excluded below because the service layer rejects
+    // `attention` combined with ID ordering (issues.ts:7825), and the UI never
+    // sends that pair — issuesApi.listAll omits `attention`, and count() only
+    // sends `attention` without sortField/afterId. It is covered separately below.
     const res = await request(app)
       .get(`/api/companies/${companyId}/issues`)
       .query({
@@ -263,9 +282,26 @@ describeEmbeddedPostgres("issue list query parameter validation", () => {
         sortField: "id",
         sortDir: "asc",
         afterId: randomUUID(),
-        attention: "blocked",
         updatedSince: new Date().toISOString(),
         view: "compact",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("still accepts the blocked-attention filters the board UI sends", async () => {
+    const companyId = await seedCompany();
+    const app = createApp(companyId);
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({
+        attention: "blocked",
+        status: "todo",
+        assigneeAgentId: randomUUID(),
+        assigneeUserId: "me",
+        projectId: randomUUID(),
+        q: "anything",
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);

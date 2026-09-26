@@ -3122,7 +3122,6 @@ const ISSUE_LIST_QUERY_PARAM_SUGGESTIONS: Readonly<Record<string, string>> = {
   sort: "sortField",
   sortOrder: "sortDir",
   search: "q",
-  taskId: "id",
 };
 
 type IssueListPreparedResponse =
@@ -7994,7 +7993,7 @@ export function issueRoutes(
         .find((value) => value.length > 0 && !ISSUE_STATUS_SET.has(value));
       if (unknownStatus !== undefined) {
         res.status(400).json({
-          error: `status must be one of ${[...ISSUE_STATUS_SET].join(", ")}`,
+          error: `Unknown status '${unknownStatus}'. status must be one of ${[...ISSUE_STATUS_SET].join(", ")}`,
         });
         return;
       }
