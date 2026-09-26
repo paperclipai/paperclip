@@ -197,12 +197,14 @@ test("honors HERMES_HOME from the process environment when config does not set i
     const entry = snapshot.entries.find((candidate) => candidate.key === "process-env-skill");
     expect(entry).toBeDefined();
     expect(entry?.sourcePath).toBe(skillMd);
+    expect(entry?.locationLabel).toBe("HERMES_HOME/skills/env/process-env-skill");
+    expect(entry?.locationLabel).not.toContain(hermesHome);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
 });
 
-test("shows the resolved home in skill locations when HERMES_HOME is set", async () => {
+test("shows the HERMES_HOME marker, not the resolved path, in skill locations", async () => {
   const root = await makeTempRoot("hermes-home-label-");
   try {
     const hermesHome = path.join(root, "hermes-home");
@@ -212,13 +214,17 @@ test("shows the resolved home in skill locations when HERMES_HOME is set", async
     const config = { env: { HOME: userHome, HERMES_HOME: hermesHome } };
     const snapshot = await listHermesSkills(skillContext(config));
     const entry = snapshot.entries.find((candidate) => candidate.key === "labeled-skill");
-    expect(entry?.locationLabel).toBe(`${hermesHome}/skills/probe/labeled-skill`);
+    // A resolved HERMES_HOME may come from a secret binding, so the label
+    // names the variable instead of echoing the value.
+    expect(entry?.locationLabel).toBe("HERMES_HOME/skills/probe/labeled-skill");
+    expect(entry?.locationLabel).not.toContain(hermesHome);
 
     const missing = await listHermesSkills(
       skillContext({ ...config, paperclipSkillSync: { desiredSkills: ["absent-skill"] } }),
     );
     const missingEntry = missing.entries.find((candidate) => candidate.key === "absent-skill");
-    expect(missingEntry?.detail).toContain(`${hermesHome}/skills`);
+    expect(missingEntry?.detail).toContain("HERMES_HOME/skills");
+    expect(missingEntry?.detail).not.toContain(hermesHome);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

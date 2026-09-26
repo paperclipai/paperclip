@@ -71,11 +71,12 @@ function resolveHermesHome(config: Record<string, unknown>): string {
 
 /**
  * Label for the skills home as shown to users. Default deployments keep the
- * `~/.hermes/skills` display; a configured `HERMES_HOME` shows its actual
- * resolved path so location text matches the scanned directory.
+ * `~/.hermes/skills` display; a configured `HERMES_HOME` names the variable
+ * instead of echoing its value, because the resolved value can come from a
+ * secret binding.
  */
 function hermesSkillsLabel(config: Record<string, unknown>): string {
-  if (configuredHermesHome(config)) return path.join(resolveHermesHome(config), "skills");
+  if (configuredHermesHome(config)) return "HERMES_HOME/skills";
   return "~/.hermes/skills";
 }
 
