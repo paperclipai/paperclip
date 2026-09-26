@@ -13,7 +13,10 @@ const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => 
 // Windows resolves a bare 'git' through PATHEXT, so probing the extensionless name alone
 // finds nothing: only git.exe is on disk. PATHEXT is unset on POSIX, where the loop below
 // reduces to the single extensionless candidate it has always probed.
-const extensions = (process.env.PATHEXT || '').split(';').map(e => e.trim()).filter(Boolean);
+// Batch wrappers are excluded: spawn() below runs without a shell, and Node cannot start a
+// .cmd or .bat that way, so selecting one would trade a not-found error for a launch error.
+const batch = /^\.(cmd|bat)$/i;
+const extensions = (process.env.PATHEXT || '').split(';').map(e => e.trim()).filter(e => e && !batch.test(e));
 const candidates = originalPath.flatMap(p => [
   ...extensions.map(extension => path.join(p, program + extension)),
   path.join(p, program),

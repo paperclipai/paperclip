@@ -39,6 +39,17 @@ describe("managed GitHub launchers", () => {
     expect(result.stdout.trim()).toBe("resolved-through-pathext");
   });
 
+  it("skips a batch wrapper and takes an executable candidate instead", async () => {
+    // spawn() in the shim runs without a shell, and Node cannot start a .cmd or .bat that
+    // way, so a batch candidate must never win over one that can actually launch.
+    const fixture = await pathExtFixture();
+    await writeFile(path.join(fixture.real, "git.CMD"), "#!/bin/sh\necho batch-wrapper\n", { mode: 0o700 });
+    await writeFile(path.join(fixture.real, "git.EXE"), "#!/bin/sh\necho real-executable\n", { mode: 0o700 });
+    const env = { ...process.env, PATH: fixture.searchPath, PATHEXT: ".CMD;.BAT;.EXE" };
+    const result = await exec(path.join(fixture.bin, "git"), ["--version"], { cwd: fixture.root, env });
+    expect(result.stdout.trim()).toBe("real-executable");
+  });
+
   it("keeps resolving the extensionless program when PATHEXT is unset", async () => {
     // POSIX regression guard: with no PATHEXT the candidate list must collapse to the one
     // extensionless entry the lookup has always probed.
