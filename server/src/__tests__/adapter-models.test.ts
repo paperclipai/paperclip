@@ -275,6 +275,13 @@ describe("adapter model listing", () => {
     expect(models.map((model) => model.id)).toEqual(expect.arrayContaining(["openai/gpt-6-astra", "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5", "anthropic/claude-fable-5-1", "anthropic/claude-sonnet-5", "google/gemini-3.8-flash", "xai/grok-4.7"]));
   });
 
+  it("returns curated Hermes OpenRouter models for the picker", async () => {
+    const models = await listAdapterModels("hermes_local");
+
+    expect(models).toContainEqual({ id: "openrouter/fusion", label: "OpenRouter: Fusion" });
+    expect(models).toContainEqual({ id: "z-ai/glm-5.2", label: "Z.ai: GLM 5.2" });
+  });
+
   it("loads cursor models dynamically and caches them", async () => {
     const runner = vi.fn(() => ({
       status: 0,
