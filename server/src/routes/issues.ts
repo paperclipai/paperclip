@@ -5421,7 +5421,7 @@ export function issueRoutes(
     if (scope.watchdogIssueId && issue.id === scope.watchdogIssueId)
       return true;
 
-    const revalidated = await taskWatchdogsSvc.revalidateMutationScope(scope);
+    const revalidated = await taskWatchdogsSvc.revalidateMutationScope(scope, issue.id);
     if (revalidated.allowed) return true;
     res.status(409).json({
       error: revalidated.reason,
