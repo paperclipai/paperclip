@@ -10519,8 +10519,8 @@ export function heartbeatService(
           eq(agentWakeupRequests.status, "skipped")));
         continue;
       }
-      // Claim the receipt by its own age, as `readmitUnblockedExecutionWaits`
-      // does, so a concurrent pass cannot rebuild the same handoff. The receipt
+      // Claim the receipt by its own age, the same claim as the deferred-wait
+      // readmission (#13769), so a concurrent pass cannot rebuild the same handoff. The receipt
       // is retired only after admission answers, so an interrupted server
       // leaves it for a later pass instead of losing the handoff.
       const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
