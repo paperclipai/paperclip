@@ -51,47 +51,43 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect, onDelet
       <span className="text-xs text-muted-foreground capitalize">{goal.level}</span>
       <span className="flex-1 truncate">{goal.title}</span>
       <StatusBadge status={goal.status} />
-      {onDelete && (
-        <button
-          type="button"
-          className="p-1 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onDelete(goal);
-          }}
-          title="Delete goal"
-          aria-label={`Delete goal "${goal.title}"`}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      )}
     </>
   );
 
+  const innerClasses = "flex items-center gap-2 min-w-0 flex-1";
+
   const classes = cn(
-    "group flex items-center gap-2 px-3 py-1.5 text-sm transition-colors cursor-pointer hover:bg-accent/50",
+    "group flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-accent/50",
   );
 
   return (
     <div>
-      {link ? (
-        <Link
-          to={link}
-          className={cn(classes, "no-underline text-inherit")}
-          style={{ paddingLeft: `${depth * 16 + 12}px` }}
-        >
-          {inner}
-        </Link>
-      ) : (
-        <div
-          className={classes}
-          style={{ paddingLeft: `${depth * 16 + 12}px` }}
-          onClick={() => onSelect?.(goal)}
-        >
-          {inner}
-        </div>
-      )}
+      <div className={classes} style={{ paddingLeft: `${depth * 16 + 12}px` }}>
+        {link ? (
+          <Link to={link} className={cn(innerClasses, "no-underline text-inherit cursor-pointer")}>
+            {inner}
+          </Link>
+        ) : (
+          <div className={cn(innerClasses, "cursor-pointer")} onClick={() => onSelect?.(goal)}>
+            {inner}
+          </div>
+        )}
+        {onDelete && (
+          <button
+            type="button"
+            className="p-1 text-muted-foreground hover:text-destructive opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onDelete(goal);
+            }}
+            title="Delete goal"
+            aria-label={`Delete goal "${goal.title}"`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
       {hasChildren && expanded && (
         <div>
           {children.map((child) => (
