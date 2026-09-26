@@ -876,4 +876,26 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.apiUrl).toBe("https://paperclip.example");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
   });
+
+  it("preserves port-mapped loopback auth public URLs when detect-port matches requested listen port (Docker mapping)", async () => {
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "http://localhost:3300",
+    }));
+    detectPortMock.mockResolvedValueOnce(3100);
+
+    const started = await startServer();
+
+    expect(started.listenPort).toBe(3100);
+    expect(started.apiUrl).toBe("http://localhost:3300");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://localhost:3300");
+    expect(createBetterAuthInstanceMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        authPublicBaseUrl: "http://localhost:3300",
+      }),
+      expect.anything(),
+    );
+  });
 });
