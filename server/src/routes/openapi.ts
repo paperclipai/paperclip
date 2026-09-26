@@ -288,6 +288,7 @@ import {
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
+  ISSUE_STATUSES,
 } from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -3805,14 +3806,56 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract. " +
+    "Unknown query parameters are rejected with 400 rather than ignored, and an unrecognised `status` is rejected rather than returning an empty list.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+    query: z
+      .object({
+        view: z.enum(["compact"]).optional(),
+        status: z
+          .string()
+          .optional()
+          .describe("One status, or a comma-separated list, from: " + ISSUE_STATUSES.join(", ")),
+        assigneeAgentId: z.string().optional().describe("Agent UUID, or 'null' for unassigned issues."),
+        assigneeUserId: z.string().optional().describe("Board user id, or 'me' for the calling board user."),
+        participantAgentId: z.string().optional(),
+        touchedByUserId: z.string().optional(),
+        inboxArchivedByUserId: z.string().optional(),
+        unreadForUserId: z.string().optional(),
+        projectId: z.string().optional(),
+        workspaceId: z.string().optional(),
+        executionWorkspaceId: z.string().optional(),
+        parentId: z.string().optional(),
+        parentIssueId: z.string().optional(),
+        descendantOf: z.string().optional(),
+        createdFromIssueId: z.string().optional(),
+        labelId: z.string().optional(),
+        originKind: z.string().optional(),
+        originKindPrefix: z.string().optional(),
+        originId: z.string().optional(),
+        q: z.string().optional(),
+        attention: z.enum(["blocked"]).optional(),
+        hasPlanDocument: z.enum(["true", "false"]).optional(),
+        includeLiveDescendantSummary: z.enum(["true", "false"]).optional(),
+        includeRoutineExecutions: z.enum(["true", "false", "1", "0"]).optional(),
+        excludeRoutineExecutions: z.enum(["true", "false", "1", "0"]).optional(),
+        includePluginOperations: z.enum(["true", "false", "1", "0"]).optional(),
+        includeBlockedBy: z.enum(["true", "false", "1", "0"]).optional(),
+        includeBlockedInboxAttention: z.enum(["true", "false", "1", "0"]).optional(),
+        updatedSince: z.string().optional(),
+        limit: z.string().optional(),
+        offset: z.string().optional(),
+        sortField: z.enum(["updated", "id"]).optional(),
+        sortDir: z.enum(["asc", "desc"]).optional(),
+        afterId: z.string().optional(),
+      })
+      .passthrough(),
   },
   responses: {
     200: r.ok(),
     304: { description: "Not Modified" },
+    400: r.badRequest,
     401: r.unauthorized,
   },
 });

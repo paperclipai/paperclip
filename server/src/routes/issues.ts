@@ -2,7 +2,7 @@ import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractio
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
+import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, ISSUE_STATUSES } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -3068,6 +3068,62 @@ export const ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES = 256;
 const ISSUE_LIST_STORM_WINDOW_MS = 500;
 const ISSUE_LIST_STORM_THRESHOLD = 4;
 const ISSUE_LIST_MAX_ACTOR_CLIENT_INFLIGHT = 8;
+
+const ISSUE_STATUS_SET: ReadonlySet<string> = new Set(ISSUE_STATUSES);
+
+// Every query parameter GET /api/companies/{companyId}/issues reads. Anything outside
+// this set used to be dropped silently, which reads to the caller as a filter that
+// matched everything, so the handler now rejects it with 400.
+const ISSUE_LIST_QUERY_PARAMS: ReadonlySet<string> = new Set([
+  "afterId",
+  "assigneeAgentId",
+  "assigneeUserId",
+  "attention",
+  "createdFromIssueId",
+  "descendantOf",
+  "excludeRoutineExecutions",
+  "executionWorkspaceId",
+  "hasPlanDocument",
+  "inboxArchivedByUserId",
+  "includeBlockedBy",
+  "includeBlockedInboxAttention",
+  "includeLiveDescendantSummary",
+  "includePluginOperations",
+  "includeRoutineExecutions",
+  "labelId",
+  "limit",
+  "offset",
+  "originId",
+  "originKind",
+  "originKindPrefix",
+  "parentId",
+  "parentIssueId",
+  "participantAgentId",
+  "projectId",
+  "q",
+  "sortDir",
+  "sortField",
+  "status",
+  "touchedByUserId",
+  "unreadForUserId",
+  "updatedSince",
+  "view",
+  "workspaceId",
+]);
+
+// Guessed names for parameters that do exist, so the rejection can name the right one.
+const ISSUE_LIST_QUERY_PARAM_SUGGESTIONS: Readonly<Record<string, string>> = {
+  agentId: "assigneeAgentId",
+  assignedTo: "assigneeAgentId",
+  assignee: "assigneeAgentId",
+  assigneeId: "assigneeAgentId",
+  includeClosed: "status",
+  includeArchived: "status",
+  sort: "sortField",
+  sortOrder: "sortDir",
+  search: "q",
+  taskId: "id",
+};
 
 type IssueListPreparedResponse =
   | {
@@ -7801,6 +7857,21 @@ export function issueRoutes(
     });
   });
 
+  // Unknown and near-miss query parameters used to be silently ignored, so a caller
+  // asking "what is assigned to me?" over a guessed parameter name got the whole
+  // board back with HTTP 200 and no way to tell the filter had done nothing. Reject
+  // them instead, naming the correct parameter so the caller can fix its own call.
+  const unknownIssueListQueryParam = (
+    req: Request,
+  ): { name: string; suggestion?: string } | null => {
+    for (const name of Object.keys(req.query)) {
+      if (ISSUE_LIST_QUERY_PARAMS.has(name)) continue;
+      const suggestion = ISSUE_LIST_QUERY_PARAM_SUGGESTIONS[name];
+      return suggestion ? { name, suggestion } : { name };
+    }
+    return null;
+  };
+
   router.get("/companies/:companyId/search/extract", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -7901,6 +7972,32 @@ export function issueRoutes(
         error: "Task bridge keys cannot use company-wide issue list APIs",
       });
       return;
+    }
+    const unknownParam = unknownIssueListQueryParam(req);
+    if (unknownParam) {
+      res.status(400).json({
+        error: unknownParam.suggestion
+          ? `Unknown query parameter '${unknownParam.name}'. Did you mean '${unknownParam.suggestion}'?`
+          : `Unknown query parameter '${unknownParam.name}'`,
+        supported: [...ISSUE_LIST_QUERY_PARAMS].sort(),
+      });
+      return;
+    }
+    const statusFilterRaw = req.query.status;
+    if (statusFilterRaw !== undefined) {
+      const requested = (Array.isArray(statusFilterRaw)
+        ? statusFilterRaw
+        : [statusFilterRaw]
+      ).flatMap((value) => String(value).split(","));
+      const unknownStatus = requested
+        .map((value) => value.trim())
+        .find((value) => value.length > 0 && !ISSUE_STATUS_SET.has(value));
+      if (unknownStatus !== undefined) {
+        res.status(400).json({
+          error: `status must be one of ${[...ISSUE_STATUS_SET].join(", ")}`,
+        });
+        return;
+      }
     }
     const assigneeUserFilterRaw = req.query.assigneeUserId as
       string | undefined;
