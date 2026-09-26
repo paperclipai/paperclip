@@ -462,13 +462,15 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       name: "wiki_list_pages",
       displayName: "List Wiki Pages",
-      description: "Return the known page index from one wiki space's plugin metadata. Operation agents should pass the issue's spaceSlug; omitting it uses the default space.",
+      description: "Return one explicitly paginated page of the known wiki inventory. Follow nextCursor until complete is true before treating the result as the full tree. Operation agents should pass the issue's spaceSlug; omitting it uses the default space.",
       parametersSchema: {
         type: "object",
         properties: {
           companyId: { type: "string" },
           wikiId: { type: "string" },
-          spaceSlug: { type: "string" }
+          spaceSlug: { type: "string" },
+          cursor: { type: "string", description: "Opaque continuation cursor returned by the previous page." },
+          limit: { type: "number", description: "Page size from 1 to 500 (default 200)." }
         },
         required: ["companyId", "wikiId"]
       }
