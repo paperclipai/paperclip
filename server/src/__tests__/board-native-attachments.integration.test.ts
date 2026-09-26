@@ -339,6 +339,52 @@ describe("Board upload receipt to native wake staging", () => {
     }
   });
 
+  it("keeps the current files when old task drops exceed the cap", async () => {
+    // One past the 20-attachment cap, all older than the current input.
+    const base = Date.UTC(2026, 0, 1);
+    const oldDrops: string[] = [];
+    for (let index = 0; index < 21; index += 1) {
+      const { attachment } = await upload(`old-${index}.txt`);
+      await db
+        .update(issueAttachments)
+        .set({ createdAt: new Date(base + index * 1000) })
+        .where(eq(issueAttachments.id, attachment.id));
+      oldDrops.push(attachment.id);
+    }
+    const { attachment: freshDrop } = await upload("fresh-drop.txt");
+    const { attachment: onComment } = await upload("on-comment.txt");
+    const response = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({
+        body: "Read the file on this comment.",
+        attachmentIds: [onComment.id],
+      });
+    expect(response.status).toBe(201);
+    await vi.waitFor(() => expect(wakeup).toHaveBeenCalled());
+
+    const wake = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      agentId,
+      contextSnapshot: mergeCoalescedContextSnapshot(
+        {},
+        { issueId, wakeCommentId: response.body.id },
+      ),
+    });
+    expect(
+      (wake?.comments[0]?.attachments ?? []).map(
+        (entry: { id: string }) => entry.id,
+      ),
+    ).toEqual([onComment.id]);
+    const served = (wake?.issueAttachments ?? []).map(
+      (entry: { id: string }) => entry.id,
+    );
+    // 1 comment file + 19 task drops fill the cap: the newest drop and the
+    // 18 most recent old ones, oldest-first. The 3 oldest fall off.
+    expect(served).toEqual([...oldDrops.slice(3), freshDrop.id]);
+    expect(wake?.truncated).toBe(true);
+  });
+
   it("leaves a file an agent run handed back out of the next wake", async () => {
     const handoffRunId = randomUUID();
     await db.insert(heartbeatRuns).values({

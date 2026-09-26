@@ -76,6 +76,7 @@ import {
   notInArray,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -7779,41 +7780,71 @@ export async function buildPaperclipWakePayload(input: {
   // rows that qualify - a row carrying an originating run is a file an agent
   // handed back, and re-serving those would re-stage the agent's own output on
   // every later wake.
-  const attachmentRows = !issueId
+  //
+  // The two sources share one cap, and task uploads accumulate for the life of
+  // the task. So the wake comments' own attachments are served first, and task
+  // uploads fill what is left newest-first: a pile of old drops must never push
+  // the file that prompted this wake out of the payload.
+  const selectWakeAttachments = (
+    binding: SQL | undefined,
+    order: SQL[],
+    limit: number,
+  ) =>
+    input.db
+      .select({
+        id: issueAttachments.id,
+        issueCommentId: issueAttachments.issueCommentId,
+        filename: assets.originalFilename,
+        contentType: assets.contentType,
+        byteSize: assets.byteSize,
+      })
+      .from(issueAttachments)
+      .innerJoin(
+        assets,
+        and(
+          eq(issueAttachments.assetId, assets.id),
+          eq(assets.companyId, input.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issueAttachments.companyId, input.companyId),
+          eq(issueAttachments.issueId, issueId!),
+          binding,
+        ),
+      )
+      .orderBy(...order)
+      .limit(limit);
+  const commentAttachmentRows =
+    !issueId || attachmentCommentIds.length === 0
+      ? []
+      : await selectWakeAttachments(
+          inArray(issueAttachments.issueCommentId, attachmentCommentIds),
+          [asc(issueAttachments.createdAt), asc(issueAttachments.id)],
+          MAX_INLINE_WAKE_ATTACHMENTS + 1,
+        );
+  const issueLevelBudget = Math.max(
+    0,
+    MAX_INLINE_WAKE_ATTACHMENTS - commentAttachmentRows.length,
+  );
+  const issueLevelRows = !issueId
     ? []
-    : await input.db
-        .select({
-          id: issueAttachments.id,
-          issueCommentId: issueAttachments.issueCommentId,
-          filename: assets.originalFilename,
-          contentType: assets.contentType,
-          byteSize: assets.byteSize,
-        })
-        .from(issueAttachments)
-        .innerJoin(
-          assets,
+    : (
+        await selectWakeAttachments(
           and(
-            eq(issueAttachments.assetId, assets.id),
-            eq(assets.companyId, input.companyId),
+            isNull(issueAttachments.issueCommentId),
+            isNull(issueAttachments.originatingRunId),
           ),
+          [desc(issueAttachments.createdAt), desc(issueAttachments.id)],
+          issueLevelBudget + 1,
         )
-        .where(
-          and(
-            eq(issueAttachments.companyId, input.companyId),
-            eq(issueAttachments.issueId, issueId),
-            or(
-              and(
-                isNull(issueAttachments.issueCommentId),
-                isNull(issueAttachments.originatingRunId),
-              ),
-              attachmentCommentIds.length > 0
-                ? inArray(issueAttachments.issueCommentId, attachmentCommentIds)
-                : undefined,
-            ),
-          ),
-        )
-        .orderBy(asc(issueAttachments.createdAt), asc(issueAttachments.id))
-        .limit(MAX_INLINE_WAKE_ATTACHMENTS + 1);
+      ).reverse();
+  if (issueLevelRows.length > issueLevelBudget) {
+    truncated = true;
+    // Newest-first then reversed: the overflow row is the oldest, at the front.
+    issueLevelRows.shift();
+  }
+  const attachmentRows = [...commentAttachmentRows, ...issueLevelRows];
   if (attachmentRows.length > MAX_INLINE_WAKE_ATTACHMENTS) truncated = true;
   const attachmentsByCommentId = new Map<
     string,
