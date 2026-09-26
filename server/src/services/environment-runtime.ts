@@ -3470,6 +3470,11 @@ function createPluginEnvironmentDriver(
         throw new Error(`Expected plugin environment config for driver "${input.environment.driver}".`);
       }
       const { plugin, driver } = await resolvePluginDriver(parsed.config);
+      const rpcTimeoutMs = resolvePluginSandboxRpcTimeoutMs(
+        parsed.config.driverConfig,
+        driver.defaultAcquireTimeoutMs,
+      );
+      const timeoutOverride: [number?] = rpcTimeoutMs === undefined ? [] : [rpcTimeoutMs];
       const providerLease = await workerManager.call(plugin.id, "environmentAcquireLease", {
         driverKey: parsed.config.driverKey,
         companyId: input.companyId,
@@ -3487,10 +3492,7 @@ function createPluginEnvironmentDriver(
         ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
           ? { requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt) }
           : {}),
-      } as PluginEnvironmentAcquireLeaseParams, resolvePluginSandboxRpcTimeoutMs(
-        parsed.config.driverConfig,
-        driver.defaultAcquireTimeoutMs,
-      ));
+      } as PluginEnvironmentAcquireLeaseParams, ...timeoutOverride);
 
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,

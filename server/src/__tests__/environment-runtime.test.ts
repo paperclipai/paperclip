@@ -7072,7 +7072,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.objectContaining({
       agentId: otherAgentId,
       executionWorkspaceId,
-    }), undefined);
+    }));
   });
 
   it.each([undefined, 300_000])("delegates plugin environment leases with acquisition budget %s", async (defaultAcquireTimeoutMs) => {
@@ -7166,7 +7166,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       adapterType: undefined,
       runId,
       workspaceMode: undefined,
-    }, defaultAcquireTimeoutMs === undefined ? undefined : 330_000);
+    }, ...(defaultAcquireTimeoutMs === undefined ? [] : [330_000]));
     expect(acquired.lease.providerLeaseId).toBe("plugin-lease-1");
     expect(acquired.lease.expiresAt?.toISOString()).toBe(expiresAt);
     expect(acquired.lease.metadata).toMatchObject({
