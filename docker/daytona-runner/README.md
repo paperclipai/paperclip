@@ -29,6 +29,11 @@ changes. Refresh the runtime executable digests from integrity-verified npm
 release archives for every supported platform, and keep the native runner,
 provider manifest, and remote controller version checks aligned.
 
+The Claude ACP bridge 0.81.2 declares Claude Agent SDK 0.3.280 itself, so
+it needs no workspace override. Prefer a bridge release that declares the
+required SDK over an override: pnpm overrides do not reach npm installs of
+`@paperclipai/adapter-claude-local`, which resolve the bridge's own SDK.
+
 ## Build and verify
 
 Run `pnpm --filter @paperclipai/paperclip-runner test:opencode:qualification`

@@ -1059,7 +1059,7 @@ describe("remote provider pack manifest", () => {
         codex: "0.156.0",
         opencode: "1.18.32",
         acpx: "0.13.1",
-        claudeAcp: "0.73.0",
+        claudeAcp: "0.81.2",
         codexAcp: "1.6.2",
       },
       target: { platform: "linux", architecture: "x64" },
@@ -1068,7 +1068,7 @@ describe("remote provider pack manifest", () => {
       bridgeDigest: "",
       acpxProfileDigests: {
         claude:
-          "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+          "sha256:ecfa6ff948a4241090934979179a5ba035bb0a7c3ef543752f4a304d44a267fb",
         codex:
           "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
       },

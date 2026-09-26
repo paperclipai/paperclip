@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import test from "node:test";
 
 const runnerPackage = JSON.parse(
@@ -22,13 +25,6 @@ const acpxPatch = await readFile(
 const codexPatch = await readFile(
   new URL(
     "../../../patches/@agentclientprotocol__codex-acp@1.6.2.patch",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const claudePatch = await readFile(
-  new URL(
-    "../../../patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
     import.meta.url,
   ),
   "utf8",
@@ -60,7 +56,7 @@ test("the runner pins every qualified ACPX production dependency", () => {
   assert.equal(runnerPackage.dependencies["@openai/codex"], "0.156.0");
   assert.equal(runnerPackage.dependencies["@anthropic-ai/claude-agent-sdk"], undefined);
   assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@1.6.2>@openai/codex"], runnerPackage.dependencies["@openai/codex"]);
-  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk"], "0.3.280");
+  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.81.2>@anthropic-ai/claude-agent-sdk"], undefined);
   assert.equal(runnerPackage.optionalDependencies, undefined);
   assert.equal(runnerPackage.dependencies.node, undefined);
   assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
@@ -70,7 +66,7 @@ test("the runner pins every qualified ACPX production dependency", () => {
   );
   assert.equal(
     runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"],
-    "0.73.0",
+    "0.81.2",
   );
 });
 
@@ -117,9 +113,9 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
   );
   assert.equal(
     rootPackage.pnpm.patchedDependencies[
-      "@agentclientprotocol/claude-agent-acp@0.73.0"
+      "@agentclientprotocol/claude-agent-acp@0.81.2"
     ],
-    "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
+    "patches/@agentclientprotocol__claude-agent-acp@0.81.2.patch",
   );
   assert.equal(
     rootPackage.pnpm.patchedDependencies[
@@ -134,7 +130,7 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
   );
   assert.match(
     workspace,
-    /claude-agent-acp@0\.73\.0["']: patches\/@agentclientprotocol__claude-agent-acp@0\.73\.0\.patch/,
+    /claude-agent-acp@0\.81\.2["']: patches\/@agentclientprotocol__claude-agent-acp@0\.81\.2\.patch/,
   );
   assert.equal(rootPackage.pnpm.patchedDependencies["node@24.11.0"], undefined);
   assert.doesNotMatch(workspace, /node@24\.11\.0:/);
@@ -200,15 +196,94 @@ test("the Codex patch keeps MCP tool approvals on the governed permission channe
   );
 });
 
-test("the Claude patch removes ambient project and local configuration", () => {
-  for (const token of [
-    "PAPERCLIP_ACPX_ISOLATED_CONTEXT",
-    'settingSources: ["user"]',
-    "userProvidedOptions?.mcpServers",
-  ]) {
-    assert.match(
-      claudePatch,
-      new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-    );
+const runnerRequire = createRequire(import.meta.url);
+const TASK_TOOL_BRIDGE_URL = "http://127.0.0.1:9/paperclip-task-tools";
+
+// Launch the installed, patched Claude ACP bridge and return the arguments it
+// passes to Claude Code. A stub executable records them, so no model runs.
+async function claudeLaunchArguments(env) {
+  const directory = await mkdtemp(join(tmpdir(), "claude-acp-patch-"));
+  const argumentsPath = join(directory, "arguments.json");
+  const stub = join(directory, "claude");
+  await writeFile(
+    stub,
+    `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify(process.argv.slice(2)));\nprocess.exit(1);\n`,
+  );
+  await chmod(stub, 0o755);
+  const bridge = spawn(
+    process.execPath,
+    [runnerRequire.resolve("@agentclientprotocol/claude-agent-acp/dist/index.js")],
+    {
+      cwd: directory,
+      env: { PATH: process.env.PATH, HOME: directory, CLAUDE_CODE_EXECUTABLE: stub, ...env },
+      stdio: ["pipe", "pipe", "ignore"],
+    },
+  );
+  const responses = new Map();
+  createInterface({ input: bridge.stdout }).on("line", (line) => {
+    const message = JSON.parse(line);
+    responses.get(message.id)?.(message);
+  });
+  const request = (id, method, params) =>
+    new Promise((resolveResponse) => {
+      responses.set(id, resolveResponse);
+      bridge.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    });
+  try {
+    await request(1, "initialize", { protocolVersion: 1, clientCapabilities: {} });
+    // The stub exits after recording its arguments, so session/new fails.
+    await request(2, "session/new", {
+      cwd: directory,
+      mcpServers: [{ type: "http", name: "paperclip", url: TASK_TOOL_BRIDGE_URL, headers: [] }],
+      _meta: {
+        claudeCode: {
+          options: { mcpServers: { ambient: { type: "stdio", command: "ambient-server", args: [] } } },
+        },
+      },
+    });
+    return JSON.parse(await readFile(argumentsPath, "utf8"));
+  } finally {
+    bridge.kill("SIGKILL");
+    await rm(directory, { recursive: true, force: true });
   }
+}
+
+function launchOption(launchArguments, name) {
+  const inline = launchArguments.find((value) => value.startsWith(`${name}=`));
+  if (inline) return inline.slice(name.length + 1);
+  const index = launchArguments.indexOf(name);
+  return index === -1 ? undefined : launchArguments[index + 1];
+}
+
+test("the patched Claude bridge launches isolated sessions without ambient configuration", async () => {
+  const isolated = await claudeLaunchArguments({
+    PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+    PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: TASK_TOOL_BRIDGE_URL,
+  });
+  assert.equal(launchOption(isolated, "--setting-sources"), "user");
+  assert.deepEqual(
+    Object.keys(JSON.parse(launchOption(isolated, "--mcp-config")).mcpServers),
+    ["paperclip"],
+  );
+  assert.deepEqual(launchOption(isolated, "--allowedTools")?.split(","), [
+    "mcp__paperclip__paperclip_finish",
+    "mcp__paperclip__paperclip_block",
+    "mcp__paperclip__read_current_wake_comments",
+    "mcp__paperclip__request_human_input",
+  ]);
+
+  const unpinned = await claudeLaunchArguments({
+    PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+    PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "http://127.0.0.1:9/another-endpoint",
+  });
+  assert.equal(launchOption(unpinned, "--setting-sources"), "user");
+  assert.equal(launchOption(unpinned, "--allowedTools"), undefined);
+
+  const ambient = await claudeLaunchArguments({});
+  assert.equal(launchOption(ambient, "--setting-sources"), "user,project,local");
+  assert.deepEqual(
+    Object.keys(JSON.parse(launchOption(ambient, "--mcp-config")).mcpServers).sort(),
+    ["ambient", "paperclip"],
+  );
+  assert.equal(launchOption(ambient, "--allowedTools"), undefined);
 });
