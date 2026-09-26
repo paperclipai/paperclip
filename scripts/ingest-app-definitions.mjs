@@ -798,6 +798,98 @@ const apps = [
       { requiredResourceFilters: ["team", "project", "environment"] },
     ),
   ],
+  // Enterpret advertises RFC 9728 -> RFC 8414 discovery from its own 401
+  // challenge (issuer https://oauth.enterpret.com, PKCE S256, registration
+  // endpoint present, token_endpoint_auth_method "none"), so `defaults` ships
+  // `serverUrl` only and the broker resolves endpoints at connect time.
+  // `scopesHint` is the reviewed read-only minimum, deliberately narrower than
+  // the "mcp:read mcp:write" set the challenge advertises: the documented tool
+  // surface is read-shaped and nothing observed establishes a write need. The
+  // provider documents no way for a customer to register their own OAuth app,
+  // so the OAuth method is `dcr` only rather than the `["customer", "dcr"]`
+  // default.
+  [
+    "enterpret",
+    "Enterpret",
+    "Ask questions about your customer feedback and pull verbatim quotes with citations.",
+    "analytics",
+    "enterpret.com",
+    ["https://wisdom-api.enterpret.com/*"],
+    [
+      method(
+        "mcp-oauth",
+        "mcp_remote",
+        "oauth",
+        {
+          serverUrl: "https://wisdom-api.enterpret.com/server/mcp",
+          scopesHint: ["mcp:read"],
+        },
+        "S3",
+        "Sign in to Enterpret in the browser. Each person connects with their own Enterpret account, and Enterpret attributes their queries individually.",
+        {
+          label: "Sign in with Enterpret",
+          ownershipModes: ["dcr"],
+          grantKinds: ["user"],
+          whenToUse:
+            "Use browser sign-in so each person's questions run under their own Enterpret account.",
+          consoleLinks: {
+            docs: "https://enterpret.support.site/article/enterpret-mcp-server",
+          },
+          warnings: [
+            "You need an Enterpret account with access to your organization's feedback.",
+            "This connection reads customer feedback, including verbatim quotes with speaker attribution.",
+          ],
+        },
+      ),
+      method(
+        "mcp-api-key",
+        "mcp_remote",
+        "api_key",
+        { serverUrl: "https://wisdom-api.enterpret.com/server/mcp" },
+        "S3",
+        "Generate an auth token in Enterpret under Settings, Enterpret MCP, then paste it below. One token belongs to one Enterpret organization.",
+        {
+          label: "Use an auth token",
+          grantKinds: ["organization"],
+          whenToUse:
+            "Use an organization auth token when browser sign-in is not suitable.",
+          credentialFields: [
+            field(
+              "authorization",
+              "Enterpret auth token",
+              "Paste the token from Settings, Enterpret MCP",
+            ),
+          ],
+          keyPlacement: {
+            location: "header",
+            name: "Authorization",
+            prefix: "Bearer ",
+          },
+          consoleLinks: {
+            docs: "https://enterpret.support.site/article/enterpret-mcp-server",
+          },
+          warnings: [
+            "Enterpret auth tokens expire six months after you generate them. Generate a replacement before the current one lapses.",
+            "This connection reads customer feedback, including verbatim quotes with speaker attribution.",
+          ],
+        },
+      ),
+    ],
+    {
+      docsUrl: "https://enterpret.support.site/article/enterpret-mcp-server",
+      redirectConstraints: "https-or-loopback-http",
+      // Neither method has been validated against a real Enterpret account, and
+      // the runbook keeps a card unavailable until its required path completes
+      // against the provider. Store-hiding alone still leaves the slug directly
+      // connectable, so the definition also refuses setup. Clear this field,
+      // and the hidden-slug entries, once the nine scenarios pass.
+      availability: {
+        available: false,
+        reason:
+          "Enterpret is not validated yet. Paperclip turns on this connection after it tests sign-in and tool discovery with a real Enterpret account.",
+      },
+    },
+  ],
   [
     "anthropic",
     "Anthropic",

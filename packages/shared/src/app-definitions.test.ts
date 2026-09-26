@@ -459,6 +459,68 @@ describe("AppDefinition catalog", () => {
     });
   });
 
+  it("keeps Enterpret discovery-first, read-scoped, and out of the store until it is validated live", () => {
+    const app = CONNECTABLE_APP_DEFINITIONS.find(
+      (entry) => entry.slug === "enterpret",
+    )!;
+    expect(
+      getAppDefinitionForUrl("https://wisdom-api.enterpret.com/server/mcp")
+        ?.slug,
+    ).toBe("enterpret");
+    expect(app.methods.map((method) => method.key)).toEqual([
+      "mcp-oauth",
+      "mcp-api-key",
+    ]);
+    expect(app.redirectConstraints).toBe("https-or-loopback-http");
+    // No live account has exercised the nine production-validation scenarios.
+    // Hiding the slug from Browse is not enough on its own, because a hidden
+    // slug is still directly connectable, so the definition refuses setup too.
+    expect(APP_STORE_HIDDEN_SLUGS.has("enterpret")).toBe(true);
+    expect(app.availability?.available).toBe(false);
+    expect(app.availability?.reason).toBeTruthy();
+    expect(app.methods[0]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      // Enterpret documents no customer-registered OAuth app, only RFC 7591.
+      ownershipModes: ["dcr"],
+      grantKinds: ["user"],
+      riskTier: "S3",
+      defaults: {
+        serverUrl: "https://wisdom-api.enterpret.com/server/mcp",
+        // Narrower than the "mcp:read mcp:write" the 401 challenge advertises.
+        scopesHint: ["mcp:read"],
+      },
+    });
+    // RFC 9728 -> RFC 8414 discovery resolves from the challenge, so shipping a
+    // complete endpoint pair would suppress discovery permanently.
+    expect(app.methods[0].defaults?.authorizationEndpoint).toBeUndefined();
+    expect(app.methods[0].defaults?.tokenEndpoint).toBeUndefined();
+    expect(app.methods[1]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      grantKinds: ["organization"],
+      riskTier: "S3",
+      defaults: { serverUrl: "https://wisdom-api.enterpret.com/server/mcp" },
+      credentialFields: [
+        { key: "authorization", type: "password", required: true, secret: true },
+      ],
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+    });
+    // The definition records the placement of a credential, never a value.
+    const serialized = JSON.stringify(app);
+    expect(serialized).not.toMatch(/eyJ[A-Za-z0-9_-]{8,}/);
+    // "Bearer " may appear only as the header prefix, never trailed by a value.
+    expect(serialized.match(/Bearer[^"]*/g)).toEqual(["Bearer "]);
+    for (const method of app.methods)
+      for (const credentialField of method.credentialFields ?? [])
+        expect(credentialField).not.toHaveProperty("defaultValue");
+  });
+
   it("uses the reviewed current endpoints and configuration modes", () => {
     const method = (slug: string, key?: string) =>
       APP_DEFINITIONS.find((app) => app.slug === slug)?.methods.find(
@@ -706,6 +768,7 @@ describe("AppDefinition catalog", () => {
       "context7",
       "egnyte",
       "embat",
+      "enterpret",
       "kernel",
       "local-falcon",
       "make",

@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "slug": "enterpret",
+  "name": "Enterpret",
+  "description": "Ask questions about your customer feedback and pull verbatim quotes with citations.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/enterpret.png"
+  },
+  "urlPatterns": [
+    "https://wisdom-api.enterpret.com/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in so each person's questions run under their own Enterpret account.",
+      "defaults": {
+        "serverUrl": "https://wisdom-api.enterpret.com/server/mcp",
+        "scopesHint": [
+          "mcp:read"
+        ]
+      },
+      "guidanceMd": "Sign in to Enterpret in the browser. Each person connects with their own Enterpret account, and Enterpret attributes their queries individually.",
+      "riskTier": "S3",
+      "label": "Sign in with Enterpret",
+      "grantKinds": [
+        "user"
+      ],
+      "consoleLinks": {
+        "docs": "https://enterpret.support.site/article/enterpret-mcp-server"
+      },
+      "warnings": [
+        "You need an Enterpret account with access to your organization's feedback.",
+        "This connection reads customer feedback, including verbatim quotes with speaker attribution."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use an organization auth token when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://wisdom-api.enterpret.com/server/mcp"
+      },
+      "guidanceMd": "Generate an auth token in Enterpret under Settings, Enterpret MCP, then paste it below. One token belongs to one Enterpret organization.",
+      "riskTier": "S3",
+      "label": "Use an auth token",
+      "grantKinds": [
+        "organization"
+      ],
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Enterpret auth token",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the token from Settings, Enterpret MCP",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "docs": "https://enterpret.support.site/article/enterpret-mcp-server"
+      },
+      "warnings": [
+        "Enterpret auth tokens expire six months after you generate them. Generate a replacement before the current one lapses.",
+        "This connection reads customer feedback, including verbatim quotes with speaker attribution."
+      ]
+    }
+  ],
+  "docsUrl": "https://enterpret.support.site/article/enterpret-mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "availability": {
+    "available": false,
+    "reason": "Enterpret is not validated yet. Paperclip turns on this connection after it tests sign-in and tool discovery with a real Enterpret account."
+  }
+}
