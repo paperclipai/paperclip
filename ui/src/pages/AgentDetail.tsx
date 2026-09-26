@@ -1425,7 +1425,6 @@ export function AgentDetail() {
             updatePermissions={updatePermissions}
             canConfigureProviderTrace={canUseProviderTrace}
             content="runtime"
-            hidePromptTemplate
             hideInstructionsFile
           />
         </div>
