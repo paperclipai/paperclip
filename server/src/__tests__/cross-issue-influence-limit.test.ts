@@ -45,7 +45,14 @@ function counterDb(
             }
             return {
               for: () => ({ then: (resolve: (rows: unknown[]) => unknown) => resolve(bound) }),
-              limit: () => ({ then: (resolve: (rows: unknown[]) => unknown) => resolve(bound) }),
+              // The source lookup orders by issues.id, so the fake sorts rather
+              // than handing rows back in insertion order.
+              orderBy: () => ({
+                limit: () => ({
+                  then: (resolve: (rows: unknown[]) => unknown) =>
+                    resolve([...bound].sort((a, b) => (a.id < b.id ? -1 : 1))),
+                }),
+              }),
             };
           },
         };
@@ -347,5 +354,28 @@ describe("a checkout gives a run a cross-issue write channel", () => {
         details: expect.objectContaining({ sourceIssueId: CHECKED_OUT }),
       }),
     ]);
+  });
+
+  // A run can hold more than one link: checkout writes `checkout_run_id`, and
+  // wake-queue dispatch writes `execution_run_id`. Neither column is unique, so
+  // the source is picked with a stable order rather than "whichever row came
+  // back first" — a non-deterministic source makes the audit record disagree
+  // with itself across writes in the same run.
+  it("resolves a run holding several issue links deterministically", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, [
+      { id: "dddd3333-3333-4333-8333-333333333333", checkoutRunId: null, executionRunId: RUN },
+      { id: CHECKED_OUT, checkoutRunId: RUN, executionRunId: null },
+    ]);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, CALL)).resolves.toMatchObject({ allowed: true });
+    const detail = fake.inserted[0]?.details as { sourceIssueId: string };
+    // Ordered by issues.id, so the lower uuid of the two wins — a fixed answer,
+    // not a race between rows. Insertion order is deliberately the other way
+    // round, so a fake that ignored orderBy would fail this.
+    expect(detail.sourceIssueId).toBe(
+      "aaaa1111-1111-4111-8111-111111111111" < "dddd3333-3333-4333-8333-333333333333"
+        ? CHECKED_OUT
+        : "dddd3333-3333-4333-8333-333333333333",
+    );
   });
 });

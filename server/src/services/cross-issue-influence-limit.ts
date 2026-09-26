@@ -83,6 +83,14 @@ export function runOwnsIssueBinding(
  * counter is attributed to it. The genuine unattributable case — a run bound to
  * no issue at all — is still refused, which is the case the cap protects
  * against.
+ *
+ * The query reads only server-written columns, so attribution cannot be forged
+ * by a client. Neither `checkout_run_id` nor `execution_run_id` is unique —
+ * `execution_run_id` is also written by wake-queue dispatch — so a run can hold
+ * more than one, and the rows are ordered to pick a *stable* one instead of an
+ * arbitrary one. Picking by recency would be wrong on purpose: the latest lock
+ * may be the run's own current work, and the ordering only exists to make the
+ * same run and board produce the same sourceIssueId on every write.
  */
 async function resolveRunCheckoutSourceIssueId(
   tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
@@ -98,6 +106,7 @@ async function resolveRunCheckoutSourceIssueId(
         eq(issues.executionRunId, input.runId),
       ),
     ))
+    .orderBy(issues.id)
     .limit(1)
     .then((found) => found[0]?.id ?? null);
   return rows;

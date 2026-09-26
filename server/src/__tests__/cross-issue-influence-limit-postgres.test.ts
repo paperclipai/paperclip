@@ -255,6 +255,147 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     });
   });
 
+  // The exact transcript in TES-101, reproduced against a real database: a
+  // timer run holds no wake binding, checks out its own task, and is then
+  // refused for writing to a different one. Nothing about the target's own
+  // binding can rescue that case, because the run does not hold the target.
+  it("admits a run bound to one task writing to a different issue, and charges the bound task", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const checkedOutIssueId = randomUUID();
+    const targetIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // A timer run: no wake binding, nothing in the snapshot.
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    // Exactly what svc.checkout wrote on run f0f29e0f: both columns on the run's
+    // own task, and nothing at all on the task it is trying to write to.
+    await db.insert(issues).values([
+      {
+        id: checkedOutIssueId,
+        companyId,
+        identifier: "TES-98",
+        title: "the task this run checked out",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        checkoutRunId: runId,
+        executionRunId: runId,
+      },
+      {
+        id: targetIssueId,
+        companyId,
+        identifier: "TES-61",
+        title: "the blocked task this run is trying to clear",
+        status: "blocked",
+        assigneeAgentId: agentId,
+        checkoutRunId: null,
+        executionRunId: null,
+      },
+    ]);
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId,
+      targetIssueIdentifier: "TES-61",
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, count: 1, mode: "enforce" });
+
+    // Charged to the task the run checked out, never the issue being written.
+    const recorded = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.runId, runId),
+        eq(activityLog.action, "issue.cross_issue_influence_observed"),
+      ));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.details).toMatchObject({
+      sourceIssueId: checkedOutIssueId,
+      targetIssueId,
+    });
+  });
+
+  // The run's own task is not cross-issue influence, so it must not spend the
+  // budget, even with another link in play.
+  it("does not count a write to the task the run is bound to", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const checkedOutIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    await db.insert(issues).values({
+      id: checkedOutIssueId,
+      companyId,
+      identifier: "TES-98",
+      title: "the task this run checked out",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+    });
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: checkedOutIssueId,
+      targetIssueIdentifier: "TES-98",
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toBeNull();
+  });
+
   it("still refuses a snapshot-less run that never checked the issue out", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
