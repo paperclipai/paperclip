@@ -34,7 +34,12 @@ import {
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
-import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  filterUnsupportedClaudeEffortArgs,
+  resolveClaudeModel,
+  resolveClaudeReasoningEffort,
+  SANDBOX_INSTALL_COMMAND,
+} from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
@@ -323,14 +328,32 @@ export async function testEnvironment(
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
       const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
       Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox }));
-      const extraArgs = (() => {
+      const rawExtraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
         return asStringArray(config.args);
       })();
 
-      let effectiveEffort = effort;
-      if (targetIsSandbox && effort) {
+      let effectiveEffort = resolveClaudeReasoningEffort(model, effort);
+      if (effort && !effectiveEffort) {
+        checks.push({
+          code: "claude_effort_unsupported_for_model",
+          level: "warn",
+          message: `Model ${model || "(provider default)"} does not accept reasoning effort "${effort}"; the probe omitted it.`,
+          hint: "Clear the configured effort, or pick a model that exposes reasoning-effort tiers.",
+        });
+      }
+      const { args: extraArgs, droppedEffort: droppedExtraArgsEffort } =
+        filterUnsupportedClaudeEffortArgs(model, rawExtraArgs);
+      if (droppedExtraArgsEffort) {
+        checks.push({
+          code: "claude_effort_unsupported_for_model",
+          level: "warn",
+          message: `Model ${model || "(provider default)"} does not accept reasoning effort "${droppedExtraArgsEffort}"; the probe omitted it from extraArgs.`,
+          hint: "Clear the configured extraArgs effort flag, or pick a model that exposes reasoning-effort tiers.",
+        });
+      }
+      if (targetIsSandbox && effectiveEffort) {
         const supportsEffort = await claudeCommandSupportsEffortFlag({
           runId,
           command,

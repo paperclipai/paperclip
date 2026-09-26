@@ -84,6 +84,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
+import { claudeReasoningEffortOptions } from "../lib/claude-reasoning-effort";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -200,12 +201,6 @@ import {
 const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
-  claude_local: [
-    { value: "", label: "Default" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-  ],
   opencode_local: [
     { value: "", label: "Default" },
     { value: "minimal", label: "Minimal" },
@@ -614,6 +609,10 @@ export function NewIssueDialog() {
     ? selectedAssigneeAgent.adapterConfig.model
     : "";
   const effectiveAssigneeModel = assigneeModelOverride || assigneePrimaryModel;
+  const assigneePrimaryEnv = isRecord(selectedAssigneeAgent?.adapterConfig)
+    && isRecord(selectedAssigneeAgent.adapterConfig.env)
+    ? (selectedAssigneeAgent.adapterConfig.env as Record<string, EnvBinding>)
+    : null;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
@@ -962,7 +961,7 @@ export function NewIssueDialog() {
         ? codexReasoningEffortOptions(effectiveAssigneeModel)
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+          : claudeReasoningEffortOptions(effectiveAssigneeModel, undefined, assigneePrimaryEnv);
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
     }
@@ -971,6 +970,7 @@ export function NewIssueDialog() {
     assigneeAdapterType,
     effectiveAssigneeModel,
     assigneeThinkingEffort,
+    assigneePrimaryEnv,
   ]);
 
   // Cleanup timer on unmount
@@ -1227,7 +1227,7 @@ export function NewIssueDialog() {
       ? codexReasoningEffortOptions(effectiveAssigneeModel)
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+      : claudeReasoningEffortOptions(effectiveAssigneeModel, undefined, assigneePrimaryEnv);
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentAssigneeOptionIds = useMemo(
     () => recentAssigneeIds.map((id) => assigneeValueFromSelection({ assigneeAgentId: id })),

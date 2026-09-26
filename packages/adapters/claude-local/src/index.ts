@@ -32,6 +32,56 @@ export function claudeLocalReasoningEffortsForModel(model: string): readonly str
   if (/^claude-(?:opus|sonnet)-4-6(?:-v1)?$/.test(id)) return ["low", "medium", "high", "max"];
   return ["low", "medium", "high"];
 }
+
+/**
+ * Keep a configured reasoning effort only when the resolved model accepts it.
+ * Haiku exposes no reasoning-effort tier at all, so forwarding a stored
+ * `low|medium|high` (set while the agent pointed at another model, or picked as
+ * a per-issue override) makes the CLI and the ACP server reject the run. Drop
+ * the unsupported value instead of failing the run; the caller logs the drop.
+ */
+export function resolveClaudeReasoningEffort(model: string, effort: unknown): string {
+  const requested = typeof effort === "string" ? effort.trim() : "";
+  if (!requested) return "";
+  return claudeLocalReasoningEffortsForModel(model).includes(requested) ? requested : "";
+}
+
+/**
+ * Strip a `--effort <value>` (or `--effort=value`) pair out of raw CLI
+ * extraArgs when the resolved model doesn't accept it. `config.effort` isn't
+ * the only way an unsupported effort can reach the CLI — an operator can also
+ * smuggle one in via `extraArgs`/`args`, which otherwise bypasses
+ * resolveClaudeReasoningEffort entirely and lets the run fail downstream.
+ */
+export function filterUnsupportedClaudeEffortArgs(
+  model: string,
+  extraArgs: readonly string[],
+): { args: string[]; droppedEffort: string | null } {
+  const supported = claudeLocalReasoningEffortsForModel(model);
+  const args: string[] = [];
+  let droppedEffort: string | null = null;
+  for (let i = 0; i < extraArgs.length; i += 1) {
+    const arg = extraArgs[i];
+    if (arg === "--effort" && i + 1 < extraArgs.length && !extraArgs[i + 1].startsWith("-")) {
+      const value = extraArgs[i + 1];
+      if (!supported.includes(value)) {
+        droppedEffort = value;
+        i += 1;
+        continue;
+      }
+    }
+    const inlineMatch = /^--effort=(.*)$/.exec(arg);
+    if (inlineMatch) {
+      const value = inlineMatch[1];
+      if (!supported.includes(value)) {
+        droppedEffort = value;
+        continue;
+      }
+    }
+    args.push(arg);
+  }
+  return { args, droppedEffort };
+}
 export const label = "Claude Code";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @anthropic-ai/claude-code";
@@ -60,7 +110,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
 - model (string, optional): Claude model id. Missing or blank defaults to ${DEFAULT_CLAUDE_LOCAL_MODEL} in both CLI and ACP, including existing agents. Explicit model IDs and ANTHROPIC_MODEL overrides are preserved. Bedrock/Vertex without an explicit model retain their provider default.
-- effort (string, optional): model-specific reasoning effort passed via --effort (low|medium|high; current Opus, Sonnet 5, and Fable models also support xhigh|max)
+- effort (string, optional): model-specific reasoning effort passed via --effort (low|medium|high; current Opus, Sonnet 5, and Fable models also support xhigh|max; Opus 4.6 and Sonnet 4.6 add max only; Haiku models accept none). An effort the resolved model does not accept is dropped with a log line instead of failing the run.
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run

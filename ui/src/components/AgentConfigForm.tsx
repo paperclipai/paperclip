@@ -94,6 +94,7 @@ import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } 
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
+import { claudeReasoningEffortOptions } from "../lib/claude-reasoning-effort";
 
 /* ---- Create mode values ---- */
 
@@ -288,7 +289,9 @@ const cursorModeOptions = [
   { id: "ask", label: "Ask" },
 ] as const;
 
-const claudeThinkingEffortOptions = [
+// Fallback tiers for adapters without a model-aware effort table of their own.
+// Claude's own tiers are model-derived; see `claudeReasoningEffortOptions`.
+const genericThinkingEffortOptions = [
   { id: "", label: "Auto" },
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
@@ -1247,6 +1250,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? val!.model ?? ""
     : eff("adapterConfig", "model", String(config.model ?? ""));
   const currentModelId = typeof currentModelValue === "string" ? currentModelValue : "";
+  const currentEnvBindings = isCreate
+    ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+    : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
 
   async function handleRefreshModels() {
     if (!selectedCompanyId) return;
@@ -1285,12 +1291,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : adapterType === "claude_local" || adapterType === "grok_local"
-                ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType, currentModelId).map((id) => ({
-                    id,
-                    label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
-                  }))]
-                : claudeThinkingEffortOptions;
+              : adapterType === "claude_local"
+                ? claudeReasoningEffortOptions(currentModelId, "Auto", currentEnvBindings).map((option) => ({
+                    id: option.value,
+                    label: option.label,
+                  }))
+                : adapterType === "grok_local"
+                  ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType, currentModelId).map((id) => ({
+                      id,
+                      label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
+                    }))]
+                  : genericThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"

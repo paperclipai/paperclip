@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { claudeLocalReasoningEffortsForModel, DEFAULT_CLAUDE_LOCAL_MODEL, resolveClaudeModel } from "./index.js";
+import {
+  claudeLocalReasoningEffortsForModel,
+  DEFAULT_CLAUDE_LOCAL_MODEL,
+  filterUnsupportedClaudeEffortArgs,
+  resolveClaudeModel,
+  resolveClaudeReasoningEffort,
+} from "./index.js";
 import { minimumClaudeCliVersionForModel } from "./server/cli-capabilities.js";
 
 describe("Claude model defaults", () => {
@@ -16,9 +22,32 @@ describe("Claude model defaults", () => {
     expect(claudeLocalReasoningEffortsForModel("custom-model")).toEqual(["low", "medium", "high"]);
   });
 
+  it("keeps only the efforts the resolved model accepts", () => {
+    expect(resolveClaudeReasoningEffort("claude-opus-5", "max")).toBe("max");
+    expect(resolveClaudeReasoningEffort("claude-opus-5", " xhigh ")).toBe("xhigh");
+    expect(resolveClaudeReasoningEffort("claude-sonnet-4-6", "xhigh")).toBe("");
+    expect(resolveClaudeReasoningEffort("us.anthropic.claude-haiku-4-5-20251001-v1:0", "high")).toBe("");
+    expect(resolveClaudeReasoningEffort("claude-haiku-4-5", "high")).toBe("");
+    expect(resolveClaudeReasoningEffort("claude-opus-5", "")).toBe("");
+    expect(resolveClaudeReasoningEffort("claude-opus-5", undefined)).toBe("");
+  });
+
   it.each([undefined, null, "", "  "])("uses Opus 5 for an unset model (%j)", (model) => {
     expect(DEFAULT_CLAUDE_LOCAL_MODEL).toBe("claude-opus-5");
     expect(resolveClaudeModel(model)).toBe("claude-opus-5");
+  });
+
+  it("strips an unsupported --effort pair smuggled through extraArgs", () => {
+    expect(filterUnsupportedClaudeEffortArgs("claude-haiku-4-5", ["--effort", "high"]))
+      .toEqual({ args: [], droppedEffort: "high" });
+    expect(filterUnsupportedClaudeEffortArgs("claude-haiku-4-5", ["--effort=high"]))
+      .toEqual({ args: [], droppedEffort: "high" });
+    expect(filterUnsupportedClaudeEffortArgs("claude-opus-5", ["--effort", "max", "--chrome"]))
+      .toEqual({ args: ["--effort", "max", "--chrome"], droppedEffort: null });
+    expect(filterUnsupportedClaudeEffortArgs("claude-sonnet-4-6", ["--effort", "xhigh", "--verbose"]))
+      .toEqual({ args: ["--verbose"], droppedEffort: "xhigh" });
+    expect(filterUnsupportedClaudeEffortArgs("claude-opus-5", []))
+      .toEqual({ args: [], droppedEffort: null });
   });
 
   it("keeps explicit model IDs ahead of environment overrides", () => {
