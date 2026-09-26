@@ -18192,8 +18192,14 @@ export function heartbeatService(
 
     const [eventStats] = await db
       .select({
-        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+        // Exclude presentation bookkeeping: run.presentation.resolved is written
+        // after the final issue comment is persisted (as part of the post-comment
+        // re-classification path introduced in #14034). If we counted it here the
+        // second classifyAndPersistRunLiveness call would treat the bookkeeping
+        // event itself as concrete evidence and incorrectly upgrade plan_only runs
+        // to advanced.
+        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error', 'run.presentation.resolved'))::int`,
+        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error', 'run.presentation.resolved'))`,
       })
       .from(heartbeatRunEvents)
       .where(
@@ -25014,7 +25020,7 @@ export function heartbeatService(
               `[paperclip] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
-          const livenessRun = finalizedRun;
+          let livenessRun = finalizedRun;
           await refreshContinuationSummaryForRun(livenessRun, agent);
           const skipRunIssueComment =
             parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
@@ -25160,6 +25166,13 @@ export function heartbeatService(
               `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
+
+          livenessRun =
+            (await classifyAndPersistRunLiveness(
+              livenessRun,
+              persistedResultJson,
+            )) ?? livenessRun;
+
           if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
             const policy = parseMaxTurnContinuationPolicy(agent);
             if (policy.enabled && policy.maxAttempts > 0) {

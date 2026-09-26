@@ -115,7 +115,7 @@ export function summarizeHeartbeatRunResultJson(
 // curly (’) forms count — agents emit either. Openers are narration phrases a
 // declarative status summary would not begin with ("Fixed X", "13/13 pass").
 const NARRATION_OPENERS =
-  /^(let me\b|i['’]ll\b|i['’]m going\b|i need to\b|i can see\b|now i['’]ll\b|next,? i['’]ll\b|looking at\b|fetching\b|checking\b|first,)/i;
+  /^(let me\b|i(?:['’]ll| will)\b|i['’]m going\b|i need to\b|i can see\b|now i(?:['’]ll| will)\b|next,? i(?:['’]ll| will)\b|looking at\b|fetching\b|checking\b|first,)/i;
 
 export const LEGACY_WITHHELD_RUN_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
