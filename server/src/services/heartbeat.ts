@@ -19660,6 +19660,14 @@ export function heartbeatService(
     return recovery.sweepStaleIssueLocks();
   }
 
+  async function reconcileStrandedAgentStatuses(opts?: {
+    now?: Date;
+    companyId?: string | null;
+    graceMs?: number;
+  }) {
+    return recovery.reconcileStrandedAgentStatuses(opts);
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return (
@@ -24925,19 +24933,37 @@ export function heartbeatService(
           persistedRunWrite.run;
         if (!persistedRunWrite.updated) {
           persistedRun = null;
-          // Native reconciliation can commit and project the terminal status in
+          // Another authority can commit and project the terminal status in
           // the narrow window between adapter completion and this live write.
-          // The status is authoritative, but it must not make us discard the
-          // adapter's semantic result, usage, logs, or presentation decision.
-          // Only complete the late metadata write when the reconciler chose the
-          // same terminal status; a conflicting terminal outcome remains owned
-          // by the path that won the compare-and-set. Owned legacy cancellation
-          // likewise keeps the provider session, logs, and usage after Stop wins.
-          if (
-            (adapterResult.nativeFinalization ||
-              (processCancellation && !processCancellation.failed && status === "cancelled")) &&
-            persistedRunWrite.run?.status === status
-          ) {
+          // Native reconciliation does it, and so does the recovery backstop
+          // (`terminalizeOrphanedRunningRun`), whose issue-terminal authority
+          // terminalizes a still-live run whose issue already reached a
+          // terminal status — the exact shape of every automation-continuation
+          // run on a reopened issue.
+          //
+          // The committed status is authoritative, but it must not skip the
+          // liveness classification and `finalizeAgentStatus` below when this
+          // execution still owns the finalization: without them the run keeps
+          // `livenessState: null` forever and the agent row keeps the run-start
+          // `running` status forever.
+          //
+          // This execution owns the late metadata write when it finalized
+          // natively, when it owned the cancellation, or when the winning
+          // authority terminalized the row without projecting any result of
+          // its own — the bare recovery backstop. When the winning authority
+          // already projected a result (agent pause, owned legacy Stop), that
+          // projection stays authoritative: the row is skipped and that
+          // authority owns the agent finalization.
+          const ownsLateMetadata =
+            Boolean(adapterResult.nativeFinalization) ||
+            Boolean(
+              processCancellation &&
+                !processCancellation.failed &&
+                status === "cancelled",
+            ) ||
+            Object.keys(parseObject(persistedRunWrite.run?.resultJson))
+              .length === 0;
+          if (ownsLateMetadata && persistedRunWrite.run?.status === status) {
             persistedRun = await db
               .update(heartbeatRuns)
               .set({
@@ -29596,6 +29622,7 @@ export function heartbeatService(
     resumeExecutionWaitComments,
 
     sweepStaleIssueLocks,
+    reconcileStrandedAgentStatuses,
 
     reconcileResolvedDependencyWakes,
 
