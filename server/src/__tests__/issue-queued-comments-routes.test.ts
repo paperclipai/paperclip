@@ -14,6 +14,7 @@ import {
   companyMemberships,
   companySkills,
   createDb,
+  environmentLeases,
   heartbeatRuns,
   heartbeatRunEvents,
   issueComments,
@@ -25,6 +26,8 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { issueService } from "../services/issues.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -186,6 +189,75 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     })));
     return { companyId, agentId, issueId, runId, wakeId, commentIds };
   }
+
+  it.each(["cancelled", "running"])("rejects a late Done from an interrupted %s task run at the write boundary", async status => {
+    const seeded = await seedQueue();
+    await db.update(heartbeatRuns).set({ status, resultJson: { executionCancellation: { state: "requested" } } })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    // Model a request that passed middleware before cancellation and reached
+    // the service after the run lost its authority. Recovery may have released
+    // checkout and changed the task to Blocked in the meantime.
+    await db.update(issues).set({ status: "blocked", executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await expect(issueService(db).update(seeded.issueId, { status: "done",
+      actorAgentId: seeded.agentId, actorRunId: seeded.runId,
+    })).rejects.toMatchObject({ status: 403, details: { code: "agent_run_cancelled" } });
+    expect((await db.select().from(issues).where(eq(issues.id, seeded.issueId)))[0].status).toBe("blocked");
+    // A board disposition remains authoritative.
+    expect(await issueService(db).update(seeded.issueId, { status: "done", actorUserId: "queue-owner" }))
+      .toMatchObject({ status: "done" });
+  });
+
+  it("delivers a saved Grok interrupt exactly once after remote cleanup, including concurrent restart sweeps", async () => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "grok_local", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+      .where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "cancelled", errorCode: "operator_interrupted",
+      finishedAt: new Date("2026-08-22T15:03:00.000Z"),
+      contextSnapshot: { issueId: seeded.issueId, paperclipWorkspace: { remoteExecution: { transport: "sandbox" } } },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ status: "blocked", executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await db.insert(issueRecoveryActions).values({ companyId: seeded.companyId, sourceIssueId: seeded.issueId,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: seeded.runId,
+      status: "resolved", outcome: "blocked", nextAction: "Automatic recovery stopped.",
+      evidence: { runId: seeded.runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    });
+    const [lease] = await db.insert(environmentLeases).values({ companyId: seeded.companyId,
+      issueId: seeded.issueId, heartbeatRunId: seeded.runId, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "active", leasePolicy: "ephemeral",
+    }).returning();
+    // Occupy the agent's slot on another task so this test never invokes a model.
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() },
+    });
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+      queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: null,
+    }).expect(200);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status)
+      .toBe("deferred_issue_execution");
+    // Cleanup timestamps alone are not proof. A mismatched receipt is not proof either.
+    await db.update(environmentLeases).set({ status: "expired", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { ...remoteTerminationReceipt(lease, {
+        providerLeaseId: lease.providerLeaseId, state: "destroyed",
+      }), runId: randomUUID() } },
+    }).where(eq(environmentLeases.id, lease.id));
+    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status)
+      .toBe("deferred_issue_execution");
+    await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: remoteTerminationReceipt(lease, {
+      providerLeaseId: lease.providerLeaseId, state: "destroyed",
+    }) } }).where(eq(environmentLeases.id, lease.id));
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await Promise.all([heartbeatService(db).resumeQueuedRuns(), heartbeatService(db).resumeQueuedRuns()]);
+    const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(delivered.status).toBe("coalesced");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
+    expect(successor.contextSnapshot).toMatchObject({ wakeCommentIds: seeded.commentIds, previousRunId: seeded.runId,
+      forceFreshSession: true });
+    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
+  });
 
   it.each((["request_confirmation", "request_checkbox_confirmation", "ask_user_questions"] as const)
     .flatMap(kind => (["legacy", "native"] as const).map(runtime => ({ kind, runtime }))))(

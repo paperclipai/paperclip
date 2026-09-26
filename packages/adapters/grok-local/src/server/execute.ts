@@ -1,4 +1,5 @@
 import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
+import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -196,6 +197,53 @@ function resolveBillingType(env: Record<string, string>): "api" | "subscription"
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const target = ctx.executionTarget;
+  if (!ctx.signal || !ctx.stopRemoteStartup || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) {
+    return executeTurn(ctx);
+  }
+
+  // Direct remote commands have no host child process to kill. Register before
+  // setup and retain ownership until the host verifies this sandbox has stopped.
+  await ctx.onCancellationReady?.();
+  const cancelled = (result?: AdapterExecutionResult): AdapterExecutionResult => ({
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    ...result,
+    errorCode: "cancelled",
+    errorMessage: "Grok execution was cancelled",
+    resultJson: {
+      ...result?.resultJson,
+      executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() },
+    },
+  });
+  if (ctx.signal.aborted) {
+    return { ...cancelled(), executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
+  }
+  // Keep the existing setup boundary armed for the whole direct CLI invocation:
+  // unlike ACP adapters, Grok has no turn-level cancellation protocol.
+  const cancellation = cancellableSandboxStartup(ctx);
+  let result: AdapterExecutionResult | undefined;
+  let failure: unknown;
+  let failed = false;
+  try {
+    result = await executeTurn(cancellation.context);
+  } catch (error) {
+    failure = error;
+    failed = true;
+  }
+  try {
+    await cancellation.finish();
+  } catch (error) {
+    failure = error;
+    failed = true;
+  }
+  if (cancellation.stopAcknowledged()) return cancelled(result);
+  if (failed) throw failure;
+  return result!;
+}
+
+async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -543,6 +591,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
+      ctx.signal?.throwIfAborted();
       const prompt = joinPromptSections([
         selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
         basePrompt,
@@ -655,6 +704,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const initial = await runAttempt(sessionId);
+    ctx.signal?.throwIfAborted();
     if (
       sessionId &&
       !initial.proc.timedOut &&
