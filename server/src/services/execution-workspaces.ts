@@ -835,9 +835,6 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   let repoRoot: string | null = null;
   let directoryIsNotGitRepository = false;
-  const hasGitMetadataConfigured = Boolean(
-    workspace.repoUrl || workspace.baseRef || workspace.branchName,
-  );
   try {
     repoRoot = (await runGit(["rev-parse", "--show-toplevel"], workspacePath)).stdout.trim() || null;
   } catch (error) {
@@ -852,7 +849,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       !(
         directoryIsNotGitRepository
         && workspace.providerType === "local_fs"
-        && !hasGitMetadataConfigured
+        && !createdByRuntime
       )
     ) {
       warnings.push(
@@ -865,14 +862,19 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
     !repoRoot
     && directoryIsNotGitRepository
     && workspace.providerType === "local_fs"
-    && !hasGitMetadataConfigured
+    && !createdByRuntime
   ) {
-    // A local_fs workspace is a plain directory by design. Git is not its
-    // delivery mechanism, so "not a git repository" is a successful
-    // inspection with no git state, not an inspection failure. Reporting it
-    // as a failure kept the terminality reaper from ever archiving these
-    // rows (#13874). Any other git failure (a missing binary, for example)
-    // still fails closed below.
+    // A local_fs directory Paperclip did not create is user-owned, and git is
+    // not its delivery mechanism, so "not a git repository" is a successful
+    // inspection with no git state, not an inspection failure. Reporting it as
+    // a failure kept the terminality reaper from ever archiving these rows
+    // (#13874). repoUrl and baseRef do not settle the question: a shared or
+    // project-primary local_fs row inherits them from the project workspace
+    // when the row is created, so they describe the project, not this
+    // directory. Only a runtime-created local_fs directory is a checkout
+    // Paperclip made, and there a vanished .git stays an inspection failure.
+    // Any other git failure (a missing binary, for example) still fails closed
+    // below.
     return {
       git: {
         repoRoot: null,
@@ -1510,19 +1512,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       cooldownAnchor,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
       workspaceHeadSha,
-      // A local_fs workspace that never carried git metadata has no delivery
-      // surface: there is nothing to merge because git never tracked it. The
-      // reaper treats that as "nothing to deliver" and archives on the
-      // issue-tree terminality check alone (#13874). A workspace that does
-      // carry git metadata but lost its checkout is an anomaly and stays
-      // blocked, as it was before this gate existed.
+      // A user-owned local_fs directory has no delivery surface: there is
+      // nothing to merge because git never tracked it. The reaper treats that
+      // as "nothing to deliver" and archives on the issue-tree terminality
+      // check alone (#13874). A runtime-created directory whose checkout lost
+      // its .git is an anomaly and stays blocked, and inherited repoUrl or
+      // baseRef says nothing about either case.
       nothingToDeliver:
         workspace.providerType === "local_fs"
         && git !== null
         && !git.repoRoot
-        && !workspace.repoUrl
-        && !workspace.baseRef
-        && !workspace.branchName,
+        && !git.createdByRuntime,
     };
   }
 

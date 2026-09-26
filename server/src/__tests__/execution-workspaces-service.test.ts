@@ -614,9 +614,74 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.access(plainDir)).resolves.toBeUndefined();
   }, 20_000);
 
-  it("keeps skipping a local_fs workspace that lost its git metadata", async () => {
-    // The row carries git delivery metadata (baseRef) but the directory is not
-    // a repository. That is a lost checkout, not a plain directory: the
+  it("archives a plain local_fs workspace that inherited git metadata", async () => {
+    // A shared or project-primary local_fs row copies repoUrl, baseRef and
+    // branchName from the project workspace when the run creates it, so those
+    // columns describe the project and not this directory. Only who created the
+    // directory decides whether git was expected here, so this user-owned plain
+    // directory must still archive instead of staying skipped forever.
+    const plainDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-inherited-git-"));
+    tempDirs.add(plainDir);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `I${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Inherited git metadata",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "local_fs",
+      name: `${issuePrefix}-1`,
+      status: "active",
+      providerType: "local_fs",
+      cwd: plainDir,
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "master",
+      branchName: "project-default-branch",
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Inherited metadata task",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0, skippedUndelivered: 0 });
+
+    const [updated] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(updated).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    await expect(fs.access(plainDir)).resolves.toBeUndefined();
+  }, 20_000);
+
+  it("keeps skipping a runtime-created local_fs checkout that lost its .git", async () => {
+    // Paperclip created this directory as a checkout, so a directory that is no
+    // longer a repository is a lost checkout rather than a plain directory. The
     // nothingToDeliver bypass must not apply and the row stays active.
     const plainDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-lost-checkout-"));
     tempDirs.add(plainDir);
@@ -650,6 +715,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       repoUrl: "https://github.com/paperclipai/paperclip.git",
       baseRef: "master",
       branchName: "issue-branch",
+      metadata: { createdByRuntime: true },
     });
     await db.insert(issues).values({
       id: sourceIssueId,
