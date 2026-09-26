@@ -91,6 +91,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Gemini CLI harness",
     icon: Gem,
   },
+  google_vertex: {
+    label: "Google Vertex AI",
+    description: "Gemini on Google Cloud via Hermes",
+    icon: Gem,
+  },
   grok_local: {
     label: "Grok Build",
     description: "Grok Build harness",

@@ -29,6 +29,7 @@ const brandMarks: Record<string, { src: string; dark?: string }> = {
   claude_local: { src: "/brands/claude-color.svg" },
   codex_local: { src: "/brands/codex-color.svg" },
   gemini_local: { src: "/brands/adapters/gemini-color.svg" },
+  google_vertex: { src: "/brands/adapters/gemini-color.svg" },
   kimi_local: {
     src: "/brands/adapters/kimi-color-light.svg",
     dark: "/brands/adapters/kimi-color.svg",

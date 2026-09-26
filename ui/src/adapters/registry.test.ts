@@ -77,4 +77,11 @@ describe("ui adapter registry", () => {
       expect(getUIAdapter(type)).toBe(builtin);
     }
   });
+
+  it("registers the Google Vertex AI UI adapter", () => {
+    const adapter = getUIAdapter("google_vertex");
+
+    expect(adapter.label).toBe("Google Vertex AI");
+    expect(adapter.ConfigFields).toBe(SchemaConfigFields);
+  });
 });

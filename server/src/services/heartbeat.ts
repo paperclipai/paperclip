@@ -865,6 +865,7 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "gemini_local",
   "grok_local",
   "hermes_local",
+  "google_vertex",
   "kimi_local",
   "opencode_local",
   "pi_local",
@@ -1254,6 +1255,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "cursor",
   "gemini_local",
   "hermes_local",
+  "google_vertex",
   "kimi_local",
   "opencode_local",
   "pi_local",
@@ -9051,12 +9053,12 @@ export function resolveSkillTestRunCompletionForHeartbeatOutcome(
   return null;
 }
 
-const HERMES_ADAPTER_TYPE = "hermes_local";
+const HERMES_ADAPTER_TYPES = new Set(["hermes_local", "google_vertex"]);
 const HERMES_SESSION_ID_REGEX =
   /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
 
 function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
-  return adapterType === HERMES_ADAPTER_TYPE;
+  return typeof adapterType === "string" && HERMES_ADAPTER_TYPES.has(adapterType);
 }
 
 function isCanonicalSessionIdForAdapter(
