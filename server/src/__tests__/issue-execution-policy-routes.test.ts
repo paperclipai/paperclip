@@ -31,32 +31,38 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
+const mockDbSelectForRows = vi.hoisted(() => [
+  {
+    id: "55555555-5555-4555-8555-555555555555",
+    companyId: "company-1",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    permissions: null,
+  },
+]);
+const mockDbSelectThen = vi.hoisted(() => (
+  onFulfilled: (rows: unknown[]) => unknown,
+  onRejected?: (reason: unknown) => unknown,
+) => Promise.resolve(mockDbSelectForRows).then(onFulfilled, onRejected));
+// The guard's checkout-source query runs where().orderBy().for("update"), so this
+// double has to carry orderBy between where and for or the route throws a TypeError.
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  for: () => ({
-    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-      Promise.resolve([{
-        id: "55555555-5555-4555-8555-555555555555",
-        companyId: "company-1",
-        agentId: "33333333-3333-4333-8333-333333333333",
-        contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-        permissions: null,
-      }]).then(onFulfilled, onRejected),
-  }),
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{
-      id: "55555555-5555-4555-8555-555555555555",
-      companyId: "company-1",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-      permissions: null,
-    }]).then(onFulfilled, onRejected),
+  orderBy: () => ({ for: () => ({ then: mockDbSelectThen }) }),
+  for: () => ({ then: mockDbSelectThen }),
+  then: mockDbSelectThen,
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => undefined) })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+  insert: mockDbInsert,
+  // The cross-issue guard records its observation with tx.insert(...).values(...),
+  // so the transaction double has to expose insert alongside select.
+  transaction: vi.fn(async (callback: (tx: {
+    select: typeof mockDbSelect;
+    insert: typeof mockDbInsert;
+  }) => Promise<unknown>) => callback({ select: mockDbSelect, insert: mockDbInsert })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -215,24 +221,9 @@ describe("issue execution policy routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
-      for: () => ({
-        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-          Promise.resolve([{
-            id: "55555555-5555-4555-8555-555555555555",
-            companyId: "company-1",
-            agentId: "33333333-3333-4333-8333-333333333333",
-            contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-            permissions: null,
-          }]).then(onFulfilled, onRejected),
-      }),
-      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{
-          id: "55555555-5555-4555-8555-555555555555",
-          companyId: "company-1",
-          agentId: "33333333-3333-4333-8333-333333333333",
-          contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-          permissions: null,
-        }]).then(onFulfilled, onRejected),
+      orderBy: () => ({ for: () => ({ then: mockDbSelectThen }) }),
+      for: () => ({ then: mockDbSelectThen }),
+      then: mockDbSelectThen,
     }));
     mockIssueService.createChild.mockResolvedValue({
       issue: {
