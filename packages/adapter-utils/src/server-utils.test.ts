@@ -809,6 +809,54 @@ describe("runChildProcess", () => {
     ).toBeLessThanOrEqual(SSH_REMOTE_ENV_MAX_BYTES);
   });
 
+  it("shrinks the SSH env budget by the reserved command bytes", () => {
+    const env = { REQUIRED_BIG: "x".repeat(60_000), SMALL: "kept" };
+
+    const withoutReserve = budgetSshRemoteEnvWithReport(env);
+    expect(withoutReserve.dropped).toEqual([]);
+
+    // The quoted remote command shares the launch argument with the env
+    // block: an 80 KiB reserve leaves too little for the 60 KiB value, so
+    // it is dropped instead of overflowing the assembled argument.
+    const { env: kept, dropped } = budgetSshRemoteEnvWithReport(env, {
+      reservedArgBytes: 80_000,
+    });
+
+    expect(dropped).toContain("REQUIRED_BIG");
+    expect(kept.REQUIRED_BIG).toBeUndefined();
+    expect(kept.SMALL).toBe("kept");
+  });
+
+  it("keeps the assembled SSH launch argument bounded for a large command and env", async () => {
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+      command: "node",
+      args: ["-e", "z".repeat(70_000)],
+      env: { REQUIRED_BIG: "x".repeat(60_000), SMALL: "kept" },
+    });
+
+    try {
+      const finalArg = String(target.args.at(-1) ?? "");
+      // A 70 KB command argument plus a 60 KB env value cannot both fit
+      // under the 128 KiB per-argument limit; the env budget shrinks and
+      // drops the large value so the launch stays executable.
+      expect(Buffer.byteLength(finalArg)).toBeLessThan(131_072);
+      expect(finalArg).not.toContain("REQUIRED_BIG=");
+      expect(finalArg).toContain("SMALL=");
+    } finally {
+      await target.cleanup();
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),

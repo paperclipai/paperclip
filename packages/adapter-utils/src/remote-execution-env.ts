@@ -92,9 +92,10 @@ export function pruneOversizedLaunchEnv(
 // argv string, so the assembled env block has the per-string limit too.
 // Budget the assembled `KEY=VALUE` block (quoting included) so several
 // medium values cannot jointly exceed the per-argument exec limit. The
-// budget bounds the final post-quoting bytes and leaves the rest of the
-// 128 KiB per-argument limit (MAX_ARG_STRLEN) for profile lines, the quoted
-// remote command, and ssh overhead.
+// budget bounds the final post-quoting bytes; `SSH_REMOTE_ARG_MAX_BYTES`
+// reserves headroom for the rest of the argument (profile lines, the quoted
+// remote command, and ssh overhead) via the lanes' `reservedArgBytes`.
+export const SSH_REMOTE_ARG_MAX_BYTES = 128 * 1024 - 4 * 1024;
 export const SSH_REMOTE_ENV_MAX_BYTES = 96 * 1024;
 
 // ssh.ts's shellQuote wraps the value in single quotes and expands each
@@ -114,6 +115,12 @@ function shellQuotedBytes(value: string): number {
   return Buffer.byteLength(value) + 2 + 4 * countSingleQuotes(value);
 }
 
+// Bytes the outer script re-quote adds to a script fragment: each single
+// quote inside expands 1 -> 4 (+3) and the wrapper adds 2.
+export function sshScriptOuterQuotedBytes(script: string): number {
+  return Buffer.byteLength(script) + 2 + 3 * countSingleQuotes(script);
+}
+
 // Bytes an entry adds to the final `sh -c '<script>'` ssh argument: the
 // inner-quoted `KEY=VALUE` plus the outer re-quote's expansion of each inner
 // quote (+3 bytes) and one entry separator.
@@ -129,7 +136,18 @@ function sshEnvEntryFinalBytes(key: string, value: string): number {
 
 export function budgetSshRemoteEnvWithReport(
   env: Record<string, string> | NodeJS.ProcessEnv,
+  options: { reservedArgBytes?: number } = {},
 ): { env: Record<string, string>; dropped: string[] } {
+  // The quoted remote command shares the launch argument with the env
+  // block, so the env budget shrinks by whatever the rest of the argument
+  // already occupies.
+  const envBudget = Math.max(
+    0,
+    Math.min(
+      SSH_REMOTE_ENV_MAX_BYTES,
+      SSH_REMOTE_ARG_MAX_BYTES - Math.max(0, options.reservedArgBytes ?? 0),
+    ),
+  );
   const { env: pruned, dropped } = pruneOversizedLaunchEnvWithReport(env);
   const kept: Record<string, string> = {};
   let totalBytes = 0;
@@ -145,7 +163,7 @@ export function budgetSshRemoteEnvWithReport(
     );
   for (const [key, value] of candidates) {
     const entryBytes = sshEnvEntryFinalBytes(key, value);
-    if (totalBytes + entryBytes > SSH_REMOTE_ENV_MAX_BYTES) {
+    if (totalBytes + entryBytes > envBudget) {
       dropped.push(key);
       continue;
     }
@@ -157,8 +175,9 @@ export function budgetSshRemoteEnvWithReport(
 
 export function budgetSshRemoteEnv(
   env: Record<string, string> | NodeJS.ProcessEnv,
+  options: { reservedArgBytes?: number } = {},
 ): Record<string, string> {
-  return budgetSshRemoteEnvWithReport(env).env;
+  return budgetSshRemoteEnvWithReport(env, options).env;
 }
 
 export function sanitizeRemoteExecutionEnv(

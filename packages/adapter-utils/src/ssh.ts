@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
-import { budgetSshRemoteEnvWithReport } from "./remote-execution-env.js";
+import { budgetSshRemoteEnvWithReport, sshScriptOuterQuotedBytes } from "./remote-execution-env.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
@@ -1206,9 +1206,36 @@ export async function runSshCommand(
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
     // The whole remote env is folded into one `sh -c` argv string, so the
-    // assembled env block needs a per-argument byte budget as well.
+    // assembled env block needs a per-argument byte budget as well. Reserve
+    // the env-independent part of the argument (profile lines, the quoted
+    // remote command, wrappers) so a large remote command shrinks the env
+    // budget instead of overflowing the assembled argument.
+    // Mirror buildSshSpawnTarget: source the login profiles first, then run
+    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything a
+    // profile re-exports. The SSH target is an operator-configured host, not a
+    // Paperclip sandbox image, so it can expose `node` or an agent CLI only
+    // through a login profile; a non-login SSH command would miss that PATH.
+    // Source `/etc/profile` first so a host that exposes the PATH through
+    // `/etc/profile.d` scripts still resolves node and the agent CLI.
+    // The script no longer sources `nvm.sh`; a profile that adds nvm still runs.
+    // .bash_profile typically sources .bashrc itself; only source .bashrc
+    // directly when no .bash_profile exists, so a host that adds nvm in
+    // .bashrc still resolves node without a double-run of the setup.
+    const profileLines = [
+      'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    ];
+    const envFreeScript = [
+      ...profileLines,
+      `exec env  sh -c ${shellQuote(remoteCommand)}`,
+    ].join(" && ");
+    const reservedArgBytes =
+      6 + sshScriptOuterQuotedBytes(envFreeScript);
     const { env: launchEnv, dropped } = budgetSshRemoteEnvWithReport(
       options.env ?? {},
+      { reservedArgBytes },
     );
     if (dropped.length) {
       console.warn(
@@ -1222,25 +1249,11 @@ export async function runSshCommand(
       }
     }
 
-    // Mirror buildSshSpawnTarget: source the login profiles first, then run
-    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything a
-    // profile re-exports. The SSH target is an operator-configured host, not a
-    // Paperclip sandbox image, so it can expose `node` or an agent CLI only
-    // through a login profile; a non-login SSH command would miss that PATH.
-    // Source `/etc/profile` first so a host that exposes the PATH through
-    // `/etc/profile.d` scripts still resolves node and the agent CLI.
-    // The script no longer sources `nvm.sh`; a profile that adds nvm still runs.
-    // .bash_profile typically sources .bashrc itself; only source .bashrc
-    // directly when no .bash_profile exists, so a host that adds nvm in
-    // .bashrc still resolves node without a double-run of the setup.
     const envArgs = Object.entries(launchEnv).map(
       ([key, value]) => `${key}=${shellQuote(value)}`,
     );
     const remoteScript = [
-      'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+      ...profileLines,
       envArgs.length > 0
         ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
         : `exec sh -c ${shellQuote(remoteCommand)}`,
@@ -1278,9 +1291,38 @@ export async function buildSshSpawnTarget(input: {
   args: string[];
   cleanup: () => Promise<void>;
 }> {
+  // Source the login profiles first, then run `env KEY=VAL cmd` so
+  // user-supplied identity overrides win over anything a profile re-exports.
+  // The SSH target is an operator-configured host, not a Paperclip sandbox
+  // image, so it can expose `node` or an agent CLI only through a login
+  // profile; a non-login SSH command would miss that PATH. Source
+  // `/etc/profile` first so a host that exposes the PATH through
+  // `/etc/profile.d` scripts still resolves node and the agent CLI. The script
+  // no longer sources `nvm.sh`; a profile that adds nvm still runs.
+  // .bash_profile typically sources .bashrc itself; only source .bashrc
+  // directly when no .bash_profile exists, so a host that adds nvm in
+  // .bashrc still resolves node without a double-run of the setup.
+  const profileLines = [
+    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+  ];
   // The whole remote env is folded into a single `sh -c` argv string, so the
   // assembled env block needs a per-argument byte budget as well (E2BIG).
-  const { env: launchEnv, dropped } = budgetSshRemoteEnvWithReport(input.env);
+  // Reserve the env-independent part of the argument (profile lines, the
+  // quoted command and args, wrappers) so a large command shrinks the env
+  // budget instead of overflowing the assembled argument.
+  const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
+  const envFreeScript = [
+    ...profileLines,
+    `cd ${shellQuote(input.spec.remoteCwd)}`,
+    `exec env  ${remoteCommandParts}`,
+  ].join(" && ");
+  const reservedArgBytes = 6 + sshScriptOuterQuotedBytes(envFreeScript);
+  const { env: launchEnv, dropped } = budgetSshRemoteEnvWithReport(input.env, {
+    reservedArgBytes,
+  });
   if (dropped.length) {
     console.warn(
       { droppedKeys: dropped },
@@ -1297,23 +1339,8 @@ export async function buildSshSpawnTarget(input: {
   const envArgs = Object.entries(launchEnv)
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
-  const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
-  // Source the login profiles first, then run `env KEY=VAL cmd` so
-  // user-supplied identity overrides win over anything a profile re-exports.
-  // The SSH target is an operator-configured host, not a Paperclip sandbox
-  // image, so it can expose `node` or an agent CLI only through a login
-  // profile; a non-login SSH command would miss that PATH. Source
-  // `/etc/profile` first so a host that exposes the PATH through
-  // `/etc/profile.d` scripts still resolves node and the agent CLI. The script
-  // no longer sources `nvm.sh`; a profile that adds nvm still runs.
-  // .bash_profile typically sources .bashrc itself; only source .bashrc
-  // directly when no .bash_profile exists, so a host that adds nvm in
-  // .bashrc still resolves node without a double-run of the setup.
   const remoteScript = [
-    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    ...profileLines,
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
