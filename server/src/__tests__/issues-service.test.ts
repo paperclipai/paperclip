@@ -4374,6 +4374,76 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("rejects moving an issue under one of its own descendants", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const rootId = randomUUID();
+    const childId = randomUUID();
+    const grandchildId = randomUUID();
+    await db.insert(issues).values([
+      { id: rootId, companyId, title: "Root", status: "todo", priority: "medium" },
+      { id: childId, companyId, parentId: rootId, title: "Child", status: "todo", priority: "medium" },
+      { id: grandchildId, companyId, parentId: childId, title: "Grandchild", status: "todo", priority: "medium" },
+    ]);
+
+    await expect(
+      svc.update(rootId, { parentId: grandchildId }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    const root = await svc.getById(rootId);
+    expect(root?.parentId).toBeNull();
+  });
+
+  it("rejects setting an issue as its own parent", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values([
+      { id: issueId, companyId, title: "Self parent", status: "todo", priority: "medium" },
+    ]);
+
+    await expect(
+      svc.update(issueId, { parentId: issueId }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("rejects reparenting into an already corrupted parent cycle", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const nodeId = randomUUID();
+    const cycleA = randomUUID();
+    const cycleB = randomUUID();
+    await db.insert(issues).values([
+      { id: nodeId, companyId, title: "Outside node", status: "todo", priority: "medium" },
+      { id: cycleA, companyId, title: "Cycle A", status: "todo", priority: "medium" },
+      { id: cycleB, companyId, parentId: cycleA, title: "Cycle B", status: "todo", priority: "medium" },
+    ]);
+    // Corrupt the graph: A's parent points back at B.
+    await db.update(issues).set({ parentId: cycleB }).where(eq(issues.id, cycleA));
+
+    await expect(
+      svc.update(nodeId, { parentId: cycleA }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
   it("only returns dependents once every blocker is done", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();

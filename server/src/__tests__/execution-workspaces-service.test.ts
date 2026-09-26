@@ -554,6 +554,33 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
 
+  it("sweeps a terminal workspace whose issue tree contains a corrupted parent cycle", async () => {
+    // A cyclic parent edge must not hang the recursive tree walks used by
+    // close-readiness (listWorkspaceIssueTree) and the reaper archive guard.
+    const seeded = await seedAncestryTerminalWorkspace();
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      parentId: seeded.sourceIssueId,
+      title: "Descendant",
+      status: "done",
+      priority: "medium",
+    });
+    // Corrupt the graph: the source issue's parent points back at its own child.
+    await db
+      .update(issues)
+      .set({ parentId: childId })
+      .where(eq(issues.id, seeded.sourceIssueId));
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    expect(readiness?.deliveryState).toBe("merged_by_ancestry");
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
+  }, 20_000);
+
   it("fails closed before archive when git status inspection is unavailable", async () => {
     const seeded = await seedAncestryTerminalWorkspace();
     const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")

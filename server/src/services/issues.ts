@@ -1925,6 +1925,39 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
   if (parent?.conversationAgentId) throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
 }
 
+/**
+ * Reject a parent reassignment that would form a cycle. A cyclic parentId makes
+ * every recursive issue-tree walk (cost rollups, the workspace reaper) loop or
+ * exhaust temp disk, so the edge must be checked before it is written.
+ */
+async function assertNoParentCycle(
+  db: DbReader,
+  companyId: string,
+  issueId: string,
+  parentId: string,
+) {
+  if (parentId === issueId) {
+    throw unprocessable("Issue cannot be its own parent");
+  }
+  const visited = new Set<string>();
+  let currentId: string | null = parentId;
+  while (currentId) {
+    if (currentId === issueId) {
+      throw unprocessable("Issue cannot be moved under one of its own descendants");
+    }
+    if (visited.has(currentId)) {
+      throw unprocessable("Issue parent chain already contains a cycle; fix the tree before reparenting");
+    }
+    visited.add(currentId);
+    const [row] = await db
+      .select({ parentId: issues.parentId })
+      .from(issues)
+      .where(and(eq(issues.id, currentId), eq(issues.companyId, companyId)));
+    if (!row) return;
+    currentId = row.parentId ?? null;
+  }
+}
+
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   initialPlan?: string | null;
@@ -10567,6 +10600,9 @@ export function issueService(db: Db) {
       if (!existing) return null;
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+        if (data.parentId) {
+          await assertNoParentCycle(dbOrTx, existing.companyId, existing.id, data.parentId);
+        }
       }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
