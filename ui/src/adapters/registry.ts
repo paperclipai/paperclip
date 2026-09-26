@@ -9,6 +9,7 @@ import { grokLocalUIAdapter } from "./grok-local";
 import { kimiLocalUIAdapter } from "./kimi-local";
 import { hermesGatewayUIAdapter } from "./hermes-gateway";
 import { hermesLocalUIAdapter } from "./hermes-local";
+import { bobShellUIAdapter } from "./bob-shell";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
@@ -63,6 +64,7 @@ function registerBuiltInUIAdapters() {
     kimiLocalUIAdapter,
     hermesGatewayUIAdapter,
     hermesLocalUIAdapter,
+    bobShellUIAdapter,
     openCodeLocalUIAdapter,
     piLocalUIAdapter,
     cursorLocalUIAdapter,

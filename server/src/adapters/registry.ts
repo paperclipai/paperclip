@@ -100,6 +100,16 @@ import {
   createHermesLocalServerAdapter,
 } from "@paperclipai/hermes-paperclip-adapter";
 import {
+  execute as bobShellExecute,
+  testEnvironment as bobShellTestEnvironment,
+  sessionCodec as bobShellSessionCodec,
+} from "@paperclipai/adapter-bob-shell/server";
+import {
+  agentConfigurationDoc as bobShellAgentConfigurationDoc,
+  models as bobShellModels,
+  createServerAdapter as createBobShellServerAdapter,
+} from "@paperclipai/adapter-bob-shell";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -839,6 +849,11 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const bobShellAdapter: ServerAdapterModule = {
+  ...createBobShellServerAdapter(),
+  runtimeToolDelivery: "environment",
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -865,6 +880,7 @@ function registerBuiltInAdapters() {
     kimiLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
+    bobShellAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,
