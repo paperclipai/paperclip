@@ -246,6 +246,14 @@ describe("grok_local execute", () => {
       resultJson: { executionCancellation: { state: "acknowledged" } } });
     expect(runProcessMock).not.toHaveBeenCalled();
     expect(prepareRuntimeMock).not.toHaveBeenCalled();
+    expect(f.ctx.stopRemoteStartup).toHaveBeenCalledOnce();
+  });
+
+  it("does not acknowledge an early cancellation when its acquired sandbox cannot stop", async () => {
+    const f = await cancellableContext(async () => { throw new Error("stop unverified"); });
+    f.ctx.onCancellationReady = vi.fn(async () => { f.controller.abort(); });
+    await expect(execute(f.ctx)).rejects.toThrow("stop unverified");
+    expect(runProcessMock).not.toHaveBeenCalled();
   });
 
   it("retains workspace recovery evidence when a confirmed stop prevents copy-back", async () => {

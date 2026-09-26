@@ -1,5 +1,5 @@
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
-import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
+import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
@@ -102,7 +102,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -10538,6 +10538,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorRunId?: string | null;
+        actorRunStopId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
       },
@@ -10584,6 +10585,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorRunId,
+        actorRunStopId,
         actorUserId,
         companyGuard,
         ...issueData
@@ -10860,13 +10862,9 @@ export function issueService(db: Db) {
         if (actorAgentId && actorRunId) {
           // Recheck under a run lock: a request admitted before Stop must not
           // commit a late Done after cancellation revoked its credentials.
-          const [actorRun] = await tx.select({ status: heartbeatRuns.status, resultJson: heartbeatRuns.resultJson })
-            .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, actorRunId),
-              eq(heartbeatRuns.companyId, receiptExisting.companyId), eq(heartbeatRuns.agentId, actorAgentId)))
-            .for("share");
-          if (agentRunWritesRevoked(actorRun)) {
-            throw forbidden("This run was cancelled", { code: "agent_run_cancelled" });
-          }
+          await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
+            agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
+          });
         }
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);

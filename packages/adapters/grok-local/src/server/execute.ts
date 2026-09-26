@@ -218,6 +218,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     },
   });
   if (ctx.signal.aborted) {
+    // The host may already have acquired a lease before adapter registration.
+    await ctx.stopRemoteStartup();
     return { ...cancelled(), executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
   }
   // Keep the existing setup boundary armed for the whole direct CLI invocation:

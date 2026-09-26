@@ -27,6 +27,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import {
@@ -257,6 +258,46 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       forceFreshSession: true });
     await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
+  });
+
+  it("allows only the exact task mutation that stopped its own run to commit", async () => {
+    const seeded = await seedQueue();
+    const stopId = randomUUID();
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "issue_reassigned",
+      resultJson: { reassignmentStopConfirmed: true, issueMutationStopId: stopId },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    const data = { status: "todo", actorAgentId: seeded.agentId, actorRunId: seeded.runId };
+    await expect(issueService(db).update(seeded.issueId, { ...data, actorRunStopId: randomUUID() }))
+      .rejects.toMatchObject({ status: 403, details: { code: "agent_run_cancelled" } });
+    expect(await issueService(db).update(seeded.issueId, { ...data, actorRunStopId: stopId }))
+      .toMatchObject({ status: "todo" });
+    await expect(issueService(db).update(seeded.issueId, { ...data, status: "done" }))
+      .rejects.toMatchObject({ status: 403, details: { code: "agent_run_cancelled" } });
+  });
+
+  it.each(["questions", "verdicts"] as const)("rejects admitted %s responses after Stop revokes the run", async kind => {
+    const seeded = await seedQueue();
+    const service = issueThreadInteractionService(db);
+    const issue = { id: seeded.issueId, companyId: seeded.companyId };
+    const interaction = await service.create(issue, kind === "questions" ? {
+      kind: "ask_user_questions", resolverPolicy: "board_or_agents", payload: { version: 1,
+        questions: [{ id: "scope", prompt: "Choose scope", selectionMode: "single", options: [{ id: "first", label: "First" }] }],
+      },
+    } : {
+      kind: "request_item_verdicts", resolverPolicy: "board_or_agents", payload: { version: 1,
+        prompt: "Review the work",
+        items: [{ id: "work", label: "Work" }],
+      },
+    }, { userId: "queue-owner" });
+    await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    const actor = { agentId: seeded.agentId, runId: seeded.runId };
+    const responding = kind === "questions"
+      ? service.answerQuestions(issue, interaction.id, { answers: [{ questionId: "scope", optionIds: ["first"] }] }, actor)
+      : service.submitItemVerdicts(issue, interaction.id, { verdicts: [{ id: "work", verdict: "approve" }] }, actor);
+    await expect(responding).rejects.toMatchObject({ status: 403, details: { code: "agent_run_cancelled" } });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0].status)
+      .toBe("pending");
   });
 
   it.each((["request_confirmation", "request_checkbox_confirmation", "ask_user_questions"] as const)
