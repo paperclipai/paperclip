@@ -98,7 +98,7 @@ function resolveAgentJwtSecretStatus(
 }
 
 export function printStartupBanner(opts: StartupBannerOptions): void {
-  const baseHost = opts.host === "0.0.0.0" ? "localhost" : opts.host;
+  const baseHost = opts.host === "0.0.0.0" || opts.host === "::" ? "localhost" : opts.host;
   const baseUrl = `http://${baseHost}:${opts.listenPort}`;
   const apiUrl = `${baseUrl}/api`;
   const uiUrl = opts.uiMode === "none" ? "disabled" : baseUrl;
