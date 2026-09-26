@@ -8038,11 +8038,51 @@ export async function buildPaperclipWakePayload(input: {
           notice: externalAttachmentOmissionNotice(omission),
         }))
     : [];
+  const confirmationKinds = new Set([
+    "request_confirmation",
+    "request_checkbox_confirmation",
+  ]);
+  let confirmationResolution: {
+    kind: string;
+    status: string;
+    reason: string | null;
+  } | null = null;
+  if (
+    issueId &&
+    interactionId &&
+    interactionKind &&
+    confirmationKinds.has(interactionKind)
+  ) {
+    const interactionRow = await input.db
+      .select({
+        kind: issueThreadInteractions.kind,
+        status: issueThreadInteractions.status,
+        result: issueThreadInteractions.result,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, input.companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (interactionRow && confirmationKinds.has(interactionRow.kind)) {
+      const result = parseObject(interactionRow.result);
+      confirmationResolution = {
+        kind: interactionRow.kind,
+        status: interactionRow.status,
+        reason: readNonEmptyString(result.reason),
+      };
+    }
+  }
   const payload = {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     executionContinuation: input.contextSnapshot.executionContinuation ?? null,
     attachmentOmissions,
     externalChatProvider,
+    confirmationResolution,
     recovery:
       !executionAlreadyReconciled && (recoveryAction || recoveryCause)
         ? {
@@ -8548,6 +8588,11 @@ export function buildPaperclipTaskMarkdown(input: {
     kind?: string | null;
     status?: string | null;
   } | null;
+  confirmationResolution?: {
+    kind?: string | null;
+    status?: string | null;
+    reason?: string | null;
+  } | null;
   planReview?: {
     status?: string | null;
     reason?: string | null;
@@ -8744,6 +8789,26 @@ export function buildPaperclipTaskMarkdown(input: {
       if (input.planReview?.reason?.trim()) {
         lines.push("User's requested changes:", fenceTaskText(input.planReview.reason.trim()));
       }
+    }
+    const confirmationReason = input.confirmationResolution?.reason?.trim() ?? "";
+    const confirmationStatus = input.confirmationResolution?.status;
+    const confirmationKind = input.confirmationResolution?.kind;
+    const rejectedPlanAlreadyShowsReason =
+      rejectedPlan && Boolean(input.planReview?.reason?.trim());
+    if (
+      confirmationReason &&
+      (confirmationKind === "request_confirmation" ||
+        confirmationKind === "request_checkbox_confirmation") &&
+      (confirmationStatus === "accepted" || confirmationStatus === "rejected") &&
+      !rejectedPlanAlreadyShowsReason
+    ) {
+      lines.push(
+        "",
+        "Confirmation decision:",
+        `- Status: ${quoteTaskScalar(confirmationStatus)}`,
+        "Resolver reason:",
+        fenceTaskText(confirmationReason),
+      );
     }
     if ((acceptedPlanContinuation || acceptedChatPlan) && input.acceptedPlan?.revisionId) {
       const revisionNumber = input.acceptedPlan.revisionNumber
@@ -20844,6 +20909,7 @@ export function heartbeatService(
           kind: readNonEmptyString(context.interactionKind),
           status: readNonEmptyString(context.interactionStatus),
         },
+        confirmationResolution: paperclipWakePayload?.confirmationResolution ?? null,
         planReview: paperclipWakePayload?.planReviewContext?.interaction
           ? {
               status: paperclipWakePayload.planReviewContext.interaction.status,

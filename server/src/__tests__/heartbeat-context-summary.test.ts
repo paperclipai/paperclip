@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPaperclipTaskMarkdown,
+  buildPaperclipWakePayload,
   mergeCoalescedContextSnapshot,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
@@ -468,6 +469,125 @@ describe("buildPaperclipTaskMarkdown", () => {
 
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
     expect(commentWake).not.toContain("Create child issues from the approved plan only");
+  });
+
+  it("puts a non-plan confirmation reason in the wake and does not repeat a rejected plan reason", () => {
+    const issue = {
+      id: "issue-9",
+      identifier: "PAP-9",
+      title: "Confirm the condition",
+      workMode: "standard",
+      description: null,
+    };
+    const accepted = buildPaperclipTaskMarkdown({
+      issue,
+      confirmationResolution: {
+        kind: "request_confirmation",
+        status: "accepted",
+        reason: "do X only under condition Y",
+      },
+    });
+    expect(accepted).toContain("Confirmation decision:");
+    expect(accepted).toContain("do X only under condition Y");
+
+    const rejected = buildPaperclipTaskMarkdown({
+      issue,
+      confirmationResolution: {
+        kind: "request_confirmation",
+        status: "rejected",
+        reason: "not now",
+      },
+    });
+    expect(rejected).toContain("not now");
+
+    const blank = buildPaperclipTaskMarkdown({
+      issue,
+      confirmationResolution: {
+        kind: "request_confirmation",
+        status: "accepted",
+        reason: "   ",
+      },
+    });
+    expect(blank).not.toContain("Confirmation decision:");
+
+    const rejectedPlan = buildPaperclipTaskMarkdown({
+      issue: { ...issue, workMode: "planning" },
+      planReview: { status: "rejected", reason: "change the plan" },
+      confirmationResolution: {
+        kind: "request_confirmation",
+        status: "rejected",
+        reason: "change the plan",
+      },
+    });
+    expect(rejectedPlan.match(/User's requested changes:/g)).toHaveLength(1);
+    expect(rejectedPlan).not.toContain("Confirmation decision:");
+  });
+});
+
+describe("buildPaperclipWakePayload confirmation reason", () => {
+  const issueSummary = {
+    id: "issue-9",
+    identifier: "PAP-9",
+    title: "Confirm the condition",
+    description: null,
+    status: "in_progress",
+    priority: "medium",
+    workMode: "standard",
+  };
+
+  function stubDb(row: { kind: string; status: string; result: { reason?: string } } | null) {
+    const chain = (rows: unknown[]) => {
+      const query = {
+        from: () => query,
+        innerJoin: () => query,
+        leftJoin: () => query,
+        where: () => query,
+        orderBy: () => query,
+        limit: () => query,
+        then: (
+          resolve: (value: unknown[]) => unknown,
+          reject?: (reason: unknown) => unknown,
+        ) => Promise.resolve(rows).then(resolve, reject),
+      };
+      return query;
+    };
+    return {
+      select(shape?: object) {
+        const keys = shape ? Object.keys(shape) : [];
+        const isConfirmationRead = keys.includes("result") && keys.includes("kind") && !keys.includes("payload");
+        return chain(isConfirmationRead && row ? [row] : []);
+      },
+    };
+  }
+
+  async function loadReason(kind: string, reason: string) {
+    const payload = await buildPaperclipWakePayload({
+      db: stubDb({ kind, status: "accepted", result: { reason } }) as never,
+      companyId: "company-1",
+      issueSummary,
+      contextSnapshot: {
+        issueId: issueSummary.id,
+        interactionId: "interaction-1",
+        interactionKind: kind,
+        interactionStatus: "accepted",
+      },
+    });
+    return payload?.confirmationResolution ?? null;
+  }
+
+  it("reads a stored confirmation reason back into the wake payload", async () => {
+    await expect(loadReason("request_confirmation", "do X only under condition Y")).resolves.toEqual({
+      kind: "request_confirmation",
+      status: "accepted",
+      reason: "do X only under condition Y",
+    });
+    await expect(loadReason("request_checkbox_confirmation", "keep b.txt")).resolves.toMatchObject({
+      kind: "request_checkbox_confirmation",
+      reason: "keep b.txt",
+    });
+    await expect(loadReason("request_confirmation", "   ")).resolves.toMatchObject({
+      reason: null,
+    });
   });
 });
 

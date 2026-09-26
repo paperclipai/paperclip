@@ -183,6 +183,7 @@ describe("issue subresource commands", () => {
       await run(["issue", "interaction:accept", ISSUE_ID, INTERACTION_ID]);
       await run(["issue", "interaction:accept", ISSUE_ID, INTERACTION_ID, "--selected-client-keys", "yes"]);
       await run(["issue", "interaction:accept", ISSUE_ID, INTERACTION_ID, "--selected-option-ids", "file-a,file-b"]);
+      await run(["issue", "interaction:accept", ISSUE_ID, INTERACTION_ID, "--reason", "  do X only under condition Y  "]);
       await run(["issue", "interaction:reject", ISSUE_ID, INTERACTION_ID, "--reason", "no"]);
       await run(["issue", "interaction:cancel", ISSUE_ID, INTERACTION_ID, "--reason", "stale"]);
       await run([
@@ -217,6 +218,7 @@ describe("issue subresource commands", () => {
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/accept`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/accept`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/accept`],
+      ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/accept`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/reject`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/cancel`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/respond`],
@@ -238,6 +240,9 @@ describe("issue subresource commands", () => {
     ]);
     expect(JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))).toEqual({
       selectedOptionIds: ["file-a", "file-b"],
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))).toEqual({
+      reason: "do X only under condition Y",
     });
   });
 

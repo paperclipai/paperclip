@@ -2168,6 +2168,7 @@ export function issueThreadInteractionService(
               selectedOptionIds: args.input.selectedOptionIds,
             })
           : undefined;
+      const acceptReason = args.input.reason?.trim() ?? "";
 
       const [updated] = await tx
         .update(issueThreadInteractions)
@@ -2176,6 +2177,7 @@ export function issueThreadInteractionService(
           result: {
             version: 1,
             outcome: "accepted",
+            ...(acceptReason ? { reason: acceptReason } : {}),
             ...(selectedOptionIds ? { selectedOptionIds } : {}),
           },
           resolvedByAgentId: args.actor.agentId ?? null,

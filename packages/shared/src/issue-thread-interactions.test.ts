@@ -494,6 +494,16 @@ describe("issue thread interaction schemas", () => {
     })).toThrow("selectedOptionIds must be unique");
   });
 
+  it("trims an optional accept reason and rejects one over 4000 characters", () => {
+    expect(acceptIssueThreadInteractionSchema.parse({
+      reason: "  do X only under condition Y  ",
+    })).toEqual({ reason: "do X only under condition Y" });
+    expect(acceptIssueThreadInteractionSchema.parse({})).toEqual({});
+    expect(() => acceptIssueThreadInteractionSchema.parse({
+      reason: "x".repeat(4001),
+    })).toThrow();
+  });
+
   it("parses request_item_verdicts payloads with defaults", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_item_verdicts",
