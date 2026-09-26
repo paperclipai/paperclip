@@ -157,9 +157,38 @@ export function publishActivity(publication: ActivityPublication) {
   if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
 }
 
+/**
+ * The activity_log.run_id column has a FK constraint on heartbeat_runs. A syntactically
+ * valid but never-persisted run id (e.g. a freshly minted bridge JWT claim) would otherwise
+ * make the whole logActivity() insert fail even though the primary write already committed
+ * (see RENA-56155). Falling back to null keeps the audit row instead of crashing the caller.
+ */
+async function resolveExistingRunId(db: Db, companyId: string, runId: string | null) {
+  if (!runId || !isUuidLike(runId)) return null;
+  const run = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))
+    .then((rows) => rows[0] ?? null);
+  return run ? runId : null;
+}
+
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+  const runId = await resolveExistingRunId(db, input.companyId, input.runId ?? null);
+  if (input.runId && !runId) {
+    logger.warn(
+      {
+        companyId: input.companyId,
+        runId: input.runId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+      },
+      "logActivity: runId does not reference an existing heartbeat run; persisting activity_log row without runId",
+    );
+  }
   const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -168,7 +197,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
@@ -180,7 +209,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     responsibleUserId,
     details: redactedDetails,
   };
