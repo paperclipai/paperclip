@@ -525,6 +525,85 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
+  describe("fresh acquisition deadline", () => {
+    const params = {
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1", runId: "run-1",
+      config: { image: "node:20", reuseLease: false },
+    };
+
+    beforeEach(() => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      vi.useFakeTimers();
+    });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("allows a slow create and setup that finish inside the total budget", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 280_000)));
+      sandbox.process.executeCommand.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({ result: "bash" }), 15_000)));
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params);
+      await vi.advanceTimersByTimeAsync(295_000);
+      expect(await pending).toMatchObject({ providerLeaseId: sandbox.id });
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("journals ownership before the host deadline when setup outlasts creation", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 280_000)));
+      sandbox.process.executeCommand.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({ result: "bash" }), 55_000)));
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      await vi.advanceTimersByTimeAsync(300_000);
+      const cleanup = readEnvironmentCreationCleanupError(await pending);
+      expect(cleanup).toMatchObject({ companyId: params.companyId, environmentId: params.environmentId,
+        runId: params.runId, observedProviderLeaseId: sandbox.id, providerLeaseId: mockCreate.mock.calls[0][0].name });
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(sandbox.setTtl).not.toHaveBeenCalled();
+      expect(sandbox.fs.uploadFile).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    });
+
+    it("records an uncertain create and rejects its late result without starting setup", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 310_000)));
+      const pending = plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      await vi.advanceTimersByTimeAsync(300_000);
+      const cleanup = readEnvironmentCreationCleanupError(await pending);
+      expect(cleanup?.providerLeaseId).toBe(mockCreate.mock.calls[0][0].name);
+      expect(cleanup?.observedProviderLeaseId).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(sandbox.getWorkDir).not.toHaveBeenCalled();
+      expect(sandbox.process.executeCommand).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    });
+
+    it("keeps a failed setup's ownership when inline deletion does not finish", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValue(sandbox);
+      sandbox.getWorkDir.mockRejectedValue(new Error("workspace unavailable"));
+      sandbox.delete.mockImplementation(() => new Promise(() => {}));
+      const pending = plugin.definition.onEnvironmentAcquireLease!({ ...params,
+        config: { ...params.config, timeoutMs: 2_000 },
+      }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(readEnvironmentCreationCleanupError(await pending)).toMatchObject({
+        observedProviderLeaseId: sandbox.id, companyId: params.companyId, runId: params.runId,
+      });
+      expect(sandbox.delete).toHaveBeenCalledOnce();
+    });
+
+    it("keeps ownership when setup and its inline deletion both reject", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValue(sandbox);
+      sandbox.getWorkDir.mockRejectedValue(new Error("workspace unavailable"));
+      sandbox.delete.mockRejectedValue(new Error("delete unavailable"));
+      const error = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(readEnvironmentCreationCleanupError(error)).toMatchObject({
+        observedProviderLeaseId: sandbox.id, companyId: params.companyId, runId: params.runId,
+      });
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
   describe("failed sandbox creation cleanup", () => {
     const params = {
       driverKey: "daytona", companyId: "company-1", environmentId: "env-1", runId: "run-1",

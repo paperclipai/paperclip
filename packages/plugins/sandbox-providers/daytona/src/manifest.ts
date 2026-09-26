@@ -142,7 +142,7 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           timeoutMs: {
             type: "number",
-            description: "Timeout for Daytona create/start/stop/execute operations in milliseconds.",
+            description: "Timeout for Daytona operations in milliseconds. Fresh lease acquisition shares one budget across creation, setup, and inline cleanup.",
             default: DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
           },
           livenessTimeoutMs: {
