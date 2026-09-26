@@ -1391,6 +1391,252 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
   });
 
+  it("cancels stranded predecessor issues before creating the newest run", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "cancel_previous" })
+      .where(eq(routines.id, routine.id));
+
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    await expect(
+      db.select({ status: issues.status }).from(issues).where(eq(issues.id, previousIssue.id)),
+    ).resolves.toEqual([{ status: "cancelled" }]);
+    await expect(
+      db
+        .select({
+          status: routineRuns.status,
+          failureReason: routineRuns.failureReason,
+          completedAt: routineRuns.completedAt,
+        })
+        .from(routineRuns)
+        .where(eq(routineRuns.id, previousRunId)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        status: "failed",
+        failureReason: `Superseded by newer routine run ${run.id}`,
+        completedAt: expect.any(Date),
+      }),
+    ]);
+    await expect(
+      db
+        .select({ action: activityLog.action, entityId: activityLog.entityId })
+        .from(activityLog)
+        .where(eq(activityLog.entityId, previousIssue.id)),
+    ).resolves.toContainEqual({
+      action: "routine.predecessor_cancelled",
+      entityId: previousIssue.id,
+    });
+  });
+
+  it("preserves a live predecessor under cancel_previous", async () => {
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    const liveHeartbeatRunId = randomUUID();
+
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "cancel_previous" })
+      .where(eq(routines.id, routine.id));
+
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "in_progress",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: liveHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date("2026-03-20T12:01:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: liveHeartbeatRunId,
+        executionRunId: liveHeartbeatRunId,
+        executionLockedAt: new Date("2026-03-20T12:01:00.000Z"),
+      })
+      .where(eq(issues.id, previousIssue.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    await expect(
+      db.select({ status: issues.status }).from(issues).where(eq(issues.id, previousIssue.id)),
+    ).resolves.toEqual([{ status: "in_progress" }]);
+  });
+
+  it("preserves stranded predecessors from a different dispatch fingerprint", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "cancel_previous" })
+      .where(eq(routines.id, routine.id));
+
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+      originFingerprint: "different-dispatch-context",
+    });
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+      dispatchFingerprint: "different-dispatch-context",
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("issue_created");
+    await expect(
+      db.select({ status: issues.status }).from(issues).where(eq(issues.id, previousIssue.id)),
+    ).resolves.toEqual([{ status: "blocked" }]);
+    await expect(
+      db.select({ status: routineRuns.status }).from(routineRuns).where(eq(routineRuns.id, previousRunId)),
+    ).resolves.toEqual([{ status: "issue_created" }]);
+  });
+
+  it("rechecks liveness after a concurrent predecessor checkout", async () => {
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    const liveHeartbeatRunId = randomUUID();
+
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "cancel_previous" })
+      .where(eq(routines.id, routine.id));
+
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "in_progress",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    let releaseCheckout!: () => void;
+    const checkoutCanCommit = new Promise<void>((resolve) => {
+      releaseCheckout = resolve;
+    });
+    let checkoutLocked!: () => void;
+    const checkoutHasLock = new Promise<void>((resolve) => {
+      checkoutLocked = resolve;
+    });
+    const checkout = db.transaction(async (tx) => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, previousIssue.id)).for("update");
+      checkoutLocked();
+      await checkoutCanCommit;
+      await tx.insert(heartbeatRuns).values({
+        id: liveHeartbeatRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId: previousIssue.id },
+        startedAt: new Date("2026-03-20T12:01:00.000Z"),
+      });
+      await tx
+        .update(issues)
+        .set({
+          checkoutRunId: liveHeartbeatRunId,
+          executionRunId: liveHeartbeatRunId,
+          executionLockedAt: new Date("2026-03-20T12:01:00.000Z"),
+        })
+        .where(eq(issues.id, previousIssue.id));
+    });
+
+    await checkoutHasLock;
+    const incomingRun = svc.runRoutine(routine.id, { source: "manual" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseCheckout();
+    await checkout;
+
+    const run = await incomingRun;
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    await expect(
+      db.select({ status: issues.status }).from(issues).where(eq(issues.id, previousIssue.id)),
+    ).resolves.toEqual([{ status: "in_progress" }]);
+  });
+
   it("touches a coalesced routine issue for the manual runner's inbox", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();

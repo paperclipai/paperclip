@@ -68,12 +68,13 @@ import {
   type FolderSelection,
 } from "../components/folders/FolderControls";
 
-const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
+const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active", "cancel_previous"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const concurrencyPolicyDescriptions: Record<string, string> = {
   coalesce_if_active: "If a run is already active, keep just one follow-up run queued.",
   always_enqueue: "Queue every trigger occurrence, even if the routine is already running.",
   skip_if_active: "Drop new trigger occurrences while a run is still active.",
+  cancel_previous: "Cancel stranded earlier issues before starting the newest run. Keep a live run working.",
 };
 const catchUpPolicyDescriptions: Record<string, string> = {
   skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",
