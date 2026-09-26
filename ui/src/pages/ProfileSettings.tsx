@@ -292,7 +292,7 @@ export function ProfileSettings() {
             <ToggleSwitch
               checked={preferencesQuery.data?.keyboardShortcuts === true}
               onCheckedChange={(keyboardShortcuts) => {
-                if (selectedCompanyId) updatePreferencesMutation.mutate({ companyId: selectedCompanyId, keyboardShortcuts });
+                if (selectedCompanyId && sessionQuery.data?.user.id) updatePreferencesMutation.mutate({ companyId: selectedCompanyId, keyboardShortcuts, expectedUserId: sessionQuery.data.user.id });
               }}
               disabled={!selectedCompanyId || !preferencesQuery.data || preferencesQuery.isError || updatePreferencesMutation.isPending}
               aria-label="Toggle keyboard shortcuts"

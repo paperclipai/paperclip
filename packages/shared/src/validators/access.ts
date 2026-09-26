@@ -227,6 +227,7 @@ export const currentUserPreferencesSchema = z.object({
   keyboardShortcuts: z.boolean(),
 });
 export const updateCurrentUserPreferencesSchema = currentUserPreferencesSchema.extend({
+  expectedUserId: z.string().min(1),
   companyId: z.string().uuid(),
 }).strict();
 export type CurrentUserPreferences = z.infer<typeof currentUserPreferencesSchema>;

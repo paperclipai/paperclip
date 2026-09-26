@@ -9,10 +9,11 @@ export function useUserPreferences() {
     retry: false,
   });
   const userId = session.data?.user?.id ?? null;
-  return useQuery({
+  const preferences = useQuery({
     queryKey: queryKeys.auth.preferences(userId),
-    queryFn: () => authApi.getPreferences(),
+    queryFn: () => authApi.getPreferences(userId!),
     enabled: !!userId,
     retry: false,
   });
+  return { ...preferences, data: preferences.isError ? undefined : preferences.data };
 }

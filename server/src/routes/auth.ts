@@ -9,9 +9,9 @@ import {
   currentUserProfileSchema,
   updateCurrentUserProfileSchema,
 } from "@paperclipai/shared";
-import { assertCompanyAccess } from "./authz.js";
-import { logActivity } from "../services/activity-log.js";
-import { unauthorized } from "../errors.js";
+import { hasCompanyAccess } from "./authz.js";
+import { logActivity, publishActivity, type ActivityPublication } from "../services/activity-log.js";
+import { forbidden, unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
 
@@ -112,6 +112,7 @@ export function authRoutes(db: Db) {
     if (req.actor.type !== "board" || !req.actor.userId) {
       throw unauthorized("Board authentication required");
     }
+    if (req.query.expectedUserId !== req.actor.userId) throw unauthorized("Account changed. Refresh and try again.");
     const [user] = await db.select({ keyboardShortcuts: authUsers.keyboardShortcuts })
       .from(authUsers).where(eq(authUsers.id, req.actor.userId));
     if (!user) throw unauthorized("Signed-in user not found");
@@ -122,22 +123,30 @@ export function authRoutes(db: Db) {
     if (req.actor.type !== "board" || !req.actor.userId) {
       throw unauthorized("Board authentication required");
     }
-    const { companyId, keyboardShortcuts } = updateCurrentUserPreferencesSchema.parse(req.body);
-    assertCompanyAccess(req, companyId);
-    const [user] = await db.update(authUsers)
-      .set({ keyboardShortcuts, updatedAt: new Date() })
-      .where(eq(authUsers.id, req.actor.userId))
-      .returning({ keyboardShortcuts: authUsers.keyboardShortcuts });
-    if (!user) throw unauthorized("Signed-in user not found");
-    await logActivity(db, {
-      companyId,
-      actorType: "user",
-      actorId: req.actor.userId,
-      action: "user.preferences_updated",
-      entityType: "user",
-      entityId: req.actor.userId,
-      details: { keyboardShortcuts },
+    const { companyId, keyboardShortcuts, expectedUserId } = updateCurrentUserPreferencesSchema.parse(req.body);
+    const userId = req.actor.userId;
+    if (expectedUserId !== userId) throw unauthorized("Account changed. Refresh and try again.");
+    // This is a personal write; company membership supplies audit context only.
+    if (!hasCompanyAccess(req, companyId)) throw forbidden("User does not have access to this company");
+    const publications: ActivityPublication[] = [];
+    const user = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(authUsers)
+        .set({ keyboardShortcuts, updatedAt: new Date() })
+        .where(eq(authUsers.id, userId))
+        .returning({ keyboardShortcuts: authUsers.keyboardShortcuts });
+      if (!updated) throw unauthorized("Signed-in user not found");
+      await logActivity(tx as unknown as Db, {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "user.preferences_updated",
+        entityType: "user",
+        entityId: userId,
+        details: { keyboardShortcuts },
+      }, publications);
+      return updated;
     });
+    for (const publication of publications) publishActivity(publication);
     res.json(currentUserPreferencesSchema.parse(user));
   });
 

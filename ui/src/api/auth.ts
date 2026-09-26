@@ -180,8 +180,8 @@ export const authApi = {
     await authPost("/sign-up/email", input);
   },
 
-  getPreferences: async (): Promise<CurrentUserPreferences> => {
-    const res = await fetch("/api/auth/preferences", {
+  getPreferences: async (expectedUserId: string): Promise<CurrentUserPreferences> => {
+    const res = await fetch(`/api/auth/preferences?expectedUserId=${encodeURIComponent(expectedUserId)}`, {
       credentials: "include",
       headers: { Accept: "application/json" },
     });

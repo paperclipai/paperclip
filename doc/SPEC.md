@@ -611,7 +611,11 @@ The preference is stored on the signed-in user, applies across companies and
 devices, and does not require instance administrator access. The local trusted
 board user has the same preference. `GET /api/auth/preferences` returns only the
 current board user's preference. `PATCH /api/auth/preferences` updates only that
-user and requires an accessible `companyId` for the activity log. Agents cannot
+user and requires an accessible `companyId` for the activity log, including viewer
+memberships. The preference and audit record commit in one transaction. Both
+requests require `expectedUserId` (GET query parameter or PATCH body) matching
+the authenticated actor, so a cookie change cannot mix accounts in the cache.
+Agents cannot
 read or change these preferences. The legacy instance general setting is retained
 for API compatibility but no longer controls shortcut behavior in the app;
 users opt in individually after the upgrade.

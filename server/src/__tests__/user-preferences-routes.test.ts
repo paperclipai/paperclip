@@ -6,9 +6,10 @@ import { authRoutes } from "../routes/auth.js";
 import { errorHandler } from "../middleware/index.js";
 
 const logActivity = vi.hoisted(() => vi.fn());
-vi.mock("../services/activity-log.js", () => ({ logActivity }));
+vi.mock("../services/activity-log.js", () => ({ logActivity, publishActivity: vi.fn() }));
 
 const companyId = "11111111-1111-4111-8111-111111111111";
+const actorExpectedId = "user-1";
 const otherCompanyId = "22222222-2222-4222-8222-222222222222";
 const dialect = new PgDialect();
 
@@ -38,6 +39,11 @@ function setup(actor: Express.Request["actor"]) {
   const db = {
     select: () => ({ from: () => ({ where: async (where: Parameters<typeof dialect.sqlToQuery>[0]) => read(where) }) }),
     update,
+    transaction: async (fn: (tx: unknown) => Promise<unknown>): Promise<unknown> => {
+      const snapshot = structuredClone(users);
+      try { return await fn(db); }
+      catch (error) { users.clear(); for (const [key, value] of snapshot) users.set(key, value); throw error; }
+    },
   };
   const app = express();
   app.use(express.json());
@@ -56,22 +62,41 @@ describe("personal keyboard shortcut preferences", () => {
 
   it("lets a non-admin persist their preference without changing another user", async () => {
     const { app, users } = setup(board);
-    expect((await request(app).get("/api/auth/preferences")).body).toEqual({ keyboardShortcuts: false });
-    const saved = await request(app).patch("/api/auth/preferences").send({ companyId, keyboardShortcuts: true });
+    expect((await request(app).get("/api/auth/preferences?expectedUserId=user-1")).body).toEqual({ keyboardShortcuts: false });
+    const saved = await request(app).patch("/api/auth/preferences").send({ companyId, expectedUserId: actorExpectedId, keyboardShortcuts: true });
     expect(saved.status).toBe(200);
     expect(saved.body).toEqual({ keyboardShortcuts: true });
-    expect((await request(app).get("/api/auth/preferences")).body).toEqual({ keyboardShortcuts: true });
+    expect((await request(app).get("/api/auth/preferences?expectedUserId=user-1")).body).toEqual({ keyboardShortcuts: true });
     expect(users.get("user-2")).toEqual({ keyboardShortcuts: false });
     expect(logActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId, actorId: "user-1", entityId: "user-1", action: "user.preferences_updated",
-    }));
-    expect((await request(app).patch("/api/auth/preferences").send({ companyId, keyboardShortcuts: false })).body)
+    }), expect.any(Array));
+    expect((await request(app).patch("/api/auth/preferences").send({ companyId, expectedUserId: actorExpectedId, keyboardShortcuts: false })).body)
       .toEqual({ keyboardShortcuts: false });
+  });
+
+  it("allows viewer members to save their own preferences", async () => {
+    const { app } = setup({ ...board, memberships: [{ companyId, membershipRole: "viewer", status: "active" }] } as Express.Request["actor"]);
+    expect((await request(app).patch("/api/auth/preferences").send({ companyId, expectedUserId: "user-1", keyboardShortcuts: true })).status).toBe(200);
+  });
+
+  it("rejects reads and writes after the cookie changes accounts", async () => {
+    const { app, update } = setup({ ...board, userId: "user-2" });
+    expect((await request(app).get("/api/auth/preferences?expectedUserId=user-1")).status).toBe(401);
+    expect((await request(app).patch("/api/auth/preferences").send({ companyId, expectedUserId: "user-1", keyboardShortcuts: true })).status).toBe(401);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the preference when its audit record fails", async () => {
+    const { app, users } = setup(board);
+    logActivity.mockRejectedValueOnce(new Error("audit unavailable"));
+    expect((await request(app).patch("/api/auth/preferences").send({ companyId, expectedUserId: "user-1", keyboardShortcuts: true })).status).toBe(500);
+    expect(users.get("user-1")?.keyboardShortcuts).toBe(false);
   });
 
   it("supports the local trusted board identity", async () => {
     const { app } = setup({ type: "board", userId: "local-board", source: "local_implicit" });
-    expect((await request(app).patch("/api/auth/preferences").send({ companyId, keyboardShortcuts: true })).status).toBe(200);
+    expect((await request(app).patch("/api/auth/preferences").send({ companyId, expectedUserId: "local-board", keyboardShortcuts: true })).status).toBe(200);
   });
 
   it.each([
@@ -80,14 +105,14 @@ describe("personal keyboard shortcut preferences", () => {
     { type: "board", source: "session" },
   ] as Express.Request["actor"][])("rejects requests without a board user: %j", async (actor) => {
     const { app, update } = setup(actor);
-    expect((await request(app).get("/api/auth/preferences")).status).toBe(401);
-    expect((await request(app).patch("/api/auth/preferences").send({ companyId, keyboardShortcuts: true })).status).toBe(401);
+    expect((await request(app).get("/api/auth/preferences?expectedUserId=user-1")).status).toBe(401);
+    expect((await request(app).patch("/api/auth/preferences").send({ companyId, expectedUserId: actorExpectedId, keyboardShortcuts: true })).status).toBe(401);
     expect(update).not.toHaveBeenCalled();
   });
 
   it("rejects an inaccessible company audit context", async () => {
     const { app, update } = setup(board);
-    expect((await request(app).patch("/api/auth/preferences").send({ companyId: otherCompanyId, keyboardShortcuts: true })).status).toBe(403);
+    expect((await request(app).patch("/api/auth/preferences").send({ companyId: otherCompanyId, expectedUserId: actorExpectedId, keyboardShortcuts: true })).status).toBe(403);
     expect(update).not.toHaveBeenCalled();
     expect(logActivity).not.toHaveBeenCalled();
   });

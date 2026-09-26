@@ -105,7 +105,7 @@ describe("ProfileSettings", () => {
     expect(toggle?.disabled).toBe(false);
     await act(async () => toggle?.click());
     await flushReact();
-    expect(mockAuthApi.updatePreferences).toHaveBeenCalledWith({ companyId: "company-1", keyboardShortcuts: true }, expect.anything());
+    expect(mockAuthApi.updatePreferences).toHaveBeenCalledWith({ companyId: "company-1", keyboardShortcuts: true, expectedUserId: "user-1" }, expect.anything());
     expect(queryClient.getQueryData(["auth", "preferences", "user-1"])).toEqual({ keyboardShortcuts: true });
     expect(mockAuthApi.updateProfile).not.toHaveBeenCalled();
     await act(async () => root.unmount());
