@@ -45,12 +45,6 @@ Feature: Move and delete tasks from collection context menus
     Then compact reads reflect the committed change before the activity log finishes
     And the committed change remains visible after the request reports an error
 
-  Scenario: CM-7 Refresh lists before post-commit activity finishes
-    Given a compact task list is cached
-    When an update or deletion commits while its activity log is still pending
-    Then compact reads reflect the committed task change immediately
-    And a later logging failure does not restore the old task data
-
   Scenario: CM-8 Refresh activity timestamps after post-commit logging
     Given a task update has committed and its activity log is still pending
     And an intermediate compact read has cached the earlier activity timestamp
