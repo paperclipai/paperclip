@@ -258,6 +258,287 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(expiredByComment).toBeUndefined();
   });
 
+  it("hands a user-assigned issue back to the asking agent when the user answers", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Answered question handoff");
+    const creatorAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "Creator",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // The state the bug lives in: the human owns the card while they owe the
+    // answer, so there is no agent for the continuation wake to target.
+    await db
+      .update(issues)
+      .set({ assigneeUserId: "user-board", assigneeAgentId: null })
+      .where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      },
+      { agentId: creatorAgentId },
+    );
+
+    const answered = await interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      created.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { userId: "user-board" },
+    );
+
+    expect(answered.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: creatorAgentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+    const updatedIssue = (await db.select().from(issues))
+      .find((issue) => issue.id === issueId);
+    expect(updatedIssue).toMatchObject({
+      status: "todo",
+      assigneeAgentId: creatorAgentId,
+      assigneeUserId: null,
+    });
+  });
+
+  it("leaves the issue with the user when the answered question asked for no continuation", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Informational question");
+    const creatorAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "Creator",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(issues)
+      .set({ assigneeUserId: "user-board", assigneeAgentId: null })
+      .where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        // No wake would ever fire for this resolution, so taking the issue off
+        // its human owner would strand it worse than the stall being fixed.
+        continuationPolicy: "none",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      },
+      { agentId: creatorAgentId },
+    );
+
+    const answered = await interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      created.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { userId: "user-board" },
+    );
+
+    expect(answered.continuationIssue).toBeNull();
+    const untouched = (await db.select().from(issues))
+      .find((issue) => issue.id === issueId);
+    expect(untouched).toMatchObject({
+      assigneeUserId: "user-board",
+      assigneeAgentId: null,
+    });
+  });
+
+  it("hands the issue back for an answered question on wake_assignee_on_accept, matching the route's own wake guard", async () => {
+    // Question interactions resolve as `answered`, never `accepted` -- this
+    // predicate has to agree with `queueResolvedInteractionContinuationWakeup`
+    // (server/src/routes/issues.ts) on treating that as the qualifying
+    // resolution for `wake_assignee_on_accept`, or the route queues a wake
+    // for an issue the handoff never gave an assignee.
+    const { companyId, issueId } = await seedConfirmationIssue(
+      "Answered question, wake on accept",
+    );
+    const creatorAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "Creator",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(issues)
+      .set({ assigneeUserId: "user-board", assigneeAgentId: null })
+      .where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      },
+      { agentId: creatorAgentId },
+    );
+
+    const answered = await interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      created.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { userId: "user-board" },
+    );
+
+    expect(answered.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: creatorAgentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+  });
+
+  it("returns a blocked issue to blocked, not to todo, when the user answers", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Blocked handoff");
+    const creatorAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "Creator",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // A blocked issue is blocked for a reason the answer does not resolve.
+    // Handing it back must not silently unblock it.
+    await db
+      .update(issues)
+      .set({ assigneeUserId: "user-board", assigneeAgentId: null, status: "blocked" })
+      .where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      },
+      { agentId: creatorAgentId },
+    );
+
+    const answered = await interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      created.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { userId: "user-board" },
+    );
+
+    expect(answered.continuationIssue).toMatchObject({
+      assigneeAgentId: creatorAgentId,
+      status: "blocked",
+    });
+    const stillBlocked = (await db.select().from(issues))
+      .find((issue) => issue.id === issueId);
+    expect(stillBlocked).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: creatorAgentId,
+      assigneeUserId: null,
+    });
+  });
+
+  it("hands a user-assigned issue back when the user accepts suggested tasks", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Accepted tasks handoff");
+    const creatorAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "Creator",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(issues)
+      .set({ assigneeUserId: "user-board", assigneeAgentId: null })
+      .where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "suggest_tasks",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          tasks: [{ clientKey: "task-1", title: "Follow-up" }],
+        },
+      },
+      { agentId: creatorAgentId },
+    );
+
+    const accepted = await interactionsSvc.acceptSuggestedTasks(
+      { id: issueId, companyId, goalId, projectId: null },
+      created.id,
+      {},
+      { userId: "user-board" },
+    );
+
+    expect(accepted.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: creatorAgentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+  });
+
   it("persists addressees without allowing them to bypass human-only governance", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Agent-addressed interaction");
     const creatorAgentId = randomUUID();

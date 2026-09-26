@@ -16302,7 +16302,10 @@ export function issueRoutes(
               : {}),
             assigneeAgentId: continuationIssue.assigneeAgentId ?? null,
             assigneeUserId: continuationIssue.assigneeUserId ?? null,
-            source: "request_confirmation_accept",
+            source:
+              interaction.kind === "suggest_tasks"
+                ? "suggest_tasks_accept"
+                : "request_confirmation_accept",
             interactionId: interaction.id,
             _previous: {
               status: issue.status,
@@ -16502,6 +16505,34 @@ export function issueRoutes(
             resolutionAuthorization.resolverPolicyRestriction,
         },
       );
+      const { continuationIssue } = interaction;
+
+      if (continuationIssue) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            status: continuationIssue.status,
+            assigneeAgentId: continuationIssue.assigneeAgentId ?? null,
+            assigneeUserId: continuationIssue.assigneeUserId ?? null,
+            source: "ask_user_questions_answer",
+            interactionId: interaction.id,
+            _previous: {
+              status: issue.status,
+              assigneeAgentId: issue.assigneeAgentId ?? null,
+              assigneeUserId: issue.assigneeUserId ?? null,
+            },
+          },
+        });
+      }
 
       await logActivity(db, {
         companyId: issue.companyId,

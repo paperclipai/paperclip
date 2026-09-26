@@ -805,16 +805,95 @@ function interactionTerminalError(row: { status: string; result?: unknown }) {
   );
 }
 
-function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
+function isWakeAssigneeContinuationPolicy(continuationPolicy: string): boolean {
+  return (
+    continuationPolicy === "wake_assignee" ||
+    continuationPolicy === "wake_assignee_on_accept"
+  );
+}
+
+/**
+ * Whether resolving this way would actually queue a continuation wakeup.
+ *
+ * Deliberately a mirror of the guard in `queueResolvedInteractionContinuationWakeup`
+ * (`server/src/routes/issues.ts`) — the handoff below exists solely to give that
+ * wakeup a live target, so the two have to agree on which resolutions get one.
+ * Where they disagree the handoff is actively harmful: it takes the issue off the
+ * person holding it and parks it on an agent nobody will wake, which is the same
+ * dead path the handoff was written to close, moved one step later.
+ */
+function wouldQueueResolvedContinuationWakeup(
+  continuationPolicy: string,
+  resolvedStatus: string,
+): boolean {
+  if (!isWakeAssigneeContinuationPolicy(continuationPolicy)) return false;
+  if (
+    continuationPolicy === "wake_assignee_on_accept" &&
+    // Question interactions resolve as `answered`, not `accepted`. An
+    // authoritative answer is the positive resolution this policy is
+    // waiting for, just as acceptance is for confirmation interactions --
+    // matching `queueResolvedInteractionContinuationWakeup`'s own check.
+    resolvedStatus !== "accepted" &&
+    resolvedStatus !== "answered"
+  ) {
+    return false;
+  }
+  return resolvedStatus !== "expired";
+}
+
+/**
+ * Which resolutions may hand a user-assigned issue back to the agent that created
+ * the interaction.
+ *
+ * `request_confirmation`-like kinds qualify unconditionally, as they always have:
+ * the asking agent is blocked on the verdict by construction. The two kinds added
+ * here are gated on a wakeup actually firing, because either can legitimately be
+ * posted with no intent to resume — an informational question, a task list the
+ * board owns — and taking the issue away from its human owner for a continuation
+ * nobody asked for would be worse than the stall this closes.
+ */
+function isCreatorHandoffOnResolveKind(
+  kind: string,
+  continuationPolicy: string,
+  resolvedStatus: string,
+): boolean {
+  if (isRequestConfirmationLikeKind(kind)) return true;
+  if (kind !== "ask_user_questions" && kind !== "suggest_tasks") return false;
+  return wouldQueueResolvedContinuationWakeup(continuationPolicy, resolvedStatus);
+}
+
+function shouldReturnResolvedInteractionToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
+  /**
+   * The status the interaction is being resolved *to*. Passed explicitly rather
+   * than read off `current`: callers run this inside the same transaction as the
+   * row update, and some only copy the new status onto `current` afterwards.
+   */
+  resolvedStatus: string;
 }) {
-  if (!isRequestConfirmationLikeKind(args.current.kind)) return false;
+  if (
+    !isCreatorHandoffOnResolveKind(
+      args.current.kind,
+      args.current.continuationPolicy,
+      args.resolvedStatus,
+    )
+  ) {
+    return false;
+  }
   if (!args.current.createdByAgentId) return false;
   if (!args.actor.userId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
   if (args.issue.assigneeAgentId) {
+    // Returning an *agent-owned* issue from review is long-standing
+    // confirmation-only behaviour and stays that way. The two kinds added here
+    // fix a stall that only exists when a human holds the issue, so extending
+    // this branch to them would buy nothing and cost something real: an
+    // answered question would move the issue out of `in_review`, and
+    // `attestReviewedExternalChatRun` refuses a native external-chat review
+    // whose issue has left that status or changed assignee.
+    if (!isRequestConfirmationLikeKind(args.current.kind)) return false;
     return (
       args.issue.status === "in_review" &&
       args.issue.assigneeAgentId === args.current.createdByAgentId
@@ -2006,6 +2085,89 @@ export function issueThreadInteractionService(
     return hydrateInteraction(current);
   }
 
+  /**
+   * Hands a resolved interaction's issue back to the agent that created it.
+   *
+   * A user-assigned issue is a live waiting path only while the user still owes
+   * the answer. Once they have answered or accepted, the issue has to go back to
+   * the agent that asked: `queueResolvedInteractionContinuationWakeup` drops the
+   * continuation wakeup unless the issue carries an `assigneeAgentId`, and an
+   * issue may hold only one assignee — so this cannot happen any earlier than
+   * resolution time without taking the question away from the person answering.
+   *
+   * `acceptRequestConfirmation` already does this inline, where it can also settle
+   * plan execution and post-commit publications; this covers the two paths that had
+   * no handoff at all. The issue row is taken `FOR UPDATE` first, matching the
+   * issue -> interaction lock order used across this file: the lock is what makes
+   * the read-then-write safe against a concurrent reassignment or close.
+   *
+   * Returns the resulting wake target, or `null` when the issue keeps its current
+   * assignee; callers own the `touchIssue` fallback for that case.
+   */
+  async function returnResolvedIssueToCreatorAgent(
+    tx: Db,
+    args: {
+      issue: { id: string; companyId: string };
+      current: IssueThreadInteractionRow;
+      actor: InteractionActor;
+      resolvedStatus: string;
+    },
+  ): Promise<IssueWakeTarget | null> {
+    const issueContext = await tx
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+        executionRunId: issues.executionRunId,
+        workMode: issues.workMode,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        reviewPolicy: issues.reviewPolicy,
+        createdByAgentId: issues.createdByAgentId,
+        createdByUserId: issues.createdByUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, args.issue.id))
+      .for("update")
+      .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+
+    if (!issueContext || issueContext.companyId !== args.issue.companyId) {
+      throw notFound("Issue not found");
+    }
+
+    if (
+      !shouldReturnResolvedInteractionToCreatorAgent({
+        issue: issueContext,
+        current: args.current,
+        actor: args.actor,
+        resolvedStatus: args.resolvedStatus,
+      })
+    ) {
+      return null;
+    }
+
+    const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+    const returnedIssue = await issueService(db).update(
+      args.issue.id,
+      {
+        status: returnStatus,
+        assigneeAgentId: args.current.createdByAgentId,
+        assigneeUserId: null,
+        actorAgentId: args.actor.agentId ?? null,
+        actorUserId: args.actor.userId ?? null,
+      },
+      tx,
+    );
+
+    if (!returnedIssue) return null;
+    return {
+      id: returnedIssue.id,
+      assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
+      assigneeUserId: returnedIssue.assigneeUserId ?? null,
+      status: returnedIssue.status,
+    };
+  }
+
   async function assertIssueWorkspaceFinalizedForAccept(args: {
     db: Pick<Db, "select">;
     issue: { id: string; companyId: string };
@@ -2252,10 +2414,11 @@ export function issueThreadInteractionService(
           };
         }
       } else if (
-        shouldReturnAcceptedConfirmationToCreatorAgent({
+        shouldReturnResolvedInteractionToCreatorAgent({
           issue: issueContext,
           current: lockedCurrent,
           actor: args.actor,
+          resolvedStatus: "accepted",
         })
       ) {
         const returnStatus =
@@ -3806,6 +3969,7 @@ export function issueThreadInteractionService(
         SuggestTasksResultCreatedTask
       >();
       const createdWakeTargets: IssueWakeTarget[] = [];
+      let continuationIssue: IssueWakeTarget | null = null;
 
       await db.transaction(async (tx) => {
         const resolvedAt = new Date();
@@ -3896,7 +4060,13 @@ export function issueThreadInteractionService(
           .where(eq(issueThreadInteractions.id, interactionId))
           .returning();
 
-        await touchIssue(tx, issue.id);
+        // After the child issues exist, so the creating agent is woken onto an
+        // issue whose suggested tasks are already there to act on.
+        continuationIssue = await returnResolvedIssueToCreatorAgent(
+          tx as unknown as Db,
+          { issue, current, actor, resolvedStatus: "accepted" },
+        );
+        if (!continuationIssue) await touchIssue(tx, issue.id);
         current.status = updated.status;
         current.result = updated.result;
         current.resolvedByAgentId = updated.resolvedByAgentId;
@@ -3912,6 +4082,7 @@ export function issueThreadInteractionService(
       return {
         interaction: accepted,
         createdIssues: createdWakeTargets,
+        continuationIssue,
       };
     },
 
@@ -4811,13 +4982,33 @@ export function issueThreadInteractionService(
           tx as unknown as Db,
           answered,
         );
-        return row;
+        // Runs inside this transaction so the resolution and the handoff commit
+        // together: a wake queued against an issue that never moved would be
+        // dropped for want of an agent assignee.
+        const continuationIssue = await returnResolvedIssueToCreatorAgent(
+          tx as unknown as Db,
+          { issue, current, actor, resolvedStatus: "answered" },
+        );
+        return { row, continuationIssue };
       });
 
-      await touchIssue(db, issue.id);
-      const answered = hydrateInteraction(updated);
+      if (!updated.continuationIssue) await touchIssue(db, issue.id);
+      const answered = hydrateInteraction(updated.row);
       await emitInteractionResolvedTelemetry(db, answered);
-      return answered;
+      // Non-enumerable rather than wrapped or plainly assigned: `answered`
+      // stays the interaction itself, so every existing and future caller
+      // that only cares about `.kind`/`.status` keeps working unchanged, but
+      // the field stays out of `JSON.stringify` / `res.json(interaction)` --
+      // it's an internal wake-target, not part of the documented
+      // `AskUserQuestionsInteraction` response contract.
+      Object.defineProperty(answered, "continuationIssue", {
+        value: updated.continuationIssue,
+        enumerable: false,
+        configurable: true,
+      });
+      return answered as typeof answered & {
+        continuationIssue: IssueWakeTarget | null;
+      };
     },
 
     skipInteraction: async (
