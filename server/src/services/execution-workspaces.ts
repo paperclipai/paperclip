@@ -1333,16 +1333,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         eq(issues.companyId, workspace.companyId),
         sql<boolean>`
           ${issues.id} IN (
-            WITH RECURSIVE issue_tree(id) AS (
-              SELECT ${issues.id}
+            WITH RECURSIVE issue_tree(id, path) AS (
+              SELECT ${issues.id}, ARRAY[${issues.id}]
               FROM ${issues}
               WHERE ${issues.companyId} = ${workspace.companyId}
                 AND ${issues.id} = ${workspace.sourceIssueId}
               UNION ALL
-              SELECT child.id
+              SELECT child.id, parent.path || child.id
               FROM ${issues} child
               JOIN issue_tree parent ON child.parent_id = parent.id
               WHERE child.company_id = ${workspace.companyId}
+                AND NOT child.id = ANY(parent.path)
             )
             SELECT id FROM issue_tree
           )
@@ -2777,16 +2778,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                   AND live_run.status IN ('queued', 'running')
               )`,
               sql<boolean>`NOT EXISTS (
-                WITH RECURSIVE issue_tree(id, status) AS (
-                  SELECT root.id, root.status
+                WITH RECURSIVE issue_tree(id, status, path) AS (
+                  SELECT root.id, root.status, ARRAY[root.id]
                   FROM ${issues} root
                   WHERE root.company_id = ${workspace.companyId}
                     AND root.id = ${workspace.sourceIssueId}
                   UNION ALL
-                  SELECT child.id, child.status
+                  SELECT child.id, child.status, parent.path || child.id
                   FROM ${issues} child
                   JOIN issue_tree parent ON child.parent_id = parent.id
                   WHERE child.company_id = ${workspace.companyId}
+                    AND NOT child.id = ANY(parent.path)
                 )
                 SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
               )`,
@@ -2797,16 +2799,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               // disabled, so this predicate drops out of the guard.
               cooldownCutoff
                 ? sql<boolean>`NOT EXISTS (
-                WITH RECURSIVE cooldown_tree(id, status, completed_at, cancelled_at, updated_at) AS (
-                  SELECT root.id, root.status, root.completed_at, root.cancelled_at, root.updated_at
+                WITH RECURSIVE cooldown_tree(id, status, completed_at, cancelled_at, updated_at, path) AS (
+                  SELECT root.id, root.status, root.completed_at, root.cancelled_at, root.updated_at, ARRAY[root.id]
                   FROM ${issues} root
                   WHERE root.company_id = ${workspace.companyId}
                     AND root.id = ${workspace.sourceIssueId}
                   UNION ALL
-                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at
+                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at, parent.path || child.id
                   FROM ${issues} child
                   JOIN cooldown_tree parent ON child.parent_id = parent.id
                   WHERE child.company_id = ${workspace.companyId}
+                    AND NOT child.id = ANY(parent.path)
                 )
                 SELECT 1 FROM cooldown_tree
                 WHERE COALESCE(
