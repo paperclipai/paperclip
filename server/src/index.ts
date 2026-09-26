@@ -111,6 +111,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { isGuardRejectedRecoveryWrite } from "./services/recovery/guard-rejection.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
@@ -1564,6 +1565,18 @@ async function startServerWithDatabaseTeardown(
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
         }
       })().catch((err) => {
+        // The known consistency-guard rejection (a cyclic blocking relation,
+        // `code: "blocking_relations_cycle"`) is a data condition about one issue,
+        // not a boot fault. Log it and keep serving; rethrowing here aborted the
+        // boot and systemd's Restart=always turned one bad row into a crash loop.
+        // Any other failure, including an unrelated 422, still aborts the boot.
+        if (isGuardRejectedRecoveryWrite(err)) {
+          logger.error(
+            { err },
+            "startup heartbeat recovery hit a consistency rejection; continuing",
+          );
+          return;
+        }
         logger.error({ err }, "startup heartbeat recovery failed");
         throw err;
       });

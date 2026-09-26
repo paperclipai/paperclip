@@ -66,7 +66,8 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
-import { forbidden, notFound } from "../../errors.js";
+import { forbidden, HttpError, notFound } from "../../errors.js";
+import { isGuardRejectedRecoveryWrite } from "./guard-rejection.js";
 import { logger } from "../../middleware/logger.js";
 import {
   isPidAlive,
@@ -899,6 +900,8 @@ function isRepeatedProductiveContinuationRecovery(
     isProductiveContinuationRun(latestRun)
   );
 }
+
+export { isGuardRejectedRecoveryWrite };
 
 export function recoveryService(
   db: Db,
@@ -3407,127 +3410,142 @@ export function recoveryService(
       issueIds: [] as string[],
     };
     for (const { action, issue } of rows) {
-      const wakePolicy = parseObject(action.wakePolicy);
-      const wakePolicyType = readNonEmptyString(wakePolicy.type);
-      if (
-        wakePolicyType !== "bounded_recovery_owner" &&
-        wakePolicyType !== "bounded_owner_disposition_repair" &&
-        action.ownerType !== "board"
-      ) {
-        continue;
-      }
-
-      if (issue.status === "done" || issue.status === "cancelled") {
-        const resolved = await recoveryActionsSvc.resolveActiveForIssue({
-          companyId: action.companyId,
-          sourceIssueId: action.sourceIssueId,
-          actionId: action.id,
-          status: "resolved",
-          outcome: "restored",
-          resolutionNote: "source_terminal",
-        });
-        if (resolved) {
-          result.resolved += 1;
-          result.issueIds.push(issue.id);
-        }
-        continue;
-      }
-
-      // A queued comment or healthy child cannot establish what the stopped
-      // provider already did. Only execution reconciliation can clear this hold.
-      if (requiresExecutionReconciliation(action.cause)) {
-        result.skipped += 1;
-        continue;
-      }
-
-      const [sourceState, healthyChildren, hasNewSourcePath] =
-        await Promise.all([
-          collectDispositionRepairSourceState(db, { issue }),
-          healthyOpenChildIssues(issue),
-          sourceHasNewPathOutsideRecoveryAction(action),
-        ]);
-      const durablePathRestored =
-        action.ownerType !== "board" && sourceState.hasDurableWaitingPath;
-      if (
-        durablePathRestored ||
-        healthyChildren.length > 0 ||
-        hasNewSourcePath
-      ) {
-        if (healthyChildren.length > 0 && !sourceState.hasDurableWaitingPath) {
-          const blockerIds = await existingUnresolvedBlockerIssueIds(
-            issue.companyId,
-            issue.id,
-          );
-          await issuesSvc.update(issue.id, {
-            status: "blocked",
-            blockedByIssueIds: [
-              ...new Set([
-                ...blockerIds,
-                ...healthyChildren.map((child) => child.id),
-              ]),
-            ],
-          });
-        }
-        const resolved = await recoveryActionsSvc.resolveActiveForIssue({
-          companyId: action.companyId,
-          sourceIssueId: action.sourceIssueId,
-          actionId: action.id,
-          status: "resolved",
-          outcome: "restored",
-          resolutionNote: durablePathRestored
-            ? `durable_path_restored:${sourceState.durablePathReason ?? "unknown"}`
-            : healthyChildren.length > 0
-              ? "durable_path_restored:healthy_child"
-              : "new_source_execution_path",
-        });
-        if (resolved) {
-          result.resolved += 1;
-          result.issueIds.push(issue.id);
-        }
-        continue;
-      }
-
-      if (wakePolicyType === "bounded_owner_disposition_repair") {
+      try {
+        const wakePolicy = parseObject(action.wakePolicy);
+        const wakePolicyType = readNonEmptyString(wakePolicy.type);
         if (
-          await isAutomaticRecoverySuppressedByPauseHold(
-            db,
-            issue.companyId,
-            issue.id,
-            treeControlSvc,
-          )
+          wakePolicyType !== "bounded_recovery_owner" &&
+          wakePolicyType !== "bounded_owner_disposition_repair" &&
+          action.ownerType !== "board"
         ) {
+          continue;
+        }
+
+        if (issue.status === "done" || issue.status === "cancelled") {
+          const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+            companyId: action.companyId,
+            sourceIssueId: action.sourceIssueId,
+            actionId: action.id,
+            status: "resolved",
+            outcome: "restored",
+            resolutionNote: "source_terminal",
+          });
+          if (resolved) {
+            result.resolved += 1;
+            result.issueIds.push(issue.id);
+          }
+          continue;
+        }
+
+        // A queued comment or healthy child cannot establish what the stopped
+        // provider already did. Only execution reconciliation can clear this hold.
+        if (requiresExecutionReconciliation(action.cause)) {
           result.skipped += 1;
           continue;
         }
 
-        const latestRun = await latestRecoveryActionRun(action);
-        const persistedAttempt = Math.max(
-          action.attemptCount,
-          Math.max(
-            0,
-            Math.floor(asNumber(wakePolicy.attempt, action.attemptCount)),
-          ),
-        );
-        const outcome = await reconcileDispositionRepair(issue, latestRun, {
-          historicalAttemptCount: persistedAttempt,
-        });
-        if (outcome === "queued") {
-          result.requeued += 1;
-          result.issueIds.push(issue.id);
-        } else if (outcome === "escalated") {
-          result.escalated += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          result.skipped += 1;
+        const [sourceState, healthyChildren, hasNewSourcePath] =
+          await Promise.all([
+            collectDispositionRepairSourceState(db, { issue }),
+            healthyOpenChildIssues(issue),
+            sourceHasNewPathOutsideRecoveryAction(action),
+          ]);
+        const durablePathRestored =
+          action.ownerType !== "board" && sourceState.hasDurableWaitingPath;
+        if (
+          durablePathRestored ||
+          healthyChildren.length > 0 ||
+          hasNewSourcePath
+        ) {
+          if (healthyChildren.length > 0 && !sourceState.hasDurableWaitingPath) {
+            const blockerIds = await existingUnresolvedBlockerIssueIds(
+              issue.companyId,
+              issue.id,
+            );
+            await issuesSvc.update(issue.id, {
+              status: "blocked",
+              blockedByIssueIds: [
+                ...new Set([
+                  ...blockerIds,
+                  ...healthyChildren.map((child) => child.id),
+                ]),
+              ],
+            });
+          }
+          const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+            companyId: action.companyId,
+            sourceIssueId: action.sourceIssueId,
+            actionId: action.id,
+            status: "resolved",
+            outcome: "restored",
+            resolutionNote: durablePathRestored
+              ? `durable_path_restored:${sourceState.durablePathReason ?? "unknown"}`
+              : healthyChildren.length > 0
+                ? "durable_path_restored:healthy_child"
+                : "new_source_execution_path",
+          });
+          if (resolved) {
+            result.resolved += 1;
+            result.issueIds.push(issue.id);
+          }
+          continue;
         }
-        continue;
+
+        if (wakePolicyType === "bounded_owner_disposition_repair") {
+          if (
+            await isAutomaticRecoverySuppressedByPauseHold(
+              db,
+              issue.companyId,
+              issue.id,
+              treeControlSvc,
+            )
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const latestRun = await latestRecoveryActionRun(action);
+          const persistedAttempt = Math.max(
+            action.attemptCount,
+            Math.max(
+              0,
+              Math.floor(asNumber(wakePolicy.attempt, action.attemptCount)),
+            ),
+          );
+          const outcome = await reconcileDispositionRepair(issue, latestRun, {
+            historicalAttemptCount: persistedAttempt,
+          });
+          if (outcome === "queued") {
+            result.requeued += 1;
+            result.issueIds.push(issue.id);
+          } else if (outcome === "escalated") {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (action.ownerType === "board") continue;
+
+        // Legacy takeover actions remain readable and resolvable, but recovery no
+        // longer schedules another agent-owned wake for them.
+        result.skipped += 1;
+      } catch (error) {
+        if (!isGuardRejectedRecoveryWrite(error)) throw error;
+        logger.warn(
+          {
+            issueId: issue.id,
+            companyId: issue.companyId,
+            recoveryActionId: action.id,
+            guardStatus: error.status,
+            guardError: error.message,
+          },
+          "recovery action write rejected by a consistency guard; skipping action",
+        );
+        result.skipped += 1;
       }
-
-      if (action.ownerType === "board") continue;
-
-      // Legacy takeover actions remain readable and resolvable, but recovery no
-      // longer schedules another agent-owned wake for them.
-      result.skipped += 1;
     }
     return result;
   }
