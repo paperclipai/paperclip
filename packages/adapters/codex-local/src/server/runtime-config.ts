@@ -203,6 +203,14 @@ function emitProviderTable(name: string, fields: Record<string, unknown>): strin
   return lines;
 }
 
+/**
+ * Root `model_provider` plus its `[model_providers.<name>]` table, for a
+ * config.toml that Paperclip writes from scratch (a managed AI connection home).
+ */
+export function renderCodexModelProviderToml(name: string, fields: Record<string, unknown>): string {
+  return `model_provider = "${escapeTomlString(name)}"\n\n${emitProviderTable(name, fields).join("\n")}\n`;
+}
+
 function stripManagedBlock(lines: string[], begin: string, end: string): string[] {
   const out: string[] = [];
   let inBlock = false;

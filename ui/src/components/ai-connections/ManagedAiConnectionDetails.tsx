@@ -20,12 +20,14 @@ export function ManagedAiConnectionRow({
       }
     | undefined;
   if (!metadata) return null;
+  const gateway = (connection.config?.aiEndpoint as { baseUrl?: string } | undefined)?.baseUrl;
   return (
     <p className="text-xs text-muted-foreground">
       {aiMethodLabel(metadata.provider, metadata.method)} ·{" "}
       {connection.credentialPolicy === "per_user"
         ? "Personal"
         : "Company shared"}
+      {gateway && <> · via {gateway}</>}
     </p>
   );
 }

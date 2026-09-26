@@ -299,6 +299,7 @@ export function ConnectionIntentInteractionBody({
         initialMethod={repair.connection.method}
         fixedMethod
         connectionId={repair.connection.id}
+        gatewayBaseUrl={repair.connection.endpointBaseUrl}
         name={repair.connection.name}
         ownership={repair.connection.ownership}
         agentIds={[interaction.payload.requestingAgentId]}

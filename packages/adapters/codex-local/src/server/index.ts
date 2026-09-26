@@ -122,5 +122,6 @@ export const sessionCodec: AdapterSessionCodec = {
 };
 
 export { decideCodexAuthMerge } from "./codex-auth-merge-decision.js";
+export { renderCodexModelProviderToml } from "./runtime-config.js";
 
 export { copyBackCodexAuth } from "./codex-auth-copyback.js";

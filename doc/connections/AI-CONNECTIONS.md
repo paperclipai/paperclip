@@ -48,7 +48,8 @@ selected company members or every company member. The separate agent-access
 setting determines which agents can use it. There is no additional AI agent
 authorization, and old delegation records do not override the human audience.
 
-A connection choice never changes the harness, model, or provider routing.
+A connection choice never changes the harness or model. Agent configuration never
+changes provider routing; only a connection's own custom endpoint does (below).
 Changing those separately may make a binding incompatible; saving then requires
 a compatible choice. Agent configuration cannot grant access to another account.
 
@@ -96,6 +97,52 @@ remote environment blocks validation rather than probing the server host. The
 runtime test accepts the form’s prospective adapter selection before it is saved.
 For a saved-agent test, omitting `environmentId` uses the agent’s saved override.
 Sending `environmentId: null` tests a change back to the instance default.
+
+### Custom endpoints
+
+A Claude or OpenAI API-key connection may carry an `endpoint`: a gateway such as
+LiteLLM or a corporate proxy. A gateway key is valid only at its gateway, so the
+endpoint belongs to the credential and is stored with the connection in
+`config.aiEndpoint`. Subscriptions, OpenRouter, and Grok do not accept one.
+
+```json
+POST /api/companies/:companyId/ai-connections
+{ "provider": "anthropic", "method": "api_key", "name": "LiteLLM", "ownership": "shared",
+  "apiKey": "sk-…", "allAgents": true,
+  "endpoint": { "baseUrl": "https://litellm.example.com", "headers": { "x-team": "platform" } } }
+```
+
+- `baseUrl` follows each CLI's convention: the host root for Claude
+  (`ANTHROPIC_BASE_URL`), and a base that includes `/v1` for OpenAI (a Codex
+  `model_providers` `base_url`).
+- `headers` are routing or attribution headers. They are stored as plain
+  connection config, so credential headers (`Authorization`, `x-api-key`, …) and
+  credentials in the URL (`user:pass@`) are rejected. `X-Anthropic-Agent-Id` is
+  reserved, so a connection cannot override per-agent attribution. The key belongs
+  in `apiKey`, which is encrypted like any other AI key.
+- Creating the connection verifies the key against the gateway's model list
+  through the remote-endpoint network guard.
+- Authenticated public deployments do not offer custom endpoints. Claude Code and
+  Codex resolve the gateway host themselves, so no server-side address check can
+  stop a hostname from rebinding to a private or metadata address. Those
+  deployments refuse to create or reconnect a gateway connection, and refuse to
+  run one that was created before the deployment became public. Private and
+  local deployments are unaffected.
+- A reconnect replaces the key and keeps the stored endpoint. It checks the stored
+  provider before the new key is sent anywhere. To move to a different gateway,
+  create a new connection.
+
+At run time, a Claude run gets `ANTHROPIC_BASE_URL` and the headers appended to
+`ANTHROPIC_CUSTOM_HEADERS`. The per-agent `X-Anthropic-Agent-Id` header is still
+added. A Codex run gets a `paperclip_gateway` model provider
+(`wire_api = "responses"`) in its private `config.toml`. The endpoint is part of
+the session identity, so changing it starts new sessions. Routing variables in agent
+configuration (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, …) remain incompatible
+with every managed connection.
+
+The gateway serves whatever `model` the agent names, for example `claude-opus-5`.
+The model picker still lists only first-party models. Gateway model discovery is
+separate work.
 
 ## Runtime isolation
 

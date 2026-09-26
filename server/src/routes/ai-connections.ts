@@ -18,16 +18,19 @@ import {
   localAiConnectionSchema,
   localAiLoginStartSchema,
   isAiConnectionCompatible,
+  aiConnectionEndpoint,
   type AiConnectionLoginIntent,
   type AiProvider,
   type AiConnectionBinding,
+  type AiConnectionEndpoint,
 } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { HttpError, forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { logActivity } from "../services/activity-log.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { validate } from "../middleware/validate.js";
+import { guardedRemoteHttpFetch } from "../services/remote-http-fetch.js";
 
 /** Agent API calls inherit authenticated run identity, never the agent's own ID. */
 export function responsibleUserForAiRequest(req: Request): string | null {
@@ -137,6 +140,7 @@ export async function validateAiApiKey(
   provider: AiProvider,
   key: string,
   request: typeof fetch = fetch,
+  gateway?: { endpoint: AiConnectionEndpoint; allowPrivateNetwork: boolean },
 ) {
   const endpoints = {
     anthropic: "https://api.anthropic.com/v1/models?limit=1",
@@ -144,18 +148,36 @@ export async function validateAiApiKey(
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
   };
+  // Each base URL follows its CLI's convention: ANTHROPIC_BASE_URL is the host
+  // root, while a Codex provider base_url already ends in the API version.
+  const gatewayUrl = gateway &&
+    `${gateway.endpoint.baseUrl}${provider === "anthropic" ? "/v1/models?limit=1" : "/models"}`;
+  const init: RequestInit = {
+    redirect: "error",
+    signal: AbortSignal.timeout(15000),
+    headers: {
+      ...gateway?.endpoint.headers,
+      ...(provider === "anthropic"
+        ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
+        : { Authorization: `Bearer ${key}` }),
+    },
+  };
   let response: Response;
   try {
-    response = await request(endpoints[provider], {
-      redirect: "error",
-      signal: AbortSignal.timeout(15000),
-      headers:
-        provider === "anthropic"
-          ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
-          : { Authorization: `Bearer ${key}` },
-    });
-  } catch {
-    throw unprocessable("Could not verify the account. Try again.");
+    response = gateway
+      ? await guardedRemoteHttpFetch(gatewayUrl!, init, {
+          allowPrivateNetwork: gateway.allowPrivateNetwork,
+          unpinnedFetch: request,
+          error: (message, code) => unprocessable(message.replace("Remote MCP connection", "The gateway"), { code }),
+        })
+      : await request(endpoints[provider], init);
+  } catch (error) {
+    if (gateway && error instanceof HttpError) throw error;
+    throw unprocessable(
+      gateway
+        ? "Could not reach the gateway. Check the URL and try again."
+        : "Could not verify the account. Try again.",
+    );
   }
   await response.body?.cancel();
   if (!response.ok)
@@ -172,6 +194,28 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   }
   const router = Router();
   const service = aiConnectionService(db);
+  async function storedAiConnection(companyId: string, connectionId: string) {
+    const [connection] = await db
+      .select({ config: toolConnections.config })
+      .from(toolConnections)
+      .where(
+        and(
+          eq(toolConnections.companyId, companyId),
+          eq(toolConnections.id, connectionId),
+          eq(toolConnections.connectionPurpose, "ai"),
+        ),
+      );
+    if (!connection) throw notFound("AI connection not found");
+    return {
+      provider: (connection.config.ai as { provider?: unknown } | undefined)?.provider,
+      endpoint: aiConnectionEndpoint(connection.config),
+    };
+  }
+  // Same policy as remote MCP URLs: only public authenticated deployments are
+  // kept off private networks.
+  const allowPrivateNetwork =
+    options.deploymentMode !== "authenticated" ||
+    options.deploymentExposure !== "public";
   const localLogin = localAiLoginService(db);
   function assertLocalOperator(req: Request) {
     assertBoard(req);
@@ -280,8 +324,24 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         throw unprocessable(
           "Use the existing provider sign-in flow to connect a subscription",
         );
+      if (input.connectionId && input.endpoint)
+        throw unprocessable("Reconnect cannot change the endpoint");
+      // Never send a new key anywhere before the reconnect target is confirmed.
+      const stored = input.connectionId
+        ? await storedAiConnection(companyId, input.connectionId)
+        : undefined;
+      if (stored && stored.provider !== input.provider)
+        throw unprocessable("Reconnect cannot change providers");
+      const endpoint = stored ? stored.endpoint : input.endpoint;
+      if (endpoint && !allowPrivateNetwork)
+        throw unprocessable("Custom AI gateway endpoints are not available on authenticated public deployments");
       const attemptStartedAt = new Date();
-      await validateAiApiKey(input.provider, input.apiKey!);
+      await validateAiApiKey(
+        input.provider,
+        input.apiKey!,
+        fetch,
+        endpoint && { endpoint, allowPrivateNetwork },
+      );
       const result = await service.save(
         companyId,
         userId,
