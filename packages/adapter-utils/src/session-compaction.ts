@@ -1,4 +1,4 @@
-export interface SessionCompactionPolicy {
+﻿export interface SessionCompactionPolicy {
   enabled: boolean;
   maxSessionRuns: number;
   maxRawInputTokens: number;
@@ -190,4 +190,65 @@ export function hasSessionCompactionThresholds(policy: Pick<
   "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours"
 >) {
   return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0 || policy.maxSessionAgeHours > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Execution Budget + Compaction
+// ---------------------------------------------------------------------------
+
+export type TaskComplexity = "normal" | "debug" | "complex";
+
+export interface ExecutionBudgetPolicy {
+  /** Maximum full-replay runs before compaction is forced. */
+  maxRunsBeforeCompaction: number;
+  /** Task complexity classification. */
+  complexity: TaskComplexity;
+}
+
+const EXECUTION_BUDGET_BY_COMPLEXITY: Record<TaskComplexity, ExecutionBudgetPolicy> = {
+  normal: { maxRunsBeforeCompaction: 4, complexity: "normal" },
+  debug: { maxRunsBeforeCompaction: 6, complexity: "debug" },
+  complex: { maxRunsBeforeCompaction: 8, complexity: "complex" },
+};
+
+/**
+ * Classify task complexity from issue/work-mode context. Normal tasks are the
+ * default; debug tasks have work-mode "debug" or explicit debug flags; complex
+ * tasks have multi-step plan documents or high child-issue counts.
+ */
+export function classifyTaskComplexity(context: Record<string, unknown> | null | undefined): TaskComplexity {
+  if (!context) return "normal";
+  const workMode = typeof context.workMode === "string" ? context.workMode.toLowerCase() : "";
+  if (workMode === "debug" || workMode === "diagnostic") return "debug";
+  if (workMode === "complex" || workMode === "epic") return "complex";
+  const childCount = typeof context.childCount === "number" ? context.childCount : 0;
+  if (childCount > 5) return "complex";
+  return "normal";
+}
+
+export function resolveExecutionBudget(context: Record<string, unknown> | null | undefined): ExecutionBudgetPolicy {
+  const complexity = classifyTaskComplexity(context);
+  return EXECUTION_BUDGET_BY_COMPLEXITY[complexity];
+}
+
+/**
+ * State fields preserved through a compaction continuation. When a session is
+ * compacted, only these fields survive into the new session context; everything
+ * else is discarded to bound context size.
+ */
+export interface CompactionContinuationState {
+  /** Objective: what the task is trying to achieve. */
+  objective: string | null;
+  /** Key decisions made so far. */
+  decisions: string[];
+  /** Files changed so far in this session. */
+  changedFiles: string[];
+  /** Test results / status. */
+  tests: string | null;
+  /** Current blockers. */
+  blockers: string[];
+  /** Concrete next action for the continuation. */
+  nextAction: string | null;
+  /** Run IDs from prior runs in this session (for traceability). */
+  priorRunIds: string[];
 }
