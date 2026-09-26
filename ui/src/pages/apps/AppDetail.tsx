@@ -29,7 +29,7 @@ import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installStateFrom, type InstallState } from "@/lib/tool-installs";
-import { navigateTopLevel } from "@/lib/browserNavigation";
+import { useAuthorizationWindow } from "@/lib/authorizationWindow";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -295,6 +295,9 @@ export function AppDetail({ renderActions, onReconnect }: {
     onSettled: () => setPending(false),
   });
 
+  // Sign-in hands the operator to a page Paperclip does not own, so it opens in
+  // its own tab and this one stays on the connector they were looking at.
+  const authorizationWindow = useAuthorizationWindow();
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const rename = useMutation({
@@ -315,13 +318,17 @@ export function AppDetail({ renderActions, onReconnect }: {
 
   const startOAuth = useMutation({
     mutationFn: (input?: { asAgentId?: string }) => toolsApi.startOAuth(connectionId, input),
+    // Claimed here, while the click that started this still counts as user
+    // activation: by the time the server hands back a URL it no longer does.
+    onMutate: () => authorizationWindow.reserve(),
     onSuccess: async (start) => {
       try {
         const target = await prepareOAuthNavigation(start);
-        if (target.kind === "reauthentication" && start.handoff) {
-          savePendingCloudHandoff(start.handoff.session);
-        }
-        navigateTopLevel(target.url);
+        authorizationWindow.navigateTo(target.url, (destination) => {
+          if (target.kind === "reauthentication" && start.handoff) {
+            savePendingCloudHandoff(start.handoff.session, destination.sessionStorage);
+          }
+        });
       } catch (error) {
         pushToast({
           title: "Couldn't start sign-in",
@@ -357,13 +364,15 @@ export function AppDetail({ renderActions, onReconnect }: {
         returnTo: appTabHref(connectionId, "permissions"),
       });
     },
+    onMutate: () => authorizationWindow.reserve(),
     onSuccess: async ({ url, handoff }) => {
       try {
         const target = await prepareOAuthNavigation({ authorizationUrl: url, handoff });
-        if (target.kind === "reauthentication" && handoff) {
-          savePendingCloudHandoff(handoff.session);
-        }
-        navigateTopLevel(target.url);
+        authorizationWindow.navigateTo(target.url, (destination) => {
+          if (target.kind === "reauthentication" && handoff) {
+            savePendingCloudHandoff(handoff.session, destination.sessionStorage);
+          }
+        });
       } catch (error) {
         pushToast({
           title: "Couldn't start sign-in",

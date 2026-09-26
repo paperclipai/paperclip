@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { newSignInTabStub, stubSignInTabOpener, type SignInTabStub } from "@/fixtures/signInTabFixture";
 import { Connections } from "./Connections";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
@@ -160,8 +161,11 @@ function profile(connectionId: string, includedEntryIds: string[]) {
 describe("Connections table (M1b / PAP-13254 door 2)", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
+  let signInTab: SignInTabStub;
 
   beforeEach(() => {
+    signInTab = newSignInTabStub();
+    stubSignInTabOpener(signInTab);
     listGalleryMock.mockResolvedValue({ apps: [] });
     listAppsAttentionMock.mockResolvedValue({ apps: [] });
     listApplicationsMock.mockResolvedValue({ applications: [] });
@@ -184,6 +188,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
   afterEach(() => {
     act(() => root?.unmount());
     container.remove();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -513,4 +518,36 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
       }),
     );
   });
+
+  it("enrolls with Paperclip Cloud in a new tab instead of leaving this list", async () => {
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: false,
+      status: "not_configured",
+      brokerBaseUrl: "https://my.paperclip.app",
+      instanceId: "instance-test",
+      environment: "development",
+      origins: [],
+    });
+    startCloudConnectorEnrollmentMock.mockResolvedValue({
+      status: "pending",
+      verificationUrl: "https://my.paperclip.app/connections/enroll?id=enroll-test",
+    });
+
+    await renderApps();
+
+    expect(container.textContent).toContain("Enable Paperclip-managed sign-in");
+    const enable = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Enable");
+    expect(enable).toBeTruthy();
+    await act(async () => {
+      enable?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(startCloudConnectorEnrollmentMock).toHaveBeenCalled();
+    expect(signInTab.location.assign).toHaveBeenCalledWith(
+      "https://my.paperclip.app/connections/enroll?id=enroll-test",
+    );
+  });
+
 });
