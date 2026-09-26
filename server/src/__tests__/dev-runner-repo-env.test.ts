@@ -129,8 +129,80 @@ describe("dev-runner repo-root env file (#13816)", () => {
     expect(
       resolveInstanceEnvPath({
         serverCwd: "/nonexistent-paperclip-root-for-test",
+        homeOverride: "",
+        instanceIdOverride: "",
         homedir: () => "/home/tester",
       }),
     ).toBe(path.join("/home/tester", ".paperclip", "instances", "default", ".env"));
+  });
+
+  it("honors PAPERCLIP_HOME and PAPERCLIP_INSTANCE_ID in the fallback instance", () => {
+    // Matches packages/shared/home-paths.ts: the fallback instance root is
+    // `<PAPERCLIP_HOME or ~/.paperclip>/instances/<PAPERCLIP_INSTANCE_ID or
+    // default>`, so a non-default instance's keys are protected too.
+    const base = {
+      serverCwd: "/nonexistent-paperclip-root-for-test",
+      homedir: () => "/home/tester",
+    };
+    expect(
+      resolveInstanceEnvPath({ ...base, homeOverride: "/srv/p8", instanceIdOverride: "staging" }),
+    ).toBe(path.join("/srv/p8", "instances", "staging", ".env"));
+    expect(
+      resolveInstanceEnvPath({ ...base, homeOverride: "~/alt", instanceIdOverride: "" }),
+    ).toBe(path.join("/home/tester", "alt", "instances", "default", ".env"));
+    expect(
+      resolveInstanceEnvPath({ ...base, homeOverride: "", instanceIdOverride: " beta_1 " }),
+    ).toBe(path.join("/home/tester", ".paperclip", "instances", "beta_1", ".env"));
+  });
+
+  it("stops the start when the repo-root .env exists but cannot be read", () => {
+    // A read failure (not a missing file) must not degrade silently into an
+    // empty env: the server would start without the secrets the file holds.
+    const root = createTempRoot("paperclip-dev-runner-env-unreadable-");
+    mkdirSync(path.join(root, ".env"));
+
+    expect(() => applyRepoRootEnvFile({}, root)).toThrow(
+      /could not read the repo-root env file/,
+    );
+  });
+
+  it("warns instead of failing when the instance .env cannot be read", () => {
+    const root = createTempRoot("paperclip-dev-runner-instance-unreadable-");
+    const instanceDir = path.join(root, "instance");
+    mkdirSync(path.join(instanceDir, ".env"), { recursive: true });
+    writeFileSync(path.join(root, ".env"), "SHARED=root-value\n");
+    const lines: string[] = [];
+
+    const result = applyRepoRootEnvFile({}, root, {
+      instanceEnvPath: path.join(instanceDir, ".env"),
+      log: (line: string) => lines.push(line),
+    });
+
+    // The instance keys are unknown, so the repo-root value is applied and
+    // the operator sees the read failure in the runner output.
+    expect(result.applied).toEqual(["SHARED"]);
+    expect(lines.join("\n")).toContain("could not read the instance env file");
+  });
+
+  it("re-resolves the instance path on every call, not once at runner start", () => {
+    // A restart after `.paperclip/config.json` moves to a closer ancestor
+    // must consult the new instance file, not the one cached at startup.
+    const root = createTempRoot("paperclip-dev-runner-instance-switch-");
+    const serverDir = path.join(root, "server");
+    mkdirSync(serverDir, { recursive: true });
+    mkdirSync(path.join(root, ".paperclip"), { recursive: true });
+    writeFileSync(path.join(root, ".paperclip", "config.json"), "{}");
+    writeFileSync(path.join(root, ".paperclip", ".env"), "SHARED=far-instance\n");
+    writeFileSync(path.join(root, ".env"), "SHARED=root-value\n");
+
+    const first = applyRepoRootEnvFile({}, root);
+    expect(first.applied).toEqual([]);
+
+    // The nearer instance takes over and does not protect SHARED.
+    mkdirSync(path.join(serverDir, ".paperclip"), { recursive: true });
+    writeFileSync(path.join(serverDir, ".paperclip", "config.json"), "{}");
+    const second = applyRepoRootEnvFile({}, root);
+    expect(second.applied).toEqual(["SHARED"]);
+    expect(second.env.SHARED).toBe("root-value");
   });
 });
