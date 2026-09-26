@@ -1,0 +1,6 @@
+{
+  "status": 400,
+  "body": {
+    "error": "RETURN_ORIGIN_NOT_ENROLLED"
+  }
+}

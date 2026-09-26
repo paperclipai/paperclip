@@ -8,6 +8,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import {
   createPaperclipCloudConnector,
@@ -23,6 +24,13 @@ import {
 const instanceId = "inst_test";
 const companyId = "company_test";
 const subject = "user_test";
+
+// Captured from the producer's in-memory HTTP integration test, using synthetic
+// enrollment and a signed request with a callback outside the enrolled origins.
+// Retain only the HTTP status and exact JSON error body, never request data.
+const originRejectionContract = JSON.parse(readFileSync(
+  new URL("./fixtures/cloud-connector-origin-rejection.json", import.meta.url), "utf8",
+)) as { status: number; body: { error: string } };
 
 function rawPrivateKey(key: KeyObject): string {
   const jwk = key.export({ format: "jwk" }) as { d?: string };
@@ -57,6 +65,15 @@ describe("Paperclip Cloud connector", () => {
       returnState: "private-state",
     }).catch((error: unknown) => error);
   }
+
+  it("accepts the producer's origin-rejection HTTP contract", async () => {
+    expect(await rejection(Response.json(originRejectionContract.body, {
+      status: originRejectionContract.status,
+    }))).toMatchObject({
+      code: "CONNECTOR_REQUEST_FAILED", status: 400,
+      message: "Paperclip Cloud connector rejected the request (operation=session, status=400, reason=RETURN_ORIGIN_NOT_ENROLLED)",
+    });
+  });
 
   it("retains an allowlisted rejection reason without broker messages or credentials", async () => {
     const error = await rejection(Response.json({
