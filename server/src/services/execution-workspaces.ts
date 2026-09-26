@@ -834,12 +834,65 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   }
 
   let repoRoot: string | null = null;
+  let directoryIsNotGitRepository = false;
   try {
     repoRoot = (await runGit(["rev-parse", "--show-toplevel"], workspacePath)).stdout.trim() || null;
   } catch (error) {
-    warnings.push(
-      `Could not inspect git status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    const stderr =
+      typeof error === "object" && error !== null && "stderr" in error
+        ? String((error as { stderr?: unknown }).stderr ?? "")
+        : "";
+    directoryIsNotGitRepository =
+      /not a git repository/i.test(message) || /not a git repository/i.test(stderr);
+    if (
+      !(
+        directoryIsNotGitRepository
+        && workspace.providerType === "local_fs"
+        && !createdByRuntime
+      )
+    ) {
+      warnings.push(
+        `Could not inspect git status for "${workspacePath}": ${message}`,
+      );
+    }
+  }
+
+  if (
+    !repoRoot
+    && directoryIsNotGitRepository
+    && workspace.providerType === "local_fs"
+    && !createdByRuntime
+  ) {
+    // A local_fs directory Paperclip did not create is user-owned, and git is
+    // not its delivery mechanism, so "not a git repository" is a successful
+    // inspection with no git state, not an inspection failure. Reporting it as
+    // a failure kept the terminality reaper from ever archiving these rows
+    // (#13874). repoUrl and baseRef do not settle the question: a shared or
+    // project-primary local_fs row inherits them from the project workspace
+    // when the row is created, so they describe the project, not this
+    // directory. Only a runtime-created local_fs directory is a checkout
+    // Paperclip made, and there a vanished .git stays an inspection failure.
+    // Any other git failure (a missing binary, for example) still fails closed
+    // below.
+    return {
+      git: {
+        repoRoot: null,
+        workspacePath,
+        branchName: workspace.branchName,
+        baseRef: workspace.baseRef,
+        hasDirtyTrackedFiles: false,
+        hasUntrackedFiles: false,
+        dirtyEntryCount: 0,
+        untrackedEntryCount: 0,
+        aheadCount: null,
+        behindCount: null,
+        isMergedIntoBase: null,
+        createdByRuntime,
+      },
+      warnings,
+      statusInspectionSucceeded: true,
+    };
   }
 
   let branchName = workspace.branchName;
@@ -1459,6 +1512,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       cooldownAnchor,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
       workspaceHeadSha,
+      // A user-owned local_fs directory has no delivery surface: there is
+      // nothing to merge because git never tracked it. The reaper treats that
+      // as "nothing to deliver" and archives on the issue-tree terminality
+      // check alone (#13874). A runtime-created directory whose checkout lost
+      // its .git is an anomaly and stays blocked, and inherited repoUrl or
+      // baseRef says nothing about either case.
+      nothingToDeliver:
+        workspace.providerType === "local_fs"
+        && git !== null
+        && !git.repoRoot
+        && !git.createdByRuntime,
     };
   }
 
@@ -2644,6 +2708,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         if (
           assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
+          && !assessment.nothingToDeliver
         ) {
           result.skippedUndelivered += 1;
           continue;

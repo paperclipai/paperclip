@@ -554,6 +554,253 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
 
+  it("archives a terminal local_fs workspace whose directory is not a git repository", async () => {
+    // A plain local_fs directory has no git delivery. "Not a git repository"
+    // must not count as an inspection failure, or the reaper skips the row
+    // forever (#13874). The user-owned directory itself survives the archival.
+    const plainDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-fs-"));
+    tempDirs.add(plainDir);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `L${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Plain directory",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "local_fs",
+      name: `${issuePrefix}-1`,
+      status: "active",
+      providerType: "local_fs",
+      cwd: plainDir,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Local task",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0, skippedUndelivered: 0 });
+
+    const [updated] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(updated).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    await expect(fs.access(plainDir)).resolves.toBeUndefined();
+  }, 20_000);
+
+  it("archives a plain local_fs workspace that inherited git metadata", async () => {
+    // A shared or project-primary local_fs row copies repoUrl, baseRef and
+    // branchName from the project workspace when the run creates it, so those
+    // columns describe the project and not this directory. Only who created the
+    // directory decides whether git was expected here, so this user-owned plain
+    // directory must still archive instead of staying skipped forever.
+    const plainDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-inherited-git-"));
+    tempDirs.add(plainDir);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `I${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Inherited git metadata",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "local_fs",
+      name: `${issuePrefix}-1`,
+      status: "active",
+      providerType: "local_fs",
+      cwd: plainDir,
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "master",
+      branchName: "project-default-branch",
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Inherited metadata task",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0, skippedUndelivered: 0 });
+
+    const [updated] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(updated).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    await expect(fs.access(plainDir)).resolves.toBeUndefined();
+  }, 20_000);
+
+  it("keeps skipping a runtime-created local_fs checkout that lost its .git", async () => {
+    // Paperclip created this directory as a checkout, so a directory that is no
+    // longer a repository is a lost checkout rather than a plain directory. The
+    // nothingToDeliver bypass must not apply and the row stays active.
+    const plainDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-lost-checkout-"));
+    tempDirs.add(plainDir);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `G${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Lost checkout",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "local_fs",
+      name: `${issuePrefix}-1`,
+      status: "active",
+      providerType: "local_fs",
+      cwd: plainDir,
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "master",
+      branchName: "issue-branch",
+      metadata: { createdByRuntime: true },
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Lost checkout task",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.status).toBe("active");
+    await expect(fs.access(plainDir)).resolves.toBeUndefined();
+  }, 20_000);
+
+  it("archives a local_fs workspace whose path is gone before the reaper reaches it", async () => {
+    // The directory disappeared with no git metadata on the row. There is no
+    // artifact left to protect, so the pre-existing behavior stands: the
+    // inspection succeeds and the terminality check archives the row.
+    const missingDir = path.join(os.tmpdir(), `paperclip-missing-dir-${randomUUID()}`);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `M${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Missing directory",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "local_fs",
+      name: `${issuePrefix}-1`,
+      status: "active",
+      providerType: "local_fs",
+      cwd: missingDir,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Missing directory task",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
+
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.status).toBe("archived");
+  }, 20_000);
+
   it("fails closed before archive when git status inspection is unavailable", async () => {
     const seeded = await seedAncestryTerminalWorkspace();
     const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
