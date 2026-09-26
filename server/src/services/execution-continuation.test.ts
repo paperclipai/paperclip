@@ -265,6 +265,68 @@ const support = await getEmbeddedPostgresTestSupport();
         await db.delete(agents).where(eq(agents.id, capAgentId));
       }
     });
+    it("caps completedActions so receipts from many runs cannot regrow the envelope", async () => {
+      const capIssueId = randomUUID();
+      const capAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: capAgentId, companyId, name: "CapActions", role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: capIssueId, companyId, title: "CapActions", status: "in_progress",
+        assigneeAgentId: capAgentId,
+      });
+      const actionRuns = Array.from({ length: 15 }, (_, i) => ({
+        id: randomUUID(),
+        companyId,
+        agentId: capAgentId,
+        status: "succeeded" as const,
+        contextSnapshot: { issueId: capIssueId },
+        resultJson: {
+          apiToolReceipts: {
+            saved: {
+              state: "completed",
+              operationId: `operation_${i}`,
+              result: { blob: "x".repeat(10_000) },
+            },
+          },
+        },
+        createdAt: new Date(Date.now() + i * 1000),
+      }));
+      await db.insert(heartbeatRuns).values(actionRuns);
+      try {
+        const envelope = await buildExecutionContinuation({
+          db, companyId, issueId: capIssueId, agentId: capAgentId,
+          context: { wakeReason: "issue_assigned" }, summary: null,
+          exposeLowTrustRaw: false,
+        });
+        const actions = envelope.completedActions ?? [];
+        // Each receipt is ~10 KiB serialized: 15 of them exceed the 64 KiB
+        // budget, so only the newest ones survive and the oldest are dropped.
+        expect(actions.length).toBeGreaterThan(1);
+        expect(actions.length).toBeLessThan(15);
+        const serializedBytes = Buffer.byteLength(
+          JSON.stringify(actions),
+          "utf8",
+        );
+        expect(serializedBytes).toBeLessThanOrEqual(
+          64 * 1024 + actions.length * 256,
+        );
+        // Newest-first retention: the latest run's receipt is kept, the
+        // earliest runs' receipts are dropped.
+        expect(actions.at(-1)?.operationId).toBe("operation_14");
+        expect(
+          actions.some((action) => action.operationId === "operation_0"),
+        ).toBe(false);
+        expect(
+          actions.some((action) => action.operationId === "operation_8"),
+        ).toBe(false);
+      } finally {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, capAgentId));
+        await db.delete(issues).where(eq(issues.id, capIssueId));
+        await db.delete(agents).where(eq(agents.id, capAgentId));
+      }
+    });
     it("loads authenticated human answers from stored resolver identity", async () => {
       const answerId = randomUUID();
       await db.insert(issueThreadInteractions).values({ id: answerId, companyId, issueId,
