@@ -1,0 +1,665 @@
+import { randomUUID } from "node:crypto";
+import { and, count, eq, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  activityLog,
+  agents,
+  companies,
+  companySecretProposals,
+  companySecrets,
+  createDb,
+  heartbeatRuns,
+  issueThreadInteractions,
+  issues,
+} from "@paperclipai/db";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import {
+  SECRET_PROPOSAL_CARD_LOST_REASON,
+  SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+  createSecretProposalsService,
+} from "../services/secret-proposals.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+const LAPSED_REASON = "Pending proposal expired";
+
+describeEmbeddedPostgres("secret proposal orphan sweep", () => {
+  let stopDb: (() => Promise<void>) | null = null;
+  let db!: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    const started = await startEmbeddedPostgresTestDatabase("secret-proposal-orphan-sweep");
+    stopDb = started.cleanup;
+    db = createDb(started.connectionString);
+  });
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(companySecretProposals);
+    await db.delete(companySecrets);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await stopDb?.();
+  });
+
+  async function seed() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const heartbeatRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Orphan sweep",
+      issuePrefix: `O${companyId.slice(0, 7)}`.toUpperCase(),
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Proposer",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+      status: "idle",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: heartbeatRunId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "user-1",
+      contextSnapshot: { issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs credential",
+      identifier: "ORP-1",
+      status: "in_progress",
+      responsibleUserId: "user-1",
+      executionRunId: heartbeatRunId,
+    });
+    const secretId = randomUUID();
+    await db.insert(companySecrets).values({
+      id: secretId,
+      companyId,
+      key: "soak-database-url",
+      name: "soak/database-url",
+    });
+    return { companyId, agentId, heartbeatRunId, issueId, secretId };
+  }
+
+  async function insertProposal(
+    fixture: Awaited<ReturnType<typeof seed>>,
+    overrides: {
+      interactionId?: string | null;
+      expiresAt?: Date;
+      configPath?: string;
+      proposerAgentId?: string;
+      kind?: "secret" | "binding";
+      secretProposalId?: string;
+    } = {},
+  ) {
+    const id = randomUUID();
+    // A secret proposal and a binding proposal carry disjoint fields; the shape
+    // check constraint allows one shape or the other, never a mix.
+    const kind = overrides.kind ?? "binding";
+    const isSecret = kind === "secret";
+    await db.insert(companySecretProposals).values({
+      id,
+      companyId: fixture.companyId,
+      kind,
+      proposedName: isSecret ? "soak/database-url" : null,
+      proposedKey: isSecret ? "soak-database-url" : null,
+      secretProposalId: isSecret ? null : overrides.secretProposalId ?? null,
+      status: "pending",
+      justification: "Soak env for the resident runner",
+      // A binding references a secret or a parent proposal, never both.
+      secretId: isSecret || overrides.secretProposalId ? null : fixture.secretId,
+      targetType: isSecret ? null : "agent",
+      targetId: isSecret ? null : overrides.proposerAgentId ?? fixture.agentId,
+      configPath: isSecret ? null : overrides.configPath ?? "env.THARSIA_DATABASE_URL",
+      proposedByAgentId: overrides.proposerAgentId ?? fixture.agentId,
+      originIssueId: fixture.issueId,
+      originRunId: fixture.heartbeatRunId,
+      interactionId: overrides.interactionId ?? null,
+      valueCiphertext: { v: 1, alg: "aes-256-gcm", iv: "iv", tag: "tag", data: "ciphertext" },
+      expiresAt: overrides.expiresAt ?? new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+    });
+    return id;
+  }
+
+  async function insertCard(
+    fixture: Awaited<ReturnType<typeof seed>>,
+    input: {
+      status: string;
+      id?: string;
+      proposalId?: string;
+      createdAt?: Date;
+      prompt?: string;
+    },
+  ) {
+    const id = input.id ?? randomUUID();
+    const linked = input.proposalId
+      ? {
+          secretProposal: {
+            version: 1,
+            proposalId: input.proposalId,
+            sourceSecretLabel: "soak/database-url",
+            configPath: "env.THARSIA_DATABASE_URL",
+            targetAgentId: fixture.agentId,
+            targetAgentName: "Proposer",
+            justification: "Soak env for the resident runner",
+            expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+          },
+        }
+      : {};
+    await db.insert(issueThreadInteractions).values({
+      id,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      kind: "request_confirmation",
+      status: input.status,
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      effectiveResolverPolicySource: "governed_action",
+      createdByAgentId: fixture.agentId,
+      idempotencyKey: `secret-proposal:${input.proposalId ?? id}`,
+      payload: {
+        version: 1,
+        prompt: input.prompt ?? "Bind secret to Proposer?",
+        ...linked,
+      },
+      createdAt: input.createdAt ?? new Date(),
+      updatedAt: input.createdAt ?? new Date(),
+    });
+    if (input.proposalId) {
+      await db
+        .update(companySecretProposals)
+        .set({ interactionId: id })
+        .where(eq(companySecretProposals.id, input.proposalId));
+    }
+    return id;
+  }
+
+  async function proposalRow(proposalId: string) {
+    return db
+      .select()
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposalId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  // The detector from the issue: zero rows where a pending proposal's card is
+  // already terminal. It must hold after every sweep run.
+  async function pendingProposalsBehindDeadCards() {
+    const rows = await db.execute<{ count: number }>(sql`
+      SELECT count(*)::int AS count
+      FROM company_secret_proposals p
+      JOIN issue_thread_interactions i
+        ON i.id = p.interaction_id AND i.company_id = p.company_id
+      WHERE p.status = 'pending' AND i.status IN ('expired', 'cancelled')
+    `);
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  it("expires a pending proposal whose approval card already expired", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture);
+    await insertCard(fixture, { status: "expired", proposalId });
+
+    const secretProposals = createSecretProposalsService(db as never);
+    expect(await pendingProposalsBehindDeadCards()).toBe(1);
+
+    expect(await secretProposals.sweepOrphaned()).toBe(1);
+
+    const proposal = await proposalRow(proposalId);
+    expect(proposal).toMatchObject({
+      status: "expired",
+      resolutionReason: SECRET_PROPOSAL_CARD_LOST_REASON,
+    });
+    expect(proposal?.ciphertextScrubbedAt).not.toBeNull();
+    expect(proposal?.valueCiphertext).toBeNull();
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+    // Re-running is a no-op: the proposal is terminal, not pending.
+    expect(await secretProposals.sweepOrphaned()).toBe(0);
+  });
+
+  it("expires a pending proposal whose card was cancelled", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture);
+    await insertCard(fixture, { status: "cancelled", proposalId });
+
+    const secretProposals = createSecretProposalsService(db as never);
+    expect(await secretProposals.sweepOrphaned()).toBe(1);
+    expect((await proposalRow(proposalId))?.status).toBe("expired");
+  });
+
+  it("leaves a proposal alone while its card is still open", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture);
+    await insertCard(fixture, { status: "pending", proposalId });
+
+    const secretProposals = createSecretProposalsService(db as never);
+    expect(await secretProposals.sweepOrphaned()).toBe(0);
+    expect((await proposalRow(proposalId))?.status).toBe("pending");
+  });
+
+  it("leaves a proposal that never had a card alone", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture, { interactionId: null });
+
+    const secretProposals = createSecretProposalsService(db as never);
+    expect(await secretProposals.sweepOrphaned()).toBe(0);
+    expect((await proposalRow(proposalId))?.status).toBe("pending");
+  });
+
+  it("resolves the linked proposal when the supersede sweep expires its card", async () => {
+    const fixture = await seed();
+    const older = new Date("2026-07-01T12:00:00.000Z");
+    const newer = new Date("2026-07-01T13:00:00.000Z");
+    const proposalId = await insertProposal(fixture);
+    const cardId = await insertCard(fixture, { status: "pending", createdAt: older, proposalId });
+    await insertCard(fixture, { status: "pending", createdAt: newer, prompt: "Re-raised ask" });
+
+    const interactions = issueThreadInteractionService(db as never);
+    await expect(interactions.sweepSupersededPendingRequestConfirmations()).resolves.toEqual({ expired: 1 });
+
+    const [card] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, cardId));
+    expect(card).toMatchObject({ status: "expired", result: { outcome: "superseded_by_newer_request" } });
+
+    const proposal = await proposalRow(proposalId);
+    expect(proposal).toMatchObject({
+      status: "expired",
+      resolutionReason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+    });
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+  });
+
+  it("resolves the proposal when a plain sibling request supersedes its card", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture);
+    const cardId = await insertCard(fixture, { status: "pending", proposalId });
+
+    const interactions = issueThreadInteractionService(db as never);
+    // The new card carries no proposal of its own, so only the sibling filter
+    // (same agent, same issue, same kind) reaches the secret-proposal card.
+    await interactions.create(
+      { id: fixture.issueId, companyId: fixture.companyId },
+      {
+        kind: "request_confirmation",
+        title: "Merge the linked pull request?",
+        summary: null,
+        payload: { version: 1, prompt: "Merge the linked pull request?" },
+      },
+      { agentId: fixture.agentId },
+    );
+
+    const [card] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, cardId));
+    expect(card).toMatchObject({ status: "expired", result: { outcome: "superseded_by_newer_request" } });
+    expect(await proposalRow(proposalId)).toMatchObject({
+      status: "expired",
+      resolutionReason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+    });
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+  });
+
+  // The product caps one agent at 20 pending proposals, so a backlog that
+  // outgrows the sweep page needs more than one proposer. The sweep itself is
+  // company-wide and does not care which agent asked.
+  async function insertExtraAgents(fixture: Awaited<ReturnType<typeof seed>>, extra: number) {
+    const ids: string[] = [];
+    for (let index = 0; index < extra; index += 1) {
+      const id = randomUUID();
+      await db.insert(agents).values({
+        id,
+        companyId: fixture.companyId,
+        name: `Proposer ${index + 1}`,
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        permissions: {},
+        status: "idle",
+      });
+      ids.push(id);
+    }
+    return ids;
+  }
+
+  it("drains an orphan backlog larger than one sweep page in a single call", async () => {
+    const fixture = await seed();
+    const proposers = [fixture.agentId, ...(await insertExtraAgents(fixture, 5))];
+    const orphanTotal = 101;
+    for (let index = 0; index < orphanTotal; index += 1) {
+      const proposalId = await insertProposal(fixture, {
+        configPath: `env.THARSIA_BULK_${index}`,
+        proposerAgentId: proposers[index % proposers.length],
+      });
+      await insertCard(fixture, { status: "cancelled", proposalId });
+    }
+    expect(await pendingProposalsBehindDeadCards()).toBe(orphanTotal);
+
+    const secretProposals = createSecretProposalsService(db as never);
+    // One call is one scheduler tick. A single page of 100 would leave a row
+    // pending past the interval the invariant promises.
+    expect(await secretProposals.sweepOrphaned()).toBe(orphanTotal);
+
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+    const stillPending = await db
+      .select({ value: count() })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.status, "pending"));
+    expect(Number(stillPending[0]?.value ?? 0)).toBe(0);
+  });
+
+  it("records card loss when the lapse and the card death are both eligible", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture, { expiresAt: new Date(Date.now() - 60_000) });
+    await insertCard(fixture, { status: "cancelled", proposalId });
+
+    const secretProposals = createSecretProposalsService(db as never);
+    // Production starts both sweeps in the same tick, the lapse sweep first.
+    // The eligibility sets are disjoint, so the recorded reason does not depend
+    // on which one wins.
+    expect(await secretProposals.sweepExpired()).toBe(0);
+    expect(await secretProposals.sweepOrphaned()).toBe(1);
+
+    expect(await proposalRow(proposalId)).toMatchObject({
+      status: "expired",
+      resolutionReason: SECRET_PROPOSAL_CARD_LOST_REASON,
+    });
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+  });
+
+  it("keeps a superseded card's proposal resolvable when a human already approved it", async () => {
+    const fixture = await seed();
+    const older = new Date("2026-07-01T12:00:00.000Z");
+    const proposalId = await insertProposal(fixture);
+    const cardId = await insertCard(fixture, { status: "pending", createdAt: older, proposalId });
+    await db
+      .update(companySecretProposals)
+      .set({ status: "approved", resolvedByUserId: "user-1", resolvedAt: older })
+      .where(eq(companySecretProposals.id, proposalId));
+    await insertCard(fixture, {
+      status: "pending",
+      createdAt: new Date("2026-07-01T13:00:00.000Z"),
+      prompt: "Re-raised ask",
+    });
+
+    const interactions = issueThreadInteractionService(db as never);
+    // The card still expires; the approved proposal is not resurrected and the
+    // sweep does not roll back the whole pass over it.
+    await expect(interactions.sweepSupersededPendingRequestConfirmations()).resolves.toEqual({ expired: 1 });
+    expect((await proposalRow(proposalId))?.status).toBe("approved");
+  });
+
+  // A queue approval (secret-proposals) locks the proposal row first and only
+  // then reflects the outcome on the card, and it holds no issue row while it
+  // does. A supersede pass that locks the card first therefore leaves the two
+  // holding one row of the pair each, and Postgres aborts one of them. These two
+  // tests assert the order the lifecycle documents (issue -> proposal ->
+  // interaction) on each of the two supersede paths, by holding the proposal
+  // row in one transaction and watching what the pass has taken when it queues
+  // behind that row.
+  async function assertPassWaitsOnTheProposalBeforeLockingTheCard(
+    proposalId: string,
+    cardId: string,
+    startPass: () => Promise<unknown>,
+  ) {
+    let resolveHolderPid!: (pid: number) => void;
+    const holderPidReady = new Promise<number>((resolve) => {
+      resolveHolderPid = resolve;
+    });
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM company_secret_proposals WHERE id = ${proposalId} FOR UPDATE`);
+      const [backend] = (await tx.execute(sql`SELECT pg_backend_pid() AS pid`)) as unknown as Array<{ pid: number }>;
+      resolveHolderPid(backend.pid);
+      await holderReleased;
+    });
+    const holderPid = await holderPidReady;
+
+    let pass: Promise<unknown> | null = null;
+    try {
+      pass = startPass();
+      // Asserted right below; keep a rejection from tripping the runner first.
+      pass.catch(() => {});
+
+      // Poll until Postgres reports the pass blocked behind the holder, rather
+      // than guessing how long that takes.
+      let passQueuedOnTheProposal = false;
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        const rows = (await db.execute(
+          sql`SELECT 1 FROM pg_stat_activity WHERE ${holderPid} = ANY(pg_blocking_pids(pid))`,
+        )) as unknown as Array<unknown>;
+        if (rows[0]) {
+          passQueuedOnTheProposal = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(passQueuedOnTheProposal).toBe(true);
+
+      // The pass is queued on the proposal. If it had taken the card first, the
+      // card row would already carry its uncommitted write and this no-wait
+      // probe would be refused; the order under test makes the card still free.
+      const probe = await db
+        .transaction(async (tx) => {
+          await tx.execute(sql`SELECT 1 FROM issue_thread_interactions WHERE id = ${cardId} FOR UPDATE NOWAIT`);
+        })
+        .then(() => null)
+        .catch((error: unknown) => error);
+      expect(String((probe as { cause?: unknown })?.cause ?? probe)).not.toMatch(/could not obtain lock/i);
+    } finally {
+      // Release and settle the pass even when an assertion above fails, so
+      // neither stays parked inside a lock past this test and corrupts teardown.
+      releaseHolder();
+      await holder;
+      if (pass) await Promise.allSettled([pass]);
+    }
+    // Returned in an object: an async function that returned `pass` directly
+    // would adopt it, and the caller would get the pass's *value* instead.
+    return { pass };
+  }
+
+  // Holds one dependent's proposal and, once the pass is queued behind that
+  // holder, reports which of the other dependents the pass has already taken.
+  // The pass is blocked on the holder's row, so anything it holds beyond that
+  // row it locked before reaching it -- which is the order under test.
+  async function assertPassHoldsNoOtherDependent(
+    holderProposalId: string,
+    otherProposalIds: string[],
+    startPass: () => Promise<unknown>,
+  ) {
+    let resolveHolderPid!: (pid: number) => void;
+    const holderPidReady = new Promise<number>((resolve) => {
+      resolveHolderPid = resolve;
+    });
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM company_secret_proposals WHERE id = ${holderProposalId} FOR UPDATE`);
+      const [backend] = (await tx.execute(sql`SELECT pg_backend_pid() AS pid`)) as unknown as Array<{ pid: number }>;
+      resolveHolderPid(backend.pid);
+      await holderReleased;
+    });
+    const holderPid = await holderPidReady;
+
+    let pass: Promise<unknown> | null = null;
+    const taken: string[] = [];
+    try {
+      pass = startPass();
+      pass.catch(() => {});
+
+      let passQueuedOnTheHolder = false;
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        const rows = (await db.execute(
+          sql`SELECT 1 FROM pg_stat_activity WHERE ${holderPid} = ANY(pg_blocking_pids(pid))`,
+        )) as unknown as Array<unknown>;
+        if (rows[0]) {
+          passQueuedOnTheHolder = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(passQueuedOnTheHolder).toBe(true);
+
+      for (const otherId of otherProposalIds) {
+        const probe = await db
+          .transaction(async (tx) => {
+            await tx.execute(sql`SELECT 1 FROM company_secret_proposals WHERE id = ${otherId} FOR UPDATE NOWAIT`);
+          })
+          .then(() => null)
+          .catch((error: unknown) => error);
+        if (/could not obtain lock/i.test(String((probe as { cause?: unknown })?.cause ?? probe))) {
+          taken.push(otherId);
+        }
+      }
+    } finally {
+      releaseHolder();
+      await holder;
+      if (pass) await Promise.allSettled([pass]);
+    }
+    return { pass, taken };
+  }
+
+  it("cascades to a shared parent's dependents in ascending card id order", async () => {
+    const fixture = await seed();
+    const parentId = await insertProposal(fixture, { kind: "secret", configPath: "env.THARSIA_SOAK_KEY" });
+    // One parent, two binding dependents, one card each. The cards are inserted
+    // highest id first, so the order a plan returns the cascade's rows in is the
+    // reverse of the order this test requires.
+    const higherId = "00000000-0000-4000-8000-00000000c002";
+    const lowerId = "00000000-0000-4000-8000-00000000c001";
+    const higherDependent = await insertProposal(fixture, {
+      secretProposalId: parentId,
+      configPath: "env.THARSIA_MODEL_BASE_URL",
+    });
+    const lowerDependent = await insertProposal(fixture, {
+      secretProposalId: parentId,
+      configPath: "env.THARSIA_NATS_URL",
+    });
+    await insertCard(fixture, { id: higherId, status: "pending", proposalId: higherDependent });
+    await insertCard(fixture, { id: lowerId, status: "pending", proposalId: lowerDependent });
+    const secretProposals = createSecretProposalsService(db as never);
+
+    const { pass, taken } = await assertPassHoldsNoOtherDependent(
+      lowerDependent,
+      [higherDependent],
+      () => secretProposals.transition(fixture.companyId, parentId, "rejected"),
+    );
+
+    expect(taken).toEqual([]);
+    await expect(pass).resolves.toBeDefined();
+    expect(await proposalRow(parentId)).toMatchObject({ status: "rejected" });
+    expect(await proposalRow(higherDependent)).toMatchObject({ status: "rejected" });
+    expect(await proposalRow(lowerDependent)).toMatchObject({ status: "rejected" });
+  });
+
+  it("takes the proposal lock before the sibling card lock when a create supersedes", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture);
+    const cardId = await insertCard(fixture, { status: "pending", proposalId });
+    const interactions = issueThreadInteractionService(db as never);
+
+    const { pass: superseded } = await assertPassWaitsOnTheProposalBeforeLockingTheCard(proposalId, cardId, () =>
+      interactions.create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        {
+          kind: "request_confirmation",
+          title: "Merge the linked pull request?",
+          summary: null,
+          payload: { version: 1, prompt: "Merge the linked pull request?" },
+        },
+        { agentId: fixture.agentId },
+      ),
+    );
+
+    await expect(superseded).resolves.toBeDefined();
+    expect(await proposalRow(proposalId)).toMatchObject({
+      status: "expired",
+      resolutionReason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+    });
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+  });
+
+  it("takes the proposal lock before the card lock in the supersede sweep", async () => {
+    const fixture = await seed();
+    const proposalId = await insertProposal(fixture);
+    const cardId = await insertCard(fixture, {
+      status: "pending",
+      createdAt: new Date("2026-07-01T12:00:00.000Z"),
+      proposalId,
+    });
+    await insertCard(fixture, {
+      status: "pending",
+      createdAt: new Date("2026-07-01T13:00:00.000Z"),
+      prompt: "Re-raised ask",
+    });
+    const interactions = issueThreadInteractionService(db as never);
+
+    const { pass: swept } = await assertPassWaitsOnTheProposalBeforeLockingTheCard(proposalId, cardId, () =>
+      interactions.sweepSupersededPendingRequestConfirmations(),
+    );
+
+    await expect(swept).resolves.toEqual({ expired: 1 });
+    expect(await proposalRow(proposalId)).toMatchObject({
+      status: "expired",
+      resolutionReason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+    });
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+  });
+
+  it("records a card death and a human lapse under different reasons", async () => {
+    const fixture = await seed();
+    const orphanProposalId = await insertProposal(fixture, { configPath: "env.THARSIA_NATS_URL" });
+    await insertCard(fixture, { status: "expired", proposalId: orphanProposalId });
+    const lapsedProposalId = await insertProposal(fixture, {
+      configPath: "env.THARSIA_TEST_NATS_URL",
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    // A lapsed proposal keeps a live card; a human could still have decided it.
+    await insertCard(fixture, { status: "pending", proposalId: lapsedProposalId });
+    expect(await pendingProposalsBehindDeadCards()).toBe(1);
+
+    const secretProposals = createSecretProposalsService(db as never);
+    // Production order: the lapse sweep runs first on the same tick.
+    expect(await secretProposals.sweepExpired()).toBe(1);
+    expect(await secretProposals.sweepOrphaned()).toBe(1);
+
+    const orphan = await proposalRow(orphanProposalId);
+    const lapsed = await proposalRow(lapsedProposalId);
+    expect(orphan?.resolutionReason).toBe(SECRET_PROPOSAL_CARD_LOST_REASON);
+    expect(lapsed?.resolutionReason).toBe(LAPSED_REASON);
+    expect(new Set([
+      SECRET_PROPOSAL_CARD_LOST_REASON,
+      SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+      LAPSED_REASON,
+    ]).size).toBe(3);
+    expect(await pendingProposalsBehindDeadCards()).toBe(0);
+  });
+});

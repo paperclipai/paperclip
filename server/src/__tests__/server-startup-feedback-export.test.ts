@@ -32,6 +32,8 @@ const {
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  secretProposalsServiceFactoryMock,
+  secretProposalsServiceMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
@@ -94,6 +96,11 @@ const {
     })),
   };
   const issueThreadInteractionServiceFactoryMock = vi.fn(() => issueThreadInteractionServiceMock);
+  const secretProposalsServiceMock = {
+    sweepExpired: vi.fn(async () => 0),
+    sweepOrphaned: vi.fn(async () => 0),
+  };
+  const secretProposalsServiceFactoryMock = vi.fn(() => secretProposalsServiceMock);
   const environmentCustomImagesServiceMock = {
     cleanupExpiredSetupSessions: vi.fn(async () => ({ scanned: 0, timedOut: 0, failed: 0 })),
   };
@@ -158,6 +165,8 @@ const {
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    secretProposalsServiceFactoryMock,
+    secretProposalsServiceMock,
   };
 });
 
@@ -375,9 +384,7 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
 }));
 
 vi.mock("../services/secret-proposals.js", () => ({
-  createSecretProposalsService: vi.fn(() => ({
-    sweepExpired: vi.fn(async () => 0),
-  })),
+  createSecretProposalsService: secretProposalsServiceFactoryMock,
 }));
 
 vi.mock("../storage/index.js", () => ({
@@ -546,9 +553,13 @@ describe("startServer feedback export wiring", () => {
       await startServer();
       expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
       expect(intervalCallback).not.toBeNull();
+      // Startup does not run the proposal reconciler; the scheduler tick does, so
+      // a proposal whose card died is expired within one scheduler interval.
+      expect(secretProposalsServiceMock.sweepOrphaned).not.toHaveBeenCalled();
       intervalCallback?.();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
+      expect(secretProposalsServiceMock.sweepOrphaned).toHaveBeenCalledTimes(1);
       expect(retiredDetector).not.toHaveBeenCalled();
     } finally {
       delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;

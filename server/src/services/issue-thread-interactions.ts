@@ -106,6 +106,9 @@ import {
 } from "./issues.js";
 import { questionResponseDeliveryValues } from "./question-response-delivery.js";
 import {
+  SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+} from "./secret-proposals.js";
+import {
   cancelPendingIssueInteractionChatPublications,
   enqueueIssueInteractionChatPublications,
   enqueueTerminalIssueInteractionChatPublications,
@@ -935,11 +938,23 @@ function buildStaleTargetResult(
   } as const;
 }
 
-function buildSupersededByNewerRequestResult(replacementInteractionId: string) {
+function buildSupersededByNewerRequestResult(
+  replacementInteractionId: string,
+  row?: IssueThreadInteractionRow,
+) {
   return {
     version: 1,
     outcome: "superseded_by_newer_request",
     supersededByInteractionId: replacementInteractionId,
+    ...(row && linkedSecretProposalId(row)
+      ? {
+          secretProposal: {
+            version: 1 as const,
+            status: "expired" as const,
+            updatedAt: new Date().toISOString(),
+          },
+        }
+      : {}),
   } as const;
 }
 
@@ -1140,6 +1155,11 @@ async function resolveLinkedSecretProposal(
     actor: InteractionActor;
     reason?: string | null;
     now: Date;
+    // Sweeps expire cards in bulk and must not roll back one card because a
+    // human resolved its proposal out of band (approve/reject from the queue
+    // does not always go through the card). Only human-initiated resolutions
+    // treat an already-resolved proposal as a conflict.
+    tolerateResolved?: boolean;
   },
 ) {
   const proposalId = linkedSecretProposalId(interaction);
@@ -1164,7 +1184,10 @@ async function resolveLinkedSecretProposal(
       ),
     )
     .returning();
-  if (!proposal) throw conflict("Linked secret proposal is no longer pending");
+  if (!proposal) {
+    if (outcome.tolerateResolved) return;
+    throw conflict("Linked secret proposal is no longer pending");
+  }
   const actorType = outcome.actor.userId
     ? ("user" as const)
     : outcome.actor.agentId
@@ -3245,12 +3268,20 @@ export function issueThreadInteractionService(
       const expired: IssueThreadInteraction[] = [];
       for (const { row, replacementInteractionId } of supersededRows) {
         const updated = await db.transaction(async (tx) => {
+          // Lock the linked proposal before the card. The queue approve/reject
+          // paths in secret-proposals take proposal -> interaction while holding
+          // no issue row, so locking the card first lets a concurrent approval
+          // and this sweep hold one row of the pair each and wait for the other.
+          // Taking the proposal first keeps the shared lifecycle order
+          // (issue -> proposal -> interaction) here too.
+          await lockLinkedSecretProposal(tx as unknown as Db, row);
           const [updatedRow] = await tx
             .update(issueThreadInteractions)
             .set({
               status: "expired",
               result: buildSupersededByNewerRequestResult(
                 replacementInteractionId,
+                row,
               ),
               resolvedByAgentId: null,
               resolvedByUserId: null,
@@ -3270,6 +3301,17 @@ export function issueThreadInteractionService(
             fromStatuses: ["pending", "approved"],
             actor: {},
             now,
+          });
+          // A superseded card must not leave its secret proposal pending: the
+          // card is the only surface that asks a human to decide it, so an
+          // orphaned proposal is a decision nobody is shown. Couple the
+          // lifecycles here rather than relying on the 14-day proposal expiry.
+          await resolveLinkedSecretProposal(tx as unknown as Db, updatedRow, {
+            status: "expired",
+            actor: {},
+            reason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+            now,
+            tolerateResolved: true,
           });
           await enqueueTerminalIssueInteractionChatPublications(
             tx as unknown as Db,
@@ -3547,6 +3589,39 @@ export function issueThreadInteractionService(
             data.kind === "ask_user_questions"
               ? buildSupersededByNewerInteractionResult(row.id)
               : buildSupersededByNewerRequestResult(row.id);
+          const supersededPredicate = and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, data.kind),
+            eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row.id),
+          );
+          // Lock the linked proposals before the sibling update locks the cards.
+          // The queue approve/reject paths in secret-proposals take
+          // proposal -> interaction while holding no issue row, so a card-first
+          // order here inverts the shared lifecycle order (issue -> proposal ->
+          // interaction) and the two deadlock on a concurrent approval. Read the
+          // candidates without locking them: the update below still decides which
+          // cards actually expire and still reports them.
+          //
+          // Order by id so an overlapping candidate set is always locked in the
+          // same sequence: a multi-row lock taken in the planner's row order is
+          // only as stable as the plan, and two passes can then take two shared
+          // proposals in opposite orders.
+          const supersededCandidates = await tx
+            .select({
+              id: issueThreadInteractions.id,
+              companyId: issueThreadInteractions.companyId,
+              kind: issueThreadInteractions.kind,
+              payload: issueThreadInteractions.payload,
+            })
+            .from(issueThreadInteractions)
+            .where(supersededPredicate)
+            .orderBy(asc(issueThreadInteractions.id));
+          for (const candidate of supersededCandidates) {
+            await lockLinkedSecretProposal(tx as unknown as Db, candidate);
+          }
           const supersededRows = await tx
             .update(issueThreadInteractions)
             .set({
@@ -3557,16 +3632,7 @@ export function issueThreadInteractionService(
               resolvedAt: now,
               updatedAt: now,
             })
-            .where(
-              and(
-                eq(issueThreadInteractions.companyId, issue.companyId),
-                eq(issueThreadInteractions.issueId, issue.id),
-                eq(issueThreadInteractions.kind, data.kind),
-                eq(issueThreadInteractions.createdByAgentId, actor.agentId),
-                eq(issueThreadInteractions.status, "pending"),
-                ne(issueThreadInteractions.id, row.id),
-              ),
-            )
+            .where(supersededPredicate)
             .returning();
           for (const supersededRow of supersededRows) {
             await resolveLinkedToolActionRequests(tx, supersededRow, {
@@ -3574,6 +3640,18 @@ export function issueThreadInteractionService(
               fromStatuses: ["pending", "approved"],
               actor,
               now,
+            });
+            // The sibling filter matches on kind, not payload, so this sweep can
+            // also catch a pending secret-proposal card even though the request
+            // that triggered it carries no proposal. Resolve the linked proposal
+            // here: the card is the only surface that asks a human to decide it,
+            // and an orphaned proposal is a decision nobody is shown.
+            await resolveLinkedSecretProposal(tx as unknown as Db, supersededRow, {
+              status: "expired",
+              actor,
+              reason: SECRET_PROPOSAL_CARD_SUPERSEDED_REASON,
+              now,
+              tolerateResolved: true,
             });
           }
           await cancelPendingIssueInteractionChatPublications(

@@ -1,5 +1,5 @@
 import { withAgentAppearance } from "@paperclipai/shared";
-import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, lte, notExists, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -27,6 +27,19 @@ const MAX_SECRET_VALUE_BYTES = 64 * 1024;
 const PENDING_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_PROPOSAL_LIST_LIMIT = 100;
 const DEFAULT_EXPIRY_SWEEP_LIMIT = 100;
+// A scheduler tick drains the orphan backlog in pages of DEFAULT_EXPIRY_SWEEP_LIMIT
+// and stops here, so one tick stays finite on a large backlog.
+const ORPHAN_SWEEP_MAX_PASSES = 20;
+
+// A pending proposal is only decidable while its approval card is open, because
+// the card is the surface that asks a human. These reasons record *why* a
+// proposal died without a decision, so a card that an infrastructure event
+// killed is not confused with one the human let lapse (PENDING_EXPIRY_MS).
+export const SECRET_PROPOSAL_CARD_SUPERSEDED_REASON =
+  "Superseded by a newer request before the secret proposal was resolved";
+export const SECRET_PROPOSAL_CARD_LOST_REASON =
+  "Approval card expired before the secret proposal was resolved";
+const SECRET_PROPOSAL_LAPSED_REASON = "Pending proposal expired";
 
 export type SecretProposalTerminalStatus = "approved" | "rejected" | "withdrawn" | "expired";
 
@@ -792,7 +805,28 @@ export function createSecretProposalsService(db: Db) {
       }).where(and(eq(companySecretProposals.id, proposalId), eq(companySecretProposals.status, "pending")))
         .returning().then((rows) => rows[0] ?? null);
       if (!updated) throw conflict("Proposal is no longer pending");
-      const dependents = proposal.kind === "secret" && (status === "rejected" || status === "expired" || status === "withdrawn")
+      // A cascade can span several dependents, and an UPDATE takes its row
+      // locks in whatever order the plan returns them. create()'s sibling
+      // supersede locks the same proposals in ascending card id order, so an
+      // unordered cascade and a concurrent create can take one shared pair in
+      // opposite orders and deadlock. Lock the dependents in that same order
+      // first; the update below then finds every row already held here.
+      const dependentIds = proposal.kind === "secret"
+        && (status === "rejected" || status === "expired" || status === "withdrawn")
+        ? (await tx.select({ id: companySecretProposals.id })
+            .from(companySecretProposals)
+            .where(and(
+              eq(companySecretProposals.companyId, companyId),
+              eq(companySecretProposals.status, "pending"),
+              eq(companySecretProposals.secretProposalId, proposal.id),
+            ))
+            // A dependent without a card sorts last: no pass ever locks it
+            // alongside a card, so its place in the sequence is arbitrary.
+            .orderBy(asc(companySecretProposals.interactionId), asc(companySecretProposals.id))
+            .for("update"))
+          .map((row) => row.id)
+        : [];
+      const dependents = dependentIds.length > 0
         ? await tx.update(companySecretProposals).set({
             status: "rejected",
             resolvedByUserId: input.resolvedByUserId ?? null,
@@ -801,11 +835,7 @@ export function createSecretProposalsService(db: Db) {
             valueCiphertext: null,
             ciphertextScrubbedAt: now,
             updatedAt: now,
-          }).where(and(
-            eq(companySecretProposals.companyId, companyId),
-            eq(companySecretProposals.status, "pending"),
-            eq(companySecretProposals.secretProposalId, proposal.id),
-          )).returning()
+          }).where(inArray(companySecretProposals.id, dependentIds)).returning()
         : [];
       const actorType = input.resolvedByUserId ? "user" as const : status === "withdrawn" ? "agent" as const : "system" as const;
       const actorId = input.resolvedByUserId ?? input.proposerAgentId ?? "system";
@@ -854,11 +884,25 @@ export function createSecretProposalsService(db: Db) {
     now = new Date(),
     limit = DEFAULT_EXPIRY_SWEEP_LIMIT,
     expireProposal: (companyId: string, proposalId: string) => Promise<unknown> =
-      (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: "Pending proposal expired" }),
+      (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: SECRET_PROPOSAL_LAPSED_REASON }),
   ) {
     const expired = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
       .from(companySecretProposals)
-      .where(and(eq(companySecretProposals.status, "pending"), lte(companySecretProposals.expiresAt, now)))
+      .where(and(
+        eq(companySecretProposals.status, "pending"),
+        lte(companySecretProposals.expiresAt, now),
+        // A row whose card is already terminal belongs to sweepOrphaned, which
+        // records the card loss. Keeping the two sweeps disjoint makes the
+        // recorded reason independent of which one commits first: both run in
+        // the same scheduler tick and neither honours the other's ordering.
+        notExists(db.select({ one: sql`1` })
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, companySecretProposals.interactionId),
+            eq(issueThreadInteractions.companyId, companySecretProposals.companyId),
+            inArray(issueThreadInteractions.status, ["expired", "cancelled"]),
+          ))),
+      ))
       .orderBy(companySecretProposals.expiresAt)
       .limit(limit);
     let expiredCount = 0;
@@ -874,5 +918,50 @@ export function createSecretProposalsService(db: Db) {
     return expiredCount;
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
+  // Backstop for the invariant "no proposal stays pending behind a dead card".
+  // Every card-expiry path is supposed to resolve its linked proposal (the
+  // supersede sweep, issue close, withdrawal), but a card can also die through
+  // a path this service does not own — a bulk expiry after a host restart, a
+  // deleted addressee, a stale document target. Nothing surfaces those, so
+  // sweep them instead of waiting out PENDING_EXPIRY_MS: a proposal whose card
+  // is terminal is a decision the human was never shown.
+  async function sweepOrphaned(
+    limit = DEFAULT_EXPIRY_SWEEP_LIMIT,
+    expireProposal: (companyId: string, proposalId: string) => Promise<unknown> =
+      (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: SECRET_PROPOSAL_CARD_LOST_REASON }),
+  ) {
+    let expiredCount = 0;
+    // The scheduler tick calls this once per interval, so one page is not
+    // enough: a backlog larger than the page would leave rows pending past the
+    // interval the invariant promises. Drain in bounded passes instead, and
+    // stop on the first short page. Each pass sees the rows the previous one
+    // resolved, so the bound is a page count, not a retry of the same rows.
+    for (let pass = 0; pass < ORPHAN_SWEEP_MAX_PASSES; pass += 1) {
+      const orphans = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
+        .from(companySecretProposals)
+        .innerJoin(issueThreadInteractions, and(
+          eq(issueThreadInteractions.id, companySecretProposals.interactionId),
+          eq(issueThreadInteractions.companyId, companySecretProposals.companyId),
+        ))
+        .where(and(
+          eq(companySecretProposals.status, "pending"),
+          inArray(issueThreadInteractions.status, ["expired", "cancelled"]),
+        ))
+        .orderBy(companySecretProposals.createdAt)
+        .limit(limit);
+      for (const proposal of orphans) {
+        try {
+          await expireProposal(proposal.companyId, proposal.id);
+          expiredCount += 1;
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 409) continue;
+          throw error;
+        }
+      }
+      if (orphans.length < limit) break;
+    }
+    return expiredCount;
+  }
+
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, sweepOrphaned };
 }
