@@ -22,6 +22,7 @@ import {
   type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { boardDescriptorForBlock } from "./recovery/blocked-descriptor.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -487,17 +488,22 @@ export async function settleUnrecoverableExecutions(
           // action is the best source of the concrete next step when the task
           // has no descriptor yet. Replacing it with a generic disposition note
           // would send board operators to the wrong next step.
-          const unblockAction =
-            task.unblockDescriptor?.action?.trim() || action.nextAction || note;
-          const unblockDescriptor: IssueUnblockDescriptor = {
-            owner: "board",
+          //
+          // If the task is already blocked with a valid descriptor, that block
+          // belongs to someone else. Downgrading it to a board-owned descriptor
+          // would sever the existing path to an agent- or user-owned unblock
+          // owner, because `deliverAgentUnblockNotification` only wakes
+          // agent-owned descriptors. Leave the existing descriptor untouched.
+          const unblockAction = task.unblockDescriptor?.action?.trim() || action.nextAction || note;
+          const unblockDescriptor = boardDescriptorForBlock({
+            existing: task.unblockDescriptor,
             action: unblockAction,
-          };
+          });
           const [projected] = await tx
             .update(issues)
             .set({
               status: "blocked",
-              unblockDescriptor,
+              ...(unblockDescriptor ? { unblockDescriptor } : {}),
               blockedTransitionAt: task.status === "blocked" ? task.blockedTransitionAt : now,
               executionRunId: null,
               checkoutRunId: null,

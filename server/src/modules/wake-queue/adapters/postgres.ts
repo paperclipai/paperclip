@@ -28,6 +28,7 @@ import { HttpError } from "../../../errors.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { issueTreeControlService, isVerifiedIssueTreeControlInteractionWake } from "../../../services/issue-tree-control.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/recovery/pause-hold-guard.js";
+import { boardDescriptorForBlock } from "../../../services/recovery/blocked-descriptor.js";
 import { classifyContinuationFailure } from "../../../services/recovery/service.js";
 import { issueService } from "../../../services/issues.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
@@ -742,13 +743,28 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
   if (issue.status !== "blocked") {
     // Reuse a valid existing recovery action when one already names the next
     // step. The native terminal check still owns this blocked projection.
-    const unblockAction = existing[0]?.nextAction?.trim() ||
+    //
+    // Only reuse an action that belongs to *this* run. The query above also
+    // admits any other active action on the issue, and putting that action's
+    // next step on this card would send the board to a different failure.
+    // Recovery evidence records the run in a few places depending on the
+    // writer, so accept any of them rather than trusting one shape.
+    const evidence = existing[0]?.evidence as
+      | { runId?: string; automaticRecovery?: { runId?: string } }
+      | undefined;
+    const ownerRunId = evidence?.automaticRecovery?.runId ?? evidence?.runId;
+    const runScopedAction = ownerRunId === run.id ? existing[0] : undefined;
+    const unblockAction = runScopedAction?.nextAction?.trim() ||
       "Inspect the original failure and reconcile the previous execution before continuing. Automatic recovery cannot start another incident.";
+    const unblockDescriptor = boardDescriptorForBlock({
+      existing: issue.unblockDescriptor,
+      action: unblockAction,
+    });
     const projected = await issueService(tx).update(
       issue.id,
       {
         status: "blocked",
-        unblockDescriptor: { owner: "board", action: unblockAction } satisfies IssueUnblockDescriptor,
+        ...(unblockDescriptor ? { unblockDescriptor } : {}),
       },
       tx,
     );
