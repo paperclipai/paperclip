@@ -10,30 +10,35 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  targetIssue: Record<string, unknown> | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
   const tx = {
     select: (selection: Record<string, unknown>) => ({
-      from: () => ({
+      from: (table: unknown) => ({
         where: () => {
           if (Object.keys(selection).includes("count")) {
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
-          return {
-            for: () => ({
-              then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
-                id: "11111111-1111-4111-8111-111111111111",
-                companyId: "22222222-2222-4222-8222-222222222222",
-                agentId: "33333333-3333-4333-8333-333333333333",
-                responsibleUserId: "user-1",
-                contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
-                ...runOverrides,
-              }]),
-            }),
-          };
+          // The run lookup and the issue-lock lookup both end in `for("update")`.
+          // They are told apart by the columns they select, so the double has to
+          // be too -- otherwise a lock-attribution test would pass against a row
+          // that was never meant to be an issue.
+          const isIssueLockQuery = Object.keys(selection).includes("checkoutRunId");
+          const rows = isIssueLockQuery
+            ? (targetIssue === null ? [] : [targetIssue])
+            : (runOverrides === null ? [] : [{
+              id: "11111111-1111-4111-8111-111111111111",
+              companyId: "22222222-2222-4222-8222-222222222222",
+              agentId: "33333333-3333-4333-8333-333333333333",
+              responsibleUserId: "user-1",
+              contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
+              ...runOverrides,
+            }]);
+          return { for: () => ({ then: (resolve: (rows: unknown[]) => unknown) => resolve(rows) }) };
         },
       }),
     }),
@@ -198,7 +203,7 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("fails closed when the persisted run has no source issue and holds no lock on the target", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -209,7 +214,69 @@ describe("cross-issue influence limit rollout", () => {
       kind: "update",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_unattributed_run" },
+    });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("attributes a run holding the target's checkout lock, with no contextSnapshot issue", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, {
+      id: "55555555-5555-4555-8555-555555555555",
+      checkoutRunId: "11111111-1111-4111-8111-111111111111",
+      executionRunId: null,
+    });
+
+    // The lock makes the write self-attributed, so the guard returns early
+    // rather than counting a cross-issue influence against itself.
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("refuses when the target row exists but a different run holds its lock", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, {
+      id: "55555555-5555-4555-8555-555555555555",
+      checkoutRunId: "99999999-9999-4999-8999-999999999999",
+      executionRunId: null,
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_unattributed_run" },
+    });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("never scans other issues: a lock on an unrelated issue does not attribute the write", async () => {
+    // The deployed guard is target-scoped only (no Case B run-wide scan), so
+    // this double can only ever return the target row. If a Case B scan were
+    // reintroduced, this test would need a second fixture to keep it honest.
+    const fake = counterDb(0, { contextSnapshot: {} }, {
+      id: "55555555-5555-4555-8555-555555555555",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_unattributed_run" },
     });
     expect(fake.inserted).toEqual([]);
   });

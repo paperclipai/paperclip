@@ -1,9 +1,12 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+
+/** The transaction handle Drizzle hands to a `db.transaction` callback. */
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
 export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.000Z");
@@ -34,12 +37,65 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
+export function crossIssueInfluenceUnattributedRunError() {
+  // Distinct from the run-context branch: the run row was found and matched the
+  // caller, but nothing binds it to an issue -- neither the run's context
+  // snapshot nor the target issue's checkout/execution lock. Telling the caller
+  // to resend X-Paperclip-Run-Id here is false advice: the header was
+  // already read and validated above.
+  const { body } = issueWriteDenialResponse("cross_issue_influence_unattributed_run");
+  return forbidden(body.error, body.details);
+}
+
 function readRunSourceIssueId(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
   for (const candidate of [context.issueId, context.taskId]) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
+  return null;
+}
+
+/**
+ * Fallback attribution for runs whose contextSnapshot carries no issue id.
+ *
+ * `assertCheckoutOwner` already treats `issues.checkoutRunId`/`executionRunId`
+ * as the authoritative binding between a run and an issue, and `svc.checkout`
+ * writes only those columns. Reading the same columns here keeps the two
+ * subsystems from disagreeing about what binds a run to an issue: checkout
+ * admits the run, the influence guard must not then deny it. The target issue
+ * row is already loaded by the caller, so this costs one indexed lookup on a row
+ * the surrounding transaction has already locked.
+ *
+ * Scope is the target issue only. A run holding a lock on some *other* issue is
+ * not bound to this write, so it falls through to the caller's fail-closed
+ * refusal rather than being charged to an unrelated row.
+ */
+async function readIssueLockAttribution(
+  tx: Tx,
+  input: {
+    companyId: string;
+    runId: string;
+    targetIssueId: string;
+  },
+): Promise<string | null> {
+  if (!isUuidLike(input.targetIssueId)) return null;
+
+  // The run's lock on the target row itself, scoped by company so a target id
+  // from another company can never satisfy the binding. The row lock is what
+  // makes the read safe against a concurrent checkout flipping the binding.
+  const target = await tx
+    .select({
+      id: issues.id,
+      checkoutRunId: issues.checkoutRunId,
+      executionRunId: issues.executionRunId,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, input.targetIssueId), eq(issues.companyId, input.companyId)))
+    .for("update")
+    .then((rows) => rows[0] ?? null);
+  if (!target) return null;
+  if (target.checkoutRunId === input.runId || target.executionRunId === input.runId) return target.id;
   return null;
 }
 
@@ -109,8 +165,9 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot) ??
+      (await readIssueLockAttribution(tx, input));
+    if (!sourceIssueId) throw crossIssueInfluenceUnattributedRunError();
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
