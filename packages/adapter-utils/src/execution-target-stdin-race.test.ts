@@ -759,6 +759,22 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
   // still leaves the peer's entry untouched under this preload proves the
   // fix for every less-adversarial timing too. It never runs unless a test
   // opts in, and it never touches this test file's own process.
+  //
+  // With PAPERCLIP_TEST_PROBE_SWAP_REUSE_IDENTITY=1 the swapped entry reads
+  // back with the most adversarial identity a filesystem may legally give it,
+  // so the result does not depend on the filesystem the test runs on:
+  // - It always carries the wrapper's own probe ctimeMs. That is what a
+  //   kernel whose file timestamp clock is coarser than the swap produces:
+  //   both creates land in one clock tick.
+  // - It also carries the probe's own (dev, ino) when the wrapper has no open
+  //   descriptor on the probe file at the swap. The unlink then frees the
+  //   inode, and a filesystem may hand that number straight to the peer's
+  //   create (ext4 does, every time). While a descriptor stays open, the
+  //   inode stays allocated, so no filesystem can reuse its number.
+  // A wrapper that closes its descriptor before the identity check then sees
+  // a full (dev, ino, ctimeMs) match on the peer's entry and removes it, on
+  // any filesystem. Only a wrapper that keeps its own inode allocated until
+  // the removal decision can tell the two apart.
   let probeSwapPreloadDir: string | null = null;
   afterAll(async () => {
     if (probeSwapPreloadDir) await rm(probeSwapPreloadDir, { recursive: true, force: true }).catch(() => undefined);
@@ -778,17 +794,45 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
             `const mode = process.env.PAPERCLIP_TEST_PROBE_SWAP_MODE;`,
             `const seq = process.env.PAPERCLIP_TEST_PROBE_SWAP_SEQ;`,
             `const symlinkTarget = process.env.PAPERCLIP_TEST_PROBE_SWAP_SYMLINK_TARGET;`,
+            `const reuseIdentity = process.env.PAPERCLIP_TEST_PROBE_SWAP_REUSE_IDENTITY === "1";`,
             `if (mode && seq) {`,
             `  const expectedName = ".paperclip-birthtime-probe-" + process.pid + "-" + seq;`,
             `  let swapped = false;`,
+            `  let openProbeDescriptors = 0;`,
+            `  const originalOpen = fs.promises.open.bind(fs.promises);`,
+            `  fs.promises.open = async (targetPath, flags, openMode) => {`,
+            `    const handle = await originalOpen(targetPath, flags, openMode);`,
+            `    if (path.basename(String(targetPath)) === expectedName) {`,
+            `      openProbeDescriptors += 1;`,
+            `      let counted = true;`,
+            `      const originalClose = handle.close.bind(handle);`,
+            `      handle.close = async () => {`,
+            `        if (counted) { counted = false; openProbeDescriptors -= 1; }`,
+            `        return originalClose();`,
+            `      };`,
+            `    }`,
+            `    return handle;`,
+            `  };`,
             `  const originalLstat = fs.promises.lstat.bind(fs.promises);`,
             `  fs.promises.lstat = async (candidatePath, opts) => {`,
             `    if (!swapped && path.basename(String(candidatePath)) === expectedName) {`,
             `      swapped = true;`,
+            `      let own = null;`,
+            `      try { own = fs.lstatSync(candidatePath); } catch {}`,
+            `      const ownInodeFreedByUnlink = openProbeDescriptors === 0;`,
             `      try { fs.unlinkSync(candidatePath); } catch {}`,
             `      if (mode === "file") fs.writeFileSync(candidatePath, "peer-owned-content");`,
             `      else if (mode === "dir") fs.mkdirSync(candidatePath);`,
             `      else if (mode === "symlink") fs.symlinkSync(symlinkTarget, candidatePath);`,
+            `      if (reuseIdentity && own !== null) {`,
+            `        const stats = await originalLstat(candidatePath, opts);`,
+            `        stats.ctimeMs = own.ctimeMs;`,
+            `        if (ownInodeFreedByUnlink) {`,
+            `          stats.dev = own.dev;`,
+            `          stats.ino = own.ino;`,
+            `        }`,
+            `        return stats;`,
+            `      }`,
             `    }`,
             `    return originalLstat(candidatePath, opts);`,
             `  };`,
@@ -873,7 +917,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     // Makes the wrapper's own process observe a same-sandbox peer replacing
     // its birth-time probe file, through the preload above (PAP-5355). seq 1
     // is sessionDir's probe (the first one captureSessionIdentity() runs).
-    probeSwap?: { seq: 1 | 2; mode: "file" | "dir" | "symlink"; symlinkTarget?: string };
+    probeSwap?: { seq: 1 | 2; mode: "file" | "dir" | "symlink"; symlinkTarget?: string; reuseIdentity?: boolean };
     // Makes the wrapper's own process observe an fstat() failure on the open
     // descriptor for its own birth-time probe file, through the preload above
     // (PAP-5374). seq 1 is sessionDir's probe (the first one
@@ -911,6 +955,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       env.PAPERCLIP_TEST_PROBE_SWAP_SEQ = String(options.probeSwap.seq);
       env.PAPERCLIP_TEST_PROBE_SWAP_MODE = options.probeSwap.mode;
       if (options.probeSwap.symlinkTarget) env.PAPERCLIP_TEST_PROBE_SWAP_SYMLINK_TARGET = options.probeSwap.symlinkTarget;
+      if (options.probeSwap.reuseIdentity) env.PAPERCLIP_TEST_PROBE_SWAP_REUSE_IDENTITY = "1";
       execArgv.push("--require", await getProbeSwapPreloadPath());
     }
     if (options?.fstatFailure) {
@@ -2048,7 +2093,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       outputToStdout: false,
       command: process.execPath,
       args: [childPath],
-      probeSwap: { seq: 1, mode: "file" },
+      probeSwap: { seq: 1, mode: "file", reuseIdentity: true },
     });
     await waitForTrackedChildPid(pidFile);
 
@@ -2097,7 +2142,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       outputToStdout: false,
       command: process.execPath,
       args: [childPath],
-      probeSwap: { seq: 1, mode: "symlink", symlinkTarget: linkTarget },
+      probeSwap: { seq: 1, mode: "symlink", symlinkTarget: linkTarget, reuseIdentity: true },
     });
     await waitForTrackedChildPid(pidFile);
 
