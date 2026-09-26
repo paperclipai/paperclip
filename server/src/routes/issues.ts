@@ -229,6 +229,7 @@ import {
   assertCompanyAccess,
   getAccessibleResource,
   getActorInfo,
+  respondForbidden,
 } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -5118,9 +5119,11 @@ export function issueRoutes(
     );
     const decision = await value;
     if (decision.allowed) return true;
-    res
-      .status(403)
-      .json({ error: "Issue is outside this actor's authorization boundary" });
+    respondForbidden(
+      res,
+      "issue_read_denied",
+      "Issue is outside this actor's authorization boundary",
+    );
     return false;
   }
 
@@ -5163,7 +5166,7 @@ export function issueRoutes(
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
-      res.status(403).json({ error: "Agent authentication required" });
+      respondForbidden(res, "agent_authentication_required", "Agent authentication required");
       return false;
     }
     const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
@@ -5284,7 +5287,7 @@ export function issueRoutes(
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
-      res.status(403).json({ error: "Agent authentication required" });
+      respondForbidden(res, "agent_authentication_required", "Agent authentication required");
       return false;
     }
     // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
@@ -5362,9 +5365,11 @@ export function issueRoutes(
       // Past the run lock the issue is idle, so only channels that have not
       // adopted the default-open rule still refuse another agent's issue.
       if (!options.allowVisibleIssueWrite) {
-        res.status(403).json({
-          error: "Agent cannot mutate another agent's issue",
-          details: {
+        respondForbidden(
+          res,
+          "agent_cannot_mutate_other_agents_issue",
+          "Agent cannot mutate another agent's issue",
+          {
             issueId: issue.id,
             assigneeAgentId: issue.assigneeAgentId,
             actorAgentId,
@@ -5375,7 +5380,7 @@ export function issueRoutes(
               "Fail Securely",
             ],
           },
-        });
+        );
         return false;
       }
       return true;
@@ -6491,17 +6496,18 @@ export function issueRoutes(
       input.presentation !== undefined || input.metadata !== undefined;
     if (!hasStructuredFields) return true;
     if (req.actor.type === "board") return true;
-    res.status(403).json({
-      error:
-        "Only board users may set structured comment presentation or metadata",
-      details: {
+    respondForbidden(
+      res,
+      "structured_comment_fields_board_only",
+      "Only board users may set structured comment presentation or metadata",
+      {
         securityPrinciples: [
           "Least Privilege",
           "Secure Defaults",
           "Complete Mediation",
         ],
       },
-    });
+    );
     return false;
   }
 
@@ -6642,7 +6648,9 @@ export function issueRoutes(
 
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
-      throw forbidden("Agent authentication required");
+      throw forbidden("Agent authentication required", {
+        code: "agent_authentication_required",
+      });
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
     if (
@@ -6668,6 +6676,7 @@ export function issueRoutes(
     }
 
     throw forbidden("Agent cannot resolve another owner's recovery action", {
+      code: "recovery_action_owner_mismatch",
       issueId: issue.id,
       recoveryActionId: activeRecoveryAction.id,
       actorAgentId,
