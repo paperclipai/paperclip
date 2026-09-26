@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agentWakeupRequests,
   agents,
   approvals,
@@ -354,6 +355,19 @@ function canonicalJson(value: unknown): string {
         ),
       )
       : val);
+}
+
+function observedMutationScopeFingerprint(classification: TaskWatchdogClassifierResult) {
+  if ("stopFingerprint" in classification) return classification.stopFingerprint;
+  const payload = canonicalJson({
+    version: 1,
+    state: classification.state,
+    includedIssueIds: classification.includedIssueIds,
+    liveIssueIds: "liveIssueIds" in classification ? classification.liveIssueIds : undefined,
+    pendingIssueIds: "pendingIssueIds" in classification ? classification.pendingIssueIds : undefined,
+    reason: classification.reason,
+  });
+  return `task_watchdog_observed:${createHash("sha256").update(payload).digest("hex")}`;
 }
 
 function isShrinkOfReviewedSnapshot(
@@ -1611,9 +1625,134 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       ));
   }
 
+  async function restampCurrentRunAfterOwnWrites(input: {
+    scope: {
+      watchdogId: string;
+      runId?: string | null;
+      companyId: string;
+      watchedIssueId: string;
+      stopFingerprint: string | null;
+    };
+    watchdog: IssueWatchdogRow;
+    classification: TaskWatchdogClassifierResult;
+    observedFingerprint: string;
+    subtreeIssueIds: string[];
+  }) {
+    const runId = readNonEmptyString(input.scope.runId);
+    if (!runId || input.subtreeIssueIds.length === 0) return false;
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.companyId, input.scope.companyId),
+        eq(heartbeatRuns.agentId, input.watchdog.watchdogAgentId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!run) return false;
+
+    const activitySince = run.startedAt ?? run.createdAt;
+    const rows = await db
+      .select({
+        action: activityLog.action,
+        entityId: activityLog.entityId,
+        runId: activityLog.runId,
+        details: activityLog.details,
+        createdAt: activityLog.createdAt,
+      })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.scope.companyId),
+        eq(activityLog.entityType, "issue"),
+        inArray(activityLog.entityId, input.subtreeIssueIds),
+        gte(activityLog.createdAt, activitySince),
+      ));
+    const writes = rows
+      .filter((row) => row.action.startsWith("issue."))
+      .filter((row) => ![
+        "issue.task_watchdog_triggered",
+        "issue.task_watchdog_fingerprint_reviewed",
+        "issue.task_watchdog_run_restamped",
+      ].includes(row.action));
+    if (writes.length === 0 || writes.some((row) => row.runId !== run.id)) return false;
+
+    const context = parseObject(run.contextSnapshot);
+    const taskWatchdog = parseObject(context.taskWatchdog);
+    const history = Array.isArray(taskWatchdog.restampedFingerprints)
+      ? taskWatchdog.restampedFingerprints.slice(-9)
+      : [];
+    const restampedAt = new Date();
+    const cause = writes
+      .slice()
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+      .slice(0, 5)
+      .map((row) => ({
+        action: row.action,
+        issueId: row.entityId,
+        createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : new Date(row.createdAt).toISOString(),
+        details: row.details ?? null,
+      }));
+    const entry = {
+      priorFingerprint: input.scope.stopFingerprint,
+      observedFingerprint: input.observedFingerprint,
+      observedState: input.classification.state,
+      restampedAt: restampedAt.toISOString(),
+      causedBy: cause,
+    };
+    const nextContext = {
+      ...context,
+      taskWatchdog: {
+        ...taskWatchdog,
+        stopFingerprint: input.observedFingerprint,
+        restampedFingerprints: [...history, entry],
+      },
+    };
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: nextContext,
+        updatedAt: restampedAt,
+      })
+      .where(and(
+        eq(heartbeatRuns.id, run.id),
+        eq(heartbeatRuns.companyId, input.scope.companyId),
+        eq(heartbeatRuns.agentId, input.watchdog.watchdogAgentId),
+      ));
+
+    await logActivity(db, {
+      companyId: input.scope.companyId,
+      actorType: "agent",
+      actorId: input.watchdog.watchdogAgentId,
+      agentId: input.watchdog.watchdogAgentId,
+      runId: run.id,
+      action: "issue.task_watchdog_run_restamped",
+      entityType: "issue",
+      entityId: input.scope.watchedIssueId,
+      details: {
+        source: "task_watchdogs.revalidate_mutation_scope",
+        watchdogId: input.scope.watchdogId,
+        priorFingerprint: input.scope.stopFingerprint,
+        observedFingerprint: input.observedFingerprint,
+        observedState: input.classification.state,
+        causedBy: cause,
+      },
+    });
+
+    return true;
+  }
+
   async function revalidateMutationScope(scope: {
     kind: "watchdog";
     watchdogId: string;
+    runId?: string | null;
     companyId: string;
     watchedIssueId: string;
     stopFingerprint: string | null;
@@ -1645,6 +1784,22 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
+      return { allowed: true as const, classification };
+    }
+    const observedFingerprint = observedMutationScopeFingerprint(classification);
+    if (observedFingerprint === scope.stopFingerprint) {
+      return { allowed: true as const, classification };
+    }
+    // Same-run writes can move the subtree between guarded mutations. Re-stamp
+    // only when every post-snapshot subtree write is from this run; any
+    // third-party write falls through to the unchanged stale-review 409 fence.
+    if (await restampCurrentRunAfterOwnWrites({
+      scope,
+      watchdog,
+      classification,
+      observedFingerprint,
+      subtreeIssueIds: input.issues.map((issue) => issue.id),
+    })) {
       return { allowed: true as const, classification };
     }
 
