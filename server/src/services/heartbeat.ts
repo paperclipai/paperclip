@@ -7079,7 +7079,17 @@ function externalAttachmentOmissionNotice(
   return `Paperclip could not import every attachment from this exact external message: ${omitted} attachment${omitted === 1 ? " was" : "s were"} omitted (${reasons}). Treat omitted attachments as unavailable; do not infer their contents or substitute an older workspace file.`;
 }
 
-function enrichWakeContextSnapshot(input: {
+/**
+ * Folds the wake's `payload` into the snapshot the new run is created with.
+ *
+ * Exported because the copy the cross-issue write gate refuses with names
+ * `POST /api/agents/{id}/wakeup` with `payload.issueId` as the binding that
+ * clears the refusal. A test that asserts the gate accepts the woken run has
+ * to obtain that run's snapshot from here, or it only proves the gate accepts a
+ * context shaped like the wake's output — which is what let the copy point at
+ * a step that no longer worked.
+ */
+export function enrichWakeContextSnapshot(input: {
   contextSnapshot: Record<string, unknown>;
   reason: string | null;
   source: WakeupOptions["source"];

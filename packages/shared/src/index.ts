@@ -159,12 +159,14 @@ export {
   type AttachmentArtifactWorkProductLike,
 } from "./markdown-work-products.js";
 export {
+  CROSS_ISSUE_RUN_CONTEXT_REASONS,
   ISSUE_WRITE_DENIAL_CODES,
   describeIssueWriteDenial,
   isIssueWriteDenialCode,
   issueWriteDenialApiMessage,
   issueWriteDenialCodeForResponsibleUserDenial,
   issueWriteDenialResponse,
+  type CrossIssueRunContextReason,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
   type IssueWriteDenialCopy,

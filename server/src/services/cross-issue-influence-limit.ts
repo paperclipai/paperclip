@@ -1,7 +1,12 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
-import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
+import { activityLog, agents, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  isUuidLike,
+  issueWriteDenialResponse,
+  type CrossIssueRunContextReason,
+  type IssueWriteDenialContext,
+} from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
@@ -10,6 +15,8 @@ export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.00
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
 const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap_rejected";
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 /**
  * Every kind shares one per-run counter. `interaction_resolution` covers the
@@ -27,11 +34,87 @@ export type CrossIssueInfluenceDecision = {
   enforceAt: string;
 };
 
-export function crossIssueInfluenceRunContextError() {
+/**
+ * Refuse a write the run-context gate cannot attribute.
+ *
+ * The reason is a required argument, not an afterthought: the three conditions
+ * have three different remedies, and the copy has to be told which one fired.
+ * Before this took a reason, every refusal shipped "send `X-Paperclip-Run-Id`
+ * and retry" — including the one condition where the run id was already proven
+ * present, which made the error path impossible to satisfy and read to an
+ * operator as "this write cannot be done".
+ */
+export function crossIssueInfluenceRunContextError(
+  reason: CrossIssueRunContextReason,
+  context: IssueWriteDenialContext = {},
+) {
   // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
   // so the agent reading this 403 is told the fix, not just the refusal.
-  const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required");
-  return forbidden(body.error, body.details);
+  const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required", {
+    ...context,
+    reason,
+  });
+  // `reason` is surfaced verbatim, next to `code`, so a JSON consumer branches
+  // on the machine value instead of parsing the prose.
+  return forbidden(body.error, {
+    ...body.details,
+    reason,
+    targetOwnedByAnotherAgent: context.targetOwnedByAnotherAgent === true,
+  });
+}
+
+/**
+ * Best-effort owner of the target issue, read only on the refusal path.
+ *
+ * The copy must distinguish "this run could not be identified" from "this run
+ * is identified and the task simply belongs to someone else", because the fix
+ * differs: one needs the run header, the other needs a child issue or a
+ * reassignment. A denial is rare, so one extra query buys a rejection that
+ * names who actually holds the task. Any failure degrades to the generic nouns
+ * rather than masking the refusal.
+ */
+async function readTargetOwnership(
+  tx: DbTransaction,
+  input: {
+    companyId: string;
+    targetIssueId: string;
+    agentId: string;
+    targetIssueIdentifier?: string | null;
+  },
+) {
+  const fallback = {
+    identifier: input.targetIssueIdentifier ?? null,
+    assigneeName: null as string | null,
+    ownedByAnotherAgent: false,
+  };
+  try {
+    const rows = await tx
+      .select({
+        identifier: issues.identifier,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeName: agents.name,
+      })
+      .from(issues)
+      .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
+      .where(and(
+        eq(issues.id, input.targetIssueId),
+        eq(issues.companyId, input.companyId),
+      ));
+    const target = rows[0];
+    if (!target) return fallback;
+    return {
+      identifier: target.identifier ?? fallback.identifier,
+      assigneeName: target.assigneeName ?? null,
+      ownedByAnotherAgent:
+        Boolean(target.assigneeAgentId) && target.assigneeAgentId !== input.agentId,
+    };
+  } catch (err) {
+    logger.warn(
+      { err, targetIssueId: input.targetIssueId },
+      "failed to resolve target ownership for run-context denial copy",
+    );
+    return fallback;
+  }
 }
 
 function readRunSourceIssueId(contextSnapshot: unknown) {
@@ -82,7 +165,7 @@ export async function observeCrossIssueInfluence(
 ): Promise<CrossIssueInfluenceDecision | null> {
   // API-key callers control the run header. Reject malformed UUIDs before the
   // database can turn an untrusted identifier into a PostgreSQL cast error.
-  if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError();
+  if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError("malformed_run_id");
 
   return db.transaction(async (tx) => {
     const run = await tx
@@ -106,11 +189,26 @@ export async function observeCrossIssueInfluence(
       run.companyId !== input.companyId ||
       run.agentId !== input.agentId
     ) {
-      throw crossIssueInfluenceRunContextError();
+      throw crossIssueInfluenceRunContextError("run_not_found");
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (!sourceIssueId) {
+      // Reached only after the run resolved, company-matched and agent-matched,
+      // so the run id is already carried and proven good. The missing half is
+      // the target binding, and the copy has to say exactly that: the header
+      // advice that used to ship here was advice this branch's own earlier
+      // checks had already disproved.
+      const target = await readTargetOwnership(tx, input);
+      throw crossIssueInfluenceRunContextError(
+        "no_context_source_and_target_unbound",
+        {
+          issueIdentifier: target.identifier,
+          assigneeLabel: target.assigneeName,
+          targetOwnedByAnotherAgent: target.ownedByAnotherAgent,
+        },
+      );
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())

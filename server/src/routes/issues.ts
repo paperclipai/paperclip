@@ -3888,8 +3888,14 @@ export function issueRoutes(
     kind: CrossIssueInfluenceKind,
   ) {
     if (req.actor.type !== "agent") return true;
-    if (!req.actor.agentId || !req.actor.runId)
-      throw crossIssueInfluenceRunContextError();
+    if (!req.actor.agentId || !req.actor.runId) {
+      // The actor arrived without a run id at all, which is the absence the
+      // header remedy names. A run id that is present but unusable is reported
+      // as `run_not_found` by the counter transaction below.
+      throw crossIssueInfluenceRunContextError(
+        req.actor.runId ? "run_not_found" : "malformed_run_id",
+      );
+    }
 
     // The counter transaction locks and validates the persisted run before it
     // derives the source issue. Never trust the API-key run header by itself.
