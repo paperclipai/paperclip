@@ -740,13 +740,12 @@ function StandardConnectionSetupFlow({
     }
     setAuthorizationFallbackUrl(url);
     const popup = oauthPopupRef.current;
-    if (!popup || popup.closed) {
+    if (!popup || popup.closed || !navigatePopupWindow(popup, url)) {
       setOAuthPhase("error");
       setOAuthError("Paperclip couldn’t open the sign-in window. Open sign-in in a new tab to continue.");
       onPhaseChange?.("needs_retry");
       return;
     }
-    navigatePopupWindow(popup, url);
     focusPopupWindow(popup);
   }, [host, onPhaseChange]);
 
@@ -1039,10 +1038,11 @@ function StandardConnectionSetupFlow({
     if (host === "dialog") {
       setEnrollmentAuthorizationUrl(target.url);
       const popup = oauthPopupRef.current;
-      if (popup && !popup.closed) {
-        navigatePopupWindow(popup, target.url);
+      if (popup && !popup.closed && navigatePopupWindow(popup, target.url)) {
         focusPopupWindow(popup);
       } else {
+        oauthPopupRef.current?.close();
+        oauthPopupRef.current = null;
         setConnectorEnrollmentError("Open authorization in a new tab to continue.");
       }
       return;

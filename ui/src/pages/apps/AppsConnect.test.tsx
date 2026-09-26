@@ -1133,6 +1133,40 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     open.mockRestore();
   });
 
+  it("closes the reserved enrollment popup and shows retry error when popup navigation fails", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const popup = {
+      closed: false,
+      name: "oauth-popup",
+      get location() {
+        throw new DOMException("Blocked frame", "SecurityError");
+      },
+      set location(_val: unknown) {
+        throw new DOMException("Blocked frame", "SecurityError");
+      },
+      focus: vi.fn(),
+      close: vi.fn(),
+    };
+    const open = vi.spyOn(window, "open").mockImplementation((url) => {
+      if (!url || url === "about:blank") return popup as unknown as Window;
+      return null;
+    });
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...GMAIL, methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
+      ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+    }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "not_configured" });
+    await render(client, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
+    await passAccessStep();
+    await act(async () => buttonByText("Connect with Paperclip")?.click());
+    await flushReact();
+    expect(open).toHaveBeenCalled();
+    expect(popup.close).toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Open authorization in a new tab to continue.");
+    open.mockRestore();
+  });
+
+
   it.each(["request", "missing-url", "invalid-url"])("closes the reserved enrollment popup after %s failure", async (failure) => {
     const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);

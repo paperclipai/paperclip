@@ -8,29 +8,36 @@
  * In contrast, setting `popup.location.href` is explicitly permitted cross-origin
  * by the HTML Living Standard.
  */
-export function navigatePopupWindow(popup: Window, target: string): void {
+export function navigatePopupWindow(popup: Window | null | undefined, target: string): boolean {
+  if (!popup || popup.closed) return false;
   try {
     popup.location.assign(target);
-    return;
+    return true;
   } catch {
     // Cross-origin access or missing assign method
   }
   try {
     popup.location.href = target;
-    return;
+    return true;
   } catch {
     // Fallback if location object is restricted
   }
   try {
     (popup as unknown as { location: string }).location = target;
+    return true;
   } catch {
     try {
-      window.open(target, popup.name);
+      if (typeof window !== "undefined" && typeof window.open === "function") {
+        const opened = window.open(target, popup.name);
+        return Boolean(opened);
+      }
+      return false;
     } catch {
-      // Ignore if window.open fails
+      return false;
     }
   }
 }
+
 
 /**
  * Safely focuses an existing popup window, swallowing any cross-origin restrictions.

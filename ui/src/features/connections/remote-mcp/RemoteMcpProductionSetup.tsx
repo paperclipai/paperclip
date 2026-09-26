@@ -139,9 +139,13 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
         authorizationUrl.current = target.url;
         edit({ connectStatus: "sign_in", token: "", headers: [] });
         if (host === "dialog") {
-          if (popup.current && !popup.current.closed) {
-            navigatePopupWindow(popup.current, target.url);
+          if (popup.current && !popup.current.closed && navigatePopupWindow(popup.current, target.url)) {
             focusPopupWindow(popup.current);
+          } else {
+            popup.current?.close();
+            popup.current = null;
+            onPhaseChange?.("needs_retry");
+            throw new Error("Paperclip couldn’t open the sign-in window. Open sign-in in a new tab to continue.");
           }
         } else navigateTopLevel(target.url);
         return;
