@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
+import { buildSshSpawnTarget } from "./ssh.js";
 import {
   readPaperclipRuntimeSkillEntries,
   applyPaperclipWorkspaceEnv,
@@ -20,6 +21,9 @@ import {
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
+  ENV_AGGREGATE_MAX_BYTES,
+  ENV_SINGLE_VALUE_MAX_BYTES,
+  pruneOversizedLaunchEnv,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -567,6 +571,155 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it(
+    "prunes adapter-supplied env values over the single-value budget so an oversized wake envelope cannot reach the child environment",
+    { timeout: 20_000 },
+    async () => {
+      // Characterization for the spawn E2BIG incident: Linux fails execve with
+      // E2BIG once any single env string exceeds MAX_ARG_STRLEN (131,072 bytes
+      // with 4 KiB pages). The guard must prune any oversized value
+      // regardless of key prefix, including adapter-supplied (non-inherited)
+      // copies of the wake payload.
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+[
+            "-e",
+            [
+              "process.stdout.write(JSON.stringify({",
+              "big:(process.env.BIG_CONTEXT??'').length,",
+              "wake:(process.env.PAPERCLIP_WAKE_PAYLOAD_JSON??'').length}))",
+            ].join(""),
+          ],
+        {
+          cwd: process.cwd(),
+          env: {
+            BIG_CONTEXT: "x".repeat(ENV_SINGLE_VALUE_MAX_BYTES + 1),
+            PAPERCLIP_WAKE_PAYLOAD_JSON: "x".repeat(131_073),
+          },
+          timeoutSec: 15,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ big: 0, wake: 0 });
+    },
+  );
+
+  it("keeps normal-sized adapter-supplied env values", { timeout: 20_000 }, async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.stdout.write(process.env.SMALL_CONTEXT ?? 'missing')"],
+      {
+        cwd: process.cwd(),
+        env: { SMALL_CONTEXT: "kept-value" },
+        timeoutSec: 15,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("kept-value");
+  });
+
+  it("keeps the aggregate child environment under the launch budget", { timeout: 20_000 }, async () => {
+    const oversizedAggregateValue = "y".repeat(60_000);
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 20; i++) env[`AGG_VAR_${i}`] = oversizedAggregateValue;
+
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "const total=Object.entries(process.env)",
+          ".reduce((sum,[k,v])=>sum+k.length+(v?.length??0)+1,0);",
+          "process.stdout.write(JSON.stringify({total,",
+          "kept:Object.keys(process.env).filter(k=>k.startsWith('AGG_VAR_')).length,",
+          "path:typeof process.env.PATH==='string'}))",
+        ].join(""),
+      ],
+      {
+        cwd: process.cwd(),
+        env,
+        timeoutSec: 15,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    const observed = JSON.parse(result.stdout);
+    expect(observed.path).toBe(true);
+    expect(observed.kept).toBeLessThan(20);
+    expect(observed.total).toBeLessThanOrEqual(
+      ENV_AGGREGATE_MAX_BYTES + oversizedAggregateValue.length + 1024,
+    );
+  });
+
+  it("does not fold oversized values into the SSH remote env argv", async () => {
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+      command: "node",
+      args: ["--version"],
+      env: {
+        SMALL: "kept",
+        BIG_CONTEXT: "x".repeat(ENV_SINGLE_VALUE_MAX_BYTES + 1),
+      },
+    });
+
+    try {
+      const remoteScript = String(target.args.at(-1) ?? "");
+      expect(remoteScript).toContain("SMALL=");
+      expect(remoteScript).toContain("'kept'");
+      expect(remoteScript).not.toContain("BIG_CONTEXT=");
+      expect(Buffer.byteLength(remoteScript)).toBeLessThan(131_072);
+    } finally {
+      await target.cleanup();
+    }
+  });
+
+  it("prunes oversized values while protecting PATH and HOME in the aggregate pass", () => {
+    const protectedPath = "/usr/bin";
+    const pruned = pruneOversizedLaunchEnv({
+      PATH: protectedPath,
+      HOME: "/home/agent",
+      FILLER_A: "a".repeat(600_000),
+      FILLER_B: "b".repeat(600_000),
+    });
+
+    expect(pruned.PATH).toBe(protectedPath);
+    expect(pruned.HOME).toBe("/home/agent");
+    expect(pruned.FILLER_A).toBeUndefined();
+    expect(pruned.FILLER_B).toBeUndefined();
+  });
+
+  it("prunes any single env value over the byte budget regardless of key prefix", () => {
+    const pruned = pruneOversizedLaunchEnv({
+      UNPREFIXED_BIG: "x".repeat(ENV_SINGLE_VALUE_MAX_BYTES + 1),
+      MULTI_BYTE: "é".repeat(ENV_SINGLE_VALUE_MAX_BYTES), // 2 bytes per char
+      SMALL: "kept",
+    });
+
+    expect(pruned.UNPREFIXED_BIG).toBeUndefined();
+    expect(pruned.MULTI_BYTE).toBeUndefined();
+    expect(pruned.SMALL).toBe("kept");
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),

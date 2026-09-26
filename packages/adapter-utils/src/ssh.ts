@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { pruneOversizedLaunchEnv } from "./remote-execution-env.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
@@ -1204,7 +1205,11 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
-    const envEntries = Object.entries(options.env ?? {})
+    // The whole remote env is folded into one `sh -c` argv string, so an
+    // oversized value would push the launch over the OS exec limits.
+    const envEntries = Object.entries(
+      pruneOversizedLaunchEnv(options.env ?? {}),
+    )
       .filter((entry): entry is [string, string] => typeof entry[1] === "string");
     for (const [key] of envEntries) {
       if (!isValidShellEnvKey(key)) {
@@ -1266,14 +1271,17 @@ export async function buildSshSpawnTarget(input: {
   args: string[];
   cleanup: () => Promise<void>;
 }> {
-  for (const key of Object.keys(input.env)) {
+  // The whole remote env is folded into a single `sh -c` argv string, so an
+  // oversized value would push the launch over the OS exec limits (E2BIG).
+  const launchEnv = pruneOversizedLaunchEnv(input.env);
+  for (const key of Object.keys(launchEnv)) {
     if (!isValidShellEnvKey(key)) {
       throw new Error(`Invalid SSH environment variable key: ${key}`);
     }
   }
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
-  const envArgs = Object.entries(input.env)
+  const envArgs = Object.entries(launchEnv)
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");

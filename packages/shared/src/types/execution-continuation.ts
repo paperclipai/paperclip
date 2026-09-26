@@ -42,6 +42,10 @@ export interface ExecutionContinuationEnvelope {
     baseRunId: string;
     messages: ExecutionContinuationEnvelope["messages"];
   };
+  /** True when the message history was capped to fit the continuation budget. */
+  truncated?: boolean;
+  /** True when older capped-off history must be fetched via the API. */
+  fallbackFetchNeeded?: boolean;
   recoveryOutcomes?: Array<{ recoveryActionId: string; decision: unknown }>;
   completedWork: string | null;
   /** Start a new turn from history; never replay prior tool calls automatically. */
