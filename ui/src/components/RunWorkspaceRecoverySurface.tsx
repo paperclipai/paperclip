@@ -7,6 +7,7 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { useToastActions } from "../context/ToastContext";
+import { issuePostCommitWarningBody } from "../lib/issue-post-commit-warnings";
 import {
   IssueRecoveryActionCard,
   type RecoveryReissueRequest,
@@ -157,12 +158,13 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
     },
     onSuccess: (created) => {
       invalidate();
+      const warning = issuePostCommitWarningBody(created);
       pushToast({
-        title: "Isolated re-issue created",
-        body: created.identifier
+        title: warning ? "Isolated re-issue created with warnings" : "Isolated re-issue created",
+        body: warning ?? (created.identifier
           ? `${created.identifier} will run on a fresh isolated workspace.`
-          : "A fresh isolated re-issue was created.",
-        tone: "success",
+          : "A fresh isolated re-issue was created."),
+        tone: warning ? "warn" : "success",
       });
       if (created.identifier) {
         navigate(`/issues/${created.identifier}`);

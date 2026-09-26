@@ -190,6 +190,7 @@ import {
   persistActivity,
   publishActivity,
   type ActivityPublication,
+  type LogActivityInput,
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
@@ -1926,6 +1927,9 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
 }
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type IssueCreateActivityContext = {
+  watchdogId: string | null;
+};
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   initialPlan?: string | null;
   labelIds?: string[];
@@ -1940,6 +1944,12 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  activityInputFactory?: (
+    issue: typeof issues.$inferSelect,
+    dbOrTx: Db,
+    context: IssueCreateActivityContext,
+  ) => LogActivityInput[] | Promise<LogActivityInput[]>;
+  postCommitActivityPublications?: ActivityPublication[];
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -9719,6 +9729,8 @@ export function issueService(db: Db) {
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
         onDeduplicated,
+        activityInputFactory,
+        postCommitActivityPublications,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (
@@ -9747,6 +9759,9 @@ export function issueService(db: Db) {
       ) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      const ownedActivityPublications: ActivityPublication[] = [];
+      const activityPublications =
+        postCommitActivityPublications ?? ownedActivityPublications;
       const persist = async (tx: DbTransaction) => {
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
@@ -10142,16 +10157,23 @@ export function issueService(db: Db) {
             issueId: issue.id,
           });
         }
+        let watchdogId: string | null = null;
         if (watchdog) {
-          await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
-            agentId: watchdog.agentId,
-            instructions: watchdog.instructions,
-            actor: {
-              agentId: issueData.createdByAgentId ?? null,
-              userId: issueData.createdByUserId ?? null,
-              runId: watchdogActorRunId ?? null,
+          const persistedWatchdog = await upsertIssueWatchdogForIssue(
+            tx,
+            companyId,
+            issue.id,
+            {
+              agentId: watchdog.agentId,
+              instructions: watchdog.instructions,
+              actor: {
+                agentId: issueData.createdByAgentId ?? null,
+                userId: issueData.createdByUserId ?? null,
+                runId: watchdogActorRunId ?? null,
+              },
             },
-          });
+          );
+          watchdogId = persistedWatchdog.watchdog.id;
         }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
@@ -10181,10 +10203,29 @@ export function issueService(db: Db) {
           [enriched],
           tx,
         );
+        for (const activityInput of
+          (await activityInputFactory?.(
+            withRelations,
+            tx as unknown as Db,
+            { watchdogId },
+          )) ?? []) {
+          const { publication } = await persistActivity(
+            tx as unknown as Db,
+            activityInput,
+          );
+          activityPublications.push(publication);
+        }
         return withRelations;
       };
-      if (dbOrTx === db) return db.transaction(persist);
-      return persist(dbOrTx as DbTransaction);
+      const result =
+        dbOrTx === db
+          ? await db.transaction(persist)
+          : await persist(dbOrTx as DbTransaction);
+      if (!postCommitActivityPublications) {
+        for (const publication of ownedActivityPublications)
+          publishActivity(publication);
+      }
+      return result;
     },
 
     /**
