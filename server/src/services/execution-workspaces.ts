@@ -17,6 +17,7 @@ import {
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import type {
+  DeploymentMode,
   ExecutionWorkspace,
   ExecutionWorkspaceDeliveryState,
   ExecutionWorkspaceSummary,
@@ -44,6 +45,7 @@ import {
 } from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { accessService } from "./access.js";
 import { logActivity } from "./activity-log.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -1276,6 +1278,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     ? createWorkspaceGitInspectionCache(opts.inspectGitCloseReadiness)
     : inspectGitForDisplay;
   const recoveryActionsSvc = issueRecoveryActionService(db);
+  const access = accessService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
   // The reaper waits this long after an issue tree becomes terminal before it
@@ -3391,6 +3394,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         reason?: string | null;
         actor: ExecutionWorkspaceBranchReconcileActor;
         alternateRecoveryFingerprints?: string[] | null;
+        /**
+         * The deployment the reconcile runs on. Only `quarantine_restore`
+         * reaches the source-issue transition, and that transition must judge
+         * the board sentinel the same way every other caller does. A caller
+         * with no deployment context — an internal sweep — reads as
+         * `authenticated`, the strict direction: it can dissolve a hold, which
+         * an operator repairs with a PATCH, but it can never park a stage on a
+         * participant nothing can satisfy.
+         */
+        deploymentMode?: DeploymentMode;
       },
     ): Promise<ExecutionWorkspaceBranchReconcileResult> => {
       const existingRow = await db
@@ -3638,6 +3651,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
           const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
           const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
+          // This path restores a status rather than escalating, but it still
+          // evaluates the escalated-hold guard, so it must read the sentinel
+          // the way the deployment does — otherwise a reconcile on
+          // `local_trusted` silently dissolves a hold the board can satisfy.
+          // The same guard asks whether the company can still assign the held
+          // user, read through the transaction that already locked the issue.
+          const assignableUserIds = await access.listAssignableUserIds(sourceBefore.companyId, tx);
           const transition = applyIssueExecutionPolicyTransition({
             issue: sourceBefore,
             policy,
@@ -3648,6 +3668,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               agentId: input.actor.agentId ?? null,
               userId: input.actor.actorType === "user" ? input.actor.actorId : null,
             },
+            deploymentMode: input.deploymentMode ?? "authenticated",
+            canAssignUser: (userId: string) => assignableUserIds.has(userId),
             commentBody: null,
           });
           const { issueService } = await import("./issues.js");
