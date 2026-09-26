@@ -1,4 +1,4 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
@@ -34,6 +34,8 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
+type RunBinding = { id: string; checkoutRunId?: string | null; executionRunId?: string | null };
+
 function readRunSourceIssueId(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
@@ -43,29 +45,62 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
   return null;
 }
 
+function bindingHoldsRun(binding: RunBinding | null | undefined, runId: string) {
+  if (!binding) return false;
+  return binding.checkoutRunId === runId || binding.executionRunId === runId;
+}
+
 /**
- * Attributes a write to an issue from the issue's own server-written run
- * binding, for runs whose context snapshot carries no issue at all.
+ * True when the server itself bound this run to the issue being written.
  *
- * A timer or on-demand run is dispatched with no source issue, so
- * `readRunSourceIssueId` returns null and the guard used to refuse every comment
- * and update — including writes to the agent's own board work, which is not
- * cross-issue influence. `checkout` is the platform's own run-to-issue binding
- * and it writes `issues.checkoutRunId` / `issues.executionRunId`, not the
- * snapshot, so a checkout the server accepted could never satisfy the guard.
- * That disagreement is the defect this closes.
- *
- * The binding is server-written, so a mismatch means the run never checked out
- * and attribution must not be borrowed from whoever holds the lock.
+ * `checkout` is the platform's own run-to-issue binding and it writes
+ * `issues.checkoutRunId` / `issues.executionRunId`, not the run's context
+ * snapshot. The binding is server-written, so a mismatch means this run never
+ * checked the issue out — attribution must never be borrowed from whoever
+ * happens to hold the lock.
  */
-export function resolveIssueBoundSourceIssueId(
-  binding: { checkoutRunId?: string | null; executionRunId?: string | null } | null | undefined,
+export function runOwnsIssueBinding(
+  binding: RunBinding | null | undefined,
   runId: string,
   targetIssueId: string,
-): string | null {
-  if (!binding) return null;
-  if (binding.checkoutRunId !== runId && binding.executionRunId !== runId) return null;
-  return targetIssueId;
+): boolean {
+  return !!binding && binding.id === targetIssueId && bindingHoldsRun(binding, runId);
+}
+
+/**
+ * Attributes a cross-issue write to the run's own checked-out issue.
+ *
+ * A timer or on-demand run is dispatched with no source issue, so the run's
+ * context snapshot names none and the guard used to refuse every comment and
+ * update — including writes to the agent's own board work, which is not
+ * cross-issue influence. Before this, the fallback asked the *target* issue
+ * whether it was bound to the run, so a run that had checked out task X was
+ * refused for writing to task Y. That made the guard's own recovery guidance
+ * (the 403 tells the agent to check a task out) cost a checkout and change
+ * nothing, and it left the platform unable to un-block an issue by status.
+ *
+ * The source is now the issue the run actually checked out, and the per-source
+ * counter is attributed to it. The genuine unattributable case — a run bound to
+ * no issue at all — is still refused, which is the case the cap protects
+ * against.
+ */
+async function resolveRunCheckoutSourceIssueId(
+  tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
+  input: { companyId: string; runId: string; targetIssueId: string },
+): Promise<string | null> {
+  const rows = await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, input.companyId),
+      or(
+        eq(issues.checkoutRunId, input.runId),
+        eq(issues.executionRunId, input.runId),
+      ),
+    ))
+    .limit(1)
+    .then((found) => found[0]?.id ?? null);
+  return rows;
 }
 
 export function evaluateCrossIssueInfluenceLimit(input: {
@@ -134,20 +169,18 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId =
-      readRunSourceIssueId(run.contextSnapshot) ??
-      (await tx
-        .select({
-          checkoutRunId: issues.checkoutRunId,
-          executionRunId: issues.executionRunId,
-        })
-        .from(issues)
-        .where(and(
-          eq(issues.id, input.targetIssueId),
-          eq(issues.companyId, input.companyId),
-        ))
-        .for("update")
-        .then((rows) => resolveIssueBoundSourceIssueId(rows[0] ?? null, input.runId, input.targetIssueId)));
+    const snapshotSourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    // A checkout, not the snapshot, is the run-to-issue binding the 403 tells
+    // the agent to establish — so the source has to be the issue the run checked
+    // out, never the issue being written. Anything checked out wins, because a
+    // run bound to task X writing to X is not cross-issue influence at all and
+    // must not spend the cross-issue budget.
+    const checkoutSourceIssueId = await resolveRunCheckoutSourceIssueId(tx, {
+      companyId: input.companyId,
+      runId: input.runId,
+      targetIssueId: input.targetIssueId,
+    });
+    const sourceIssueId = checkoutSourceIssueId ?? snapshotSourceIssueId;
     if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
       sourceIssueId === input.targetIssueId ||

@@ -615,7 +615,14 @@ may wake the target assignee, including an explicit `resume: true` comment on a
 the normal agent rewake throttle; comment presentation cannot give it human
 wake privileges. Agent issue comments and updates require a persisted heartbeat
 run bound to the authenticated agent and company; missing, invalid, or mismatched
-run context fails closed before mutation. A run may attempt at most 20 cross-issue comments, issue
+run context fails closed before mutation. Attribution is the run's own bound
+source issue: the issue it checked out or that is executing it, or the source
+issue in its run context. A run bound to one issue may write to any other
+company issue; the write is charged to the bound source issue, never to the
+issue being written, and a checkout is the binding the denial names, so
+following that guidance must produce a writable cross-issue channel. Only a run
+bound to no issue at all is unattributable and fails closed. A run may attempt at
+most 20 cross-issue comments, issue
 updates, or issue-thread interaction resolutions across one shared counter. The
 server records each attempt with its source issue, target issue, run, count, and
 rollout mode, and fails closed with the cap in the error once enforcement is

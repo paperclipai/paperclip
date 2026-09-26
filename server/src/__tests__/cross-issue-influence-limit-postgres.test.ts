@@ -171,6 +171,90 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     })).resolves.toBeNull();
   });
 
+  // TES-101. The 403 tells an agent that checking a task out is how to get a
+  // write channel, so against a real database the run's *own* checked-out issue
+  // has to satisfy the guard for any target. Otherwise the recovery step costs a
+  // checkout and changes nothing, and no agent can clear the status of an issue
+  // it did not wake on.
+  it("admits a run bound to one task writing to a different issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const checkedOutIssueId = randomUUID();
+    const targetIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    // The run checked out task X and is writing to task Y.
+    await db.insert(issues).values([
+      {
+        id: checkedOutIssueId,
+        companyId,
+        identifier: "TES-101",
+        title: "the task this run owns",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        checkoutRunId: runId,
+        executionRunId: runId,
+      },
+      {
+        id: targetIssueId,
+        companyId,
+        identifier: "TES-61",
+        title: "the task this run is trying to unblock",
+        status: "blocked",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId,
+      targetIssueIdentifier: "TES-61",
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, count: 1, mode: "enforce" });
+
+    // The per-source counter needs a real source, not the issue being written.
+    const recorded = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.runId, runId),
+        eq(activityLog.action, "issue.cross_issue_influence_observed"),
+      ));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.details).toMatchObject({
+      sourceIssueId: checkedOutIssueId,
+      targetIssueId,
+    });
+  });
+
   it("still refuses a snapshot-less run that never checked the issue out", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

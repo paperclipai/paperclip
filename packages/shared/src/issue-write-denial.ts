@@ -323,12 +323,14 @@ export function describeIssueWriteDenial(
           `source issue, so it could not be contained.`,
         whoCanAct: `${actor}, once the request is attributable to its own run.`,
         sanctionedPath:
-          `Check out the issue you are writing to (\`POST /api/issues/{id}/checkout\`) so the ` +
-          `run is bound to it, or send the \`X-Paperclip-Run-Id\` header with your current ` +
-          `run (\`$PAPERCLIP_RUN_ID\`). Comments are refused with this same code, so a ` +
+          `Check out the task this run is working on (` +
+          `\`POST /api/issues/{id}/checkout\`, with that task's id) so the run is bound ` +
+          `to a source issue — any checkout makes cross-issue writes on this run ` +
+          `countable, not just writes back to the checked-out task. Sending the ` +
+          `\`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
+          `also satisfies this. Comments are refused with this same code, so a ` +
           `document write (\`PUT /api/issues/{id}/documents/{key}\`) can be used to record ` +
           `the evidence in the meantime.`,
-
       };
 
     case "issue_write_attribution_spoof_rejected":
