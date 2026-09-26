@@ -195,6 +195,9 @@ import { buildIssueChanges } from "./issue-change-receipt.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
+// The transaction handle db.transaction hands its callback.
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
 const ALL_ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -7424,13 +7427,16 @@ export function issueService(db: Db) {
     return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
 
-  async function adoptStaleCheckoutRun(input: {
-    issueId: string;
-    actorAgentId: string;
-    actorRunId: string;
-    expectedCheckoutRunId: string;
-  }) {
-    return db.transaction(async (tx) => {
+  async function adoptStaleCheckoutRun(
+    input: {
+      issueId: string;
+      actorAgentId: string;
+      actorRunId: string;
+      expectedCheckoutRunId: string;
+    },
+    tx?: Tx,
+  ) {
+    const run = async (tx: Tx) => {
       const lockedIssue = await tx
         .select({
           id: issues.id,
@@ -7524,15 +7530,19 @@ export function issueService(db: Db) {
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
       return { adopted: null, latest };
-    });
+    };
+    return tx ? run(tx) : db.transaction(run);
   }
 
-  async function adoptUnownedCheckoutRun(input: {
-    issueId: string;
-    actorAgentId: string;
-    actorRunId: string;
-  }) {
-    return db.transaction(async (tx) => {
+  async function adoptUnownedCheckoutRun(
+    input: {
+      issueId: string;
+      actorAgentId: string;
+      actorRunId: string;
+    },
+    tx?: Tx,
+  ) {
+    const run = async (tx: Tx) => {
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
@@ -7575,13 +7585,15 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       return adopted;
-    });
+    };
+    return tx ? run(tx) : db.transaction(run);
   }
 
   async function clearExecutionRunIfTerminal(
     issueId: string,
+    tx?: Tx,
   ): Promise<boolean> {
-    return db.transaction(async (tx) => {
+    const run = async (tx: Tx) => {
       await tx.execute(
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
       );
@@ -7595,12 +7607,16 @@ export function issueService(db: Db) {
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
-      const run = await tx
+      const heartbeatRun = await tx
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (
+        heartbeatRun &&
+        !TERMINAL_HEARTBEAT_RUN_STATUSES.has(heartbeatRun.status)
+      )
+        return false;
 
       const updated = await tx
         .update(issues)
@@ -7620,7 +7636,8 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       return Boolean(updated);
-    });
+    };
+    return tx ? run(tx) : db.transaction(run);
   }
 
   // Symmetric to clearExecutionRunIfTerminal. Clears checkoutRunId (and the
@@ -7628,8 +7645,11 @@ export function issueService(db: Db) {
   // heartbeat run that is terminal or no longer exists. No assignee/status
   // precondition: a terminal run holds no real claim regardless of who is
   // assigned or what status the issue is currently in.
-  async function clearCheckoutRunIfTerminal(issueId: string): Promise<boolean> {
-    return db.transaction(async (tx) => {
+  async function clearCheckoutRunIfTerminal(
+    issueId: string,
+    tx?: Tx,
+  ): Promise<boolean> {
+    const run = async (tx: Tx) => {
       await tx.execute(
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
       );
@@ -7694,7 +7714,8 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       return Boolean(updated);
-    });
+    };
+    return tx ? run(tx) : db.transaction(run);
   }
 
   async function addStopRelayCommentIfNeeded(
@@ -11559,154 +11580,184 @@ export function issueService(db: Db) {
       id: string,
       actorAgentId: string,
       actorRunId: string | null,
-    ) => {
-      await clearExecutionRunIfTerminal(id);
-      await clearCheckoutRunIfTerminal(id);
-      const loadCurrent = () =>
-        db
-          .select({
-            id: issues.id,
-            status: issues.status,
-            assigneeAgentId: issues.assigneeAgentId,
-            checkoutRunId: issues.checkoutRunId,
-            executionRunId: issues.executionRunId,
-          })
-          .from(issues)
-          .where(eq(issues.id, id))
-          .then((rows) => rows[0] ?? null);
-      const current = await loadCurrent();
+    ) =>
+      // TES-111: a refused request must not commit state. These two clears
+      // previously ran as their own committed transactions BEFORE ownership
+      // resolved, so a 409-throw still cleared checkoutRunId/executionRunId —
+      // and release() skips its guard when the binding is null, so the caller
+      // lost its own remedy. They cannot simply move after the decision:
+      // canAdoptUnownedCheckout requires checkoutRunId == null, so the clear
+      // is what makes adoption possible. So the whole decision runs in ONE
+      // transaction and the clears join it: a refusal rolls them back.
+      db.transaction(async (tx) => {
+        await clearExecutionRunIfTerminal(id, tx);
+        await clearCheckoutRunIfTerminal(id, tx);
+        const loadCurrent = () =>
+          tx
+            .select({
+              id: issues.id,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              checkoutRunId: issues.checkoutRunId,
+              executionRunId: issues.executionRunId,
+            })
+            .from(issues)
+            .where(eq(issues.id, id))
+            .then((rows) => rows[0] ?? null);
 
-      if (!current) throw notFound("Issue not found");
+        const current = await loadCurrent();
 
-      const resolveSameRunOwnership = (candidate: {
-        id: string;
-        status: string;
-        assigneeAgentId: string | null;
-        checkoutRunId: string | null;
-        executionRunId: string | null;
-      }) => {
-        if (
-          candidate.status === "in_progress" &&
-          candidate.assigneeAgentId === actorAgentId &&
-          sameRunLock(candidate.checkoutRunId, actorRunId)
-        ) {
-          return { ...candidate, adoptedFromRunId: null as string | null };
-        }
-        return null;
-      };
+        if (!current) throw notFound("Issue not found");
 
-      const canAdoptUnownedCheckout = (candidate: {
-        status: string;
-        assigneeAgentId: string | null;
-        checkoutRunId: string | null;
-        executionRunId: string | null;
-      }) =>
-        actorRunId &&
-        candidate.status === "in_progress" &&
-        candidate.assigneeAgentId === actorAgentId &&
-        candidate.checkoutRunId == null &&
-        (candidate.executionRunId == null ||
-          candidate.executionRunId === actorRunId);
-
-      const resolveOwnership = async (candidate: {
-        id: string;
-        status: string;
-        assigneeAgentId: string | null;
-        checkoutRunId: string | null;
-        executionRunId: string | null;
-      }) => {
-        const sameRunOwnership = resolveSameRunOwnership(candidate);
-        if (sameRunOwnership)
-          return { ownership: sameRunOwnership, latest: null };
-
-        if (canAdoptUnownedCheckout(candidate)) {
-          const adopted = await adoptUnownedCheckoutRun({
-            issueId: id,
-            actorAgentId,
-            actorRunId: actorRunId!,
-          });
-
-          if (adopted) {
-            return {
-              ownership: {
-                ...adopted,
-                adoptedFromRunId: null as string | null,
-              },
-              latest: null,
-            };
+        const resolveSameRunOwnership = (candidate: {
+          id: string;
+          status: string;
+          assigneeAgentId: string | null;
+          checkoutRunId: string | null;
+          executionRunId: string | null;
+        }) => {
+          if (
+            candidate.status === "in_progress" &&
+            candidate.assigneeAgentId === actorAgentId &&
+            sameRunLock(candidate.checkoutRunId, actorRunId)
+          ) {
+            return { ...candidate, adoptedFromRunId: null as string | null };
           }
-        }
+          return null;
+        };
 
-        if (
+        const canAdoptUnownedCheckout = (candidate: {
+          status: string;
+          assigneeAgentId: string | null;
+          checkoutRunId: string | null;
+          executionRunId: string | null;
+        }) =>
           actorRunId &&
           candidate.status === "in_progress" &&
           candidate.assigneeAgentId === actorAgentId &&
-          candidate.checkoutRunId &&
-          candidate.checkoutRunId !== actorRunId
-        ) {
-          const previousCheckoutRunId = candidate.checkoutRunId;
-          const staleAdoption = await adoptStaleCheckoutRun({
-            issueId: id,
+          candidate.checkoutRunId == null &&
+          (candidate.executionRunId == null ||
+            candidate.executionRunId === actorRunId);
+
+        const resolveOwnership = async (candidate: {
+          id: string;
+          status: string;
+          assigneeAgentId: string | null;
+          checkoutRunId: string | null;
+          executionRunId: string | null;
+        }) => {
+          const sameRunOwnership = resolveSameRunOwnership(candidate);
+          if (sameRunOwnership)
+            return { ownership: sameRunOwnership, latest: null };
+
+          if (canAdoptUnownedCheckout(candidate)) {
+            const adopted = await adoptUnownedCheckoutRun(
+              { issueId: id, actorAgentId, actorRunId: actorRunId! },
+              tx,
+            );
+
+            if (adopted) {
+              return {
+                ownership: {
+                  ...adopted,
+                  adoptedFromRunId: null as string | null,
+                },
+                latest: null,
+              };
+            }
+          }
+
+          if (
+            actorRunId &&
+            candidate.status === "in_progress" &&
+            candidate.assigneeAgentId === actorAgentId &&
+            candidate.checkoutRunId &&
+            candidate.checkoutRunId !== actorRunId
+          ) {
+            const previousCheckoutRunId = candidate.checkoutRunId;
+            const staleAdoption = await adoptStaleCheckoutRun(
+              {
+                issueId: id,
+                actorAgentId,
+                actorRunId,
+                expectedCheckoutRunId: previousCheckoutRunId,
+              },
+              tx,
+            );
+
+            if (staleAdoption.adopted) {
+              return {
+                ownership: {
+                  ...staleAdoption.adopted,
+                  adoptedFromRunId: previousCheckoutRunId,
+                },
+                latest: null,
+              };
+            }
+
+            if (staleAdoption.latest) {
+              const latestOwnership = resolveSameRunOwnership(
+                staleAdoption.latest,
+              );
+              if (latestOwnership)
+                return {
+                  ownership: latestOwnership,
+                  latest: staleAdoption.latest,
+                };
+              return { ownership: null, latest: staleAdoption.latest };
+            }
+          }
+
+          return { ownership: null, latest: null };
+        };
+
+        // This path used to throw identifiers only, bypassing denyIssueWrite's
+        // structured contract. Name the remedy: the caller's own options, and
+        // which one the observed run fact selects.
+        const ownershipConflict = (
+          observed: {
+            id: string;
+            status: string;
+            assigneeAgentId: string | null;
+            checkoutRunId: string | null;
+            executionRunId: string | null;
+          },
+          actorAgentId: string,
+          actorRunId: string | null,
+        ) =>
+          conflict("Issue run ownership conflict", {
+            code: "issue_run_ownership_conflict",
+            issueId: observed.id,
+            status: observed.status,
+            assigneeAgentId: observed.assigneeAgentId,
+            checkoutRunId: observed.checkoutRunId,
+            executionRunId: observed.executionRunId,
             actorAgentId,
             actorRunId,
-            expectedCheckoutRunId: previousCheckoutRunId,
+            remediation:
+              observed.checkoutRunId || observed.executionRunId
+                ? "The issue is bound to a run that is still live. Wait for it to finish, or have the board release the issue from that run."
+                : "The issue is assigned to another agent with no live run binding. Ask the board to release or reassign it.",
+            securityPrinciples: [
+              "Least Privilege",
+              "Complete Mediation",
+              "Secure Defaults",
+            ],
           });
 
-          if (staleAdoption.adopted) {
-            return {
-              ownership: {
-                ...staleAdoption.adopted,
-                adoptedFromRunId: previousCheckoutRunId,
-              },
-              latest: null,
-            };
-          }
+        const resolved = await resolveOwnership(current);
+        if (resolved.ownership) return resolved.ownership;
 
-          if (staleAdoption.latest) {
-            const latestOwnership = resolveSameRunOwnership(
-              staleAdoption.latest,
-            );
-            if (latestOwnership)
-              return {
-                ownership: latestOwnership,
-                latest: staleAdoption.latest,
-              };
-            return { ownership: null, latest: staleAdoption.latest };
-          }
+        const latest = resolved.latest ?? (await loadCurrent());
+        if (!latest) throw notFound("Issue not found");
+        const resolvedLatest = await resolveOwnership(latest);
+        if (resolvedLatest.ownership) return resolvedLatest.ownership;
+        if (resolvedLatest.latest) {
+          throw ownershipConflict(resolvedLatest.latest, actorAgentId, actorRunId);
         }
 
-        return { ownership: null, latest: null };
-      };
-
-      const resolved = await resolveOwnership(current);
-      if (resolved.ownership) return resolved.ownership;
-
-      const latest = resolved.latest ?? (await loadCurrent());
-      if (!latest) throw notFound("Issue not found");
-      const resolvedLatest = await resolveOwnership(latest);
-      if (resolvedLatest.ownership) return resolvedLatest.ownership;
-      if (resolvedLatest.latest) {
-        throw conflict("Issue run ownership conflict", {
-          issueId: resolvedLatest.latest.id,
-          status: resolvedLatest.latest.status,
-          assigneeAgentId: resolvedLatest.latest.assigneeAgentId,
-          checkoutRunId: resolvedLatest.latest.checkoutRunId,
-          executionRunId: resolvedLatest.latest.executionRunId,
-          actorAgentId,
-          actorRunId,
-        });
-      }
-
-      throw conflict("Issue run ownership conflict", {
-        issueId: latest.id,
-        status: latest.status,
-        assigneeAgentId: latest.assigneeAgentId,
-        checkoutRunId: latest.checkoutRunId,
-        executionRunId: latest.executionRunId,
-        actorAgentId,
-        actorRunId,
-      });
-    },
+        throw ownershipConflict(latest, actorAgentId, actorRunId);
+      }),
 
     release: async (
       id: string,

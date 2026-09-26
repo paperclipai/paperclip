@@ -7032,9 +7032,13 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
       .from(issues)
       .where(eq(issues.id, seeded.issueId))
       .then((rows) => rows[0]);
+    // TES-111: a refused call must not commit. This row used to read null here
+    // — the old code cleared it in its own transaction before throwing, which
+    // stripped the caller's release path. The clears now join the decision's
+    // transaction and roll back with it, so the binding survives.
     expect(row).toEqual({
-      checkoutRunId: null,
-      executionRunId: null,
+      checkoutRunId: seeded.staleRunId,
+      executionRunId: seeded.staleRunId,
     });
   });
 

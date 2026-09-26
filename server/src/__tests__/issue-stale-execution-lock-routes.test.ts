@@ -349,6 +349,123 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(res.body?.error).toBe("Issue run ownership conflict");
   });
 
+  it("does not clear the run binding when the ownership check refuses with 409", async () => {
+    // TES-111: assertCheckoutOwner used to run its two terminal-run clears
+    // BEFORE resolving ownership, each in its own committed transaction. A
+    // refused PATCH therefore mutated state on its way to throwing 409 — and
+    // because release() skips its guard entirely when checkoutRunId is null,
+    // the caller lost its own remedy. A rejected request must not write.
+    //
+    // To reach assertCheckoutOwner's 409 the actor must be the ASSIGNEE with
+    // a live run of its own, and the row must be bound to a checkout that
+    // adoptStaleCheckoutRun will NOT take over. A terminal checkout is stale,
+    // so adoption would succeed (200) and nothing would be refused; a LIVE
+    // checkout owned by a different live run is the case that reaches the
+    // throw. The live binding must survive the refusal untouched.
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const actorRunId = randomUUID();
+    const liveOwnerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: actorRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date(),
+        // Bind this run to the issue it is writing, so the cross-issue
+        // influence guard counts the write as in-scope. Without it the write
+        // is refused 403 before ownership is consulted, which would make this
+        // test pass for the wrong reason.
+        contextSnapshot: { issueId },
+      },
+      {
+        id: liveOwnerRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date(),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Refused write must not mutate",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: liveOwnerRunId,
+      executionRunId: liveOwnerRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, actorRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Should fail" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body?.error).toBe("Issue run ownership conflict");
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        title: issues.title,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+
+    // The binding survives the refusal, so its owner keeps a release path.
+    expect(row).toEqual({
+      checkoutRunId: liveOwnerRunId,
+      executionRunId: liveOwnerRunId,
+      executionAgentNameKey: "codexcoder",
+      title: "Refused write must not mutate",
+    });
+  });
+
+  it("gives the ownership 409 a remediation instead of identifiers alone", async () => {
+    const { companyId, agentId, failedRunId } = await seedCompanyAgentAndRuns();
+    const liveOwnerRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: liveOwnerRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Live checkout lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: liveOwnerRunId,
+      executionRunId: liveOwnerRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, failedRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Should fail" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    const details = res.body?.details ?? res.body?.error?.details;
+    expect(details?.code).toBe("issue_run_ownership_conflict");
+    expect(typeof details?.remediation).toBe("string");
+    expect(details.remediation.length).toBeGreaterThan(0);
+    expect(details?.securityPrinciples).toContain("Complete Mediation");
+  });
+
   it("preserves live checkout ownership on checkout conflicts without retry side effects", async () => {
     const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
     const contenderRunId = randomUUID();
