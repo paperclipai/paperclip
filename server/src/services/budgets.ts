@@ -53,12 +53,21 @@ function currentUtcMonthWindow(now = new Date()) {
   return { start, end };
 }
 
-function resolveWindow(windowKind: BudgetWindowKind, now = new Date()) {
+function currentUtcDayWindow(now = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return { start, end };
+}
+
+export function resolveWindow(windowKind: BudgetWindowKind, now = new Date()) {
   if (windowKind === "lifetime") {
     return {
       start: new Date(Date.UTC(1970, 0, 1, 0, 0, 0, 0)),
       end: new Date(Date.UTC(9999, 0, 1, 0, 0, 0, 0)),
     };
+  }
+  if (windowKind === "calendar_day_utc") {
+    return currentUtcDayWindow(now);
   }
   return currentUtcMonthWindow(now);
 }
@@ -150,7 +159,7 @@ async function computeObservedAmount(
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
   const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
-  if (policy.windowKind === "calendar_month_utc") {
+  if (policy.windowKind !== "lifetime") {
     conditions.push(gte(costEvents.occurredAt, start));
     conditions.push(lt(costEvents.occurredAt, end));
   }
@@ -258,7 +267,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     });
   }
 
-  async function resumeScopeFromBudget(policy: PolicyRow) {
+  async function resumeScopeFromBudget(policy: Pick<PolicyRow, "scopeType" | "scopeId">) {
     const now = new Date();
     if (policy.scopeType === "agent") {
       await db
@@ -742,19 +751,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .where(eq(companies.id, companyId))
         .then((rows) => rows[0] ?? null);
       if (!company) throw notFound("Company not found");
-      if (company.status === "paused") {
-        return {
-          scopeType: "company" as const,
-          scopeId: companyId,
-          scopeName: company.name,
-          reason:
-            company.pauseReason === "budget"
-              ? "Company is paused because its budget hard-stop was reached."
-              : "Company is paused and cannot start new work.",
-        };
-      }
 
-      const companyPolicy = await db
+      const companyPolicies = await db
         .select()
         .from(budgetPolicies)
         .where(
@@ -766,29 +764,49 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             eq(budgetPolicies.metric, "billed_cents"),
           ),
         )
-        .then((rows) => rows[0] ?? null);
-      if (companyPolicy && companyPolicy.hardStopEnabled && companyPolicy.amount > 0) {
-        const observed = await computeObservedAmount(db, companyPolicy);
-        if (observed >= companyPolicy.amount) {
+        .then((rows) => rows);
+
+      let companyHardStopExceeded = false;
+      for (const policy of companyPolicies) {
+        if (!policy.hardStopEnabled || policy.amount <= 0) continue;
+        const observed = await computeObservedAmount(db, policy);
+        if (observed >= policy.amount) {
+          companyHardStopExceeded = true;
+          break;
+        }
+      }
+
+      if (company.status === "paused" && company.pauseReason !== "budget") {
+        return {
+          scopeType: "company" as const,
+          scopeId: companyId,
+          scopeName: company.name,
+          reason: "Company is paused and cannot start new work.",
+        };
+      }
+      if (company.status === "paused" && company.pauseReason === "budget") {
+        if (companyHardStopExceeded) {
           return {
             scopeType: "company" as const,
             scopeId: companyId,
             scopeName: company.name,
-            reason: "Company cannot start new work because its budget hard-stop is exceeded.",
+            reason: "Company is paused because its budget hard-stop was reached.",
           };
         }
+        // The window that triggered the pause has rolled over (or the policy
+        // was cleared), so a recurring day/month budget resumes automatically.
+        await resumeScopeFromBudget({ scopeType: "company", scopeId: companyId });
       }
-
-      if (agent.status === "paused" && agent.pauseReason === "budget") {
+      if (companyHardStopExceeded) {
         return {
-          scopeType: "agent" as const,
-          scopeId: agentId,
-          scopeName: agent.name,
-          reason: "Agent is paused because its budget hard-stop was reached.",
+          scopeType: "company" as const,
+          scopeId: companyId,
+          scopeName: company.name,
+          reason: "Company cannot start new work because its budget hard-stop is exceeded.",
         };
       }
 
-      const agentPolicy = await db
+      const agentPolicies = await db
         .select()
         .from(budgetPolicies)
         .where(
@@ -800,17 +818,36 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             eq(budgetPolicies.metric, "billed_cents"),
           ),
         )
-        .then((rows) => rows[0] ?? null);
-      if (agentPolicy && agentPolicy.hardStopEnabled && agentPolicy.amount > 0) {
-        const observed = await computeObservedAmount(db, agentPolicy);
-        if (observed >= agentPolicy.amount) {
+        .then((rows) => rows);
+
+      let agentHardStopExceeded = false;
+      for (const policy of agentPolicies) {
+        if (!policy.hardStopEnabled || policy.amount <= 0) continue;
+        const observed = await computeObservedAmount(db, policy);
+        if (observed >= policy.amount) {
+          agentHardStopExceeded = true;
+          break;
+        }
+      }
+
+      if (agent.status === "paused" && agent.pauseReason === "budget") {
+        if (agentHardStopExceeded) {
           return {
             scopeType: "agent" as const,
             scopeId: agentId,
             scopeName: agent.name,
-            reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+            reason: "Agent is paused because its budget hard-stop was reached.",
           };
         }
+        await resumeScopeFromBudget({ scopeType: "agent", scopeId: agentId });
+      }
+      if (agentHardStopExceeded) {
+        return {
+          scopeType: "agent" as const,
+          scopeId: agentId,
+          scopeName: agent.name,
+          reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+        };
       }
 
       const candidateProjectId = context?.projectId ?? null;
