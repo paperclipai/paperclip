@@ -21,6 +21,39 @@ const object = (v: unknown): Record<string, unknown> =>
     : {};
 const string = (v: unknown) =>
   typeof v === "string" && v.length > 0 ? v : null;
+
+// The envelope regrows monotonically as a task thread grows, and every
+// consumer serializes it (prompt sections, DB context snapshots). Bound the
+// message history: keep the newest messages within a byte budget, drop the
+// oldest, and disclose the cap so agents fetch older history via the API.
+const CONTINUATION_MESSAGES_MAX_BYTES = 96 * 1024;
+const CONTINUATION_MESSAGE_OVERHEAD_BYTES = 256;
+
+function capContinuationMessages(
+  messages: ExecutionContinuationEnvelope["messages"],
+): {
+  messages: ExecutionContinuationEnvelope["messages"];
+  truncated: boolean;
+} {
+  let totalBytes = 0;
+  let firstKeptIndex = messages.length;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const size =
+      Buffer.byteLength(messages[i].body, "utf8") +
+      CONTINUATION_MESSAGE_OVERHEAD_BYTES;
+    if (
+      firstKeptIndex < messages.length &&
+      totalBytes + size > CONTINUATION_MESSAGES_MAX_BYTES
+    )
+      break;
+    totalBytes += size;
+    firstKeptIndex = i;
+  }
+  return {
+    messages: messages.slice(firstKeptIndex),
+    truncated: firstKeptIndex > 0,
+  };
+}
 export function continuationOriginCommentIds(context: unknown): string[] {
   const c = object(context);
   const prior = object(c.executionContinuation);
@@ -243,11 +276,12 @@ export async function buildExecutionContinuation(input: {
   const deliveredMessages = Array.isArray(priorEnvelope.messages)
     ? priorEnvelope.messages.map(object)
     : null;
+  const continuationMessages = capContinuationMessages(messages);
   const resumeDelta =
     deliveredMessages && input.previousContextRunId
       ? {
           baseRunId: input.previousContextRunId,
-          messages: messages.filter(
+          messages: continuationMessages.messages.filter(
             (message) =>
               originCommentIds.includes(message.id) ||
               !deliveredMessages.some(
@@ -384,7 +418,10 @@ export async function buildExecutionContinuation(input: {
     },
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
-    messages,
+    messages: continuationMessages.messages,
+    ...(continuationMessages.truncated
+      ? { truncated: true, fallbackFetchNeeded: true }
+      : {}),
     humanResponses: interactions.flatMap(row => {
       const response = projectHumanInteractionResponse(row);
       return response ? [response] : [];
@@ -409,7 +446,7 @@ export async function buildExecutionContinuation(input: {
       .map((row) => row.id),
     coverage: {
       kind: "full_task_history",
-      throughCommentId: messages.at(-1)?.id ?? null,
+      throughCommentId: continuationMessages.messages.at(-1)?.id ?? null,
       summaryThroughCommentId: null,
     },
   };

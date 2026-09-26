@@ -133,6 +133,61 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("caps the message history budget and discloses truncation", async () => {
+      const capIssueId = randomUUID();
+      const capAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: capAgentId, companyId, name: "Cap", role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: capIssueId, companyId, title: "Cap", status: "in_progress",
+        assigneeAgentId: capAgentId,
+      });
+      const largeBodies = Array.from({ length: 6 }, (_, i) => ({
+        id: randomUUID(),
+        companyId,
+        issueId: capIssueId,
+        authorType: "user",
+        authorUserId: "local-board",
+        body: `chunk ${i}: ${"x".repeat(60_000)}`,
+        createdAt: new Date(Date.now() + i * 1000),
+      }));
+      await db.insert(issueComments).values(largeBodies);
+      try {
+        const envelope = await buildExecutionContinuation({
+          db, companyId, issueId: capIssueId, agentId: capAgentId,
+          context: { wakeReason: "issue_assigned" }, summary: null,
+          exposeLowTrustRaw: false,
+        });
+        expect(envelope.truncated).toBe(true);
+        expect(envelope.fallbackFetchNeeded).toBe(true);
+        const bodyBytes = envelope.messages.reduce(
+          (sum, message) => sum + Buffer.byteLength(message.body, "utf8"),
+          0,
+        );
+        expect(bodyBytes).toBeLessThanOrEqual(
+          96 * 1024 + envelope.messages.length * 256,
+        );
+        // The newest message is always kept; older head history is dropped
+        // and disclosed as fetchable.
+        expect(envelope.messages.at(-1)?.body.startsWith("chunk 5: ")).toBe(true);
+        expect(envelope.messages[0]?.body.startsWith("chunk 0: ")).toBe(false);
+        expect(envelope.coverage.throughCommentId).toBe(
+          envelope.messages.at(-1)?.id,
+        );
+        const prompt = renderPaperclipWakePrompt(
+          { executionContinuation: envelope },
+          { resumedSession: false },
+        );
+        expect(prompt).toContain("task history truncated");
+        expect(prompt).toContain("fallbackFetchNeeded");
+      } finally {
+        await db.delete(issueComments).where(eq(issueComments.issueId, capIssueId));
+        await db.delete(issues).where(eq(issues.id, capIssueId));
+        await db.delete(agents).where(eq(agents.id, capAgentId));
+      }
+    });
     it("loads authenticated human answers from stored resolver identity", async () => {
       const answerId = randomUUID();
       await db.insert(issueThreadInteractions).values({ id: answerId, companyId, issueId,
