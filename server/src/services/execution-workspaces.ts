@@ -835,6 +835,9 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   let repoRoot: string | null = null;
   let directoryIsNotGitRepository = false;
+  const hasGitMetadataConfigured = Boolean(
+    workspace.repoUrl || workspace.baseRef || workspace.branchName,
+  );
   try {
     repoRoot = (await runGit(["rev-parse", "--show-toplevel"], workspacePath)).stdout.trim() || null;
   } catch (error) {
@@ -845,7 +848,13 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         : "";
     directoryIsNotGitRepository =
       /not a git repository/i.test(message) || /not a git repository/i.test(stderr);
-    if (!(directoryIsNotGitRepository && workspace.providerType === "local_fs")) {
+    if (
+      !(
+        directoryIsNotGitRepository
+        && workspace.providerType === "local_fs"
+        && !hasGitMetadataConfigured
+      )
+    ) {
       warnings.push(
         `Could not inspect git status for "${workspacePath}": ${message}`,
       );
@@ -856,6 +865,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
     !repoRoot
     && directoryIsNotGitRepository
     && workspace.providerType === "local_fs"
+    && !hasGitMetadataConfigured
   ) {
     // A local_fs workspace is a plain directory by design. Git is not its
     // delivery mechanism, so "not a git repository" is a successful
@@ -1500,14 +1510,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       cooldownAnchor,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
       workspaceHeadSha,
-      // A local_fs workspace whose directory is not (or no longer) a git
-      // repository has no delivery surface: there is nothing to merge because
-      // git never tracked it. The reaper treats that as "nothing to deliver"
-      // and archives on the issue-tree terminality check alone (#13874).
+      // A local_fs workspace that never carried git metadata has no delivery
+      // surface: there is nothing to merge because git never tracked it. The
+      // reaper treats that as "nothing to deliver" and archives on the
+      // issue-tree terminality check alone (#13874). A workspace that does
+      // carry git metadata but lost its checkout is an anomaly and stays
+      // blocked, as it was before this gate existed.
       nothingToDeliver:
         workspace.providerType === "local_fs"
         && git !== null
-        && git.repoRoot === null,
+        && !git.repoRoot
+        && !workspace.repoUrl
+        && !workspace.baseRef
+        && !workspace.branchName,
     };
   }
 

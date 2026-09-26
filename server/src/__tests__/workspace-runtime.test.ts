@@ -9958,3 +9958,52 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
     });
   });
 });
+
+describe("cleanupExecutionWorkspaceArtifacts user-owned local_fs semantics", () => {
+  function userOwnedLocalFsWorkspace(cwd: string) {
+    return {
+      id: randomUUID(),
+      cwd,
+      providerType: "local_fs",
+      providerRef: null,
+      branchName: null,
+      repoUrl: null,
+      baseRef: null,
+      projectId: null,
+      projectWorkspaceId: null,
+      sourceIssueId: null,
+      metadata: { createdByRuntime: false },
+    };
+  }
+
+  it("keeps a healthy user-owned local_fs directory and reports the cleanup as done", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-user-owned-local-fs-"));
+    try {
+      const result = await cleanupExecutionWorkspaceArtifacts({
+        workspace: userOwnedLocalFsWorkspace(dir),
+      });
+
+      expect(result.cleaned).toBe(true);
+      expect(result.warnings).toEqual([]);
+      expect(existsSync(dir)).toBe(true);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the cleanup as not done when a teardown command failed for a user-owned local_fs directory", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-user-owned-local-fs-"));
+    try {
+      const result = await cleanupExecutionWorkspaceArtifacts({
+        workspace: userOwnedLocalFsWorkspace(dir),
+        teardownCommand: "exit 1",
+      });
+
+      expect(result.warnings.length).toBeGreaterThan(0);
+      expect(result.cleaned).toBe(false);
+      expect(existsSync(dir)).toBe(true);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});

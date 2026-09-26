@@ -4225,9 +4225,14 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     !workspacePath ||
     !(await directoryExists(workspacePath)) ||
     // A user-owned local_fs directory outlives the archival by design: only
-    // runtime-created directories may be removed. There was no artifact left
-    // to clean, so the archival succeeded.
-    (input.workspace.providerType === "local_fs" && !createdByRuntime);
+    // runtime-created directories may be removed. The archival only counts as
+    // clean when nothing else failed — a failed teardown command still lands
+    // in warnings, and the callers turn warnings into a cleanup-failure state.
+    (
+      input.workspace.providerType === "local_fs"
+      && !createdByRuntime
+      && warnings.length === 0
+    );
 
   return {
     cleanedPath: workspacePath,
