@@ -20,6 +20,9 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineRuns,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -140,6 +143,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     await db.delete(issueRecoveryActions);
     await db.delete(issueComments);
     await db.delete(environmentLeases);
@@ -668,6 +673,342 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(enqueueWakeup).not.toHaveBeenCalled();
     },
   );
+
+  it("finalizes a successful routine execution scan as a completed poll", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const routineId = randomUUID();
+    const routineRunId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "TestFlight Feedback Poll",
+      status: "active",
+      assigneeAgentId: coderId,
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 * * *",
+      timezone: "UTC",
+    });
+    await db.insert(routineRuns).values({
+      id: routineRunId,
+      companyId,
+      routineId,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-07-15T19:59:00.000Z"),
+      linkedIssueId: sourceIssueId,
+      dispatchFingerprint: "default",
+    });
+    await db
+      .update(issues)
+      .set({
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: routineRunId,
+        originFingerprint: "default",
+      })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId,
+      kind: "deliberate_wait_without_target",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: coderId,
+      cause: "deliberate_wait_without_target",
+      fingerprint: "missing-disposition",
+      nextAction: "Choose a valid disposition.",
+      attemptCount: 1,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      resultJson: { stopReason: "completed" },
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.routinePollRearmed).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    // The one-shot execution issue reaches its expected terminal state.
+    const [finalized] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(finalized).toMatchObject({ status: "done", assigneeAgentId: coderId });
+
+    // The linked routine_run is finalized, not left at issue_created.
+    const [run] = await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId));
+    expect(run).toMatchObject({ status: "completed", failureReason: null });
+    expect(run?.completedAt).toBeInstanceOf(Date);
+
+    // The active source-scoped recovery action is resolved, and a system
+    // evidence comment records why the poll closed.
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(action).toMatchObject({
+      status: "resolved",
+      outcome: "owner_completed",
+      resolutionNote: "routine_poll_completed",
+    });
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, sourceIssueId));
+    expect(
+      comments.some(
+        (comment) =>
+          comment.authorType === "system" &&
+          (comment.body ?? "").includes("re-arms on its next fire"),
+      ),
+    ).toBe(true);
+  });
+
+  it("leaves an in_review routine execution issue to the review-participant recovery path", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const routineId = randomUUID();
+    const routineRunId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Review Poll",
+      status: "active",
+      assigneeAgentId: coderId,
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 * * *",
+      timezone: "UTC",
+    });
+    await db.insert(routineRuns).values({
+      id: routineRunId,
+      companyId,
+      routineId,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-07-15T19:59:00.000Z"),
+      linkedIssueId: sourceIssueId,
+      dispatchFingerprint: "default",
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: routineRunId,
+        originFingerprint: "default",
+      })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      resultJson: { stopReason: "completed" },
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.reconcileStrandedAssignedIssues();
+
+    const [unchanged] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(unchanged).toMatchObject({ status: "in_review" });
+    const [run] = await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId));
+    expect(run).toMatchObject({ status: "issue_created" });
+  });
+
+  it("finalizes a blocked pre-fix poll and resolves its spurious board recovery action", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const routineId = randomUUID();
+    const routineRunId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "TestFlight Feedback Poll",
+      status: "active",
+      assigneeAgentId: coderId,
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 * * *",
+      timezone: "UTC",
+    });
+    await db.insert(routineRuns).values({
+      id: routineRunId,
+      companyId,
+      routineId,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-07-15T19:59:00.000Z"),
+      linkedIssueId: sourceIssueId,
+      dispatchFingerprint: "default",
+    });
+    await db
+      .update(issues)
+      .set({
+        // The disposition watchdog parked the completed poll blocked.
+        status: "blocked",
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: routineRunId,
+        originFingerprint: "default",
+      })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition",
+      nextAction: "Choose a valid issue disposition.",
+      wakePolicy: { type: "board_escalation", preservesSourceAssignee: true },
+      attemptCount: 1,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      resultJson: { stopReason: "completed" },
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.reconcileStrandedAssignedIssues();
+
+    const [finalized] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(finalized).toMatchObject({ status: "done" });
+    const [run] = await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId));
+    expect(run).toMatchObject({ status: "completed" });
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(action).toMatchObject({ status: "resolved", outcome: "owner_completed" });
+  });
+
+  it("recovers an active routine execution issue whose routine has no enabled schedule", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Manual Poll",
+      status: "active",
+      assigneeAgentId: coderId,
+      priority: "medium",
+    });
+    // An active routine with only a manual/API trigger has no next fire, so its
+    // execution issue must fall through to normal recovery.
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId,
+      kind: "api",
+      enabled: true,
+      cronExpression: null,
+    });
+    await db
+      .update(issues)
+      .set({
+        originKind: "routine_execution",
+        originId: routineId,
+        originFingerprint: "default",
+      })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      resultJson: { stopReason: "completed" },
+      livenessState: "needs_followup",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.routinePollRearmed).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalled();
+  });
+
+  it("still recovers a stranded routine execution issue whose routine is not active", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Archived Poll",
+      status: "archived",
+      assigneeAgentId: coderId,
+      priority: "medium",
+    });
+    await db
+      .update(issues)
+      .set({
+        originKind: "routine_execution",
+        originId: routineId,
+        originFingerprint: "default",
+      })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      resultJson: { stopReason: "completed" },
+      livenessState: "needs_followup",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.routinePollRearmed).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalled();
+  });
 
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();

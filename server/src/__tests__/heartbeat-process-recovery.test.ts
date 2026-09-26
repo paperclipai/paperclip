@@ -70,6 +70,8 @@ import {
   plugins,
   projects,
   projectWorkspaces,
+  routineTriggers,
+  routines,
   statusDecisionEffects,
   statusDecisions,
   toolApplications,
@@ -545,6 +547,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(activityLog);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     await db.delete(costEvents);
     await db.delete(workspaceOperations);
     await db.delete(environmentLeases);
@@ -5508,6 +5512,79 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).not.toEqual(expect.arrayContaining([expect.objectContaining({body: SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY})]));
     expect(repairs[0].idempotencyKey).toBe(`issue_disposition_repair:${issueId}:${legacyDispositionFingerprint(companyId, issueId, agentId, runId)}:1`);
     expect(await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId))).toHaveLength(1);
+  });
+
+  it("does not queue a missing-disposition handoff for an active routine's execution issue", async () => {
+    const { companyId, agentId, runId, issueId } =
+      await seedQueuedIssueRunFixture();
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "TestFlight Feedback Poll",
+      status: "active",
+      assigneeAgentId: agentId,
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 * * *",
+      timezone: "UTC",
+    });
+    await db
+      .update(issues)
+      .set({
+        originKind: "routine_execution",
+        originId: routineId,
+        originFingerprint: "default",
+      })
+      .where(eq(issues.id, issueId));
+    mockAdapterExecute.mockImplementationOnce(
+      async (ctx: { runId: string }) => {
+        await db.insert(issueComments).values({
+          companyId,
+          issueId,
+          authorAgentId: agentId,
+          createdByRunId: ctx.runId,
+          body: "Polled TestFlight feedback and filed the new items; no disposition recorded.",
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Polled TestFlight feedback and filed the new items.",
+          provider: "test",
+          model: "test-model",
+        };
+      },
+    );
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    // Drain the queued execution so this test's run settles here instead of
+    // leaking a queued dispatch into the next test's `drainActiveRunExecutions`.
+    await heartbeat.drainActiveRunExecutions();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(
+      wakeups.filter(
+        (wakeup) => wakeup.reason === "finish_successful_run_handoff",
+      ),
+    ).toHaveLength(0);
+    const [issue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_progress");
   });
 
   it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {
