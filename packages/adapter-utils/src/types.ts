@@ -90,6 +90,14 @@ export interface AdapterExecutionResult {
   errorFamily?: AdapterExecutionErrorFamily | null;
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
+  /**
+   * True when the adapter itself stopped a process it had already seen a SUCCESSFUL terminal result from —
+   * i.e. `terminalResultCleanup` fired (see `runWithTerminalResultCleanup` in server-utils) and the parsed
+   * result was a success. The process then exits non-zero because Paperclip signalled it, not because the
+   * work failed, so `exitCode` alone cannot decide the outcome. `exitCode`/`signal` stay truthful; the
+   * server reads this to avoid recording its own cleanup as an adapter failure. Absent means "not applicable".
+   */
+  stoppedAfterTerminalResult?: boolean;
   usage?: UsageSummary;
   /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
