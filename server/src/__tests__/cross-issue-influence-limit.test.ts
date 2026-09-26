@@ -5,7 +5,6 @@ import {
   crossIssueInfluenceLimitError,
   evaluateCrossIssueInfluenceLimit,
   observeCrossIssueInfluence,
-  runOwnsIssueBinding,
 } from "../services/cross-issue-influence-limit.ts";
 
 const RUN = "11111111-1111-4111-8111-111111111111";
@@ -48,7 +47,7 @@ function counterDb(
               // The source lookup orders by issues.id, so the fake sorts rather
               // than handing rows back in insertion order.
               orderBy: () => ({
-                limit: () => ({
+                for: () => ({
                   then: (resolve: (rows: unknown[]) => unknown) =>
                     resolve([...bound].sort((a, b) => (a.id < b.id ? -1 : 1))),
                 }),
@@ -219,7 +218,7 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("fails closed as unattributed when the persisted run has no source issue", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -230,34 +229,12 @@ describe("cross-issue influence limit rollout", () => {
       kind: "update",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      // Not the run-context code: that copy tells the caller to resend
+      // X-Paperclip-Run-Id, which cannot help here because the run row was found
+      // and matched the caller above.
+      details: { code: "cross_issue_influence_unattributed_run" },
     });
     expect(fake.inserted).toEqual([]);
-  });
-});
-
-describe("runOwnsIssueBinding", () => {
-  const ISSUE = "22222222-2222-4222-8222-222222222222";
-  const OTHER_RUN = "33333333-3333-4333-8333-333333333333";
-
-  it("owns the binding when the run holds the checkout", () => {
-    expect(runOwnsIssueBinding({ id: ISSUE, checkoutRunId: RUN, executionRunId: RUN }, RUN, ISSUE)).toBe(true);
-  });
-
-  it("owns the binding when only the execution run is bound", () => {
-    expect(runOwnsIssueBinding({ id: ISSUE, checkoutRunId: null, executionRunId: RUN }, RUN, ISSUE)).toBe(true);
-  });
-
-  it("does not own the binding when a different run holds it", () => {
-    // The binding is server-written, so a mismatch means this run never checked
-    // out. Attribution must not be borrowed from whoever holds the lock.
-    expect(
-      runOwnsIssueBinding({ id: ISSUE, checkoutRunId: OTHER_RUN, executionRunId: OTHER_RUN }, RUN, ISSUE),
-    ).toBe(false);
-  });
-
-  it("does not own the binding when the issue is not the one being written", () => {
-    expect(runOwnsIssueBinding({ id: ISSUE, checkoutRunId: RUN }, RUN, "44444444-4444-4444-8444-444444444444")).toBe(false);
   });
 });
 
@@ -280,13 +257,15 @@ describe("a checkout gives a run a cross-issue write channel", () => {
     now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   } as const;
 
-  // Acceptance 1: the cap that must keep working.
+  // Acceptance 1: the cap that must keep working. It must be refused as
+  // *unattributed* — the run-context copy would tell the agent to resend a
+  // header that was already read and accepted.
   it("refuses a run that has checked out nothing", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, CALL)).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_unattributed_run" },
     });
     expect(fake.inserted).toEqual([]);
   });
@@ -339,7 +318,7 @@ describe("a checkout gives a run a cross-issue write channel", () => {
 
     await expect(observeCrossIssueInfluence(fake.db as never, CALL)).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_unattributed_run" },
     });
   });
 

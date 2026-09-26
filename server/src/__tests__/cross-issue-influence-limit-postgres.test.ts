@@ -457,7 +457,84 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_unattributed_run" },
     });
+  });
+
+  // TES-106. Acceptance case 1, against a real database, and the specific
+  // regression this rebase exists to prevent: the refusal must name the
+  // *unattributed* code, not the run-context one. The run row was found and the
+  // caller's identity on it checked out, so the run-context copy — which tells
+  // the agent to send X-Paperclip-Run-Id — is false advice, since that header
+  // was the thing already read and accepted.
+  it("refuses an unbound cross-issue write as unattributed, never as run-context", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const targetIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // A live, correctly identified run that is bound to nothing: no snapshot
+    // issue, and no issue anywhere carrying this run's binding.
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    await db.insert(issues).values({
+      id: targetIssueId,
+      companyId,
+      identifier: "TES-61",
+      title: "the task this run is trying to clear",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+
+    // The error is caught so the copy can be inspected, not just the code.
+    const thrown = await observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId,
+      targetIssueIdentifier: "TES-61",
+      kind: "comment",
+    }).then(
+      () => null,
+      (error: { status?: number; details?: { code?: string; description?: string } }) => error,
+    );
+
+    expect(thrown).toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_unattributed_run" },
+    });
+    // The regression itself: the refused write must not be told to resend a
+    // header that was already read and validated above.
+    expect(thrown?.details?.code).not.toBe("cross_issue_influence_run_context_required");
+    expect(thrown?.details?.description ?? "").not.toMatch(/X-Paperclip-Run-Id/);
+
+    // A refused write must not spend the budget.
+    const observed = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(observed).toEqual([]);
   });
 });

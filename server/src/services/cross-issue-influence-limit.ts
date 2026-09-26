@@ -34,7 +34,15 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
-type RunBinding = { id: string; checkoutRunId?: string | null; executionRunId?: string | null };
+export function crossIssueInfluenceUnattributedRunError() {
+  // Distinct from the run-context branch: the run row was found and matched the
+  // caller, but nothing binds it to an issue — neither the run's context
+  // snapshot nor any issue carrying this run's checkout/execution binding.
+  // Telling the caller to resend X-Paperclip-Run-Id here is false advice: the
+  // header was already read and validated above.
+  const { body } = issueWriteDenialResponse("cross_issue_influence_unattributed_run");
+  return forbidden(body.error, body.details);
+}
 
 function readRunSourceIssueId(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
@@ -43,28 +51,6 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
   return null;
-}
-
-function bindingHoldsRun(binding: RunBinding | null | undefined, runId: string) {
-  if (!binding) return false;
-  return binding.checkoutRunId === runId || binding.executionRunId === runId;
-}
-
-/**
- * True when the server itself bound this run to the issue being written.
- *
- * `checkout` is the platform's own run-to-issue binding and it writes
- * `issues.checkoutRunId` / `issues.executionRunId`, not the run's context
- * snapshot. The binding is server-written, so a mismatch means this run never
- * checked the issue out — attribution must never be borrowed from whoever
- * happens to hold the lock.
- */
-export function runOwnsIssueBinding(
-  binding: RunBinding | null | undefined,
-  runId: string,
-  targetIssueId: string,
-): boolean {
-  return !!binding && binding.id === targetIssueId && bindingHoldsRun(binding, runId);
 }
 
 /**
@@ -91,6 +77,17 @@ export function runOwnsIssueBinding(
  * arbitrary one. Picking by recency would be wrong on purpose: the latest lock
  * may be the run's own current work, and the ordering only exists to make the
  * same run and board produce the same sourceIssueId on every write.
+ *
+ * The rows are locked `.for("update")`, matching `svc.checkout`, which writes
+ * these same columns. The lock is what makes the read a decision rather than a
+ * guess: a checkout that commits between this read and the counter insert would
+ * otherwise let the write be attributed to a source the run did not hold. It
+ * widens the rows read (any issue in the company carrying this runId) compared
+ * with the fallback it replaces, so the lock is taken over the *ordered* set —
+ * locking the single row `limit(1)` would return would leave a competing
+ * checkout of a lower-id issue unserialised. The run row is already locked by
+ * the enclosing transaction, so the per-run counter stays serialised either way;
+ * this lock is about the attribution decision, not the count.
  */
 async function resolveRunCheckoutSourceIssueId(
   tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
@@ -107,7 +104,7 @@ async function resolveRunCheckoutSourceIssueId(
       ),
     ))
     .orderBy(issues.id)
-    .limit(1)
+    .for("update")
     .then((found) => found[0]?.id ?? null);
   return rows;
 }
@@ -190,7 +187,11 @@ export async function observeCrossIssueInfluence(
       targetIssueId: input.targetIssueId,
     });
     const sourceIssueId = checkoutSourceIssueId ?? snapshotSourceIssueId;
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    // The run row was found and matched the caller, so this is not a run-context
+    // problem — there is no header to resend. It is the genuinely unattributable
+    // case, and it is refused as such so the copy does not advise a header that
+    // was already read and accepted.
+    if (!sourceIssueId) throw crossIssueInfluenceUnattributedRunError();
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())

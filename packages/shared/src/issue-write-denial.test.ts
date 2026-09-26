@@ -104,6 +104,25 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.description).toContain("could not be attributed");
   });
 
+  // TES-106. The unattributed refusal is a separate code from the run-context
+  // one precisely so the copy can tell the truth: by the time it fires, the run
+  // header was already read and matched, so advising a resend is false advice.
+  it("does not advise resending a run header the server already accepted", () => {
+    const copy = describeIssueWriteDenial("cross_issue_influence_unattributed_run", {
+      issueIdentifier: "TES-61",
+      actorLabel: "Fable",
+    });
+    expect(copy.status).toBe(403);
+    expect(copy.boundary).toContain("attribution");
+    // It says the header was read and accepted, and points at checkout instead.
+    expect(copy.description).toContain("header was read and accepted");
+    expect(copy.sanctionedPath).toContain("checkout");
+    expect(copy.whoCanAct).toContain("Fable");
+    for (const field of [copy.sanctionedPath, copy.whoCanAct]) {
+      expect(field).not.toMatch(/send the `?X-Paperclip-Run-Id`?/i);
+    }
+  });
+
   it("tells a spoof attempt that the write itself was fine", () => {
     const copy = describeIssueWriteDenial("issue_write_attribution_spoof_rejected", {
       actorLabel: "Fable",
