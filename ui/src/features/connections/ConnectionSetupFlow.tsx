@@ -324,6 +324,24 @@ const ZAPIER_STEP_LABELS = ["Access", "Add MCP URL"];
 // dots to three the moment you press Connect reads as a step you missed.
 const OAUTH_SIGN_IN_STEP_LABELS = ["Access", "Sign in"];
 
+// Apps whose provider console needs work before consent will succeed. Their
+// method guidance is the only place those prerequisites are written down, so
+// the Access step shows it while the reader can still act on it.
+const SETUP_GUIDANCE_SLUGS = new Set(["railway", "slack"]);
+
+/**
+ * The scopes a person must type into their own OAuth app, or none.
+ *
+ * Only a customer-owned app needs them. A method that can register its client
+ * dynamically asks for its own scopes, so naming them there is noise. Reading
+ * the list from the method keeps the screen and the request identical.
+ */
+function customerOwnedScopes(method: ConnectionMethodDef | null | undefined): string[] {
+  if (method?.auth !== "oauth") return [];
+  if (!method.ownershipModes.every((mode) => mode === "customer")) return [];
+  return method.defaults?.scopesHint ?? [];
+}
+
 /**
  * Which identity a fresh connection should default to (PAP-17835).
  *
@@ -2407,12 +2425,20 @@ function StandardConnectionSetupFlow({
 
       {step === "access" && (
         <>
-        {entry?.slug === "railway" && (
+        {SETUP_GUIDANCE_SLUGS.has(entry?.slug ?? "") && (
           <div className="mb-6 space-y-3 text-sm text-muted-foreground">
             <p>{accessStepMethod?.guidanceMd}</p>
-            <ul className="list-disc space-y-2 pl-5">
-              {accessStepMethod?.warnings?.map((warning) => <li key={warning}>{warning}</li>)}
-            </ul>
+            {customerOwnedScopes(accessStepMethod).length > 0 ? (
+              <p>
+                Add these scopes to your {entry?.name} app:{" "}
+                <span className="font-mono">{customerOwnedScopes(accessStepMethod).join(" ")}</span>
+              </p>
+            ) : null}
+            {accessStepMethod?.warnings?.length ? (
+              <ul className="list-disc space-y-2 pl-5">
+                {accessStepMethod.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            ) : null}
           </div>
         )}
         <AccessStep
