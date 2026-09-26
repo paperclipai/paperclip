@@ -413,6 +413,87 @@ describe("agent routes adapter validation", () => {
     expect(env.CODEX_HOME).toBeUndefined();
   });
 
+  it("refuses a PATCH that sets a model the agent's own adapter cannot serve", async () => {
+    // The break this guard exists for: one self-write puts a cross-vendor model
+    // on the agent, every dispatch then fails at the first model call, and the
+    // agent can no longer issue the write that would undo it.
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({
+      ...existing,
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-5" },
+    });
+    const app = await createApp();
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { model: "gpt-5.6-sol-900k", provider: "openai-codex" } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("gpt-5.6-sol-900k");
+    expect(res.body.error).toContain("claude_local");
+    expect(res.body.code).toBe("adapter_cannot_serve_model");
+    // Refusal means refusal: nothing reached the store.
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("still accepts a PATCH that sets a model the adapter does serve", async () => {
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({
+      ...existing,
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-5" },
+    });
+    const app = await createApp();
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { model: "claude-opus-5" } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("keeps an agent already on an off-catalog model editable in its other fields", async () => {
+    // A guard that made these agents unwritable would recreate the very defect
+    // it fixes, so a model the caller is not changing is never re-validated.
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({
+      ...existing,
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-retired-9" },
+    });
+    const app = await createApp();
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { model: "claude-retired-9", cwd: "/srv/next" } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("refuses a create that names a model the chosen adapter cannot serve", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Wrong Vendor",
+          adapterType: "claude_local",
+          adapterConfig: { model: "gpt-5.6-sol-900k" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.code).toBe("adapter_cannot_serve_model");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
   it("forwards a claude_local→process adapter move that drops the OAuth binding to the service unchanged", async () => {
     // The agent has the fixed Claude Code OAuth binding on the claude_local
     // adapter. A PATCH moves the agent to the process adapter and sends an empty
