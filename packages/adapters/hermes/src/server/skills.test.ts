@@ -30,6 +30,32 @@ function skillContext(config: Record<string, unknown>) {
   };
 }
 
+/**
+ * Run `fn` with HERMES_HOME set to `value` (or removed when `value` is
+ * undefined), then restore the previous process environment. Keeps the
+ * fallback tests independent of the machine that runs them.
+ */
+async function withProcessHermesHome<T>(
+  value: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const saved = process.env.HERMES_HOME;
+  if (value === undefined) {
+    delete process.env.HERMES_HOME;
+  } else {
+    process.env.HERMES_HOME = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) {
+      delete process.env.HERMES_HOME;
+    } else {
+      process.env.HERMES_HOME = saved;
+    }
+  }
+}
+
 test("resolveHermesHome honors HERMES_HOME over HOME for the skills inventory", async () => {
   const root = await makeTempRoot("hermes-home-preferred-");
   try {
@@ -76,10 +102,12 @@ test("ignores a secret binding for HERMES_HOME and falls back to HOME", async ()
     const userHome = path.join(root, "user-home");
     await writeSkill(path.join(userHome, ".hermes", "skills"), "legacy", "fallback-skill");
 
-    const snapshot = await listHermesSkills(
-      skillContext({
-        env: { HOME: userHome, HERMES_HOME: { type: "secret_ref", secretId: "secret-placeholder" } },
-      }),
+    const snapshot = await withProcessHermesHome(undefined, () =>
+      listHermesSkills(
+        skillContext({
+          env: { HOME: userHome, HERMES_HOME: { type: "secret_ref", secretId: "secret-placeholder" } },
+        }),
+      ),
     );
 
     expect(snapshot.entries.some((candidate) => candidate.key === "fallback-skill")).toBe(true);
@@ -94,9 +122,13 @@ test("falls back to $HOME/.hermes/skills when HERMES_HOME is unset", async () =>
     const userHome = path.join(root, "user-home");
     await writeSkill(path.join(userHome, ".hermes", "skills"), "legacy", "default-home-skill");
 
-    const snapshot = await listHermesSkills(skillContext({ env: { HOME: userHome } }));
+    const snapshot = await withProcessHermesHome(undefined, () =>
+      listHermesSkills(skillContext({ env: { HOME: userHome } })),
+    );
 
-    expect(snapshot.entries.some((candidate) => candidate.key === "default-home-skill")).toBe(true);
+    const entry = snapshot.entries.find((candidate) => candidate.key === "default-home-skill");
+    expect(entry).toBeDefined();
+    expect(entry?.locationLabel).toBe("~/.hermes/skills/legacy/default-home-skill");
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -145,6 +177,48 @@ test("links reconciled Paperclip skills into HERMES_HOME/skills", async () => {
     expect(desired).toContain("paperclipai/paperclip/paperclip");
     const target = path.join(hermesHome, "skills", "paperclip");
     expect((await fs.lstat(target)).isSymbolicLink()).toBe(true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("honors HERMES_HOME from the process environment when config does not set it", async () => {
+  const root = await makeTempRoot("hermes-home-process-env-");
+  try {
+    const hermesHome = path.join(root, "hermes-home");
+    const userHome = path.join(root, "user-home");
+    const skillMd = await writeSkill(path.join(hermesHome, "skills"), "env", "process-env-skill");
+    await fs.mkdir(path.join(userHome, ".hermes", "skills"), { recursive: true });
+
+    const snapshot = await withProcessHermesHome(hermesHome, () =>
+      listHermesSkills(skillContext({ env: { HOME: userHome } })),
+    );
+
+    const entry = snapshot.entries.find((candidate) => candidate.key === "process-env-skill");
+    expect(entry).toBeDefined();
+    expect(entry?.sourcePath).toBe(skillMd);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("shows the resolved home in skill locations when HERMES_HOME is set", async () => {
+  const root = await makeTempRoot("hermes-home-label-");
+  try {
+    const hermesHome = path.join(root, "hermes-home");
+    const userHome = path.join(root, "user-home");
+    await writeSkill(path.join(hermesHome, "skills"), "probe", "labeled-skill");
+
+    const config = { env: { HOME: userHome, HERMES_HOME: hermesHome } };
+    const snapshot = await listHermesSkills(skillContext(config));
+    const entry = snapshot.entries.find((candidate) => candidate.key === "labeled-skill");
+    expect(entry?.locationLabel).toBe(`${hermesHome}/skills/probe/labeled-skill`);
+
+    const missing = await listHermesSkills(
+      skillContext({ ...config, paperclipSkillSync: { desiredSkills: ["absent-skill"] } }),
+    );
+    const missingEntry = missing.entries.find((candidate) => candidate.key === "absent-skill");
+    expect(missingEntry?.detail).toContain(`${hermesHome}/skills`);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

@@ -35,24 +35,48 @@ function envPlainString(value: unknown): string | null {
 }
 
 /**
- * Resolve the Hermes home directory.
- *
- * Honors `HERMES_HOME` from the adapter config env — the selector Hermes
- * itself documents for non-default deployments (containers, mounted volumes,
- * per-agent profile directories). Falls back to `$HOME/.hermes` when
- * `HERMES_HOME` is not set, so default deployments keep the previous
- * behaviour. Secret bindings are never resolved here.
+ * Read `HERMES_HOME` from the adapter config env, then from the server
+ * process env. The Hermes subprocess inherits the process environment
+ * (see `execute.ts`), so both sources select the same home. Secret
+ * bindings are never resolved here — they return null.
  */
-function resolveHermesHome(config: Record<string, unknown>): string {
+function configuredHermesHome(config: Record<string, unknown>): string | null {
   const env =
     typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
       ? (config.env as Record<string, unknown>)
       : {};
-  const hermesHome = envPlainString(env.HERMES_HOME);
+  return envPlainString(env.HERMES_HOME) ?? asString(process.env.HERMES_HOME);
+}
+
+/**
+ * Resolve the Hermes home directory.
+ *
+ * Honors `HERMES_HOME` from the adapter config env — the selector Hermes
+ * itself documents for non-default deployments (containers, mounted volumes,
+ * per-agent profile directories). Falls back to the server process
+ * `HERMES_HOME`, then to `$HOME/.hermes`, so default deployments keep the
+ * previous behaviour. Secret bindings are never resolved here.
+ */
+function resolveHermesHome(config: Record<string, unknown>): string {
+  const hermesHome = configuredHermesHome(config);
   if (hermesHome) return path.resolve(hermesHome);
+  const env =
+    typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+      ? (config.env as Record<string, unknown>)
+      : {};
   const configuredHome = asString(env.HOME);
   const userHome = configuredHome ? path.resolve(configuredHome) : os.homedir();
   return path.join(userHome, ".hermes");
+}
+
+/**
+ * Label for the skills home as shown to users. Default deployments keep the
+ * `~/.hermes/skills` display; a configured `HERMES_HOME` shows its actual
+ * resolved path so location text matches the scanned directory.
+ */
+function hermesSkillsLabel(config: Record<string, unknown>): string {
+  if (configuredHermesHome(config)) return path.join(resolveHermesHome(config), "skills");
+  return "~/.hermes/skills";
 }
 
 interface SkillFrontmatter {
@@ -83,6 +107,7 @@ function parseSkillFrontmatter(content: string): SkillFrontmatter {
 
 async function scanHermesSkills(
   skillsHome: string,
+  skillsLabel: string,
 ): Promise<AdapterSkillEntry[]> {
   const entries: AdapterSkillEntry[] = [];
 
@@ -95,7 +120,7 @@ async function scanHermesSkills(
       // Check if the category directory itself has a SKILL.md (top-level skill)
       const topLevelSkillMd = path.join(catPath, "SKILL.md");
       if (await fs.stat(topLevelSkillMd).catch(() => null)) {
-        entries.push(await buildSkillEntry(cat.name, topLevelSkillMd, cat.name));
+        entries.push(await buildSkillEntry(cat.name, topLevelSkillMd, cat.name, skillsLabel));
       }
 
       // Scan for sub-skills
@@ -105,7 +130,9 @@ async function scanHermesSkills(
         const skillMd = path.join(catPath, item.name, "SKILL.md");
         if (await fs.stat(skillMd).catch(() => null)) {
           const key = item.name;
-          entries.push(await buildSkillEntry(key, skillMd, `${cat.name}/${item.name}`));
+          entries.push(
+            await buildSkillEntry(key, skillMd, `${cat.name}/${item.name}`, skillsLabel),
+          );
         }
       }
     }
@@ -120,6 +147,7 @@ async function buildSkillEntry(
   key: string,
   skillMdPath: string,
   categoryPath: string,
+  skillsLabel: string,
 ): Promise<AdapterSkillEntry> {
   let description: string | null = null;
   try {
@@ -138,7 +166,7 @@ async function buildSkillEntry(
     state: "installed",
     origin: "user_installed",
     originLabel: "Hermes skill",
-    locationLabel: `~/.hermes/skills/${categoryPath}`,
+    locationLabel: `${skillsLabel}/${categoryPath}`,
     readOnly: true, // Hermes manages its own skills — Paperclip can't toggle them
     sourcePath: skillMdPath,
     targetPath: null,
@@ -153,6 +181,7 @@ async function buildSkillEntry(
 async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
   const home = resolveHermesHome(config);
   const hermesSkillsHome = path.join(home, "skills");
+  const skillsLabel = hermesSkillsLabel(config);
 
   // 1. Scan Paperclip-managed skills (bundled with the adapter)
   const paperclipEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
@@ -161,7 +190,7 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promis
   const availableByKey = new Map(paperclipEntries.map((e) => [e.key, e]));
 
   // 2. Scan Hermes's own skills from the resolved Hermes home
-  const hermesSkillEntries = await scanHermesSkills(hermesSkillsHome);
+  const hermesSkillEntries = await scanHermesSkills(hermesSkillsHome, skillsLabel);
   const hermesKeys = new Set(hermesSkillEntries.map((e) => e.key));
 
   // 3. Merge: Paperclip skills first (ephemeral), then Hermes skills
@@ -213,7 +242,7 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promis
       sourcePath: null,
       targetPath: null,
       detail:
-        "Cannot find this skill in Paperclip or ~/.hermes/skills/.",
+        `Cannot find this skill in Paperclip or ${skillsLabel}/.`,
     });
   }
 
