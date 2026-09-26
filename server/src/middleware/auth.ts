@@ -153,6 +153,50 @@ async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
     );
 }
 
+/**
+ * Stand in for a live session on OAuth 3LO callbacks that land on a
+ * different origin than the one the user is browsing from (e.g. a public
+ * ALB fronting an otherwise Tailscale-private app, needed only because
+ * Google/Notion/etc. cannot redirect into a private network). The browser's
+ * session cookie for the private origin never reaches that public one, so
+ * there is no `req.actor` to work with there.
+ *
+ * The OAuth `state` the callback carries is itself sufficient proof: it is a
+ * single-use, server-minted, unguessable token that was only ever handed to
+ * the browser that started the flow while authenticated as this exact user
+ * (see `peekOAuthState`/`consumeOAuthState`). Resolving the same board actor
+ * shape a real session would have produced is safe to do from it.
+ */
+export async function resolveBoardActorForOAuthState(
+  db: Db,
+  userId: string,
+): Promise<Express.Request["actor"] | null> {
+  const [userRow, roleRow, memberships] = await Promise.all([
+    db
+      .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+      .from(authUsers)
+      .where(eq(authUsers.id, userId))
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({ id: instanceUserRoles.id })
+      .from(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+      .then((rows) => rows[0] ?? null),
+    loadActiveUserCompanyMemberships(db, userId),
+  ]);
+  if (!userRow) return null;
+  return {
+    type: "board",
+    userId,
+    userName: userRow.name ?? null,
+    userEmail: userRow.email ?? null,
+    companyIds: memberships.map((row) => row.companyId),
+    memberships,
+    isInstanceAdmin: Boolean(roleRow),
+    source: "oauth_state",
+  };
+}
+
 async function auditAgentJwtRunHeaderMismatch(
   db: Db,
   input: { companyId: string; agentId: string; claimRunId: string; headerRunId: string; method: string; url: string },

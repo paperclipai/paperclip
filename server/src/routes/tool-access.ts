@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import express, { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
 import { and, eq, or } from "drizzle-orm";
@@ -53,6 +53,7 @@ import {
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
+import { resolveBoardActorForOAuthState } from "../middleware/auth.js";
 import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
@@ -191,6 +192,55 @@ export function connectionIntentOAuthOutcomeHtml(input: {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Connection authorization</title></head><body><p>Returning to Paperclip…</p><script>const message=${message};const targetOrigin=${targetOrigin}||window.location.origin;if(window.opener&&window.opener!==window){window.opener.postMessage(message,targetOrigin);window.close();}else{window.location.replace(${fallback});}</script></body></html>`;
 }
 
+export function crossOriginOAuthConnectedHtml(): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Connected</title></head><body><p>Connected. You can close this tab and return to Paperclip.</p></body></html>`;
+}
+
+export function crossOriginOAuthFailedHtml(outcome: "declined" | "failed"): string {
+  const message = outcome === "declined"
+    ? "Authorization was declined. You can close this tab and try again from Paperclip."
+    : "Authorization did not complete. You can close this tab and try again from Paperclip.";
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Not connected</title></head><body><p>${message}</p></body></html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+}
+
+/**
+ * Shown before a session-less callback exchanges its code. Without a session,
+ * the state alone names the Paperclip account, so a user who was sent someone
+ * else's consent URL would link their provider account to that account. The
+ * page names the account and needs an explicit confirmation first.
+ */
+export function crossOriginOAuthConfirmHtml(input: {
+  appName: string;
+  accountLabel: string;
+  formAction: string;
+  state: string;
+  code: string;
+  iss: string | null;
+}): string {
+  const hidden = (name: string, value: string) =>
+    `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Confirm connection</title></head><body>`
+    + `<p>Connect <strong>${escapeHtml(input.appName)}</strong> to the Paperclip account <strong>${escapeHtml(input.accountLabel)}</strong>?</p>`
+    + `<p>If this is not your Paperclip account, close this page. Do not continue.</p>`
+    + `<form method="post" action="${escapeHtml(input.formAction)}">`
+    + hidden("state", input.state) + hidden("code", input.code) + (input.iss ? hidden("iss", input.iss) : "")
+    + `<button type="submit">Connect to ${escapeHtml(input.accountLabel)}</button></form></body></html>`;
+}
+
+function sendCrossOriginOAuthPage(res: Response, html: string) {
+  res
+    .set("Cache-Control", "no-store")
+    .set("Referrer-Policy", "no-referrer")
+    .set("X-Frame-Options", "DENY")
+    .set("Content-Security-Policy", "default-src 'none'; form-action 'self'; frame-ancestors 'none'")
+    .type("html")
+    .send(html);
+}
+
 function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): string | null {
   if (!returnTo || returnTo.length > 2_048) return null;
   try {
@@ -242,6 +292,8 @@ export function toolAccessRoutes(
     vercelConnectClient?: VercelConnectClient | null;
     paperclipCloudConnector?: PaperclipCloudConnector | null;
     connectionIntentHeartbeat?: Pick<Heartbeat, "wakeup">;
+    /** See `oauthCrossOriginCallback` in server config. Off by default. */
+    oauthCrossOriginCallback?: boolean;
   } = {},
 ) {
   const router = Router();
@@ -447,6 +499,33 @@ export function toolAccessRoutes(
       .limit(1);
     if (!company) throw new Error("OAuth callback connection belongs to a missing company");
     return `/${company.issuePrefix}/apps/${connectionId}/permissions`;
+  }
+
+  /**
+   * A same-origin session cookie can't reach a browser-facing OAuth callback
+   * that lives on a different origin than the app itself (see
+   * `resolveBoardActorForOAuthState`). When that's the case, stand in for it
+   * using the pending state's subject: the state is already the proof that
+   * matters, and every caller re-checks it (`hasCompanyAccess`,
+   * `assertToolConnection*Access`) against the actor this sets.
+   *
+   * Scoped to single-user flows (`pendingState.subjectUserId`) only —
+   * organization-grant flows have no bound subject and genuinely need a live
+   * session to prove the completing user manages the connection.
+   *
+   * Off unless the deployment opts in (`oauthCrossOriginCallback`): without a
+   * session the state is a bearer token, so a user who is tricked into
+   * authorizing another user's pending flow links their provider account to
+   * that other user.
+   */
+  async function resolveActorFromOAuthState(
+    req: Request,
+    pendingState: { subjectUserId: string | null } | null,
+  ): Promise<void> {
+    if (!options.oauthCrossOriginCallback) return;
+    if (req.actor.type === "board" || !pendingState?.subjectUserId) return;
+    const actor = await resolveBoardActorForOAuthState(db, pendingState.subjectUserId);
+    if (actor) req.actor = actor;
   }
 
 function connectorEnrollmentPrincipal(req: Request): string {
@@ -1306,16 +1385,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.get("/tools/oauth/callback", async (req, res) => {
-    assertBoard(req);
-    const state = typeof req.query.state === "string" ? req.query.state : "";
-    const code = typeof req.query.code === "string" ? req.query.code : null;
-    const error = typeof req.query.error === "string" ? req.query.error : null;
-    // `error_description` / `error_uri` are read from neither the query nor the
-    // provider's body: they are provider-authored prose, and Paperclip maps the
-    // `error` code to its own copy instead of reflecting them (PAP-17108).
-    const iss = typeof req.query.iss === "string" ? req.query.iss : null;
+  async function handleOAuthCallback(
+    req: Request,
+    res: Response,
+    params: { state: string; code: string | null; error: string | null; iss: string | null; confirmed: boolean },
+  ) {
+    const { state, code, error, iss } = params;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
+    await resolveActorFromOAuthState(req, pendingState);
+    assertBoard(req);
     if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
       throw badRequest("Invalid or expired OAuth state");
     }
@@ -1330,7 +1408,21 @@ function connectorEnrollmentPrincipal(req: Request): string {
     } else {
       await assertToolConnectionConfigureAccess(req, pendingConnection);
     }
-    const acceptsHtml = req.get("accept")?.includes("text/html") === true;
+    const sessionless = req.actor.source === "oauth_state";
+    if (sessionless && !params.confirmed && !error && code) {
+      // Do not exchange the code or consume the state yet. See
+      // crossOriginOAuthConfirmHtml for why a session-less flow must confirm.
+      sendCrossOriginOAuthPage(res, crossOriginOAuthConfirmHtml({
+        appName: pendingConnection.name,
+        accountLabel: req.actor.userEmail ?? req.actor.userName ?? req.actor.userId ?? "unknown account",
+        formAction: "/api/tools/oauth/callback/confirm",
+        state,
+        code,
+        iss,
+      }));
+      return;
+    }
+    const acceptsHtml = sessionless || req.get("accept")?.includes("text/html") === true;
     let result: Awaited<ReturnType<typeof svc.completeOAuthCallback>>;
     try {
       result = await svc.completeOAuthCallback({
@@ -1382,12 +1474,24 @@ function connectorEnrollmentPrincipal(req: Request): string {
           canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
           bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
         });
+        if (sessionless) {
+          sendCrossOriginOAuthPage(res, crossOriginOAuthFailedHtml(outcome));
+          return;
+        }
         sendConnectionIntentOAuthOutcome(res, {
           interactionId: pendingState.interactionId,
           issueId: pendingState.issueId,
           outcome,
           openerOrigin: pendingState.returnTo,
         });
+        return;
+      }
+      // A relative recovery path does not exist on a callback-only origin.
+      if (sessionless) {
+        sendCrossOriginOAuthPage(
+          res,
+          crossOriginOAuthFailedHtml(callbackErrorCode === "oauth_authorization_denied" ? "declined" : "failed"),
+        );
         return;
       }
       res.redirect(303, await oauthRecoveryPath(
@@ -1418,6 +1522,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
         canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
         bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
       });
+      // The intent page's opener and fallback both live on the app origin.
+      if (sessionless) {
+        sendCrossOriginOAuthPage(res, crossOriginOAuthConnectedHtml());
+        return;
+      }
       sendConnectionIntentOAuthOutcome(res, {
         interactionId: pendingState.interactionId,
         issueId: pendingState.issueId,
@@ -1426,13 +1535,57 @@ function connectorEnrollmentPrincipal(req: Request): string {
       });
       return;
     }
+    // A same-origin redirect is useless when this callback ran on a
+    // different origin than the app itself (see resolveActorFromOAuthState)
+    // — there is no session there for the app to land in either. Just say
+    // it worked; the user's own tab still has their real session. A caller
+    // without a session never gets the connection JSON either.
+    if (sessionless) {
+      sendCrossOriginOAuthPage(res, crossOriginOAuthConnectedHtml());
+      return;
+    }
     if (acceptsHtml) {
       const permissionsPath = await oauthAppPath(result.connection.companyId, result.connection.id);
       res.redirect(303, `${permissionsPath}?success=1`);
       return;
     }
     res.json(result);
+  }
+
+  const queryString = (value: unknown) => (typeof value === "string" ? value : null);
+
+  router.get("/tools/oauth/callback", async (req, res) => {
+    // `error_description` / `error_uri` are read from neither the query nor the
+    // provider's body: they are provider-authored prose, and Paperclip maps the
+    // `error` code to its own copy instead of reflecting them (PAP-17108).
+    await handleOAuthCallback(req, res, {
+      state: queryString(req.query.state) ?? "",
+      code: queryString(req.query.code),
+      error: queryString(req.query.error),
+      iss: queryString(req.query.iss),
+      confirmed: false,
+    });
   });
+
+  // The session-less confirmation page posts here. The provider code only
+  // reaches the browser that completed consent, so a third party cannot
+  // submit this form for someone else.
+  router.post(
+    "/tools/oauth/callback/confirm",
+    express.urlencoded({ extended: false, limit: "16kb" }),
+    async (req, res) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      await handleOAuthCallback(req, res, {
+        state: queryString(body.state) ?? "",
+        code: queryString(body.code),
+        error: null,
+        iss: queryString(body.iss),
+        confirmed: true,
+      });
+    },
+  );
+
+
 
   router.post(
     "/companies/:companyId/tools/apps/:connectionId/finalize-oauth-access",

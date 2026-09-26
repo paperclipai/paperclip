@@ -654,6 +654,8 @@ type ToolAccessServiceOptions = {
   paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  /** See `oauthCrossOriginCallback` in server config. Off by default. */
+  oauthCrossOriginCallback?: boolean;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -1506,6 +1508,7 @@ function oauthActorType(value: string | null): ActorInfo["actorType"] | null {
 function assertSameOAuthActor(
   stateRow: typeof toolOauthStates.$inferSelect,
   actor: ActorInfo | undefined,
+  allowUserCrossSession = false,
 ) {
   const expected = {
     actorType: oauthActorType(stateRow.createdByActorType),
@@ -1526,7 +1529,15 @@ function assertSameOAuthActor(
       "OAuth sign-in must be completed by the user who started it",
     );
   }
-  if (expected.sessionId && expected.sessionId !== actual.sessionId) {
+  // With a cross-origin callback, a user can be signed in on both origins
+  // with two different sessions. The same actorId above already proves the
+  // same account. Keep the strict session match for agent, system and plugin
+  // actors, and for every actor when the deployment has not opted in.
+  if (
+    !(allowUserCrossSession && expected.actorType === "user") &&
+    expected.sessionId &&
+    expected.sessionId !== actual.sessionId
+  ) {
     throw forbidden(
       "OAuth sign-in must be completed from the same authenticated session",
     );
@@ -14719,7 +14730,11 @@ export function toolAccessService(
         );
       }
     } else {
-      assertSameOAuthActor(stateRow, actor);
+      assertSameOAuthActor(
+        stateRow,
+        actor,
+        options.oauthCrossOriginCallback === true,
+      );
     }
     return stateRow;
   }

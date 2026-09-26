@@ -480,6 +480,7 @@ export async function createApp(
     chatWebhookPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    oauthCrossOriginCallback?: boolean;
     announcements?: { enabled: boolean; feedUrl: string };
     instanceId?: string;
     hostVersion?: string;
@@ -856,6 +857,7 @@ export async function createApp(
       trustedLocalStdioRuntimeHost,
       toolGateway,
       connectionIntentHeartbeat,
+      oauthCrossOriginCallback: opts.oauthCrossOriginCallback,
     }),
   );
   api.use(connectionIntentBoardRoutes(db, connectionIntentHeartbeat));

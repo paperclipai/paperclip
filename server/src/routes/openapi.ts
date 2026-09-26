@@ -10674,6 +10674,13 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "post",
+  path: "/api/tools/oauth/callback/confirm",
+  tags: ["tool-access"],
+  summary: "Confirm a session-less tool app OAuth callback",
+});
+
+registerCurrentRoute({
   method: "get",
   path: "/api/tools/oauth/cloud-connector/callback",
   tags: ["tool-access"],
