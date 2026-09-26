@@ -1,3 +1,5 @@
+import { resolveHttpTimeoutMs } from "../adapters/http/timeout.js";
+
 export type HeartbeatRunOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
 
 export type HeartbeatRunStopReason =
@@ -56,14 +58,14 @@ export function resolveHeartbeatRunTimeoutPolicy(
   const config = adapterConfig ?? {};
 
   if (adapterType === "http") {
-    const hasTimeoutMs = hasOwn(config, "timeoutMs");
-    const rawTimeoutMs = hasTimeoutMs ? readFiniteNumber(config.timeoutMs) : 0;
-    const timeoutMs = Math.max(0, Math.floor(rawTimeoutMs ?? 0));
+    // The adapter owns this resolution, so the recorded policy cannot drift
+    // from the timer the adapter actually arms.
+    const timeoutMs = resolveHttpTimeoutMs(config);
     return {
       effectiveTimeoutSec: timeoutMs / 1000,
       effectiveTimeoutMs: timeoutMs,
       timeoutConfigured: timeoutMs > 0,
-      timeoutSource: hasTimeoutMs ? "config" : "default",
+      timeoutSource: hasOwn(config, "timeoutMs") || hasOwn(config, "timeoutSec") ? "config" : "default",
     };
   }
 
