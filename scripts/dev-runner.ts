@@ -11,6 +11,7 @@ import {
   resolveNativeRunnerRequirement,
 } from "./dev-runner-native-binary.mjs";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
+import { applyRepoRootEnvFile } from "./dev-runner-env-file.mjs";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
@@ -171,6 +172,11 @@ const env: NodeJS.ProcessEnv = {
   ...process.env,
   PAPERCLIP_UI_DEV_MIDDLEWARE: explicitUiDevMiddleware ?? (serveBuiltUiForManagedRuntime ? "false" : "true"),
 };
+
+// The server runs with cwd `server/`, so it never loads a repo-root `.env`.
+// Without this, secrets like BETTER_AUTH_SECRET set only there are silently
+// missing from local agent runs (#13816).
+applyRepoRootEnvFile(env, repoRoot, { log: (line) => console.log(line) });
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
