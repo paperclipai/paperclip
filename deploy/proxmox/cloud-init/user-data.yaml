@@ -1,0 +1,41 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+packages:
+  - git
+  - qemu-guest-agent
+
+users:
+  - default
+  - name: "__VM_USERNAME__"
+    gecos: Paperclip Admin
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - "__SSH_PUBLIC_KEY__"
+
+write_files:
+  - path: /usr/local/sbin/paperclip-firstboot.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      if [[ ! -d /opt/paperclip/.git ]]; then
+        git clone "__PAPERCLIP_REPO__" /opt/paperclip
+      fi
+      cd /opt/paperclip
+      git fetch --all --tags
+      git checkout "__PAPERCLIP_GIT_REF__"
+      PAPERCLIP_PUBLIC_URL="__PAPERCLIP_PUBLIC_URL__" \
+      PAPERCLIP_PROXY_MODE="__PAPERCLIP_PROXY_MODE__" \
+      PAPERCLIP_SERVER_NAME="__PAPERCLIP_SERVER_NAME__" \
+      OPENAI_API_KEY="__OPENAI_API_KEY__" \
+      ANTHROPIC_API_KEY="__ANTHROPIC_API_KEY__" \
+      ./deploy/proxmox/bootstrap-ubuntu.sh
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent || true
+  - /usr/local/sbin/paperclip-firstboot.sh
