@@ -430,6 +430,51 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(result.persistedExecutionWorkspace).toEqual(updatedEw);
   });
 
+  it("persists the realized cwd as remoteCwd when realization returns no workspaceRealization payload", async () => {
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/workspace",
+        metadata: { provider: "kubernetes", remoteCwd: "/workspace" },
+      }),
+    } as Partial<EnvironmentRuntimeService>);
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({ kind: "local", environmentId: "env-1", leaseId: "lease-1" });
+
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(
+      makeRealizeInput({ environment: makeEnvironment("sandbox") }),
+    );
+
+    expect(mockUpdateLeaseMetadata).toHaveBeenCalledWith(
+      "lease-1",
+      expect.objectContaining({ remoteCwd: "/workspace" }),
+    );
+    // Nothing to record about the realization shape, so the execution workspace
+    // row is left untouched.
+    expect(mockUpdateExecutionWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("does not rewrite lease metadata when the realized cwd already matches the lease", async () => {
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/workspace",
+        metadata: { provider: "kubernetes", remoteCwd: "/workspace" },
+      }),
+    } as Partial<EnvironmentRuntimeService>);
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({ kind: "local", environmentId: "env-1", leaseId: "lease-1" });
+
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(
+      makeRealizeInput({
+        environment: makeEnvironment("sandbox"),
+        lease: makeLease({ metadata: { remoteCwd: "/workspace" } }),
+      }),
+    );
+
+    expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled();
+  });
+
   it("runs a remote provision command after workspace realization when configured", async () => {
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
