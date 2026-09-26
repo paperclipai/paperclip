@@ -118,6 +118,45 @@ describeEmbeddedPostgres("issue list routes identifier filter", () => {
     expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([target.id]);
   });
 
+  it("rejects an empty identifier instead of returning the whole board", async () => {
+    const only = { id: randomUUID(), identifier: "TES-1", title: "Only" };
+    const companyId = await seedCompanyWithIssues([only]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ identifier: "" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toMatch(/identifier/);
+  });
+
+  it("rejects a whitespace-only identifier", async () => {
+    const only = { id: randomUUID(), identifier: "TES-1", title: "Only" };
+    const companyId = await seedCompanyWithIssues([only]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ identifier: "   " });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toMatch(/identifier/);
+  });
+
+  it("trims surrounding whitespace from a valid identifier", async () => {
+    const target = { id: randomUUID(), identifier: "TES-8", title: "Target" };
+    const companyId = await seedCompanyWithIssues([target]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ identifier: "  TES-8  " });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([target.id]);
+  });
+
   it("does not treat the identifier as a prefix", async () => {
     const short = { id: randomUUID(), identifier: "TES-1", title: "Short" };
     const longer = { id: randomUUID(), identifier: "TES-100", title: "Longer" };

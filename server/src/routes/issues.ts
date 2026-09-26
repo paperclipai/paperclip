@@ -8078,6 +8078,21 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    // A present-but-blank `identifier` is a mistake, not a request for the
+    // whole board. Left unchecked it reaches the service as "", which the
+    // service cannot distinguish from an absent filter, and the caller gets
+    // every issue in the company instead of a validation error.
+    if (req.query.identifier !== undefined) {
+      if (typeof req.query.identifier !== "string") {
+        res.status(400).json({ error: "identifier must be a string" });
+        return;
+      }
+      if (req.query.identifier.trim().length === 0) {
+        res.status(400).json({ error: "identifier must not be empty" });
+        return;
+      }
+    }
+
     const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,

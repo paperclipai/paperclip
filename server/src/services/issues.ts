@@ -6166,6 +6166,27 @@ function parseIssueAssigneeAgentFilter(
   return normalized.toLowerCase() === "null" ? null : normalized;
 }
 
+/**
+ * Exact identifier match as an index-usable equality.
+ *
+ * `lower(identifier) = lower(?)` is exact but cannot use `issues_identifier_idx`,
+ * because the index is on the bare column. Prefixes are always `[A-Z]{1,3}`
+ * (see `deriveIssuePrefixBase`) and the counter is decimal, so folding the
+ * caller's input to upper case is sufficient to make the equality match the
+ * stored form, and the planner can use the index.
+ *
+ * Returns `undefined` for an absent or blank filter so callers never push a
+ * condition that silently degrades to "no filter" - the full board.
+ */
+function exactIdentifierCondition(
+  identifier: IssueFilters["identifier"],
+) {
+  if (typeof identifier !== "string") return undefined;
+  const normalized = identifier.trim();
+  if (normalized.length === 0) return undefined;
+  return eq(issues.identifier, normalized.toUpperCase());
+}
+
 function assertValidAssigneeAgentFilter(
   assigneeAgentFilter: string | null | undefined,
 ) {
@@ -6271,9 +6292,8 @@ async function blockedInboxIssueConditions(
   if (filters?.originKindPrefix)
     conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
-  if (filters?.identifier) {
-    conditions.push(sql`lower(${issues.identifier}) = lower(${filters.identifier})`);
-  }
+  const identifierCondition = exactIdentifierCondition(filters?.identifier);
+  if (identifierCondition) conditions.push(identifierCondition);
   if (filters?.hasPlanDocument !== undefined) {
     conditions.push(
       hasPlanDocumentCondition(companyId, filters.hasPlanDocument),
@@ -7962,11 +7982,8 @@ export function issueService(db: Db) {
         );
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.identifier) {
-        conditions.push(
-          sql`lower(${issues.identifier}) = lower(${filters.identifier})`,
-        );
-      }
+      const identifierCondition = exactIdentifierCondition(filters?.identifier);
+      if (identifierCondition) conditions.push(identifierCondition);
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(
           hasPlanDocumentCondition(companyId, filters.hasPlanDocument),
@@ -8233,11 +8250,8 @@ export function issueService(db: Db) {
         );
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.identifier) {
-        conditions.push(
-          sql`lower(${issues.identifier}) = lower(${filters.identifier})`,
-        );
-      }
+      const identifierCondition = exactIdentifierCondition(filters?.identifier);
+      if (identifierCondition) conditions.push(identifierCondition);
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(
           hasPlanDocumentCondition(companyId, filters.hasPlanDocument),
