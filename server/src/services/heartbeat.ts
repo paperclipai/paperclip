@@ -18165,8 +18165,14 @@ export function heartbeatService(
 
     const [eventStats] = await db
       .select({
-        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+        // Exclude presentation bookkeeping: run.presentation.resolved is written
+        // after the final issue comment is persisted (as part of the post-comment
+        // re-classification path introduced in #14034). If we counted it here the
+        // second classifyAndPersistRunLiveness call would treat the bookkeeping
+        // event itself as concrete evidence and incorrectly upgrade plan_only runs
+        // to advanced.
+        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error', 'run.presentation.resolved'))::int`,
+        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error', 'run.presentation.resolved'))`,
       })
       .from(heartbeatRunEvents)
       .where(
