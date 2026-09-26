@@ -7017,13 +7017,21 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     ).rejects.toMatchObject({ status: 409 });
   });
 
-  it("does not let terminal actor runs adopt stale checkout ownership", async () => {
+  it("lets a terminal actor run adopt stale checkout ownership on its own issue", async () => {
+    // A heartbeat cancelled mid-run is stranded on exactly this state: the
+    // reaper cleared the binding, the issue is still in_progress and assigned to
+    // this agent, and the only actor who can clear it is the one whose run the
+    // clearable check treats as dead. Refusing here is what made every write
+    // 409 for a run that had nothing left to protect.
     const seeded = await seedOwnershipIssue({ checkoutStatus: "failed", actorRunStatus: "succeeded" });
 
-    await expect(
-      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
-    ).rejects.toMatchObject({ status: 409 });
+    const ownership = await svc.assertCheckoutOwner(
+      seeded.issueId,
+      seeded.actorAgentId,
+      seeded.actorRunId,
+    );
 
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
     const row = await db
       .select({
         checkoutRunId: issues.checkoutRunId,
@@ -7033,8 +7041,8 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
       .where(eq(issues.id, seeded.issueId))
       .then((rows) => rows[0]);
     expect(row).toEqual({
-      checkoutRunId: null,
-      executionRunId: null,
+      checkoutRunId: seeded.actorRunId,
+      executionRunId: seeded.actorRunId,
     });
   });
 
