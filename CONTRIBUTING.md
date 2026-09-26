@@ -102,6 +102,16 @@ Every PR must include a **Model Used** section specifying which AI model produce
 
 All tests must pass before a PR can be merged. Run them locally first and verify CI is green after pushing.
 
+### Troubleshooting: `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` on a fresh clone
+
+If `pnpm install --frozen-lockfile` fails on a **freshly cloned, unmodified `master`** -- before you have touched anything -- this is almost always not your environment. It means `master` itself is temporarily inconsistent between `package.json` and `pnpm-lock.yaml` (a manifest field, most often `patchedDependencies` or `overrides`, drifted out of sync with the lockfile on a recent merge). See #10393 for the ongoing tracker and root cause.
+
+Before debugging your own setup:
+
+1. Check the [Issues list](https://github.com/paperclipai/paperclip/issues?q=is%3Aissue+ERR_PNPM_LOCKFILE_CONFIG_MISMATCH) for a fresh report matching your commit -- this class of drift is usually already known and self-heals via an automated `chore(lockfile): refresh pnpm-lock.yaml` PR within minutes to hours of the breaking merge.
+2. If a refresh PR already exists and is green, you can safely `pnpm install --no-frozen-lockfile` locally on your branch to unblock yourself while you wait for it to merge -- do **not** commit the resulting `pnpm-lock.yaml` diff yourself; a manual lockfile diff in a normal PR triggers `pr.yml`'s "lockfile edits" failure. Rebase once the refresh PR lands.
+3. If no report or refresh PR exists yet, file one per [Bug fix](.github/ISSUE_TEMPLATE/bug_report.yml), noting the exact manifest field mismatch (visible in the error output) and the commit SHA of the merge that introduced it.
+
 ### Telemetry Changes
 
 This repo has three separate data paths: Telemetry, Observability, and the run log. See rule 7 in `AGENTS.md` for the full definitions and the review level each path needs.
