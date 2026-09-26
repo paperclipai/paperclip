@@ -30,7 +30,7 @@ test("script parses", () => {
 test("no --db is a usage error, and the usage text names every option", () => {
   const { status, out } = run([]);
   assert.equal(status, 2, out);
-  for (const opt of ["--db", "--volume", "--image", "--max-missing", "--boot", "--boot-timeout", "--keep"]) {
+  for (const opt of ["--db", "--volume", "--image", "--max-missing", "--max-torn", "--boot", "--boot-timeout", "--keep"]) {
     assert.match(out, new RegExp(`^#?\\s*${opt}\\b`, "m"), `usage text should list ${opt}`);
   }
 });
@@ -64,6 +64,19 @@ test("--boot-timeout must be a number of seconds", () => {
     const { status, out } = run(["--db", db, "--volume", vol, "--boot", "img", "--boot-timeout", "soon"]);
     assert.equal(status, 2, out);
     assert.match(out, /--boot-timeout must be a whole number/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--max-torn must be a non-negative integer, refused before anything starts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "restore-smoke-"));
+  try {
+    const db = join(dir, "db.sql.gz");
+    writeFileSync(db, "");
+    const { status, out } = run(["--db", db, "--max-torn", "a few"]);
+    assert.equal(status, 2, out);
+    assert.match(out, /--max-torn needs a non-negative integer/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

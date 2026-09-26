@@ -29,27 +29,36 @@ set -euo pipefail
 #                        connectors can reach nothing but the throwaway
 #                        database. It then mints a throwaway agent API key
 #                        in the restored database (never the source's), signs
-#                        in with it, lists the board and reads one finalized
-#                        run log through the API — restore step 6, done by the
-#                        server rather than by hand
+#                        in with it, and requires the API to serve the
+#                        company's agents and issues, one issue's comments,
+#                        one finalized run's record and events, and its log,
+#                        each matching the restored database — restore step
+#                        6, done by the server rather than by hand
+#   --max-torn <n>       unfinalized transcripts allowed to end mid-line,
+#                        default 0. Same rule as --max-missing: the source's
+#                        known count, measured with restore-verify-logs.sh
+#                        against the live tree
 #   --boot-timeout <s>   seconds to wait for the booted server, default 300;
 #                        migrations newer than the dump apply during this
 #   --keep               leave the containers, network and extracted tree
 #                        behind
 #
-# Needs docker and tar on the host; psql runs inside the container, so the host
-# needs no PostgreSQL client. Exits non-zero on the first failure.
+# Needs docker and tar on the host, and node when --volume is given (it
+# decrypts the restored secrets with the restored key); psql runs inside the
+# container, so the host needs no PostgreSQL client. Exits non-zero on the
+# first failure.
 
 DB_ARTIFACT=""
 VOLUME_ARTIFACT=""
 PG_IMAGE="postgres:17-alpine"
 MAX_MISSING=0
+MAX_TORN=0
 BOOT_IMAGE=""
 BOOT_TIMEOUT=300
 KEEP=0
 
 usage() {
-  sed -n '3,45p' "$0" >&2
+  sed -n '3,49p' "$0" >&2
   exit 2
 }
 
@@ -59,7 +68,8 @@ while [ $# -gt 0 ]; do
     --volume) [ $# -ge 2 ] || usage; VOLUME_ARTIFACT="$2"; shift 2 ;;
     --image)  [ $# -ge 2 ] || usage; PG_IMAGE="$2"; shift 2 ;;
     --max-missing) [ $# -ge 2 ] || usage; MAX_MISSING="$2"; shift 2 ;;
-    --boot)   [ $# -ge 2 ] || usage; BOOT_IMAGE="$2"; shift 2 ;;
+    --max-torn) [ $# -ge 2 ] || usage; MAX_TORN="$2"; shift 2 ;;
+    --boot)  [ $# -ge 2 ] || usage; BOOT_IMAGE="$2"; shift 2 ;;
     --boot-timeout) [ $# -ge 2 ] || usage; BOOT_TIMEOUT="$2"; shift 2 ;;
     --keep)   KEEP=1; shift ;;
     -h|--help) usage ;;
@@ -79,6 +89,9 @@ if [ -n "$BOOT_IMAGE" ] && [ -z "$VOLUME_ARTIFACT" ]; then
 fi
 case "$BOOT_TIMEOUT" in
   ''|*[!0-9]*) echo "--boot-timeout must be a whole number of seconds" >&2; usage ;;
+esac
+case "$MAX_TORN" in
+  ''|*[!0-9]*) echo "--max-torn needs a non-negative integer, got: $MAX_TORN" >&2; usage ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -103,7 +116,7 @@ cleanup() {
     # The archive carries read-only directories (skill bundles are 0555), and
     # rm cannot unlink inside them until they are writable again.
     chmod -R u+w "$EXTRACT_DIR" 2>/dev/null || true
-    rm -rf "$EXTRACT_DIR" "$EXTRACT_DIR.refs"
+    rm -rf "$EXTRACT_DIR" "$EXTRACT_DIR.refs" "$EXTRACT_DIR.secrets"
   fi
   return 0
 }
@@ -180,14 +193,20 @@ EXTRACT_DIR="$(mktemp -d)"
 tar -xzf "$VOLUME_ARTIFACT" -C "$EXTRACT_DIR" --strip-components=1
 echo "extracted to $EXTRACT_DIR"
 
-# 6. The master key. The database holds secret metadata encrypted against it;
+# 6. The master key. The database holds secret values encrypted against it;
 #    without the file every stored credential is undecryptable, and nothing in
-#    the database can tell you that.
+#    the database can tell you that. Presence is not enough either: a valid
+#    32-byte key from a different artifact set boots the server just as well
+#    and fails only when an agent first uses a credential. So every
+#    local_encrypted_v1 version in the restored database is decrypted with the
+#    restored key. AES-256-GCM authenticates, so a wrong key cannot decrypt by
+#    accident, and the plaintext's SHA-256 is compared with value_sha256 on
+#    the row. No plaintext leaves the node process.
 step "secrets master key"
-key_count=0
+keys=()
 for key in "$EXTRACT_DIR"/instances/*/secrets/master.key; do
   [ -f "$key" ] || continue
-  key_count=$((key_count + 1))
+  keys+=("$key")
   mode="$(stat -c '%a' "$key")"
   echo "found $key (mode $mode)"
   if [ "$mode" != "600" ]; then
@@ -195,11 +214,28 @@ for key in "$EXTRACT_DIR"/instances/*/secrets/master.key; do
     exit 1
   fi
 done
-if [ "$key_count" -eq 0 ]; then
+if [ "${#keys[@]}" -eq 0 ]; then
   echo "FAIL: no instances/*/secrets/master.key in the archive." >&2
   echo "      Every stored credential is undecryptable from this artifact set," >&2
   echo "      or the archive was extracted at the wrong level." >&2
   exit 1
+fi
+
+versions_file="$EXTRACT_DIR.secrets"
+docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -F "$(printf '\t')" -c \
+  "select id, value_sha256, material::text from company_secret_versions
+    where material->>'scheme' = 'local_encrypted_v1'" > "$versions_file"
+version_count="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -c \
+  "select count(*) from company_secret_versions where material->>'scheme' = 'local_encrypted_v1'")"
+if [ "$version_count" -eq 0 ]; then
+  echo "no local_encrypted secret versions in the dump: nothing depends on this key"
+elif [ "${#keys[@]}" -ne 1 ]; then
+  echo "FAIL: ${#keys[@]} master keys in the archive and $version_count encrypted versions;" >&2
+  echo "      which key belongs to this database is a choice this script must not make." >&2
+  exit 1
+else
+  command -v node >/dev/null 2>&1 || { echo "FAIL: node not found on PATH; it decrypts the secrets" >&2; exit 1; }
+  node "$SCRIPT_DIR/restore-verify-secrets.mjs" "${keys[0]}" --expect "$version_count" < "$versions_file"
 fi
 
 # 7. The run logs the restored database points at. This is the one check that
@@ -209,7 +245,7 @@ fi
 #    log_sha256 are what the server recorded at finalize; the checker compares
 #    the extracted file against them, so a transcript the tar captured
 #    mid-write fails here instead of passing as "present".
-step "run-log reachability and content (every ref, tolerance $MAX_MISSING missing)"
+step "run-log reachability and content (every ref, tolerance $MAX_MISSING missing, $MAX_TORN torn)"
 #    The rows go to a file first and the checker is held to the database's
 #    count: `docker exec` piped into a reader that falls behind has been
 #    measured dropping rows with exit 0, and a short list passes.
@@ -220,7 +256,7 @@ docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -F "$(p
 ref_count="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -c \
   "select count(*) from heartbeat_runs where log_store = 'local_file' and log_ref is not null")"
 "$SCRIPT_DIR/restore-verify-logs.sh" "$EXTRACT_DIR" --max-missing "$MAX_MISSING" \
-  --expect "$ref_count" < "$refs_file"
+  --max-torn "$MAX_TORN" --expect "$ref_count" < "$refs_file"
 
 if [ -z "$BOOT_IMAGE" ]; then
   echo
@@ -304,6 +340,18 @@ async function get(path) {
       get("/api/companies/" + arg + "/issues"),
     ]);
     console.log(company.name + "\t" + agents.length + "\t" + issues.length);
+  } else if (mode === "issue") {
+    const [issue, comments] = await Promise.all([
+      get("/api/issues/" + arg),
+      get("/api/issues/" + arg + "/comments"),
+    ]);
+    console.log(issue.identifier + "\t" + comments.length);
+  } else if (mode === "run") {
+    const [run, events] = await Promise.all([
+      get("/api/heartbeat-runs/" + arg),
+      get("/api/heartbeat-runs/" + arg + "/events?limit=1000"),
+    ]);
+    console.log(run.id + "\t" + run.status + "\t" + events.length);
   } else if (mode === "log") {
     const j = await get("/api/heartbeat-runs/" + arg + "/log?offset=0&limitBytes=65536");
     const content = String(j.content ?? "");
@@ -351,12 +399,16 @@ echo "migrations: $(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq
 #    random token whose SHA-256 goes into agent_api_keys, exactly as the
 #    server stores its own keys, on behalf of an active user member of its
 #    company (the server refuses agent keys with no responsible user). Nothing
-#    valid on the source is created or used. Then one of that agent's own run logs, served by the server that
-#    owns it: the file the digest check verified on disk, read back the way
-#    the UI reads it.
+#    valid on the source is created or used. Every surface is held to what
+#    the restored database says it should serve, not to "the call returned":
+#    the company's agents and issues are non-empty, one issue comes back with
+#    exactly its comments, one of the agent's own finalized runs comes back
+#    with its status and exactly its events, and its log is served by the
+#    server that owns it — the file the digest check verified on disk, read
+#    back the way the UI reads it.
 step "sign in and read the board through the restored server"
 smoke_agent="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -F "$(printf '\t')" -c \
-  "select r.agent_id, a.company_id, r.id, m.principal_id
+  "select r.agent_id, a.company_id, r.id, m.principal_id, r.status, e.n
      from heartbeat_runs r
      join agents a on a.id = r.agent_id
      join lateral (
@@ -364,16 +416,33 @@ smoke_agent="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no
         where company_id = a.company_id and principal_type = 'user' and status = 'active'
         order by (membership_role = 'owner') desc, created_at limit 1
      ) m on true
+     join lateral (
+       select count(*) as n from heartbeat_run_events where run_id = r.id
+     ) e on e.n between 1 and 1000
     where r.log_store = 'local_file' and r.log_ref is not null
       and r.log_sha256 is not null and r.log_bytes > 0
       and a.status not in ('terminated', 'pending_approval')
     order by r.created_at desc limit 1")"
 if [ -z "$smoke_agent" ]; then
-  echo "FAIL: no active agent with a finalized local run log and an active user in its company to sign in as" >&2
+  echo "FAIL: no active agent with a finalized local run log, 1-1000 run events and an active user in its company to sign in as" >&2
   exit 1
 fi
 agent_id="$(echo "$smoke_agent" | cut -f1)"
 run_id="$(echo "$smoke_agent" | cut -f3)"
+run_status="$(echo "$smoke_agent" | cut -f5)"
+run_events="$(echo "$smoke_agent" | cut -f6)"
+# The company's most recently commented issue: the one most likely to show a
+# comment path broken by the restore, and certain to have comments to count.
+smoke_issue="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -F "$(printf '\t')" -c \
+  "select i.id, i.identifier, (select count(*) from issue_comments where issue_id = i.id)
+     from issues i
+     join issue_comments c on c.issue_id = i.id
+    where i.company_id = '$(echo "$smoke_agent" | cut -f2)'
+    order by c.created_at desc limit 1")"
+if [ -z "$smoke_issue" ]; then
+  echo "FAIL: the signed-in agent's company has no commented issue in the restored database" >&2
+  exit 1
+fi
 SMOKE_KEY="restore-smoke-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 printf "insert into agent_api_keys (agent_id, company_id, name, key_hash, responsible_user_id)
   values ('%s', '%s', 'restore-smoke', encode(sha256(convert_to('%s', 'UTF8')), 'hex'), '%s');\n" \
@@ -388,9 +457,36 @@ agent_name="${rest#*$'\t'}"
 echo "signed in as agent '$agent_name' ($agent_id), company $company_id"
 
 board="$(probe company "$company_id")"
-company_name="${board%%$'\t'*}"
-rest="${board#*$'\t'}"
-echo "company '$company_name': ${rest%%$'\t'*} agents, ${rest#*$'\t'} issues listed"
+company_name="$(echo "$board" | cut -f1)"
+listed_agents="$(echo "$board" | cut -f2)"
+listed_issues="$(echo "$board" | cut -f3)"
+echo "company '$company_name': $listed_agents agents, $listed_issues issues listed"
+if [ "$listed_agents" -eq 0 ] || [ "$listed_issues" -eq 0 ]; then
+  echo "FAIL: the restored server lists $listed_agents agents and $listed_issues issues for a company the database has both for" >&2
+  exit 1
+fi
+
+issue_id="$(echo "$smoke_issue" | cut -f1)"
+want_identifier="$(echo "$smoke_issue" | cut -f2)"
+want_comments="$(echo "$smoke_issue" | cut -f3)"
+served_issue="$(probe issue "$issue_id")"
+have_identifier="$(echo "$served_issue" | cut -f1)"
+have_comments="$(echo "$served_issue" | cut -f2)"
+echo "issue $have_identifier: $have_comments comments served, database has $want_comments"
+if [ "$have_identifier" != "$want_identifier" ] || [ "$have_comments" -ne "$want_comments" ]; then
+  echo "FAIL: issue $want_identifier came back as '$have_identifier' with $have_comments of $want_comments comments" >&2
+  exit 1
+fi
+
+served_run="$(probe run "$run_id")"
+have_status="$(echo "$served_run" | cut -f2)"
+have_events="$(echo "$served_run" | cut -f3)"
+echo "run $run_id: status $have_status, $have_events events served, database has $run_status and $run_events"
+if [ "$(echo "$served_run" | cut -f1)" != "$run_id" ] || [ "$have_status" != "$run_status" ] \
+    || [ "$have_events" -ne "$run_events" ]; then
+  echo "FAIL: run $run_id did not come back as the database recorded it" >&2
+  exit 1
+fi
 
 served="$(probe log "$run_id")"
 echo "run $run_id: log served through the API, ${served%%$'\t'*} bytes read, first event at $(echo "$served" | cut -f2) on $(echo "$served" | cut -f3), NDJSON parses"
