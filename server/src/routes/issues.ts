@@ -275,6 +275,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
+  TERMINAL_HEARTBEAT_RUN_STATUSES,
   type IssuePostCommitAction,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -13288,6 +13289,7 @@ export function issueRoutes(
             .select({
               companyId: heartbeatRuns.companyId,
               agentId: heartbeatRuns.agentId,
+              status: heartbeatRuns.status,
               contextSnapshot: heartbeatRuns.contextSnapshot,
             })
             .from(heartbeatRuns)
@@ -13303,11 +13305,24 @@ export function issueRoutes(
             (candidate): candidate is string =>
               typeof candidate === "string" && candidate.trim() !== "",
           );
+          /**
+           * Liveness is part of attribution, not an extra. `contextSnapshot` is
+           * a *historical* record: a run that started for this issue keeps
+           * naming it forever. Without this, an agent holding any run id from any
+           * past run of its own could name a cross-agent unblock owner on an
+           * already-blocked issue — the mutation guard for that path requires
+           * checkout ownership, and a blocked issue has none to have.
+           *
+           * The two paths that bypass checkout ownership are exactly the two
+           * this has to cover: an already-`blocked` issue, and self-naming is
+           * exempt by the check above entirely.
+           */
           if (
             !run ||
             run.companyId !== existing.companyId ||
             run.agentId !== req.actor.agentId ||
-            runIssueId !== existing.id
+            runIssueId !== existing.id ||
+            TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)
           ) {
             throw unprocessable(
               "Naming another unblock owner requires a run bound to this issue",

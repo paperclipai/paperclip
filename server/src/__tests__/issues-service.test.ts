@@ -7360,6 +7360,52 @@ describeEmbeddedPostgres("issueService.update keeps the handing-off run's checko
   });
 
   /**
+   * The board header attack. `auth.ts` copies `X-Paperclip-Run-Id` onto a board
+   * actor without validating it, unlike an agent JWT whose `run_id` is a signed
+   * claim. So a board request can name the run that holds the checkout, and an
+   * id-equality carve-out would hand the lock straight to a board write.
+   *
+   * Here the run id matches the holder exactly, so only the run-row check can
+   * refuse: the write is attributed to a user, so the run is not the actor's.
+   */
+  it("releases the checkout when a board actor names the holding run in the header", async () => {
+    const { issueId, runId } = await seedHeldCheckout();
+
+    await svc.update(issueId, {
+      status: "blocked",
+      actorUserId: "local-board",
+      // The header is read, but it belongs to an agent — not to this actor.
+      actorRunId: runId,
+    });
+
+    const row = await readLocks(issueId);
+    expect(row?.status).toBe("blocked");
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+  });
+
+  /**
+   * The other half of the same control: even for the correct agent, a run that
+   * has already gone terminal must not keep the lock. Otherwise the carve-out
+   * would outlive the run that justified it, and the sweeper would be the only
+   * thing reclaiming it.
+   */
+  it("releases the checkout when the handing-off run is already terminal", async () => {
+    const { issueId, agentId, runId } = await seedHeldCheckout({ runStatus: "succeeded" });
+
+    await svc.update(issueId, {
+      status: "blocked",
+      actorAgentId: agentId,
+      actorRunId: runId,
+    });
+
+    const row = await readLocks(issueId);
+    expect(row?.status).toBe("blocked");
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+  });
+
+  /**
    * The lock is retained across the transition into `blocked` only. Reaching any
    * other non-`in_progress` status still releases it, so a blocked issue cannot
    * become a way to pin a lock open indefinitely.

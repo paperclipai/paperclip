@@ -186,6 +186,16 @@ function registerRouteMocks() {
 
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
+    // The unblock-owner attribution check reads liveness off this set. The
+    // values are duplicated from the service rather than re-derived so a change
+    // to a terminal status name has to be made deliberately in both places.
+    TERMINAL_HEARTBEAT_RUN_STATUSES: new Set([
+      "succeeded",
+      "interrupted",
+      "failed",
+      "cancelled",
+      "timed_out",
+    ]),
   }));
 
   vi.doMock("../services/work-products.js", () => ({
@@ -338,6 +348,10 @@ function createRunContextDb(
         companyId,
         agentId: runAgentOrRows,
         agentCompanyId: companyId,
+        // Attribution requires a *live* run, so the fixture default has to be
+        // one. A test that needs a finished run passes `{ ...ownerRunRow(),
+        // status: "succeeded" }` explicitly.
+        status: "running",
         contextSnapshot,
       }];
   const firstRun = runRows[0] ?? {};
@@ -1839,6 +1853,42 @@ describe("agent issue mutation checkout ownership", () => {
       .send({
         status: "blocked",
         unblockDescriptor: { owner: "board", action: "Not my run either" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe(
+      "Naming another unblock owner requires a run bound to this issue",
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The third attribution control, and the one that was missing: a *finished*
+   * run of the caller's own, started for this very issue.
+   *
+   * `contextSnapshot` is a historical record, so a dead run keeps naming this
+   * issue forever. On an already-`blocked` issue the mutation guard does not
+   * require checkout ownership (a blocked issue has none to have), so without a
+   * liveness check this is a standing permission to rename any other agent as
+   * unblock owner using a run id the agent can still present after it ended.
+   */
+  it("refuses to name another owner from a run of its own that has already finished", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+
+    const res = await request(await createApp(ownerActor(), createRunContextDb(
+      { issueId },
+      [{
+        id: ownerRunId,
+        companyId,
+        agentId: ownerAgentId,
+        agentCompanyId: companyId,
+        status: "succeeded",
+        contextSnapshot: { issueId },
+      }],
+    )))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        unblockDescriptor: { owner: { agentId: peerAgentId }, action: "A dead run does not get a say" },
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);

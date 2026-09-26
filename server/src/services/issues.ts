@@ -10847,19 +10847,54 @@ export function issueService(db: Db) {
          * left unable to say anything about the block it had just set.
          *
          * So the run holding the checkout keeps it across the transition into
-         * `blocked`, and only that run. Every other run is still refused by the
-         * checkout gate, and the sweeper
+         * `blocked`, and only that run. Every other run is still refused by
+         * the checkout gate, and the sweeper
          * (`clearCheckoutRunIfTerminal`) reclaims the lock as soon as this run
          * is actually terminal, so a blocked issue cannot hold a lock
          * indefinitely. A different run, and a board write with no run at all,
          * release it as before.
+         *
+         * `actorRunId` alone is not sufficient authority, and the gap is
+         * concrete: auth.ts copies `X-Paperclip-Run-Id` onto a *board* actor
+         * unvalidated (unlike an agent JWT, whose run_id is a signed claim).
+         * So a board request could name the holding run in the header and
+         * satisfy an id equality test, keeping a lock that board writes are
+         * meant to release. The run row is therefore consulted: it must be
+         * non-terminal and it must belong to an agent. A board write has
+         * `actorRunId` stripped by the route (`actor.runId` is only forwarded
+         * for agent actors) *and* now fails this check if the header path is
+         * ever opened, so the carve-out stays reachable only by the agent run
+         * that actually holds the checkout.
          */
-        const blockHandedOffByThisRun =
+        let blockHandedOffByThisRun = false;
+        if (
           issueData.status === "blocked" &&
           existing.status !== "blocked" &&
           existing.checkoutRunId !== null &&
           actorRunId !== undefined &&
-          existing.checkoutRunId === actorRunId;
+          existing.checkoutRunId === actorRunId
+        ) {
+          const handingOffRun = await dbOrTx
+            .select({
+              agentId: heartbeatRuns.agentId,
+              status: heartbeatRuns.status,
+            })
+            .from(heartbeatRuns)
+            // `dbOrTx` is untyped at this call site, which collapses the `eq`
+            // column overload to `never`. `sql` keeps the comparison typed.
+            .where(
+              sql`${heartbeatRuns.id} = ${actorRunId}`,
+            )
+            .limit(1)
+            .then(
+              (rows: Array<{ agentId: string; status: string }>) =>
+                rows[0] ?? null,
+            );
+          blockHandedOffByThisRun =
+            handingOffRun !== null &&
+            handingOffRun.agentId === actorAgentId &&
+            !TERMINAL_HEARTBEAT_RUN_STATUSES.has(handingOffRun.status);
+        }
         if (!blockHandedOffByThisRun) {
           patch.checkoutRunId = null;
           patch.executionRunId = null;
