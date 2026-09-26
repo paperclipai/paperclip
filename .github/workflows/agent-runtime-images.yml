@@ -1,4 +1,7 @@
 name: Agent runtime images
+# Manual runs carry their requested version in the run title, which the "Wait
+# for earlier manual builds" step uses to find same-version runs.
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Agent runtime images (dispatch {0})', inputs.version) || format('Agent runtime images ({0})', github.sha) }}
 
 on:
   push:
@@ -18,6 +21,23 @@ permissions:
   contents: read
   packages: write
   id-token: write   # cosign keyless OIDC
+  actions: read     # "Wait for earlier manual builds" lists this workflow's runs
+
+# Push-triggered runs on the same ref serialize against each other so two
+# overlapping builds can't publish the floating :latest alias out of order
+# (see build-and-sign's "Alias digests under a stable :latest tag" step).
+# `cancel-in-progress: false` queues the newer run instead of killing the older
+# one mid-push. GitHub keeps only the newest pending run per group, which is
+# what we want for pushes: the latest commit is the one :latest should reach.
+#
+# workflow_dispatch runs must never be dropped that way (an explicitly
+# requested version tag would silently never get published), so each gets its
+# own group and same-version manual builds are serialized by the "Wait for
+# earlier manual builds" step instead, which has no pending-run limit and
+# isn't affected by Actions' case-insensitive group names.
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && format('agent-runtime-images-dispatch-{0}', github.run_id) || format('agent-runtime-images-{0}', github.ref) }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io/paperclipai
@@ -27,20 +47,50 @@ jobs:
   build-and-sign:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
+      - name: Wait for earlier manual builds
+        # Serialize manual builds of the same version in start order so two
+        # dispatches for e.g. "dev" can't interleave their pushes and leave the
+        # six tags pointing at different commits. Builds of other versions
+        # push other tags and don't wait. Run ids only increase, so the oldest
+        # run never waits and this can't deadlock. Querying each unfinished
+        # status (rather than the N most recent runs) means an old, still
+        # running build can't fall out of the result page.
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          TITLE: Agent runtime images (dispatch ${{ inputs.version }})
+        run: |
+          # bash -e: a failed API call fails the step rather than building
+          # unserialized.
+          while true; do
+            : > "${RUNNER_TEMP}/unfinished.tsv"
+            for status in requested pending waiting queued in_progress; do
+              gh api --paginate \
+                "repos/${REPO}/actions/workflows/agent-runtime-images.yml/runs?event=workflow_dispatch&status=${status}&per_page=100" \
+                --jq '.workflow_runs[] | "\(.id)\t\(.display_title)"' >> "${RUNNER_TEMP}/unfinished.tsv"
+            done
+            older=$(awk -F'\t' -v me="${RUN_ID}" -v t="${TITLE}" '$1 < me && $2 == t' "${RUNNER_TEMP}/unfinished.tsv" | wc -l)
+            [ "${older}" = "0" ] && break
+            echo "Waiting for ${older} earlier build(s) of this version to finish..."
+            sleep 30
+          done
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log into GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       - name: Build + push all deployed harness images (linux/amd64)
         id: bake
@@ -96,3 +146,24 @@ jobs:
       - name: Cosign sign claude
         run: |
           cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-claude@${{ steps.bake.outputs.claude_digest }}"
+
+      - name: Alias digests under a stable :latest tag
+        # The bake step above only ever pushes the VERSION tag (a git-sha on
+        # push, or an arbitrary string on manual dispatch). Self-hosters
+        # configuring the kubernetes-sandbox plugin have no way to discover or
+        # pin the newest git-sha tag, and the plugin's built-in adapter-defaults
+        # point at a ":v1" tag that has never been published (#8757, #13544
+        # blocker 2), so every unconfigured self-host install gets
+        # ImagePullBackOff. `imagetools create` re-tags the already-pushed
+        # digest without rebuilding, so this is push-cost only. Skip on manual
+        # dispatch with a custom version — only automated `push` runs move
+        # the floating tag, so a one-off `workflow_dispatch` test build can
+        # never clobber :latest for real deployments.
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          docker buildx imagetools create -t "${{ env.REGISTRY }}/agent-runtime-base:latest"     "${{ env.REGISTRY }}/agent-runtime-base@${{ steps.bake.outputs.base_digest }}"
+          docker buildx imagetools create -t "${{ env.REGISTRY }}/agent-runtime-opencode:latest" "${{ env.REGISTRY }}/agent-runtime-opencode@${{ steps.bake.outputs.opencode_digest }}"
+          docker buildx imagetools create -t "${{ env.REGISTRY }}/agent-runtime-pi:latest"       "${{ env.REGISTRY }}/agent-runtime-pi@${{ steps.bake.outputs.pi_digest }}"
+          docker buildx imagetools create -t "${{ env.REGISTRY }}/agent-runtime-codex:latest"    "${{ env.REGISTRY }}/agent-runtime-codex@${{ steps.bake.outputs.codex_digest }}"
+          docker buildx imagetools create -t "${{ env.REGISTRY }}/agent-runtime-gemini:latest"   "${{ env.REGISTRY }}/agent-runtime-gemini@${{ steps.bake.outputs.gemini_digest }}"
+          docker buildx imagetools create -t "${{ env.REGISTRY }}/agent-runtime-claude:latest"   "${{ env.REGISTRY }}/agent-runtime-claude@${{ steps.bake.outputs.claude_digest }}"

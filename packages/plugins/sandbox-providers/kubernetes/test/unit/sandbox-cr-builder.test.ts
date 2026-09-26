@@ -134,4 +134,26 @@ describe("buildSandboxCrManifest", () => {
     const cr = buildSandboxCrManifest(baseInput);
     expect(cr.spec.podTemplate.spec.imagePullSecrets).toBeUndefined();
   });
+
+  it("uses IfNotPresent for an immutable version-tagged image", () => {
+    const cr = buildSandboxCrManifest(baseInput);
+    expect(cr.spec.podTemplate.spec.containers[0].imagePullPolicy).toBe("IfNotPresent");
+  });
+
+  it("uses Always for a floating :latest image so stale node caches can't stick", () => {
+    const cr = buildSandboxCrManifest({
+      ...baseInput,
+      image: "ghcr.io/paperclipai/agent-runtime-claude:latest",
+    });
+    expect(cr.spec.podTemplate.spec.containers[0].imagePullPolicy).toBe("Always");
+  });
+
+  it("uses IfNotPresent for a floating :latest image when preloadedImages is set (air-gapped clusters)", () => {
+    const cr = buildSandboxCrManifest({
+      ...baseInput,
+      image: "ghcr.io/paperclipai/agent-runtime-claude:latest",
+      preloadedImages: true,
+    });
+    expect(cr.spec.podTemplate.spec.containers[0].imagePullPolicy).toBe("IfNotPresent");
+  });
 });

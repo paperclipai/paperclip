@@ -16,6 +16,14 @@ export const kubernetesProviderConfigSchema = z
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),
 
+    /**
+     * Air-gapped/offline clusters that preload runtime images onto nodes
+     * out-of-band (no registry reachable at pod-start time) should set this
+     * to keep `imagePullPolicy: IfNotPresent` for every image, even for
+     * floating tags like `:latest` that would otherwise force `Always`.
+     */
+    preloadedImages: z.boolean().default(false),
+
     egressAllowFqdns: z.array(z.string()).default([]),
     egressAllowCidrs: z.array(z.string().regex(cidrRegex, "Invalid CIDR")).default([]),
     egressMode: z.enum(["cilium", "standard"]).default("standard"),

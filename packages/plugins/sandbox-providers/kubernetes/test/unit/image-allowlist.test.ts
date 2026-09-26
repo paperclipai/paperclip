@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { globMatch, resolveImage } from "../../src/image-allowlist.js";
+import { globMatch, resolveImage, imagePullPolicyFor, resolveImagePullPolicy } from "../../src/image-allowlist.js";
 
 describe("globMatch", () => {
   it("matches exact image", () => {
@@ -58,5 +58,62 @@ describe("resolveImage", () => {
         { imageAllowList: ["registry.example.com/*"], imageRegistry: undefined },
       ),
     ).toThrow(/not in allowlist/);
+  });
+});
+
+describe("imagePullPolicyFor", () => {
+  it("uses Always for :latest so nodes can't cache a stale floating tag", () => {
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:latest")).toBe("Always");
+  });
+
+  it("uses Always for other known floating aliases (dev/main/stable)", () => {
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:dev")).toBe("Always");
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:main")).toBe("Always");
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:stable")).toBe("Always");
+  });
+
+  it("uses Always when no tag is given (Docker defaults to :latest)", () => {
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude")).toBe("Always");
+  });
+
+  it("uses IfNotPresent for an immutable-looking version tag", () => {
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:v1")).toBe("IfNotPresent");
+    expect(imagePullPolicyFor("ghcr.io/paperclipai/agent-runtime-claude:git-38d8f37")).toBe(
+      "IfNotPresent",
+    );
+  });
+
+  it("uses IfNotPresent for a digest-pinned reference even if it happens to say latest", () => {
+    expect(
+      imagePullPolicyFor(
+        "ghcr.io/paperclipai/agent-runtime-claude@sha256:" + "a".repeat(64),
+      ),
+    ).toBe("IfNotPresent");
+  });
+});
+
+describe("resolveImagePullPolicy", () => {
+  it("defers to imagePullPolicyFor when preloadedImages is not set", () => {
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude:latest", undefined)).toBe(
+      "Always",
+    );
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude:v1", undefined)).toBe(
+      "IfNotPresent",
+    );
+  });
+
+  it("defers to imagePullPolicyFor when preloadedImages is false", () => {
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude:latest", false)).toBe(
+      "Always",
+    );
+  });
+
+  it("forces IfNotPresent for a floating tag when preloadedImages is true (air-gapped clusters)", () => {
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude:latest", true)).toBe(
+      "IfNotPresent",
+    );
+    expect(resolveImagePullPolicy("ghcr.io/paperclipai/agent-runtime-claude", true)).toBe(
+      "IfNotPresent",
+    );
   });
 });
