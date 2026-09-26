@@ -54,4 +54,6 @@ export const SETUP_LOGIN_HINTS: Record<string, string> = {
     "Grok Build uses its CLI sign-in. Run grok login on the selected environment's host, then test the connection here.",
   hermes_local:
     "Use a provider API key, or the existing Hermes provider configuration on the selected environment's host.",
+  opencode_local:
+    "Use a provider API key, or authenticate providers on the selected environment's host (e.g. opencode auth login).",
 };

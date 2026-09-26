@@ -145,11 +145,7 @@ function Setup({
   const [providerBinding, setProviderBinding] = useState<EnvBinding | null>(
     null,
   );
-  const [runtimeAiBinding, setRuntimeAiBinding] = useState<AiConnectionBinding | undefined>(() =>
-    brandType === "opencode_local"
-      ? { provider: "openrouter", method: "api_key", mode: "responsible_user" }
-      : undefined,
-  );
+  const [runtimeAiBinding, setRuntimeAiBinding] = useState<AiConnectionBinding | undefined>(undefined);
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
   const aiBinding = runtimeAiBinding ?? connection?.aiConnection;
   const [repository, setRepository] = useState("");
@@ -823,6 +819,7 @@ function Setup({
                             </div>
                           ) : (
                             <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
+                              allowNone={brandType === "opencode_local"}
                               onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
                           )
                         )}
