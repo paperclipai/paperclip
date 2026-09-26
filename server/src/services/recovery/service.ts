@@ -6200,7 +6200,8 @@ export function recoveryService(
     // process-death authority is deliberately left alone, because there the
     // evidence is positive — the recorded pid and process group are gone — and
     // it already skips runs that have not recorded process metadata. The cost
-    // for a genuinely orphaned run is at most one extra sweep tick. Fail open
+    // for a genuinely orphaned run is bounded by the grace period plus one sweep
+    // tick: every sweep before the run reaches that age skips cleanup. Fail open
     // when the row carries no usable timestamp, so an unexpected shape can never
     // strand a lock forever.
     if (issueTerminalStatus) {
