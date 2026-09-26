@@ -14,6 +14,11 @@ function counterDb(
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
+  // The order in which the transaction takes its row locks. Both queries below
+  // end in `for("update")`, so this is the only place the lock order is
+  // observable -- and lock order is what decides whether this transaction can
+  // deadlock against `clearCheckoutRunIfTerminal`.
+  const lockOrder: Array<"issue" | "run"> = [];
   const tx = {
     select: (selection: Record<string, unknown>) => ({
       from: (table: unknown) => ({
@@ -28,6 +33,7 @@ function counterDb(
           // be too -- otherwise a lock-attribution test would pass against a row
           // that was never meant to be an issue.
           const isIssueLockQuery = Object.keys(selection).includes("checkoutRunId");
+          lockOrder.push(isIssueLockQuery ? "issue" : "run");
           const rows = isIssueLockQuery
             ? (targetIssue === null ? [] : [targetIssue])
             : (runOverrides === null ? [] : [{
@@ -54,6 +60,7 @@ function counterDb(
       transaction: async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx),
     },
     inserted,
+    lockOrder,
     get observedCount() {
       return observedCount;
     },
@@ -236,6 +243,50 @@ describe("cross-issue influence limit rollout", () => {
       kind: "update",
     })).resolves.toBeNull();
     expect(fake.inserted).toEqual([]);
+  });
+
+  it("attributes a run holding only the target's execution lock, with no contextSnapshot issue", async () => {
+    // The execution lock is a separate column from the checkout lock and either
+    // one alone must satisfy the binding. Every other fixture here sets
+    // `executionRunId` to null, so without this case a regression that dropped
+    // the execution arm would still pass all of them.
+    const fake = counterDb(0, { contextSnapshot: {} }, {
+      id: "55555555-5555-4555-8555-555555555555",
+      checkoutRunId: null,
+      executionRunId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("locks the target issue before the run row, matching the checkout cleanup order", async () => {
+    // `clearCheckoutRunIfTerminal` locks the issue and then the run. If this
+    // transaction ever takes them the other way round, the two can each hold
+    // one lock and wait on the other. The double records the order the locked
+    // queries arrive in, which is the only thing that changes when the order
+    // regresses.
+    const fake = counterDb(0, { contextSnapshot: {} }, {
+      id: "55555555-5555-4555-8555-555555555555",
+      checkoutRunId: "11111111-1111-4111-8111-111111111111",
+      executionRunId: null,
+    });
+
+    await observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    });
+
+    expect(fake.lockOrder).toEqual(["issue", "run"]);
   });
 
   it("refuses when the target row exists but a different run holds its lock", async () => {

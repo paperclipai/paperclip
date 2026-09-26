@@ -70,21 +70,26 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
  * Scope is the target issue only. A run holding a lock on some *other* issue is
  * not bound to this write, so it falls through to the caller's fail-closed
  * refusal rather than being charged to an unrelated row.
+ *
+ * Returns the locked row so the caller can read the run's context snapshot
+ * while the issue lock is still held. The lock order is issue-then-run, which is
+ * the order `clearCheckoutRunIfTerminal` already takes; taking it the other way
+ * round lets this transaction and a concurrent checkout cleanup deadlock against
+ * each other.
  */
-async function readIssueLockAttribution(
+async function lockTargetIssueForAttribution(
   tx: Tx,
   input: {
     companyId: string;
-    runId: string;
     targetIssueId: string;
   },
-): Promise<string | null> {
+): Promise<{ id: string; checkoutRunId: string | null; executionRunId: string | null } | null> {
   if (!isUuidLike(input.targetIssueId)) return null;
 
   // The run's lock on the target row itself, scoped by company so a target id
   // from another company can never satisfy the binding. The row lock is what
   // makes the read safe against a concurrent checkout flipping the binding.
-  const target = await tx
+  return tx
     .select({
       id: issues.id,
       checkoutRunId: issues.checkoutRunId,
@@ -94,9 +99,6 @@ async function readIssueLockAttribution(
     .where(and(eq(issues.id, input.targetIssueId), eq(issues.companyId, input.companyId)))
     .for("update")
     .then((rows) => rows[0] ?? null);
-  if (!target) return null;
-  if (target.checkoutRunId === input.runId || target.executionRunId === input.runId) return target.id;
-  return null;
 }
 
 export function evaluateCrossIssueInfluenceLimit(input: {
@@ -141,6 +143,16 @@ export async function observeCrossIssueInfluence(
   if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError();
 
   return db.transaction(async (tx) => {
+    // Issue row first, then run row. `clearCheckoutRunIfTerminal` and
+    // `clearExecutionRunIfTerminal` -- the checkout-ownership cleanup that runs
+    // ahead of every issue write -- lock the issue and then the run. Taking the
+    // same order here means this transaction and that cleanup can never hold one
+    // lock each and wait on the other.
+    const target = await lockTargetIssueForAttribution(tx, {
+      companyId: input.companyId,
+      targetIssueId: input.targetIssueId,
+    });
+
     const run = await tx
       .select({
         id: heartbeatRuns.id,
@@ -165,8 +177,11 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot) ??
-      (await readIssueLockAttribution(tx, input));
+    const lockAttribution =
+      target && (target.checkoutRunId === input.runId || target.executionRunId === input.runId)
+        ? target.id
+        : null;
+    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot) ?? lockAttribution;
     if (!sourceIssueId) throw crossIssueInfluenceUnattributedRunError();
     if (
       sourceIssueId === input.targetIssueId ||
