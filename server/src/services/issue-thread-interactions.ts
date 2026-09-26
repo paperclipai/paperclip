@@ -1107,7 +1107,11 @@ function linkedSecretProposalId(
     : null;
 }
 
-async function lockLinkedSecretProposal(
+// A grouped ask links one card to every binding it covers: the anchor row
+// carries the interaction id and its siblings share the group id. Resolving the
+// card must resolve the whole ask, because the card is the only surface that
+// asks a human to decide it - a sibling left pending is a decision nobody sees.
+async function linkedSecretProposalIds(
   db: Db,
   interaction: Pick<
     IssueThreadInteractionRow,
@@ -1115,9 +1119,9 @@ async function lockLinkedSecretProposal(
   >,
 ) {
   const proposalId = linkedSecretProposalId(interaction);
-  if (!proposalId) return;
-  await db
-    .select({ id: companySecretProposals.id })
+  if (!proposalId) return [];
+  const anchor = await db
+    .select({ groupId: companySecretProposals.groupId })
     .from(companySecretProposals)
     .where(
       and(
@@ -1126,6 +1130,43 @@ async function lockLinkedSecretProposal(
         eq(companySecretProposals.interactionId, interaction.id),
       ),
     )
+    .then((rows) => rows[0] ?? null);
+  if (!anchor) return [];
+  if (!anchor.groupId) return [proposalId];
+  const members = await db
+    .select({ id: companySecretProposals.id })
+    .from(companySecretProposals)
+    .where(
+      and(
+        eq(companySecretProposals.companyId, interaction.companyId),
+        eq(companySecretProposals.groupId, anchor.groupId),
+      ),
+    )
+    // Id order, so every path that resolves a group takes the same locks in the
+    // same sequence: a multi-row lock is only as stable as the plan under it.
+    .orderBy(asc(companySecretProposals.id));
+  return members.map((member) => member.id);
+}
+
+async function lockLinkedSecretProposal(
+  db: Db,
+  interaction: Pick<
+    IssueThreadInteractionRow,
+    "id" | "companyId" | "kind" | "payload"
+  >,
+) {
+  const proposalIds = await linkedSecretProposalIds(db, interaction);
+  if (proposalIds.length === 0) return;
+  await db
+    .select({ id: companySecretProposals.id })
+    .from(companySecretProposals)
+    .where(
+      and(
+        eq(companySecretProposals.companyId, interaction.companyId),
+        inArray(companySecretProposals.id, proposalIds),
+      ),
+    )
+    .orderBy(asc(companySecretProposals.id))
     .for("update");
 }
 
@@ -1142,9 +1183,10 @@ async function resolveLinkedSecretProposal(
     now: Date;
   },
 ) {
-  const proposalId = linkedSecretProposalId(interaction);
-  if (!proposalId) return;
-  const [proposal] = await db
+  const anchorId = linkedSecretProposalId(interaction);
+  const proposalIds = await linkedSecretProposalIds(db, interaction);
+  if (!anchorId || proposalIds.length === 0) return;
+  const proposals = await db
     .update(companySecretProposals)
     .set({
       status: outcome.status,
@@ -1157,14 +1199,17 @@ async function resolveLinkedSecretProposal(
     })
     .where(
       and(
-        eq(companySecretProposals.id, proposalId),
         eq(companySecretProposals.companyId, interaction.companyId),
-        eq(companySecretProposals.interactionId, interaction.id),
+        inArray(companySecretProposals.id, proposalIds),
         eq(companySecretProposals.status, "pending"),
       ),
     )
     .returning();
-  if (!proposal) throw conflict("Linked secret proposal is no longer pending");
+  // Nothing left to resolve is the guard it always was: a human resolving a card
+  // whose ask is already settled is a conflict, not a no-op. A group where only
+  // some members are still pending is not that case - a sibling rejected on its
+  // own leaves the card decididable for the rest.
+  if (proposals.length === 0) throw conflict("Linked secret proposal is no longer pending");
   const actorType = outcome.actor.userId
     ? ("user" as const)
     : outcome.actor.agentId
@@ -1175,22 +1220,25 @@ async function resolveLinkedSecretProposal(
     outcome.actor.agentId ??
     outcome.actor.systemId ??
     "system";
-  await logActivity(db, {
-    companyId: interaction.companyId,
-    actorType,
-    actorId,
-    action: `secret.proposal.${outcome.status}`,
-    entityType: "company_secret_proposal",
-    entityId: proposal.id,
-    agentId: proposal.proposedByAgentId,
-    runId: proposal.originRunId,
-    details: {
-      ciphertextScrubbed: true,
-      issueId: proposal.originIssueId,
-      interactionId: interaction.id,
-      reason: outcome.reason ?? null,
-    },
-  });
+  for (const proposal of proposals) {
+    await logActivity(db, {
+      companyId: interaction.companyId,
+      actorType,
+      actorId,
+      action: `secret.proposal.${outcome.status}`,
+      entityType: "company_secret_proposal",
+      entityId: proposal.id,
+      agentId: proposal.proposedByAgentId,
+      runId: proposal.originRunId,
+      details: {
+        ciphertextScrubbed: true,
+        issueId: proposal.originIssueId,
+        interactionId: interaction.id,
+        reason: outcome.reason ?? null,
+        ...(proposals.length > 1 ? { groupAnchorProposalId: anchorId } : {}),
+      },
+    });
+  }
 }
 
 function resolveActorKind(
@@ -3073,7 +3121,12 @@ export function issueThreadInteractionService(
           : execution.status;
         if (executionStatus === "failed" && proposal.status === "pending") {
           const resolutionReason = `Interaction acceptance failed: ${execution.errorCode ?? "secret_proposal_execution_failed"}`;
-          await tx
+          // The ask failed whole, so the whole ask is rejected. Rejecting only
+          // the anchor would leave its group pending behind an accepted card,
+          // which is the orphan this coupling exists to prevent.
+          const linkedIds =
+            await linkedSecretProposalIds(tx as unknown as Db, current);
+          const rejected = await tx
             .update(companySecretProposals)
             .set({
               status: "rejected",
@@ -3086,27 +3139,35 @@ export function issueThreadInteractionService(
             })
             .where(
               and(
-                eq(companySecretProposals.id, proposal.id),
+                eq(companySecretProposals.companyId, issue.companyId),
+                inArray(
+                  companySecretProposals.id,
+                  linkedIds.length > 0 ? linkedIds : [proposal.id],
+                ),
                 eq(companySecretProposals.status, "pending"),
               ),
-            );
-          await logActivity(tx as unknown as Db, {
-            companyId: issue.companyId,
-            actorType: current.resolvedByUserId ? "user" : "system",
-            actorId: current.resolvedByUserId ?? "system",
-            action: "secret.proposal.rejected",
-            entityType: "company_secret_proposal",
-            entityId: proposal.id,
-            agentId: proposal.proposedByAgentId,
-            runId: proposal.originRunId,
-            details: {
-              ciphertextScrubbed: true,
-              issueId: proposal.originIssueId,
-              interactionId: current.id,
-              reason: resolutionReason,
-              executionFailed: true,
-            },
-          });
+            )
+            .returning();
+          for (const rejectedProposal of rejected) {
+            await logActivity(tx as unknown as Db, {
+              companyId: issue.companyId,
+              actorType: current.resolvedByUserId ? "user" : "system",
+              actorId: current.resolvedByUserId ?? "system",
+              action: "secret.proposal.rejected",
+              entityType: "company_secret_proposal",
+              entityId: rejectedProposal.id,
+              agentId: rejectedProposal.proposedByAgentId,
+              runId: rejectedProposal.originRunId,
+              details: {
+                ciphertextScrubbed: true,
+                issueId: rejectedProposal.originIssueId,
+                interactionId: current.id,
+                reason: resolutionReason,
+                executionFailed: true,
+                ...(rejected.length > 1 ? { groupAnchorProposalId: proposal.id } : {}),
+              },
+            });
+          }
         }
         const result =
           current.result &&
@@ -3114,6 +3175,15 @@ export function issueThreadInteractionService(
           !Array.isArray(current.result)
             ? (current.result as unknown as Record<string, unknown>)
             : {};
+        // A grouped ask records its per-binding outcomes when it is resolved.
+        // This receipt is the last write to the card and must not drop them:
+        // they are the only record on the card of which bindings were created.
+        const recordedBindings =
+          result.secretProposal &&
+          typeof result.secretProposal === "object" &&
+          !Array.isArray(result.secretProposal)
+            ? (result.secretProposal as Record<string, unknown>).bindings
+            : undefined;
         const [row] = await tx
           .update(issueThreadInteractions)
           .set({
@@ -3129,6 +3199,9 @@ export function issueThreadInteractionService(
                     ? (execution.errorCode ?? null)
                     : null,
                 updatedAt: now.toISOString(),
+                ...(Array.isArray(recordedBindings)
+                  ? { bindings: recordedBindings }
+                  : {}),
               },
             },
             updatedAt: now,

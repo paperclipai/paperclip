@@ -26,6 +26,12 @@ export const companySecretProposals = pgTable(
     targetType: text("target_type"),
     targetId: uuid("target_id").references(() => agents.id, { onDelete: "cascade" }),
     configPath: text("config_path"),
+    // Binding proposals raised as one ask share a group id. The group is the
+    // unit a human decides; each binding stays its own row so the config path,
+    // the secret reference and its foreign key, the chain-of-command snapshot
+    // and the per-binding audit entry are all unchanged. Null for a proposal
+    // raised on its own, which is every proposal that predates this column.
+    groupId: uuid("group_id"),
     projectionClass: text("projection_class").notNull().default("unclassified"),
     bindingTargetPolicySnapshot: text("binding_target_policy_snapshot"),
     proposerAncestorIdsSnapshot: jsonb("proposer_ancestor_ids_snapshot").$type<string[] | null>(),
@@ -50,9 +56,11 @@ export const companySecretProposals = pgTable(
     expiryIdx: index("company_secret_proposals_expiry_idx").on(table.status, table.expiresAt),
     secretProposalIdx: index("company_secret_proposals_secret_proposal_idx").on(table.secretProposalId),
     interactionIdx: index("company_secret_proposals_interaction_idx").on(table.interactionId),
+    groupIdx: index("company_secret_proposals_group_idx").on(table.groupId),
     kindCheck: check("company_secret_proposals_kind_check", sql`${table.kind} in ('secret', 'binding')`),
     statusCheck: check("company_secret_proposals_status_check", sql`${table.status} in ('pending', 'approved', 'rejected', 'withdrawn', 'expired')`),
     projectionCheck: check("company_secret_proposals_projection_check", sql`${table.projectionClass} = 'unclassified'`),
+    groupCheck: check("company_secret_proposals_group_check", sql`${table.groupId} is null or ${table.kind} = 'binding'`),
     shapeCheck: check("company_secret_proposals_shape_check", sql`(
       ${table.kind} = 'secret'
       and ${table.proposedName} is not null

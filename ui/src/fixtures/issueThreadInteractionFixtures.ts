@@ -815,6 +815,44 @@ export const pendingSecretProposalInteraction = createSecretProposalConfirmation
   id: "interaction-secret-proposal-pending",
 });
 
+// One ask that grants several bindings at once. The card has to name every one
+// of them and let the approver keep some while refusing others.
+export const pendingGroupedSecretProposalInteraction = createSecretProposalConfirmationInteraction({
+  id: "interaction-secret-proposal-group",
+  payload: {
+    version: 1,
+    prompt: "Bind 3 secrets to EvalsEngineer?",
+    acceptLabel: "Create bindings",
+    rejectLabel: "Reject",
+    allowDeclineReason: true,
+  },
+  secretProposal: {
+    configPath: "env.SOAK_A",
+    proposalIds: [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ],
+    bindings: [
+      {
+        proposalId: "11111111-1111-4111-8111-111111111111",
+        sourceSecretLabel: "dev/soak/alpha",
+        configPath: "env.SOAK_A",
+      },
+      {
+        proposalId: "22222222-2222-4222-8222-222222222222",
+        sourceSecretLabel: "dev/soak/beta",
+        configPath: "env.SOAK_B",
+      },
+      {
+        proposalId: "33333333-3333-4333-8333-333333333333",
+        sourceSecretLabel: "dev/soak/gamma",
+        configPath: "env.SOAK_C",
+      },
+    ],
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Connection-authorization fixtures (PAP-17835). Same interaction kind and the
 // same server-addressed audience as any other confirmation; only the

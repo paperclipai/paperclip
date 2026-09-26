@@ -78,6 +78,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   upsertDocument: vi.fn(),
   getDocument: vi.fn(),
   rejectInteraction: vi.fn(),
+  acceptInteraction: vi.fn(),
 }));
 
 const mockActivityApi = vi.hoisted(() => ({
@@ -4992,6 +4993,102 @@ describe("IssueDetail", () => {
       title: "Selected “Continue work”",
       tone: "success",
     });
+  });
+
+  // The card passes the bindings a human cleared as a fifth argument. A page
+  // handler that declares only four parameters drops it without a type error,
+  // and the accept request then approves every binding the human just refused.
+  it("carries the bindings a human cleared on the card into the accept request", async () => {
+    const groupedInteraction = {
+      id: "interaction-group-bindings",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation",
+      title: "Bind 3 secrets to EvalsEngineer?",
+      summary: "One approval creates three config paths.",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      resolverPolicy: "human_only",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "governed_action",
+      legacyResolverPolicyAliases: {
+        requested: "board_only",
+        effective: "board_only",
+      },
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      createdAt: new Date("2026-09-06T12:00:00.000Z"),
+      updatedAt: new Date("2026-09-06T12:00:00.000Z"),
+      resolvedAt: null,
+      payload: {
+        version: 1,
+        prompt: "Bind 3 secrets to EvalsEngineer?",
+        acceptLabel: "Create bindings",
+        rejectLabel: "Reject",
+        secretProposal: {
+          version: 1,
+          proposalId: "binding-1",
+          sourceSecretLabel: "dev/soak/alpha",
+          configPath: "env.SOAK_A",
+          targetAgentId: "agent-evals",
+          targetAgentName: "EvalsEngineer",
+          justification: "The soak run needs all three.",
+          expiresAt: "2026-10-06T12:00:00.000Z",
+          proposalIds: ["binding-1", "binding-2", "binding-3"],
+          bindings: [
+            { proposalId: "binding-1", sourceSecretLabel: "dev/soak/alpha", configPath: "env.SOAK_A" },
+            { proposalId: "binding-2", sourceSecretLabel: "dev/soak/beta", configPath: "env.SOAK_B" },
+            { proposalId: "binding-3", sourceSecretLabel: "dev/soak/gamma", configPath: "env.SOAK_C" },
+          ],
+        },
+      },
+      result: null,
+    } satisfies RequestConfirmationInteraction;
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.acceptInteraction.mockResolvedValue({
+      ...groupedInteraction,
+      status: "accepted",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAcceptInteraction?: (
+        interaction: RequestConfirmationInteraction,
+        selectedClientKeys?: string[],
+        selectedOptionIds?: string[],
+        rememberAction?: boolean,
+        rejectProposalIds?: string[],
+      ) => Promise<void>;
+    };
+    expect(props.onAcceptInteraction).toBeTypeOf("function");
+
+    await act(async () => {
+      await props.onAcceptInteraction?.(
+        groupedInteraction,
+        undefined,
+        undefined,
+        undefined,
+        ["binding-2"],
+      );
+    });
+
+    expect(mockIssuesApi.acceptInteraction).toHaveBeenCalledWith(
+      "PAP-1",
+      groupedInteraction.id,
+      expect.objectContaining({ rejectProposalIds: ["binding-2"] }),
+    );
   });
 
   it("passes ask work mode to the issue chat thread", async () => {

@@ -430,6 +430,9 @@ export const issuesApi = {
       selectedClientKeys?: string[];
       selectedOptionIds?: string[];
       rememberAction?: boolean;
+      // Bindings of a grouped secret proposal to decline while accepting the
+      // rest of the ask.
+      rejectProposalIds?: string[];
     },
   ) =>
     api.post<IssueThreadInteraction>(

@@ -90,11 +90,14 @@ export function AttentionInteractionResolver({
       selectedClientKeys?: string[];
       selectedOptionIds?: string[];
       rememberAction?: boolean;
+      // Bindings of a grouped secret proposal the approver cleared on the card.
+      rejectProposalIds?: string[];
     }) =>
       issuesApi.acceptInteraction(issueId, input.interaction.id, {
         selectedClientKeys: input.selectedClientKeys,
         selectedOptionIds: input.selectedOptionIds,
         rememberAction: input.rememberAction,
+        rejectProposalIds: input.rejectProposalIds,
       }),
     onSuccess: invalidate,
   });
@@ -147,8 +150,8 @@ export function AttentionInteractionResolver({
       agentMap={agentMap}
       currentUserId={currentUserId}
       userLabelMap={userLabelMap}
-      onAcceptInteraction={(target, selectedClientKeys, selectedOptionIds, rememberAction) =>
-        acceptMutation.mutateAsync({ interaction: target, selectedClientKeys, selectedOptionIds, rememberAction }).then(() => undefined)
+      onAcceptInteraction={(target, selectedClientKeys, selectedOptionIds, rememberAction, rejectProposalIds) =>
+        acceptMutation.mutateAsync({ interaction: target, selectedClientKeys, selectedOptionIds, rememberAction, rejectProposalIds }).then(() => undefined)
       }
       onRejectInteraction={(target, reason) =>
         rejectMutation.mutateAsync({ interactionId: target.id, reason }).then(() => undefined)

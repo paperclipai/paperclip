@@ -16185,6 +16185,9 @@ export function issueRoutes(
             }
             await secretProposals.approve(issue.companyId, proposal.id, {
               resolvedByUserId,
+              // The accepting user may have declined some bindings of a group on
+              // the card itself; the rest are approved in the same transaction.
+              rejectProposalIds: req.body.rejectProposalIds,
               assertCanResolve: (lockedProposal, txDb) =>
                 assertCanResolveProposal({
                   db: txDb,
@@ -16193,10 +16196,15 @@ export function issueRoutes(
                   proposal: lockedProposal,
                 }),
             });
+            // Accepting the card is the same decision as approving the proposal,
+            // so it owes the same receipt: every binding the decision settled,
+            // not the anchor alone.
+            const groupMembers = await secretProposals.resolutionSet(issue.companyId, proposal);
             await notifySecretProposalResolution({
               proposal,
               status: "approved",
               userId: resolvedByUserId,
+              groupMembers,
               issues: svc,
               heartbeat,
             });
