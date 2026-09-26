@@ -12035,6 +12035,14 @@ export function issueService(db: Db) {
             });
           }
         }
+        if (issueData.parentId && issueData.parentId !== existing.parentId) {
+          // Concurrent reparents are serialized by the issue-privacy-tree
+          // advisory lock above (it fires on every parentId change), so the
+          // pre-write cycle check cannot race a concurrent move into a
+          // committed cycle: re-check the parent chain here, under the same
+          // lock, before the edge is written.
+          await assertNoParentCycle(tx, existing.companyId, existing.id, issueData.parentId);
+        }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
