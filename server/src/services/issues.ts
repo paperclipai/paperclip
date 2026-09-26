@@ -10636,8 +10636,12 @@ export function issueService(db: Db) {
       // Warm sandbox continuity is runtime bookkeeping, independent of the
       // opt-in UI for creating isolated worktrees. Public updates still obey
       // the feature gate; only the internal shared-workspace binding bypasses it.
+      // An explicit null still goes through: with the gate off it is the only
+      // way to detach a stale execution workspace pin from an issue.
       if (!isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace) {
-        delete issueData.executionWorkspaceId;
+        if (issueData.executionWorkspaceId !== null) {
+          delete issueData.executionWorkspaceId;
+        }
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
@@ -10739,18 +10743,36 @@ export function issueService(db: Db) {
         issueData.projectId !== undefined
           ? issueData.projectId
           : existing.projectId;
-      const nextProjectWorkspaceId =
+      let nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined
           ? issueData.projectWorkspaceId
           : existing.projectWorkspaceId;
-      const nextExecutionWorkspaceId =
+      let nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined
           ? issueData.executionWorkspaceId
           : existing.executionWorkspaceId;
-      const nextExecutionWorkspacePreference =
+      let nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
           : existing.executionWorkspacePreference;
+      // Moving an issue to another project leaves any carried-over workspace
+      // link pointing at the old project's workspaces. Drop the links the caller
+      // did not ask for instead of rejecting the move on a link it never chose;
+      // an explicitly supplied workspace id is still validated below.
+      if (issueData.projectId !== undefined && issueData.projectId !== existing.projectId) {
+        if (issueData.projectWorkspaceId === undefined && nextProjectWorkspaceId) {
+          nextProjectWorkspaceId = null;
+          patch.projectWorkspaceId = null;
+        }
+        if (issueData.executionWorkspaceId === undefined && nextExecutionWorkspaceId) {
+          nextExecutionWorkspaceId = null;
+          patch.executionWorkspaceId = null;
+          if (issueData.executionWorkspacePreference === undefined && nextExecutionWorkspacePreference) {
+            nextExecutionWorkspacePreference = null;
+            patch.executionWorkspacePreference = null;
+          }
+        }
+      }
       const nextExecutionWorkspaceSettings =
         issueData.executionWorkspaceSettings !== undefined
           ? parseIssueExecutionWorkspaceSettings(

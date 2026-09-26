@@ -5035,6 +5035,98 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
   });
 
+  async function seedPinnedIssue(opts: { isolatedWorkspaces: boolean }) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const issueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: opts.isolatedWorkspaces,
+    });
+
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Workspace project", status: "in_progress" },
+      { id: otherProjectId, companyId, name: "Other project", status: "in_progress" },
+    ]);
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Issue worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Pinned issue",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    });
+
+    return { issueId, projectId, otherProjectId, executionWorkspaceId };
+  }
+
+  it("clears a carried-over execution workspace when an issue is moved to another project", async () => {
+    const { issueId, otherProjectId } = await seedPinnedIssue({ isolatedWorkspaces: true });
+
+    const moved = await svc.update(issueId, { status: "todo", projectId: otherProjectId });
+
+    expect(moved?.projectId).toBe(otherProjectId);
+    expect(moved?.executionWorkspaceId).toBeNull();
+    expect(moved?.projectWorkspaceId).toBeNull();
+    expect(moved?.executionWorkspacePreference).toBeNull();
+  });
+
+  it("still rejects an explicit execution workspace from the old project on a project move", async () => {
+    const { issueId, projectId, otherProjectId, executionWorkspaceId } = await seedPinnedIssue({
+      isolatedWorkspaces: true,
+    });
+
+    await expect(
+      svc.update(issueId, { status: "todo", projectId: otherProjectId, executionWorkspaceId }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    const [unchanged] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(unchanged?.projectId).toBe(projectId);
+    expect(unchanged?.executionWorkspaceId).toBe(executionWorkspaceId);
+  });
+
+  it("clears an execution workspace pin with an explicit null when isolated workspaces are off", async () => {
+    const { issueId, projectId } = await seedPinnedIssue({ isolatedWorkspaces: false });
+
+    const updated = await svc.update(issueId, { executionWorkspaceId: null });
+
+    expect(updated?.projectId).toBe(projectId);
+    expect(updated?.executionWorkspaceId).toBeNull();
+  });
+
   it("uses the target project's own workspaces for a cross-project child instead of inheriting the parent's", async () => {
     const companyId = randomUUID();
     const parentProjectId = randomUUID();
