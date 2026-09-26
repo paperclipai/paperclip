@@ -932,6 +932,11 @@ npx paperclipai auth revoke-current
 
 `--token <challenge-secret>` is still supported for compatibility, but `--token-env` avoids putting challenge secrets in shell history or process arguments.
 
+Use the challenge UUID returned by `auth challenge create` for get, approve, and
+cancel. Malformed IDs return HTTP 400 before database access. Unknown challenges
+or incorrect challenge secrets still return HTTP 404. Approving a challenge
+still requires board authentication.
+
 ## Instance Settings Commands
 
 ```sh
