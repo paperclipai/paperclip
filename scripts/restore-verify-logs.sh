@@ -45,8 +45,24 @@ set -euo pipefail
 # the tar, wherever the cut fell, and always fails. Longer is normal: the tar
 # ran after the dump and the run kept writing. The floor lags: it is written
 # at most once a minute, so output from the last minute before the dump is
-# recorded nowhere in the dump and no check can bound it. NULL means the run
-# never produced output.
+# recorded nowhere in the dump and no per-file check can bound it. NULL means
+# the run never produced output.
+#
+# What bounds it is the pairing. A transcript is append-only, so a tar that
+# read it after the dump finished holds every byte the run wrote before the
+# dump. A tar from an earlier backup run can sit at or past the stale floor,
+# end on a line boundary, and still lack events the dump preceded — nothing
+# in the file tells the two apart. So the producer writes the dump artifact's
+# sha256 to <data-dir>/.backup-generation after the dump is complete and
+# before the tar starts:
+#
+#   sha256sum db-<ts>.sql.gz > "$PAPERCLIP_HOME/.backup-generation"
+#
+# and --dump-sha256 holds the restored marker to the dump being restored. A
+# marker naming any other dump, or none, fails before any ref is checked.
+# Without --dump-sha256 an unfinalized transcript is unbounded and fails
+# unless --allow-unbound is given. Finalized runs need no marker: a
+# transcript from another generation does not match their digest.
 #
 # It also has a shape: the server appends whole NDJSON lines, so an intact
 # transcript is empty or ends in a newline. A last byte other than a newline
@@ -61,7 +77,8 @@ set -euo pipefail
 # Usage:
 #   restore-verify-logs.sh <data-dir> [--run-logs-dir <dir>] [--max-missing <n>]
 #                          [--max-torn <n>] [--expect <n>] [--allow-empty]
-#                          [--allow-unverified]
+#                          [--allow-unverified] [--dump-sha256 <hex>]
+#                          [--allow-unbound]
 #
 # <data-dir> is PAPERCLIP_HOME (the restored data directory) or an instance
 # root; the run-log base is resolved from it. --run-logs-dir names the base
@@ -91,6 +108,14 @@ set -euo pipefail
 # stderr — and a short list is checked and passes. Write the rows to a file
 # first and pass the count; the runbook and restore-smoke.sh both do.
 #
+# --dump-sha256 <hex>: the sha256 of the database dump artifact being
+# restored (`sha256sum db-<ts>.sql.gz`). <data-dir> must then be the root the
+# data-directory archive extracted to, which is where .backup-generation is.
+#
+# --allow-unbound: accept unfinalized transcripts with no generation marker
+# checked, and say so on the PASSED line. For artifacts from a producer that
+# does not write the marker; it is the old guarantee, stated as such.
+#
 # --allow-unverified: accept input with no digest columns at all (the
 # two-column form) and report presence only. Without it, such input fails, so
 # a PASSED line always means content was compared.
@@ -100,7 +125,7 @@ set -euo pipefail
 # content differs from its recorded digest, so it gates a script.
 
 usage() {
-  echo "usage: $0 <data-dir> [--run-logs-dir <dir>] [--max-missing <n>] [--max-torn <n>] [--expect <n>] [--allow-empty] [--allow-unverified]" >&2
+  echo "usage: $0 <data-dir> [--run-logs-dir <dir>] [--max-missing <n>] [--max-torn <n>] [--expect <n>] [--allow-empty] [--allow-unverified] [--dump-sha256 <hex>] [--allow-unbound]" >&2
   exit 2
 }
 
@@ -111,6 +136,8 @@ MAX_TORN=0
 EXPECT=""
 ALLOW_EMPTY=0
 ALLOW_UNVERIFIED=0
+DUMP_SHA=""
+ALLOW_UNBOUND=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -149,6 +176,19 @@ while [ $# -gt 0 ]; do
       ;;
     --allow-unverified)
       ALLOW_UNVERIFIED=1
+      shift
+      ;;
+    --dump-sha256)
+      [ $# -ge 2 ] || usage
+      DUMP_SHA="$(printf '%s' "$2" | tr 'A-F' 'a-f')"
+      case "$DUMP_SHA" in
+        *[!0-9a-f]*) echo "--dump-sha256 needs a sha256 hex digest, got: $2" >&2; usage ;;
+      esac
+      [ "${#DUMP_SHA}" -eq 64 ] || { echo "--dump-sha256 needs a sha256 hex digest, got: $2" >&2; usage; }
+      shift 2
+      ;;
+    --allow-unbound)
+      ALLOW_UNBOUND=1
       shift
       ;;
     -h|--help) usage ;;
@@ -194,6 +234,31 @@ fi
 
 [ -d "$RUN_LOGS_DIR" ] || { echo "FAIL: run-log directory not found: $RUN_LOGS_DIR" >&2; exit 1; }
 
+# Tie the tar to the dump before trusting any unfinalized transcript in it.
+generation_proven=0
+if [ -n "$DUMP_SHA" ]; then
+  [ -n "$DATA_DIR" ] || { echo "--dump-sha256 needs <data-dir>, the root the archive extracted to" >&2; usage; }
+  marker="$DATA_DIR/.backup-generation"
+  if [ ! -f "$marker" ]; then
+    echo "FAIL: no .backup-generation marker in $DATA_DIR; nothing was checked." >&2
+    echo "      The producer did not write one, or the archive was extracted" >&2
+    echo "      one level off. Nothing ties this tar to the dump being restored." >&2
+    exit 1
+  fi
+  marker_sha=""
+  read -r marker_sha _ < "$marker" || true
+  marker_sha="$(printf '%s' "$marker_sha" | tr 'A-F' 'a-f')"
+  if [ "$marker_sha" != "$DUMP_SHA" ]; then
+    echo "FAIL: the data directory was not taken after this dump; nothing was checked." >&2
+    echo "      restoring dump $DUMP_SHA" >&2
+    echo "      marker names ${marker_sha:-(empty)}" >&2
+    echo "      The tar belongs to a different backup run. Restore the tar written" >&2
+    echo "      by the same run as the dump." >&2
+    exit 1
+  fi
+  generation_proven=1
+fi
+
 # sha256sum is coreutils on a host and busybox in the alpine helper container
 # the runbook uses for named volumes; both print "<hex>  <path>".
 command -v sha256sum >/dev/null 2>&1 || { echo "FAIL: sha256sum not found on PATH" >&2; exit 1; }
@@ -206,6 +271,7 @@ unverified=0
 floored=0
 short=0
 unbounded_input=0
+presence_only=0
 torn=0
 empty=0
 reported=0
@@ -281,7 +347,11 @@ for line in ${rows[@]+"${rows[@]}"}; do
     # the append it counts, and the dump precedes the tar, so the restored
     # file is at least that long. Shorter is a cut the tar made, on a line
     # boundary or not.
-    if [ "${#seps}" -eq 3 ]; then
+    if [ "${#seps}" -lt 3 ]; then
+      # No digest columns at all: presence-only input, which makes no claim
+      # about content and is refused below unless --allow-unverified.
+      presence_only=$((presence_only + 1))
+    elif [ "${#seps}" -eq 3 ]; then
       # The four-column query: digests selected, the floor not. (Fewer
       # columns is presence-only input, which the digest rule below refuses.)
       unbounded_input=$((unbounded_input + 1))
@@ -388,6 +458,22 @@ if [ "$unbounded_input" -gt 0 ] && [ "$ALLOW_UNVERIFIED" -ne 1 ]; then
   failed=1
 fi
 
+# Every unfinalized transcript that got this far, torn or not, is only
+# known to hold what the dump preceded if the tar is known to follow it.
+unbound=0
+if [ "$generation_proven" -ne 1 ]; then
+  unbound=$((floored + unverified + torn - presence_only))
+fi
+if [ "$unbound" -gt 0 ] && [ "$ALLOW_UNBOUND" -ne 1 ]; then
+  echo "FAIL: $unbound unfinalized transcript(s) cannot be bounded: nothing proves this" >&2
+  echo "      tar was taken after this dump. One from an earlier backup run can be" >&2
+  echo "      as long as the database recorded, end on a line boundary, and still" >&2
+  echo "      lack events the dump holds. Pass --dump-sha256 <sha256 of the dump>" >&2
+  echo "      to check the .backup-generation marker, or --allow-unbound to" >&2
+  echo "      accept that knowingly." >&2
+  failed=1
+fi
+
 if [ "$torn" -gt "$MAX_TORN" ]; then
   echo "FAIL: $checked ref(s) checked, $torn unfinalized transcript(s) end mid-line (tolerance $MAX_TORN)." >&2
   echo "      If the runs above were in flight when the backup ran, the tar cut" >&2
@@ -429,6 +515,12 @@ if [ "$unverified" -gt 0 ]; then
 fi
 if [ "$torn" -gt 0 ]; then
   summary="$summary, $torn unfinalized torn mid-line (within tolerance $MAX_TORN)"
+fi
+if [ "$unbound" -gt 0 ]; then
+  summary="$summary, $unbound unfinalized NOT bounded (no generation marker checked, --allow-unbound given)"
+fi
+if [ "$generation_proven" -eq 1 ]; then
+  summary="$summary, data directory taken after dump ${DUMP_SHA:0:12}"
 fi
 if [ "$empty" -gt 0 ]; then
   summary="$summary ($empty zero-byte, which the source also had)"

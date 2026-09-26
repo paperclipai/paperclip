@@ -38,6 +38,11 @@ set -euo pipefail
 #                        default 0. Same rule as --max-missing: the source's
 #                        known count, measured with restore-verify-logs.sh
 #                        against the live tree
+#   --allow-unbound      the data-directory tar carries no .backup-generation
+#                        marker (its producer does not write one), so nothing
+#                        ties it to --db and in-flight transcripts cannot be
+#                        bounded; accept that, and say so. Without it the
+#                        marker must name the sha256 of --db
 #   --boot-timeout <s>   seconds to wait for the booted server, default 300;
 #                        migrations newer than the dump apply during this
 #   --keep               leave the containers, network and extracted tree
@@ -56,9 +61,10 @@ MAX_TORN=0
 BOOT_IMAGE=""
 BOOT_TIMEOUT=300
 KEEP=0
+ALLOW_UNBOUND=0
 
 usage() {
-  sed -n '3,49p' "$0" >&2
+  sed -n '3,54p' "$0" >&2
   exit 2
 }
 
@@ -71,6 +77,7 @@ while [ $# -gt 0 ]; do
     --max-torn) [ $# -ge 2 ] || usage; MAX_TORN="$2"; shift 2 ;;
     --boot)  [ $# -ge 2 ] || usage; BOOT_IMAGE="$2"; shift 2 ;;
     --boot-timeout) [ $# -ge 2 ] || usage; BOOT_TIMEOUT="$2"; shift 2 ;;
+    --allow-unbound) ALLOW_UNBOUND=1; shift ;;
     --keep)   KEEP=1; shift ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
@@ -245,7 +252,9 @@ fi
 #    log_sha256 are what the server recorded at finalize; the checker compares
 #    the extracted file against them, so a transcript the tar captured
 #    mid-write fails here instead of passing as "present". last_output_bytes
-#    is the floor for a run still in flight at the dump.
+#    is the floor for a run still in flight at the dump, and the tar's
+#    .backup-generation marker, held to --db's own sha256, proves the tar was
+#    taken after this dump and so holds every byte those runs wrote before it.
 step "run-log reachability and content (every ref, tolerance $MAX_MISSING missing, $MAX_TORN torn)"
 #    The rows go to a file first and the checker is held to the database's
 #    count: `docker exec` piped into a reader that falls behind has been
@@ -257,8 +266,14 @@ docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -F "$(p
     where log_store = 'local_file' and log_ref is not null" > "$refs_file"
 ref_count="$(docker exec "$CONTAINER" psql -U paperclip -d paperclip -Atq --no-psqlrc -c \
   "select count(*) from heartbeat_runs where log_store = 'local_file' and log_ref is not null")"
+if [ "$ALLOW_UNBOUND" -eq 1 ]; then
+  generation_args=(--allow-unbound)
+else
+  dump_sha="$(sha256sum "$DB_ARTIFACT")"
+  generation_args=(--dump-sha256 "${dump_sha%% *}")
+fi
 "$SCRIPT_DIR/restore-verify-logs.sh" "$EXTRACT_DIR" --max-missing "$MAX_MISSING" \
-  --max-torn "$MAX_TORN" --expect "$ref_count" < "$refs_file"
+  --max-torn "$MAX_TORN" --expect "$ref_count" "${generation_args[@]}" < "$refs_file"
 
 if [ -z "$BOOT_IMAGE" ]; then
   echo

@@ -30,7 +30,7 @@ test("script parses", () => {
 test("no --db is a usage error, and the usage text names every option", () => {
   const { status, out } = run([]);
   assert.equal(status, 2, out);
-  for (const opt of ["--db", "--volume", "--image", "--max-missing", "--max-torn", "--boot", "--boot-timeout", "--keep"]) {
+  for (const opt of ["--db", "--volume", "--image", "--max-missing", "--max-torn", "--boot", "--boot-timeout", "--allow-unbound", "--keep"]) {
     assert.match(out, new RegExp(`^#?\\s*${opt}\\b`, "m"), `usage text should list ${opt}`);
   }
 });

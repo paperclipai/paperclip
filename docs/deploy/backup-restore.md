@@ -77,6 +77,18 @@ control, and it is worth getting right:
 - Reversed — tar first, dump last — the database can reference files created
   after the tar was made, and those references are dangling on restore. That is
   the failure mode that looks like data loss.
+- **Between the two, write the pairing marker.** Once the dump file is complete
+  and before the tar starts:
+
+  ```sh
+  sha256sum db-<ts>.sql.gz > "$PC_DATA/.backup-generation"
+  ```
+
+  The tar then carries the name of the dump it followed, and the restore check
+  (step 4) holds it to the dump being restored. Without it, "dumped first" is
+  a claim about the producer that nothing in the artifacts can confirm: a
+  data-directory tar from an earlier backup run, paired with this run's dump,
+  looks the same file by file.
 
 This ordering removes the *systematic* direction of failure. It does not make the
 pair a point-in-time image, and two residual risks survive it:
@@ -93,6 +105,7 @@ So state the guarantee at the level it actually holds:
 | The database dump alone | **Yes**, always, by construction |
 | The data directory tar alone | No — smeared across the walk |
 | The two together | No — skewed by the gap, and the tar is smeared |
+| The two together, with the pairing marker | No, but the restore check proves every run transcript the dump records is complete in the tar, or fails |
 
 **A shorter interval shortens how much you lose, not how consistent an artifact
 set is.** An hourly *database* cadence is worth buying: it is the system of
@@ -103,7 +116,8 @@ recovery point, not about consistency.
 
 Fixing this properly is producer-side work, not restore-side: it is the tooling
 that takes the artifacts that must quiesce or snapshot. The next section is what
-that would cost.
+that would cost, and the one after it is what a producer must do before any
+cadence is sold on it.
 
 ### What quiescing would actually cost
 
@@ -136,10 +150,37 @@ A short interval on the **database dump alone** is cheap and worth having
 independently of the tar — it is the system of record, and it is self-consistent
 by construction.
 
-Until a producer does one of those things, none of this is a property of the
-schedule, and a backup tier should not be described as if it were. What a tier
-buys today is *how much you lose*, bounded by the interval of each artifact
-separately.
+### What a producer must do before a cadence is sold on it
+
+A backup tier is a promise about artifact sets, so it is exactly as good as the
+producer behind it. Scheduling a producer more often does not make its
+artifacts better. Before a tier is sold on a producer, the producer does all
+of these, and a restore of its output passes `scripts/restore-smoke.sh`
+without `--allow-unbound`:
+
+1. **Dump the database first**, as one `pg_dump`, and fail the run if it fails.
+2. **Write the pairing marker** — the dump artifact's sha256 to
+   `<data-dir>/.backup-generation` — after the dump is complete and before the
+   tar starts.
+3. **Tar the kept paths only** (the list above), so the tar takes minutes.
+4. **Ship all three or none.** A run that loses one artifact ships nothing and
+   fails loudly, so a gap is an alert rather than an old artifact silently
+   paired with a new one.
+
+Those four make an artifact set whose run history is proven complete on
+restore. They do not make the data-directory tar an image of one instant; for
+that, a tier also needs quiescing or a snapshot (above). So:
+
+| Tier | Needs |
+|---|---|
+| Weekly, or any cadence on the database dump alone | 1 and 4 |
+| Any cadence on the full artifact set | 1 to 4 |
+| Hourly on the full artifact set, described as consistent | 1 to 4, plus quiescing or a filesystem snapshot |
+
+Until a producer meets the row a tier is sold under, the tier should not be
+scheduled, and should not be described as if the schedule were the guarantee.
+What a tier buys is *how much you lose*, bounded by the interval of each
+artifact separately.
 
 ## Name your deployment's three moving parts first
 
@@ -481,7 +522,8 @@ restored file against them.
 "${PSQL[@]}" -d paperclip_restored -Atq -c \
   "select count(*) from heartbeat_runs
     where log_store = 'local_file' and log_ref is not null"   # note the number
-scripts/restore-verify-logs.sh "$PC_DATA" --expect <that number> < run-log-refs.tsv
+scripts/restore-verify-logs.sh "$PC_DATA" --expect <that number> \
+  --dump-sha256 "$(sha256sum db-<ts>.sql.gz | cut -d' ' -f1)" < run-log-refs.tsv
 ```
 
 Write the refs to a file; do not pipe `psql` straight into the checker. When
@@ -513,8 +555,18 @@ numbers:
   whether mid-line or on a line boundary — and a healthy source has none
   (measured: 0 of 285). Longer is normal: the run kept writing between the
   dump and the tar. The floor is written at most once a minute, so output
-  from the minute before the dump is recorded nowhere in the dump and no
-  check can bound it. Second, shape: the server appends whole NDJSON lines,
+  from the minute before the dump is recorded nowhere in the dump, and no
+  per-file check can bound it — a tar from an earlier backup run can hold a
+  file past the floor that still lacks those events. What bounds it is the
+  pairing marker: `--dump-sha256` holds `.backup-generation` in the restored
+  tree to the dump being restored, which proves the tar read every transcript
+  after the dump finished, and a transcript is append-only, so it holds
+  everything written before. A marker naming another dump, or none, fails
+  before any ref is checked. Without `--dump-sha256`, unfinalized transcripts
+  fail as **unbounded**; `--allow-unbound` accepts them for artifacts from a
+  producer that writes no marker, and the PASSED line says they were not
+  bounded. Finalized runs need no marker: their digests pin the generation
+  already. Second, shape: the server appends whole NDJSON lines,
   so an intact transcript ends in a newline, and one that does not was cut
   off mid-event. **Torn** ones fail beyond `--max-torn <n>` (default 0).
   A four-column ref list (no `last_output_bytes`) fails rather than skip the
@@ -695,9 +747,12 @@ container, so the host needs no PostgreSQL client. In order it checks:
    extracted tree **and is the file the server finalized** — size and SHA-256
    compared with what the database recorded — and every unfinalized one ends
    on a line boundary, so a transcript the tar caught mid-write fails rather
-   than passing as present. `--max-missing <n>` and `--max-torn <n>` tolerate
-   the source's own known dangling and torn transcripts, as in step 4 above; a
-   content mismatch is never tolerated;
+   than passing as present. The tar's `.backup-generation` marker must name
+   the sha256 of `--db`, so an unfinalized transcript is known to hold
+   everything the dump preceded; `--allow-unbound` accepts a tar from a
+   producer that writes no marker, and says so. `--max-missing <n>` and
+   `--max-torn <n>` tolerate the source's own known dangling and torn
+   transcripts, as in step 4 above; a content mismatch is never tolerated;
 7. with `--boot`, the Paperclip image starts against the restored database and
    the extracted tree and its health endpoint reports `ok` — which means the
    migrations newer than the dump applied, the secrets and auth stack came up
@@ -752,6 +807,10 @@ scripts/restore-smoke.sh --db db-20260926T032440Z.sql.gz \
   --boot ghcr.io/paperclipai/paperclip:nightly
 ```
 
+That producer predates the pairing marker, so a re-run of the same artifacts
+today needs `--allow-unbound` and reports its unfinalized transcripts as
+not bounded; the pairing is shown separately below.
+
 `--max-missing 11` and `--max-torn 23` are the source's own counts, measured by
 running `restore-verify-logs.sh` against the live tree first; both sets date
 from server restarts a month before the backup.
@@ -771,6 +830,16 @@ from server restarts a month before the backup.
 
 `RESTORE SMOKE PASSED (database + data directory + server boots + board
 served)`, exit 0.
+
+The pairing was then exercised on the same deployment with a producer that
+follows the contract: the dump (30 s), `sha256sum` of it into
+`.backup-generation`, then a tar of the run logs, secrets and `config.json`
+(33 s). `restore-smoke.sh` without `--allow-unbound` passed: 6513 refs, 6217
+byte-identical to the recorded digest, 261 unfinalized at or past their
+recorded length, 1 with none, 23 torn and 11 missing (the source's own), and
+`data directory taken after dump 6714371ba771`. The same dump paired with the
+previous day's tar — a real earlier-generation artifact — failed at the marker
+before any ref was checked, exit 1.
 
 ## Giving a customer their data back
 
