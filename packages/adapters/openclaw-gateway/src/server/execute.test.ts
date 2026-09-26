@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentParams, resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
+import {
+  buildAgentParams,
+  buildDeviceAuthPayloadV3,
+  resolveClaimedApiKeyPath,
+  resolveDeviceSignatureToken,
+  resolveSessionKey,
+} from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -121,5 +127,44 @@ describe("resolveClaimedApiKeyPath", () => {
   it("falls back to the shared default when value is not a string", () => {
     expect(resolveClaimedApiKeyPath(42)).toBe(DEFAULT_PATH);
     expect(resolveClaimedApiKeyPath({})).toBe(DEFAULT_PATH);
+  });
+});
+
+describe("device signature token binding", () => {
+  const basePayload = {
+    deviceId: "device-id",
+    clientId: "cli",
+    clientMode: "cli",
+    role: "operator",
+    scopes: ["operator.read", "operator.write"],
+    signedAtMs: 1_700_000_000_000,
+    nonce: "nonce-1",
+    platform: "linux",
+    deviceFamily: null,
+  };
+
+  it("binds the device token when no shared token is configured (device-token-only reconnect)", () => {
+    const token = resolveDeviceSignatureToken({ authToken: null, deviceToken: "D" });
+    expect(token).toBe("D");
+    const payload = buildDeviceAuthPayloadV3({ ...basePayload, token });
+    expect(payload.split("|")[7]).toBe("D");
+  });
+
+  it("binds the shared token when both are configured (gateway precedence: token, then deviceToken)", () => {
+    const token = resolveDeviceSignatureToken({ authToken: "S", deviceToken: "D" });
+    expect(token).toBe("S");
+    const payload = buildDeviceAuthPayloadV3({ ...basePayload, token });
+    expect(payload.split("|")[7]).toBe("S");
+  });
+
+  it("leaves the token slot empty only when no credential of either kind is configured", () => {
+    expect(resolveDeviceSignatureToken({ authToken: "  ", deviceToken: undefined })).toBeNull();
+    const payload = buildDeviceAuthPayloadV3({ ...basePayload, token: null });
+    expect(payload.split("|")[7]).toBe("");
+  });
+
+  it("keeps the v3 payload field order stable", () => {
+    const payload = buildDeviceAuthPayloadV3({ ...basePayload, token: "D" });
+    expect(payload).toBe("v3|device-id|cli|cli|operator|operator.read,operator.write|1700000000000|D|nonce-1|linux|");
   });
 });
