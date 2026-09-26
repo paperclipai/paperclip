@@ -396,6 +396,130 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     })).resolves.toBeNull();
   });
 
+  // A run can hold several bindings at once — neither checkout_run_id nor
+  // execution_run_id is unique, and wake-queue dispatch also writes
+  // execution_run_id. The ordered pick settled which row wins, but it settled it
+  // by UUID, so a run writing to one of its own tasks was charged the cross-issue
+  // budget or exempted from it depending on how its ids happened to sort.
+  it("does not count a write to one of several tasks the run is bound to, whichever id sorts first", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    // Pin the sort order rather than trusting randomUUID, so this test fails
+    // against the ordered pick for the reason under test and not by luck.
+    const lowId = "00000000-0000-4000-8000-000000000001";
+    const highId = "ffffffff-0000-4000-8000-000000000002";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: lowId,
+        companyId,
+        identifier: "TES-101",
+        title: "the task whose id sorts first",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        checkoutRunId: runId,
+        executionRunId: runId,
+      },
+      {
+        id: highId,
+        companyId,
+        identifier: "TES-102",
+        title: "the task whose id sorts last",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        checkoutRunId: runId,
+      },
+    ]);
+
+    // Writing to the id-sorting-last task of its own is not cross-issue
+    // influence. Under the ordered pick this is charged, because `lowId` wins
+    // the orderBy and is a different issue from the target.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: highId,
+      targetIssueIdentifier: "TES-102",
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toBeNull();
+
+    // And writing to the id-sorting-first task stays exempt too, so the fix is
+    // not just moving the charge onto the other own task.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: lowId,
+      targetIssueIdentifier: "TES-101",
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toBeNull();
+
+    // A genuinely different issue is still charged, so the own-task exemption
+    // did not widen into a blanket exemption for a multi-bound run.
+    const otherIssueId = "7fffffff-0000-4000-8000-000000000003";
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      identifier: "TES-103",
+      title: "a task this run is not bound to",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: otherIssueId,
+      targetIssueIdentifier: "TES-103",
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ count: 1, allowed: true });
+
+    // The charge is still attributed to one of the run's own bindings, chosen by
+    // the stable order — the fix changed which issue counts as the source for the
+    // run's *own* task, not which source a genuinely foreign write is billed to.
+    const recorded = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.runId, runId),
+          eq(activityLog.action, "issue.cross_issue_influence_observed"),
+        ),
+      )
+      .then((rows) => rows.map((row) => row.details as Record<string, unknown> | null));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ sourceIssueId: lowId, targetIssueId: otherIssueId });
+  });
+
   it("still refuses a snapshot-less run that never checked the issue out", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

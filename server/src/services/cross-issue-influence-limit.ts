@@ -105,8 +105,19 @@ async function resolveRunCheckoutSourceIssueId(
     ))
     .orderBy(issues.id)
     .for("update")
-    .then((found) => found[0]?.id ?? null);
-  return rows;
+    .then((found) => found);
+  // Ordering only settles which row wins when the run holds several and the
+  // target is not one of them. When the run is bound to the issue being
+  // written, that issue is the source: a run bound to task X writing to X is not
+  // cross-issue influence and must not spend the budget, and the caller has
+  // already stated that as the rule this function exists to apply. Falling
+  // through to the ordered pick instead would charge the budget by UUID order
+  // for a run writing to its own task, and would exempt it for a run writing to
+  // a different one of its own tasks.
+  if (rows.some((row) => row.id === input.targetIssueId)) {
+    return input.targetIssueId;
+  }
+  return rows[0]?.id ?? null;
 }
 
 export function evaluateCrossIssueInfluenceLimit(input: {
