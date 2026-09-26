@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  hydrateStoredIssueExecutionPolicy,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+  repairStoredIssueExecutionPolicy,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -2083,5 +2089,79 @@ describe("review round circuit breaker", () => {
       currentParticipant: { type: "user", userId: boardUserId },
       changesRequestedCount: 1,
     });
+  });
+});
+
+describe("repairStoredIssueExecutionPolicy / hydrateStoredIssueExecutionPolicy", () => {
+  const legacyReconcilerPolicy = {
+    stages: [
+      {
+        id: "reconciler-verify",
+        type: "review",
+        participants: [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", agentId: qaAgentId }],
+      },
+    ],
+  };
+
+  it("repairs the legacy reconciler stage shape (slug stage id, participant without type)", () => {
+    const result = repairStoredIssueExecutionPolicy(legacyReconcilerPolicy);
+    expect(result.repaired).toBe(true);
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.policy).not.toBeNull();
+    expect(result.policy!.stages).toHaveLength(1);
+    const [stage] = result.policy!.stages;
+    expect(stage.id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(stage.participants[0]).toMatchObject({ type: "agent", agentId: qaAgentId });
+    expect(normalizeIssueExecutionPolicy(result.policy)).toEqual(result.policy);
+  });
+
+  it("returns valid policies unchanged without claiming a repair", () => {
+    const valid = twoStagePolicy();
+    const stored = JSON.parse(JSON.stringify(valid));
+    const result = repairStoredIssueExecutionPolicy(stored);
+    expect(result.repaired).toBe(false);
+    expect(result.warnings).toEqual([]);
+    expect(result.policy).toEqual(valid);
+    expect(hydrateStoredIssueExecutionPolicy(JSON.parse(JSON.stringify(valid)))).toEqual(valid);
+  });
+
+  it("keeps a valid monitor while repairing corrupt stages", () => {
+    const result = repairStoredIssueExecutionPolicy({
+      ...legacyReconcilerPolicy,
+      monitor: { nextCheckAt: "2026-09-30T12:00:00.000Z", maxAttempts: 3 },
+    });
+    expect(result.repaired).toBe(true);
+    expect(result.policy).not.toBeNull();
+    expect(result.policy!.monitor?.nextCheckAt).toBe("2026-09-30T12:00:00.000Z");
+    expect(result.policy!.stages).toHaveLength(1);
+  });
+
+  it("degrades hopeless policies to null instead of throwing", () => {
+    expect(hydrateStoredIssueExecutionPolicy({ stages: "nope" })).toBeNull();
+    expect(
+      hydrateStoredIssueExecutionPolicy({ stages: [{ type: "review", participants: [{ type: "agent" }] }] }),
+    ).toBeNull();
+    expect(repairStoredIssueExecutionPolicy(null)).toEqual({ policy: null, repaired: false, warnings: [] });
+  });
+
+  it("still rejects corrupt policies on the strict request-body path", () => {
+    expect(() => normalizeIssueExecutionPolicy(legacyReconcilerPolicy)).toThrow();
+  });
+
+  it("drops agent participants without a GUID agentId but keeps repairable user participants", () => {
+    const result = repairStoredIssueExecutionPolicy({
+      stages: [
+        { type: "approval", participants: [{ agentId: "not-a-guid" }, { userId: boardUserId }] },
+      ],
+    });
+    expect(result.policy).not.toBeNull();
+    const [stage] = result.policy!.stages;
+    expect(stage.participants).toHaveLength(1);
+    expect(stage.participants[0]).toMatchObject({ type: "user", userId: boardUserId });
+  });
+
+  it("hydrateStoredIssueExecutionPolicy matches normalizeIssueExecutionPolicy for valid input", () => {
+    const valid = reviewOnlyPolicy();
+    expect(hydrateStoredIssueExecutionPolicy(JSON.parse(JSON.stringify(valid)))).toEqual(valid);
   });
 });

@@ -1,0 +1,863 @@
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, projects, } from "@paperclipai/db";
+import { ORCHESTRATION_INCIDENT_ORIGIN_KIND } from "@paperclipai/shared";
+import { isUniqueViolation } from "../db-errors.js";
+import { logger } from "../middleware/logger.js";
+import { logActivity } from "./activity-log.js";
+import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import { issueService } from "./issues.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
+import { randomUUID } from "node:crypto";
+/**
+ * Execution reconciler.
+ *
+ * Paperclip's dispatch pipeline is wake-driven: a run only starts after some
+ * actor mints a wake (assignment, comment, timer, dependency resolution). That
+ * leaves structural dead zones where eligible work never generates a wake:
+ *
+ *  - an issue assigned while still in `backlog` never gets an assignment wake
+ *    (assignment wakes skip backlog by design);
+ *  - an agent whose timer heartbeat is disabled is never woken for assigned
+ *    backlog/todo work by anything else;
+ *  - unassigned issues have no assignee to wake at all;
+ *  - a remote worker that dies silently holds its issue's execution lock
+ *    forever, because nothing reaps a "running" run without a local process.
+ *
+ * This service closes the loop from the system side. Every scheduler tick it
+ * reconciles desired execution (dependency-eligible work should be running)
+ * with actual execution:
+ *
+ *   scan non-terminal work -> evaluate dependencies -> route owners ->
+ *   promote backlog -> attach verification policy -> dispatch (idempotent) ->
+ *   recover expired worker leases (bounded retries) ->
+ *   raise program-stall incidents.
+ *
+ * All state changes reuse Paperclip's own primitives: dependency readiness,
+ * assignment, `enqueueWakeup`, the issue execution lock, the execution-policy
+ * engine, and origin-scoped incident issues. The reconciler never bypasses
+ * the checkout CAS: workers still claim their own issues at run start.
+ */
+export const EXECUTION_RECONCILER_DISPATCH_WAKE_REASON = "execution_reconciler_dispatch";
+export const EXECUTION_RECONCILER_LEASE_RETRY_WAKE_REASON = "execution_reconciler_lease_retry";
+export const WORKER_LEASE_EXPIRED_ERROR_CODE = "worker_lease_expired";
+export const BLOCKED_NO_OWNER_REASON = "no_owner";
+export function resolveExecutionReconcilerSettings() {
+    const env = process.env;
+    return {
+        enabled: env.EXECUTION_RECONCILER_ENABLED !== "false",
+        dryRun: env.EXECUTION_RECONCILER_DRY_RUN === "true",
+        stallThresholdMs: Math.max(60_000, Number(env.EXECUTION_RECONCILER_STALL_THRESHOLD_MS) || 30 * 60 * 1000),
+        workerLeaseTtlMs: Math.max(60_000, Number(env.EXECUTION_WORKER_LEASE_TTL_MS) || 15 * 60 * 1000),
+        workerLeaseMaxRetries: Math.max(0, Number(env.EXECUTION_WORKER_LEASE_MAX_RETRIES ?? 3)),
+        blockedCooldownMs: Math.max(60_000, Number(env.EXECUTION_RECONCILER_BLOCKED_COOLDOWN_MS) || 10 * 60 * 1000),
+        maxDispatchesPerTick: Math.max(1, Number(env.EXECUTION_RECONCILER_MAX_DISPATCHES_PER_TICK) || 10),
+        defaultWorkerAgentId: env.EXECUTION_RECONCILER_DEFAULT_WORKER_AGENT_ID?.trim() || null,
+        verifierAgentId: env.EXECUTION_RECONCILER_VERIFIER_AGENT_ID?.trim() || null,
+        disabledCompanies: (env.EXECUTION_RECONCILER_DISABLED_COMPANIES ?? "")
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean),
+    };
+}
+// Origins that exist only because some recovery path created them. The
+// reconciler must not "help" by dispatching its own (or other systems')
+// escalation artifacts as if they were ordinary product work.
+const NON_DISPATCHABLE_ORIGIN_KINDS = new Set([
+    "stale_active_run_evaluation",
+    "harness_liveness_escalation",
+    "stranded_issue_recovery",
+    "task_watchdog",
+    "task_watchdog_product_bug",
+    ORCHESTRATION_INCIDENT_ORIGIN_KIND,
+]);
+export function executionReconcilerService(db, deps) {
+    const issuesSvc = issueService(db);
+    function settings() {
+        return deps.getSettings?.() ?? resolveExecutionReconcilerSettings();
+    }
+    async function getAgent(agentId) {
+        return db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0] ?? null);
+    }
+    async function isAgentInvokable(agent) {
+        if (!agent)
+            return false;
+        return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
+    }
+    function reconcilerDisabledForCompany(companyId) {
+        return settings().disabledCompanies.includes(companyId);
+    }
+    async function hasQueuedIssueWake(companyId, issueId, agentId) {
+        const conditions = [
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.status, "queued"),
+            sql `${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ];
+        if (agentId)
+            conditions.push(eq(agentWakeupRequests.agentId, agentId));
+        const rows = await db
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(and(...conditions))
+            .limit(1);
+        return rows.length > 0;
+    }
+    /**
+     * Latest run bound to an issue (by contextSnapshot.issueId), newest first.
+     * Used to mirror the stranded-recovery semantics: a succeeded run that
+     * left the issue in `todo` means the agent already looked at this work;
+     * re-dispatching every tick would hot-loop instead of progressing.
+     */
+    async function getLatestIssueRunRow(companyId, issueId) {
+        const rows = await db
+            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.companyId, companyId), sql `${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`))
+            .orderBy(desc(heartbeatRuns.createdAt))
+            .limit(1);
+        return rows[0] ?? null;
+    }
+    async function hasLiveIssueRun(companyId, issueId) {
+        const rows = await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ["queued", "running"]), sql `${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`))
+            .limit(1);
+        return rows.length > 0;
+    }
+    async function resolveOwner(issue, projectLeadAgentId) {
+        if (issue.assigneeAgentId) {
+            const assignee = await getAgent(issue.assigneeAgentId);
+            const invokable = assignee && assignee.companyId === issue.companyId && (await isAgentInvokable(assignee));
+            if (invokable)
+                return { agentId: issue.assigneeAgentId, decision: { kind: "assignee" } };
+            return { agentId: null, decision: { kind: "no_owner" } };
+        }
+        const tryCandidate = async (agentId, basis) => {
+            if (!agentId)
+                return null;
+            const candidate = await getAgent(agentId);
+            if (!candidate || candidate.companyId !== issue.companyId)
+                return null;
+            if (!(await isAgentInvokable(candidate)))
+                return null;
+            return { agentId, basis };
+        };
+        const conf = settings();
+        const routed = (await tryCandidate(projectLeadAgentId, "project_lead")) ??
+            (await tryCandidate(issue.createdByAgentId, "creator")) ??
+            (await tryCandidate(conf.defaultWorkerAgentId, "default_worker"));
+        if (routed) {
+            return { agentId: routed.agentId, decision: { kind: "routed", agentId: routed.agentId, basis: routed.basis } };
+        }
+        return { agentId: null, decision: { kind: "no_owner" } };
+    }
+    async function addSystemComment(companyId, issueId, body) {
+        await db.insert(issueComments).values({
+            companyId,
+            issueId,
+            body,
+            authorType: "system",
+        });
+    }
+    async function markBlockedNoOwner(issue) {
+        const now = new Date();
+        const updated = await db
+            .update(issues)
+            .set({
+            status: "blocked",
+            blockedTransitionAt: now,
+            unblockDescriptor: {
+                owner: "board",
+                action: "Assign an owner so the execution reconciler can dispatch this dependency-eligible work.",
+            },
+            updatedAt: now,
+        })
+            .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId), inArray(issues.status, ["backlog", "todo"]), isNull(issues.assigneeAgentId)))
+            .returning({ id: issues.id });
+        if (updated.length === 0)
+            return false;
+        await addSystemComment(issue.companyId, issue.id, "Execution reconciler: this issue is dependency-eligible but has no routable owner " +
+            "(no assignee, project lead, creator agent, or configured default worker). " +
+            "Marked `blocked` as **BLOCKED_NO_OWNER** instead of leaving it looking like ordinary backlog work.");
+        await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            action: "issue.execution_reconciler_blocked_no_owner",
+            entityType: "issue",
+            entityId: issue.id,
+            issueId: issue.id,
+            details: { issueId: issue.id, reason: BLOCKED_NO_OWNER_REASON },
+        });
+        return true;
+    }
+    function buildVerificationPolicy(verifierAgentId) {
+        return {
+            mode: "normal",
+            commentRequired: true,
+            stages: [
+                {
+                    id: randomUUID(),
+                    type: "review",
+                    approvalsNeeded: 1,
+                    participants: [{ id: verifierAgentId, type: "agent", agentId: verifierAgentId }],
+                },
+            ],
+        };
+    }
+    /**
+     * Attach an independent verification stage (a different worker) to owned
+     * non-terminal work that has no execution policy yet. Runs as its own sweep
+     * so it covers issues dispatched by ANY path — assignment wakes, dependency
+     * wakes, routines, board checkouts — not only this reconciler's dispatches.
+     * The update is guarded on executionPolicy being null, so it is idempotent.
+     */
+    async function attachVerificationPolicy(companyId, issue, ownerAgentId, conf, now, result) {
+        if (conf.dryRun || issue.executionPolicy || !conf.verifierAgentId)
+            return;
+        if (conf.verifierAgentId === ownerAgentId)
+            return;
+        if (NON_DISPATCHABLE_ORIGIN_KINDS.has(issue.originKind ?? "manual"))
+            return;
+        const verifier = await getAgent(conf.verifierAgentId);
+        if (!verifier || verifier.companyId !== companyId)
+            return;
+        if (!(await isAgentInvokable(verifier)))
+            return;
+        const updated = await db
+            .update(issues)
+            .set({
+            executionPolicy: buildVerificationPolicy(verifier.id),
+            reviewPolicy: "not_creator",
+            updatedAt: now,
+        })
+            .where(and(eq(issues.id, issue.id), eq(issues.companyId, companyId), isNull(issues.executionPolicy)))
+            .returning({ id: issues.id });
+        if (updated.length > 0)
+            result.verificationPoliciesAttached += 1;
+    }
+    /**
+     * Main reconciliation pass. Idempotent by construction: every mutation is a
+     * guarded update (status/owner conditions in the WHERE clause) or an
+     * enqueueWakeup guarded by the queued-wake/live-run checks, and the pass
+     * itself runs serially inside the scheduler's recovery chain. Running it
+     * twice must produce zero additional wakes.
+     */
+    async function reconcileExecutionState(opts) {
+        const now = opts?.now ?? new Date();
+        const conf = settings();
+        const result = {
+            companiesScanned: 0,
+            issuesScanned: 0,
+            eligible: 0,
+            notReady: 0,
+            dispatched: 0,
+            promoted: 0,
+            routed: 0,
+            blockedNoOwner: 0,
+            skipped: 0,
+            verificationPoliciesAttached: 0,
+            actions: [],
+            dryRun: conf.dryRun,
+        };
+        if (!conf.enabled)
+            return result;
+        const companyRows = await db
+            .select({ id: companies.id })
+            .from(companies)
+            .where(and(opts?.companyId ? eq(companies.id, opts.companyId) : undefined, isNull(companies.pausedAt)));
+        for (const company of companyRows) {
+            if (reconcilerDisabledForCompany(company.id))
+                continue;
+            result.companiesScanned += 1;
+            const candidates = await db
+                .select()
+                .from(issues)
+                .where(and(eq(issues.companyId, company.id), inArray(issues.status, ["backlog", "todo", "blocked", "in_progress"]), isNull(issues.assigneeUserId), visibleIssueCondition()))
+                .orderBy(issues.createdAt);
+            const dispatchable = candidates.filter((issue) => !NON_DISPATCHABLE_ORIGIN_KINDS.has(issue.originKind ?? "manual"));
+            result.issuesScanned += dispatchable.length;
+            if (dispatchable.length === 0)
+                continue;
+            const readinessMap = await issuesSvc.listDependencyReadiness(company.id, dispatchable.map((issue) => issue.id));
+            const projectIds = [
+                ...new Set(dispatchable
+                    .map((issue) => issue.projectId)
+                    .filter((id) => Boolean(id))),
+            ];
+            const projectRows = projectIds.length
+                ? await db
+                    .select({ id: projects.id, leadAgentId: projects.leadAgentId })
+                    .from(projects)
+                    .where(inArray(projects.id, projectIds))
+                : [];
+            const projectLeadByProjectId = new Map(projectRows.map((row) => [row.id, row.leadAgentId]));
+            for (const issue of dispatchable) {
+                const readiness = readinessMap.get(issue.id);
+                if (!readiness || !readiness.isDependencyReady) {
+                    result.notReady += 1;
+                    continue;
+                }
+                result.eligible += 1;
+                // Respect deliberate blocks: an explicit unblock descriptor means a
+                // human or a recovery path recorded WHY this is blocked (including
+                // this reconciler's own BLOCKED_NO_OWNER and upstream stranded-issue
+                // escalations). Dispatching over it would fight the escalation system
+                // and hot-loop.
+                if (issue.unblockDescriptor) {
+                    result.skipped += 1;
+                    result.actions.push({ kind: "skipped", issueId: issue.id, reason: "explicit_unblock_descriptor" });
+                    continue;
+                }
+                // Respect fresh escalations: a recent blocked transition is the
+                // stranded-recovery path parking undecidable work; give it the
+                // cooldown window before treating stale blocked+ready work as
+                // forgotten and re-dispatching it.
+                if (issue.status === "blocked" &&
+                    issue.blockedTransitionAt &&
+                    now.getTime() - issue.blockedTransitionAt.getTime() < conf.blockedCooldownMs) {
+                    result.skipped += 1;
+                    result.actions.push({ kind: "skipped", issueId: issue.id, reason: "blocked_cooldown" });
+                    continue;
+                }
+                // Never dispatch work that already has a live execution path.
+                if (await hasLiveIssueRun(company.id, issue.id)) {
+                    result.skipped += 1;
+                    result.actions.push({ kind: "already_covered", issueId: issue.id, reason: "active_run" });
+                    continue;
+                }
+                // Zombie checkout: the issue claims to be running but nothing is
+                // executing it (dead worker, reaped run, released lock). A dead
+                // worker must never leave an issue RUNNING indefinitely. Only
+                // re-dispatch after the issue has been quiet for a full worker-lease
+                // period; a succeeded last run stays with the stranded sweep.
+                if (issue.status === "in_progress") {
+                    if (now.getTime() - issue.updatedAt.getTime() < conf.workerLeaseTtlMs) {
+                        result.skipped += 1;
+                        result.actions.push({ kind: "skipped", issueId: issue.id, reason: "recently_touched" });
+                        continue;
+                    }
+                    const latestRun = await getLatestIssueRunRow(company.id, issue.id);
+                    if (latestRun?.status === "succeeded") {
+                        result.skipped += 1;
+                        result.actions.push({ kind: "skipped", issueId: issue.id, reason: "succeeded_run_no_disposition" });
+                        continue;
+                    }
+                    if (!conf.dryRun) {
+                        const updated = await db
+                            .update(issues)
+                            .set({ status: "todo", updatedAt: now })
+                            .where(and(eq(issues.id, issue.id), eq(issues.companyId, company.id), eq(issues.status, "in_progress")))
+                            .returning({ id: issues.id });
+                        if (updated.length > 0) {
+                            result.promoted += 1;
+                            result.actions.push({ kind: "promoted_to_todo", issueId: issue.id });
+                            await addSystemComment(company.id, issue.id, "Execution reconciler: this issue was `in_progress` with no live worker run " +
+                                "(zombie checkout from a dead or reaped worker). Reset to `todo` for re-dispatch.");
+                        }
+                    }
+                }
+                // A succeeded run that left the issue in `todo` means the assignee
+                // already processed this work without a disposition; the stranded
+                // sweep owns that case. Re-dispatching here would hot-loop.
+                if (issue.status === "todo") {
+                    const latestRun = await getLatestIssueRunRow(company.id, issue.id);
+                    if (latestRun?.status === "succeeded") {
+                        result.skipped += 1;
+                        result.actions.push({
+                            kind: "skipped",
+                            issueId: issue.id,
+                            reason: "succeeded_run_no_disposition",
+                        });
+                        continue;
+                    }
+                }
+                const owner = await resolveOwner(issue, issue.projectId ? projectLeadByProjectId.get(issue.projectId) ?? null : null);
+                if (owner.decision.kind === "no_owner") {
+                    if (conf.dryRun) {
+                        result.actions.push({ kind: "skipped", issueId: issue.id, reason: "dry_run:blocked_no_owner" });
+                        continue;
+                    }
+                    const blocked = await markBlockedNoOwner(issue);
+                    if (blocked) {
+                        result.blockedNoOwner += 1;
+                        result.actions.push({ kind: "blocked_no_owner", issueId: issue.id });
+                    }
+                    else {
+                        result.skipped += 1;
+                    }
+                    continue;
+                }
+                const agentId = owner.agentId;
+                if (owner.decision.kind === "routed" && !conf.dryRun) {
+                    const updated = await db
+                        .update(issues)
+                        .set({
+                        assigneeAgentId: agentId,
+                        assigneeUserId: null,
+                        status: issue.status === "backlog" || issue.status === "in_progress" ? "todo" : issue.status,
+                        updatedAt: now,
+                    })
+                        .where(and(eq(issues.id, issue.id), eq(issues.companyId, company.id), isNull(issues.assigneeAgentId), isNull(issues.assigneeUserId), inArray(issues.status, ["backlog", "todo", "blocked"])))
+                        .returning({ id: issues.id });
+                    if (updated.length === 0) {
+                        result.skipped += 1;
+                        continue;
+                    }
+                    result.routed += 1;
+                    result.actions.push({
+                        kind: "routed",
+                        issueId: issue.id,
+                        agentId,
+                        basis: owner.decision.basis,
+                    });
+                    if (issue.status === "backlog")
+                        result.promoted += 1;
+                    await logActivity(db, {
+                        companyId: company.id,
+                        actorType: "system",
+                        actorId: "system",
+                        action: "issue.execution_reconciler_routed",
+                        entityType: "issue",
+                        entityId: issue.id,
+                        issueId: issue.id,
+                        agentId,
+                        details: { issueId: issue.id, agentId, basis: owner.decision.basis },
+                    });
+                }
+                else if (issue.status === "backlog" && !conf.dryRun) {
+                    // Assigned-but-backlog work is the structural dead zone: assignment
+                    // wakes skip backlog, and timer heartbeats only look at todo+ work.
+                    const updated = await db
+                        .update(issues)
+                        .set({ status: "todo", updatedAt: now })
+                        .where(and(eq(issues.id, issue.id), eq(issues.companyId, company.id), eq(issues.status, "backlog"), eq(issues.assigneeAgentId, agentId)))
+                        .returning({ id: issues.id });
+                    if (updated.length > 0) {
+                        result.promoted += 1;
+                        result.actions.push({ kind: "promoted_to_todo", issueId: issue.id });
+                    }
+                }
+                // Independent verification is attached by the dedicated sweep below,
+                // which covers work dispatched by ANY path (assignment wakes,
+                // dependency wakes, routines, this reconciler).
+                if (await hasQueuedIssueWake(company.id, issue.id, agentId)) {
+                    result.skipped += 1;
+                    result.actions.push({ kind: "already_covered", issueId: issue.id, reason: "queued_wake" });
+                    continue;
+                }
+                if (result.dispatched >= conf.maxDispatchesPerTick) {
+                    result.skipped += 1;
+                    result.actions.push({ kind: "skipped", issueId: issue.id, reason: "dispatch_budget" });
+                    continue;
+                }
+                if (conf.dryRun) {
+                    result.actions.push({ kind: "skipped", issueId: issue.id, reason: "dry_run:dispatch" });
+                    continue;
+                }
+                const queuedRun = await deps.enqueueWakeup(agentId, {
+                    source: "automation",
+                    triggerDetail: "system",
+                    reason: EXECUTION_RECONCILER_DISPATCH_WAKE_REASON,
+                    payload: {
+                        issueId: issue.id,
+                        mutation: "execution_reconciler_dispatch",
+                    },
+                    requestedByActorType: "system",
+                    requestedByActorId: "execution-reconciler",
+                    contextSnapshot: {
+                        issueId: issue.id,
+                        taskId: issue.id,
+                        wakeReason: EXECUTION_RECONCILER_DISPATCH_WAKE_REASON,
+                        source: "execution.reconciler",
+                    },
+                    idempotencyKey: `execution-reconciler:${issue.id}:${issue.statusVersion}`,
+                });
+                result.dispatched += 1;
+                result.actions.push({
+                    kind: "dispatched",
+                    issueId: issue.id,
+                    agentId,
+                    wakeRunId: queuedRun?.id ?? null,
+                });
+                await logActivity(db, {
+                    companyId: company.id,
+                    actorType: "system",
+                    actorId: "system",
+                    action: "issue.execution_reconciler_dispatched",
+                    entityType: "issue",
+                    entityId: issue.id,
+                    issueId: issue.id,
+                    agentId,
+                    details: { issueId: issue.id, agentId, runId: queuedRun?.id ?? null },
+                });
+            }
+            // Verification sweep: gate ALL owned non-terminal work (regardless of
+            // which path dispatched it) behind an independent verifier.
+            if (!conf.dryRun && conf.verifierAgentId) {
+                const owned = await db
+                    .select({
+                    id: issues.id,
+                    executionPolicy: issues.executionPolicy,
+                    originKind: issues.originKind,
+                    assigneeAgentId: issues.assigneeAgentId,
+                })
+                    .from(issues)
+                    .where(and(eq(issues.companyId, company.id), inArray(issues.status, ["backlog", "todo", "blocked", "in_progress"]), isNotNull(issues.assigneeAgentId), isNull(issues.executionPolicy), visibleIssueCondition()));
+                for (const ownedIssue of owned) {
+                    if (!ownedIssue.assigneeAgentId)
+                        continue;
+                    await attachVerificationPolicy(company.id, ownedIssue, ownedIssue.assigneeAgentId, conf, now, result);
+                }
+            }
+        }
+        if (result.dispatched > 0 ||
+            result.blockedNoOwner > 0 ||
+            result.routed > 0 ||
+            result.verificationPoliciesAttached > 0) {
+            logger.warn({ ...result, actions: result.actions.length }, "execution reconciler changed program state");
+        }
+        return result;
+    }
+    /**
+     * Worker-lease recovery. A running run whose lease (controller lease /
+     * last output) expired and which the server does not observe locally must
+     * not hold its issue hostage: preserve all evidence (comments, artifacts),
+     * terminalize the run as failed(worker_lease_expired), release the issue
+     * execution lock, and re-dispatch under a bounded retry policy. After the
+     * retry limit, move the issue to blocked and escalate.
+     */
+    async function recoverExpiredWorkerLeases(opts) {
+        const now = opts?.now ?? new Date();
+        const conf = settings();
+        const result = {
+            scanned: 0,
+            expired: 0,
+            retried: 0,
+            escalated: 0,
+            skipped: 0,
+            issueIds: [],
+        };
+        if (!conf.enabled)
+            return result;
+        const leaseBoundary = new Date(now.getTime() - conf.workerLeaseTtlMs);
+        const candidates = await db
+            .select({
+            id: heartbeatRuns.id,
+            companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+            status: heartbeatRuns.status,
+            lastOutputAt: heartbeatRuns.lastOutputAt,
+            controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+            startedAt: heartbeatRuns.startedAt,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.status, "running"), opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined, sql `coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}) < ${leaseBoundary.toISOString()}`, or(isNull(heartbeatRuns.controllerLeaseExpiresAt), sql `${heartbeatRuns.controllerLeaseExpiresAt} < ${now.toISOString()}`)))
+            .orderBy(heartbeatRuns.startedAt)
+            .limit(100);
+        result.scanned = candidates.length;
+        for (const run of candidates) {
+            if (reconcilerDisabledForCompany(run.companyId)) {
+                result.skipped += 1;
+                continue;
+            }
+            if (deps.isRunLocallyAlive?.(run.id)) {
+                // The server still observes this execution locally (child process or
+                // active execution handle): silence is not death.
+                result.skipped += 1;
+                continue;
+            }
+            const issueId = run.contextSnapshot?.issueId;
+            const issue = typeof issueId === "string"
+                ? await db
+                    .select()
+                    .from(issues)
+                    .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+                    .then((rows) => rows[0] ?? null)
+                : null;
+            const finalizedAt = new Date();
+            const finalized = await db
+                .update(heartbeatRuns)
+                .set({
+                status: "failed",
+                errorCode: WORKER_LEASE_EXPIRED_ERROR_CODE,
+                error: "Worker lease expired; evidence preserved on the issue",
+                finishedAt: finalizedAt,
+                updatedAt: finalizedAt,
+            })
+                .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
+                .returning({ id: heartbeatRuns.id });
+            if (finalized.length === 0) {
+                result.skipped += 1;
+                continue;
+            }
+            result.expired += 1;
+            if (!issue)
+                continue;
+            result.issueIds.push(issue.id);
+            // Release the execution lock only if this run still holds it.
+            await db
+                .update(issues)
+                .set({
+                executionRunId: null,
+                checkoutRunId: null,
+                executionLockedAt: null,
+                executionAgentNameKey: null,
+                status: issue.status === "in_progress" ? "todo" : issue.status,
+                updatedAt: finalizedAt,
+            })
+                .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId), or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id))));
+            await addSystemComment(issue.companyId, issue.id, "Execution reconciler: the worker holding this issue stopped heartbeating and its lease expired. " +
+                "The run was marked failed (`worker_lease_expired`); all evidence above is preserved. " +
+                "The reconciler will re-dispatch this issue automatically.");
+            const priorExpiries = await db
+                .select({ id: heartbeatRuns.id })
+                .from(heartbeatRuns)
+                .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.errorCode, WORKER_LEASE_EXPIRED_ERROR_CODE), sql `${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`));
+            if (priorExpiries.length > conf.workerLeaseMaxRetries) {
+                const blockedAt = new Date();
+                await db
+                    .update(issues)
+                    .set({
+                    status: "blocked",
+                    blockedTransitionAt: blockedAt,
+                    unblockDescriptor: {
+                        owner: "board",
+                        action: `Worker lease expired ${priorExpiries.length} times (retry limit ${conf.workerLeaseMaxRetries}); investigate the worker runtime before re-dispatching.`,
+                    },
+                    updatedAt: blockedAt,
+                })
+                    .where(and(eq(issues.id, issue.id), inArray(issues.status, ["todo", "in_progress"])));
+                await logActivity(db, {
+                    companyId: issue.companyId,
+                    actorType: "system",
+                    actorId: "system",
+                    action: "issue.execution_reconciler_lease_escalated",
+                    entityType: "issue",
+                    entityId: issue.id,
+                    issueId: issue.id,
+                    details: { issueId: issue.id, runId: run.id, expiries: priorExpiries.length },
+                });
+                result.escalated += 1;
+                continue;
+            }
+            const owner = await resolveOwner(issue, null);
+            if (!owner.agentId) {
+                result.escalated += 1;
+                continue;
+            }
+            const retryRun = await deps.enqueueWakeup(owner.agentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: EXECUTION_RECONCILER_LEASE_RETRY_WAKE_REASON,
+                payload: { issueId: issue.id, retryOfRunId: run.id },
+                requestedByActorType: "system",
+                requestedByActorId: "execution-reconciler",
+                contextSnapshot: {
+                    issueId: issue.id,
+                    taskId: issue.id,
+                    wakeReason: EXECUTION_RECONCILER_LEASE_RETRY_WAKE_REASON,
+                    source: "execution.reconciler.lease_retry",
+                    retryOfRunId: run.id,
+                },
+                idempotencyKey: `execution-reconciler-lease:${run.id}`,
+            });
+            if (retryRun) {
+                await db
+                    .update(heartbeatRuns)
+                    .set({ retryOfRunId: run.id, updatedAt: new Date() })
+                    .where(eq(heartbeatRuns.id, retryRun.id));
+                result.retried += 1;
+            }
+            else {
+                result.skipped += 1;
+            }
+        }
+        if (result.expired > 0) {
+            logger.warn({ ...result }, "execution reconciler recovered expired worker leases");
+        }
+        return result;
+    }
+    async function buildProgramSummary(companyId, projectId) {
+        const now = new Date();
+        const conf = settings();
+        const stallBoundary = new Date(now.getTime() - conf.stallThresholdMs);
+        const rows = await db
+            .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            originKind: issues.originKind,
+            updatedAt: issues.updatedAt,
+        })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), visibleIssueCondition(), projectId ? eq(issues.projectId, projectId) : isNull(issues.projectId), inArray(issues.status, ["backlog", "todo", "blocked", "in_progress", "in_review"])));
+        // Escalation artifacts (including this watchdog's own incidents) are
+        // meta-work: they must not count as program progress, or a fresh incident
+        // would immediately "un-stall" the program it reports on.
+        const programRows = rows.filter((row) => !NON_DISPATCHABLE_ORIGIN_KINDS.has(row.originKind ?? "manual"));
+        const readiness = await issuesSvc.listDependencyReadiness(companyId, programRows.map((row) => row.id));
+        let eligible = 0;
+        let running = 0;
+        let verifying = 0;
+        let blocked = 0;
+        let unowned = 0;
+        let lastTransition = null;
+        for (const row of programRows) {
+            const ready = readiness.get(row.id)?.isDependencyReady ?? false;
+            if (row.status === "in_progress")
+                running += 1;
+            else if (row.status === "in_review")
+                verifying += 1;
+            else if (row.status === "blocked")
+                blocked += 1;
+            else if (ready)
+                eligible += 1;
+            if (!row.assigneeAgentId && ready && (row.status === "backlog" || row.status === "todo")) {
+                unowned += 1;
+            }
+            if (!lastTransition || row.updatedAt > lastTransition)
+                lastTransition = row.updatedAt;
+        }
+        const leaseBoundary = new Date(now.getTime() - conf.workerLeaseTtlMs);
+        const staleRunRows = await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running"), sql `coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}) < ${leaseBoundary.toISOString()}`));
+        const stalled = eligible > 0 && running === 0 && (lastTransition === null || lastTransition < stallBoundary);
+        return {
+            projectId,
+            eligibleIssues: eligible,
+            runningIssues: running,
+            verifyingIssues: verifying,
+            blockedIssues: blocked,
+            unownedIssues: unowned,
+            staleRuns: staleRunRows.length,
+            lastMeaningfulTransitionAt: lastTransition,
+            stalled,
+        };
+    }
+    /**
+     * Program watchdog: an active program with dependency-eligible work, no
+     * running work, and no meaningful transition within the stall threshold is
+     * an orchestration failure, not a quiet board. Raise exactly one incident
+     * issue per program (enforced by partial unique index) and escalate the
+     * existing one if the condition persists.
+     */
+    async function scanProgramStalls(opts) {
+        const now = opts?.now ?? new Date();
+        const conf = settings();
+        const result = {
+            programsScanned: 0,
+            stalled: 0,
+            incidentsCreated: 0,
+            incidentsEscalated: 0,
+            incidentsExisting: 0,
+        };
+        if (!conf.enabled)
+            return result;
+        const companyRows = await db
+            .select({ id: companies.id })
+            .from(companies)
+            .where(and(opts?.companyId ? eq(companies.id, opts.companyId) : undefined, isNull(companies.pausedAt)));
+        for (const company of companyRows) {
+            if (reconcilerDisabledForCompany(company.id))
+                continue;
+            const projectRows = await db
+                .select({ id: projects.id })
+                .from(projects)
+                .where(and(eq(projects.companyId, company.id), eq(projects.status, "in_progress")));
+            // Programs are in-progress projects plus the company-level null program.
+            const programKeys = [...projectRows.map((row) => row.id), null];
+            for (const projectId of programKeys) {
+                const summary = await buildProgramSummary(company.id, projectId);
+                result.programsScanned += 1;
+                if (!summary.stalled)
+                    continue;
+                result.stalled += 1;
+                const originId = projectId ?? "company";
+                const existing = await db
+                    .select({ id: issues.id })
+                    .from(issues)
+                    .where(and(eq(issues.companyId, company.id), eq(issues.originKind, ORCHESTRATION_INCIDENT_ORIGIN_KIND), eq(issues.originId, originId), inArray(issues.status, ["backlog", "todo", "blocked", "in_progress", "in_review"]), visibleIssueCondition()))
+                    .limit(1);
+                const identifier = projectId ? "project program" : "company program";
+                const body = `Orchestration stall detected in ${identifier}. ` +
+                    `Eligible issues: ${summary.eligibleIssues}; running: ${summary.runningIssues}; ` +
+                    `verifying: ${summary.verifyingIssues}; blocked: ${summary.blockedIssues}; ` +
+                    `unowned eligible: ${summary.unownedIssues}; stale runs: ${summary.staleRuns}; ` +
+                    `last meaningful transition: ${summary.lastMeaningfulTransitionAt?.toISOString() ?? "never"}. ` +
+                    `Eligible work with worker capacity has had no running work for over ` +
+                    `${Math.round(conf.stallThresholdMs / 60000)} minutes.`;
+                if (existing.length > 0) {
+                    if (!conf.dryRun) {
+                        const lastComment = await db
+                            .select({ createdAt: issueComments.createdAt })
+                            .from(issueComments)
+                            .where(eq(issueComments.issueId, existing[0].id))
+                            .orderBy(desc(issueComments.createdAt))
+                            .limit(1);
+                        const lastEscalation = lastComment[0]?.createdAt ?? new Date(0);
+                        if (now.getTime() - lastEscalation.getTime() >= conf.stallThresholdMs) {
+                            await addSystemComment(company.id, existing[0].id, `Still stalled. ${body}`);
+                            result.incidentsEscalated += 1;
+                        }
+                    }
+                    result.incidentsExisting += 1;
+                    continue;
+                }
+                if (conf.dryRun)
+                    continue;
+                try {
+                    const created = await issuesSvc.create(company.id, {
+                        title: `[orchestration] ${projectId ? "Program" : "Company"} stall: eligible work is not running`,
+                        description: body,
+                        status: "todo",
+                        priority: "critical",
+                        projectId: projectId ?? undefined,
+                        originKind: ORCHESTRATION_INCIDENT_ORIGIN_KIND,
+                        originId,
+                    });
+                    if (created) {
+                        result.incidentsCreated += 1;
+                        await logActivity(db, {
+                            companyId: company.id,
+                            actorType: "system",
+                            actorId: "system",
+                            action: "issue.execution_reconciler_incident_created",
+                            entityType: "issue",
+                            entityId: created.id,
+                            issueId: created.id,
+                            details: { projectId, summary },
+                        });
+                    }
+                }
+                catch (error) {
+                    if (isUniqueViolation(error)) {
+                        // Another tick created the incident first — idempotent by index.
+                        result.incidentsExisting += 1;
+                    }
+                    else {
+                        throw error;
+                    }
+                }
+            }
+        }
+        if (result.incidentsCreated > 0 || result.incidentsEscalated > 0) {
+            logger.warn({ ...result }, "execution reconciler program watchdog raised incidents");
+        }
+        return result;
+    }
+    return {
+        reconcileExecutionState,
+        recoverExpiredWorkerLeases,
+        scanProgramStalls,
+        buildProgramSummary,
+    };
+}
+//# sourceMappingURL=execution-reconciler.js.map

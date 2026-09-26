@@ -294,6 +294,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  hydrateStoredIssueExecutionPolicy,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -1053,7 +1054,7 @@ function hasScheduledMonitor(input: {
     input.existingMonitorNextCheckAt
   )
     return true;
-  const policy = normalizeIssueExecutionPolicy(input.executionPolicy ?? null);
+  const policy = hydrateStoredIssueExecutionPolicy(input.executionPolicy ?? null);
   return Boolean(policy?.monitor?.nextCheckAt);
 }
 
@@ -4366,7 +4367,7 @@ export function issueRoutes(
 
     const monitor = summarizeIssueMonitor(
       issue,
-      normalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
+      hydrateStoredIssueExecutionPolicy(issue.executionPolicy ?? null),
     );
     if (monitor.nextCheckAt && Date.parse(monitor.nextCheckAt) > Date.now()) {
       return "Recovery action became stale because the source issue now has a scheduled monitor.";
@@ -9460,7 +9461,7 @@ export function issueRoutes(
               actorAgentId: actor.agentId,
               actorRunId: actor.runId,
             });
-            const executionPolicy = normalizeIssueExecutionPolicy(
+            const executionPolicy = hydrateStoredIssueExecutionPolicy(
               lockedIssue.executionPolicy ?? null,
             );
             const transition = applyIssueExecutionPolicyTransition({
@@ -12417,7 +12418,7 @@ export function issueRoutes(
       const normalizedChildren = [];
       for (const child of requestedChildren) {
         const executionPolicy = applyActorMonitorScheduledBy(
-          normalizeIssueExecutionPolicy(child.executionPolicy),
+          hydrateStoredIssueExecutionPolicy(child.executionPolicy),
           actor.actorType,
         );
         await assertCanManageIssueMonitor(
@@ -12544,7 +12545,7 @@ export function issueRoutes(
           },
         });
 
-        const executionPolicy = normalizeIssueExecutionPolicy(
+        const executionPolicy = hydrateStoredIssueExecutionPolicy(
           issue.executionPolicy,
         );
         if (executionPolicy?.monitor) {
@@ -13186,7 +13187,7 @@ export function issueRoutes(
           actor.actorType,
         );
       }
-      const previousExecutionPolicy = normalizeIssueExecutionPolicy(
+      const previousExecutionPolicy = hydrateStoredIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
       const nextExecutionPolicy =
@@ -14212,7 +14213,7 @@ export function issueRoutes(
         });
       }
 
-      const nextStoredExecutionPolicy = normalizeIssueExecutionPolicy(
+      const nextStoredExecutionPolicy = hydrateStoredIssueExecutionPolicy(
         issue.executionPolicy ?? null,
       );
       const previousMonitor = summarizeIssueMonitor(
@@ -17639,7 +17640,7 @@ export function issueRoutes(
       const currentExecutionState = parseIssueExecutionState(
         currentIssue.executionState,
       );
-      const currentExecutionPolicy = normalizeIssueExecutionPolicy(
+      const currentExecutionPolicy = hydrateStoredIssueExecutionPolicy(
         currentIssue.executionPolicy ?? null,
       );
       const shouldAutoApproveReviewComment =
