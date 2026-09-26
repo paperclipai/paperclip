@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeManagedShim, flipCurrentAtomic, initializeInstallStore, payloadPathFor, readInstallManifest, resolveInstallStorePaths, writeInstallManifestAtomic, type InstallManifest, type InstallRecord } from "../install-store.js";
 import type { CommandRunner } from "../commands/install.js";
 import { compareVersions, detectInstallMode, resolveUpdateRequest, rollbackManagedInstall, updateCommand } from "../commands/update.js";
+import { packageVersion } from "../version.js";
 
 let root: string;
 let previousHome: string | undefined;
@@ -117,29 +118,60 @@ describe("update command", () => {
     expect(detectInstallMode(entry("lib"), paths, { PNPM_HOME: path.join(root, "custom-pnpm-home") })).toBe("global-npm");
   });
 
-  it("prints the pnpm command for a pnpm global install and never runs npm install", async () => {
+  it.each([
+    ["yarn", [".config", "yarn", "global"], "global-yarn"],
+    ["bun", [".bun", "install", "global"], "global-bun"],
+  ] as const)("detects a %s global install launched through its symlinked bin entry", (_manager, segments, mode) => {
     const paths = resolveInstallStorePaths();
-    const executable = path.join(root, ".local", "share", "pnpm", "global", "v11", "abc123", "node_modules", "paperclipai", "dist", "index.js");
+    const packageDir = path.join(root, ...segments, "node_modules", "paperclipai");
+    fs.mkdirSync(path.join(packageDir, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(packageDir, "dist", "index.js"), "");
+    // A junction needs no symlink privilege on Windows and is a plain symlink elsewhere.
+    const binLink = path.join(root, "bin", "paperclipai");
+    fs.mkdirSync(path.dirname(binLink), { recursive: true });
+    fs.symlinkSync(packageDir, binLink, "junction");
+    expect(detectInstallMode(path.join(binLink, "dist", "index.js"), paths, {})).toBe(mode);
+  });
+
+  it.each([
+    ["global-pnpm", [".local", "share", "pnpm", "global", "v11", "abc123"], ["pnpm", "add", "-g", "paperclipai@99.0.0", "--registry=https://registry.npmjs.org"]],
+    ["global-yarn", [".config", "yarn", "global"], ["yarn", "global", "add", "paperclipai@99.0.0", "--registry=https://registry.npmjs.org"]],
+    ["global-bun", [".bun", "install", "global"], ["bun", "add", "-g", "paperclipai@99.0.0", "--registry=https://registry.npmjs.org"]],
+  ] as const)("prints the owning manager's command for a %s install and never runs npm install", async (mode, segments, command) => {
+    const paths = resolveInstallStorePaths();
+    const executable = path.join(root, ...segments, "node_modules", "paperclipai", "dist", "index.js");
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const runCommand = vi.fn(async () => ({ stdout: '"99.0.0"\n', stderr: "" }));
     await updateCommand({ json: true }, { paths, executablePath: executable, runCommand });
     expect(runCommand).toHaveBeenCalledTimes(1);
     expect(runCommand).toHaveBeenCalledWith("npm", expect.arrayContaining(["view"]), expect.anything());
-    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toEqual({
-      mode: "global-pnpm",
-      action: "manual",
-      targetVersion: "99.0.0",
-      command: ["pnpm", "add", "-g", "paperclipai@99.0.0", "--registry=https://registry.npmjs.org"],
-    });
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toEqual({ mode, action: "manual", targetVersion: "99.0.0", command });
   });
 
-  it("reports update availability for a pnpm global install", async () => {
+  it("prints the pnpm command on unsupported Node because it installs nothing", async () => {
     const paths = resolveInstallStorePaths();
     const executable = path.join(root, ".local", "share", "pnpm", "global", "v11", "abc123", "node_modules", "paperclipai", "dist", "index.js");
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const runCommand = vi.fn(async () => ({ stdout: '"99.0.0"\n', stderr: "" }));
+    const nodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
+    Object.defineProperty(process.versions, "node", { ...nodeVersion, value: "22.22.2" });
+    try {
+      await updateCommand({ json: true }, { paths, executablePath: executable, runCommand });
+    } finally {
+      Object.defineProperty(process.versions, "node", nodeVersion);
+    }
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({ mode: "global-pnpm", action: "manual" });
+  });
+
+  it("reports update availability for a pnpm global install from the running version, not a managed manifest", async () => {
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const managedPayload = payloadPathFor(paths, "npm", "1.0.0"); createPayload(managedPayload, "1.0.0");
+    writeInstallManifestAtomic({ schemaVersion: 1, ...record(managedPayload, "1.0.0"), previous: [] }, paths);
+    const executable = path.join(root, ".local", "share", "pnpm", "global", "v11", "abc123", "node_modules", "paperclipai", "dist", "index.js");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const runCommand = vi.fn(async () => ({ stdout: '"99.0.0"\n', stderr: "" }));
     await updateCommand({ check: true, json: true }, { paths, executablePath: executable, runCommand });
-    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({ mode: "global-pnpm", targetVersion: "99.0.0", updateAvailable: true });
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({ mode: "global-pnpm", currentVersion: packageVersion, targetVersion: "99.0.0", updateAvailable: true });
     expect(process.exitCode).toBe(10);
   });
 

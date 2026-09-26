@@ -85,13 +85,17 @@ export function detectInstallMode(executablePath = process.argv[1] ?? "", paths 
   const resolved = path.resolve(executablePath || ".");
   const manifest = readInstallManifest(paths);
   if (manifest && isManagedExecutable(resolved, manifest, paths)) return "managed";
-  const normalized = resolved.split(path.sep).join("/");
+  // npm, Yarn, and Bun link their bin entries as symlinks, and Node does not
+  // resolve process.argv[1], so classify the package entrypoint the link targets.
+  let real = resolved;
+  try { real = fs.realpathSync(resolved); } catch { /* keep the unresolved path */ }
+  const normalized = real.split(path.sep).join("/");
   if (normalized.includes("/.npm/_npx/") || normalized.includes("/node_modules/.cache/npx/")) return "npx";
   // pnpm, yarn, and bun global installs also contain /node_modules/paperclipai/,
   // but npm does not own them, so classify them before the npm fallback.
   if (normalized.includes("/node_modules/paperclipai/")) {
     const pnpmHome = env.PNPM_HOME?.trim();
-    if (/\/pnpm\/global\//i.test(normalized) || (pnpmHome && isWithin(resolved, path.resolve(pnpmHome)))) return "global-pnpm";
+    if (/\/pnpm\/global\//i.test(normalized) || (pnpmHome && isWithin(real, path.resolve(pnpmHome)))) return "global-pnpm";
     if (/\/yarn\/(?:data\/)?global\//i.test(normalized)) return "global-yarn";
     if (normalized.includes("/.bun/install/global/")) return "global-bun";
     return "global-npm";
@@ -204,7 +208,8 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
   }
   if (mode === "npx") { emit(options, { mode, action: "install" }, "This is an ephemeral npx install. Run `paperclipai install`, then use `paperclipai update` from the managed shim."); return; }
   if (mode === "source" || mode === "unknown") { emit(options, { mode, action: "manual" }, "This appears to be a source checkout. Update it with `git pull` followed by `pnpm install`; Paperclip will not mutate the repository."); return; }
-  if (!options.check && !options.dryRun) assertSupportedNodeVersion();
+  // Foreign global installs only print a command, so the Node check must not block that guidance.
+  if (!options.check && !options.dryRun && !isForeignGlobalMode(mode)) assertSupportedNodeVersion();
   const request = resolveUpdateRequest(mode === "managed" ? manifest : null, options);
   if (mode === "managed" && manifest?.source === "git") {
     if (!manifest.repo || !manifest.ref || !manifest.sha) throw new Error("Managed git install metadata is incomplete.");
@@ -241,7 +246,8 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
     return;
   }
   const targetVersion = await resolvePublishedVersion(request.spec, runCommand);
-  const currentVersion = manifest?.version ?? (mode === "global-npm" || isForeignGlobalMode(mode) ? packageVersion : undefined);
+  // A managed manifest can exist next to a global install; only a managed run reports its version.
+  const currentVersion = mode === "managed" ? manifest?.version : mode === "global-npm" || isForeignGlobalMode(mode) ? packageVersion : undefined;
   const comparison = currentVersion ? compareVersions(targetVersion, currentVersion) : 1;
   if (options.check) { emit(options, { mode, currentVersion: currentVersion ?? null, targetVersion, updateAvailable: comparison > 0, downgrade: comparison < 0, channel: request.channel }, comparison > 0 ? `Update available: ${targetVersion}` : comparison < 0 ? `Target ${targetVersion} is older than ${currentVersion}.` : `paperclipai ${targetVersion} is current.`); if (comparison > 0) process.exitCode = 10; return; }
   if (isForeignGlobalMode(mode)) {
