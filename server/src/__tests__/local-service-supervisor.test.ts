@@ -33,7 +33,11 @@ describe("local service supervision", () => {
 
     // The managed service uses a login shell, whose PATH can select a different
     // Node installation from the one CI configured for this test process.
-    const nodeCommand = "'" + process.execPath.replace(/'/g, "'\\''") + "'";
+    // Git Bash accepts Windows drive paths with forward slashes.
+    const nodeExecutable = process.platform === "win32"
+      ? process.execPath.replace(/\\/g, "/")
+      : process.execPath;
+    const nodeCommand = "'" + nodeExecutable.replace(/'/g, "'\\''") + "'";
     let registryRecord: Awaited<ReturnType<typeof listLocalServiceRegistryRecords>>[number] | null = null;
     try {
       const [service] = await startRuntimeServicesForWorkspaceControl({
