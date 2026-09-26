@@ -563,22 +563,36 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
-  it("keeps Claude startup model handling and Gemini session config handling unchanged", async () => {
+  it("keeps Claude startup model handling and skips ACP session config for Gemini", async () => {
     const claude = await runExecutor({ agent: "claude", model: "claude-opus-4-7" });
     expect((claude.meta[0]?.env as Record<string, string>).ANTHROPIC_MODEL).toBe(
       "claude-opus-4-7",
     );
     expect(claude.configOptions).toEqual([]);
 
+    // Gemini's ACP server does not implement session/set_config_option — any
+    // call fails the whole run with a JSON-RPC "Method not found" (-32601)
+    // error. Model is passed as a `--model` startup flag instead; effort and
+    // fast-mode have no equivalent for gemini and are simply dropped.
     const gemini = await runExecutor({
       agent: "gemini",
       model: "gemini-2.5-pro",
       thinkingEffort: "high",
     });
-    expect(gemini.configOptions).toEqual([
-      { key: "model", value: "gemini-2.5-pro" },
-      { key: "effort", value: "high" },
-    ]);
+    expect(gemini.configOptions).toEqual([]);
+    expect(gemini.meta[0]?.command).toBe("gemini --acp --model gemini-2.5-pro");
+  });
+
+  it("does not append a second --model when a custom Gemini command already sets one", async () => {
+    for (const agentCommand of [
+      "gemini --acp --model gemini-2.5-flash",
+      "gemini --acp --model=gemini-2.5-flash",
+      "gemini --acp -m gemini-2.5-flash",
+    ]) {
+      const gemini = await runExecutor({ agent: "gemini", agentCommand, model: "gemini-2.5-pro" });
+      expect(gemini.configOptions).toEqual([]);
+      expect(gemini.meta[0]?.command).toBe(agentCommand);
+    }
   });
 
   it("does not inject CODEX_CONFIG or session config when Codex overrides are absent", async () => {
