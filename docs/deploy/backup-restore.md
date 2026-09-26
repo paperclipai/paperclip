@@ -366,6 +366,12 @@ If the artifact predates the secrets in the database, see
 [Secrets](/deploy/secrets) — metadata restored without its key is not recoverable
 by any later step.
 
+Present is not the same as right. A valid key from a different artifact set
+looks identical here, the server boots on it, and every stored credential
+fails the first time an agent uses one. `restore-smoke.sh` (below) proves the
+pair belongs together by decrypting every secret version in the dump with the
+key in the archive; run it on the artifacts before you restore them.
+
 **Ownership.** `tar` run as root restores the uid/gid recorded in the archive. If
 the archive was made on a host where Paperclip ran under a different uid than the
 one it will run as now, every file is owned by a stranger and the server fails on
@@ -487,25 +493,36 @@ truncated.
 
 ```
 run-log base: /paperclip/instances/default/data/run-logs
-run-log check PASSED — 6368 ref(s) checked, all present, 6070 verified against the database digest, 287 unverifiable (no digest in the database: run never finalized) (1096 zero-byte, which the source also had)
+run-log check PASSED — 6501 ref(s) checked, 11 missing (within tolerance 11), 6204 verified against the database digest, 263 unfinalized ending on a line boundary (no digest to compare), 23 unfinalized torn mid-line (within tolerance 23) (1103 zero-byte, which the source also had)
 ```
 
 It checks every ref, not a sample — hashing a gigabyte of transcripts takes
 well under a minute, and a sample turns the result into a coin toss. Read the
-three numbers:
+numbers:
 
 - **Verified** is the count that matters. Every one of those files is
   byte-for-byte what the server had when it closed the run, so it opens.
-- **Unverifiable** are runs the server never finalized — in flight when the
-  dump was taken, or killed before finalize — so the database holds no digest
-  to compare against. They are the *only* runs a live tar can tear, and the
-  source already holds torn files for exactly these (measured: 37 of 288 on one
-  deployment), so the check reports them rather than failing on them. With the
-  database dumped before the tree is tarred, every *finalized* run's file is
-  complete in the tar; if this number is large relative to the deployment's
+- **Unfinalized** runs — in flight when the dump was taken, or killed before
+  finalize — have no digest in the database. They are the *only* runs a live
+  tar can tear, so the checker holds them to the one property it can still
+  test: the server appends whole NDJSON lines, so an intact transcript ends in
+  a newline, and one that does not was cut off mid-event. Those ending on a
+  line boundary are clean prefixes — every event in them opens — and pass.
+  **Torn** ones fail beyond `--max-torn <n>` (default 0). With the database
+  dumped before the tree is tarred, every *finalized* run's file is complete
+  in the tar; if the unfinalized count is large relative to the deployment's
   concurrency, the dump and the tar were taken far apart.
 - **Zero-byte** is normal: a run killed before its first line leaves one, and a
   faithful restore brings it back empty.
+
+**Torn transcripts get the same treatment as missing refs.** A source can hold
+torn files of its own — runs killed mid-write by a server restart leave one —
+and a faithful restore brings those back torn. Measured on one live
+deployment: 286 unfinalized transcripts, 23 torn at the source, all from
+interrupted or failed runs weeks earlier, and none damaged anywhere but the
+last line. Get the source's count by running this script against the live
+tree with the live database's refs, and pass `--max-torn <that count>`; one
+more than that is a run the backup itself cut off, and it fails.
 
 Any **content mismatch** fails, with no tolerance flag: a healthy source has
 none (measured: 0 of 6070), so one means the files are from a different
@@ -650,8 +667,8 @@ scripts/restore-smoke.sh --db db-<ts>.sql.gz --volume paperclip-<ts>.tar.gz \
   --boot ghcr.io/paperclipai/paperclip:<the tag you run>
 ```
 
-It needs `docker` and `tar`; psql runs inside the container, so the host needs no
-PostgreSQL client. In order it checks:
+It needs `docker` and `tar`, and `node` with `--volume`; psql runs inside the
+container, so the host needs no PostgreSQL client. In order it checks:
 
 1. both artifacts are intact (`gzip -t`);
 2. a clean `postgres:17-alpine` accepts the dump under `ON_ERROR_STOP=1`;
@@ -659,12 +676,17 @@ PostgreSQL client. In order it checks:
    referential integrity, a populated board, run history, sequences;
 4. the data-directory archive extracts at the right level with
    `--strip-components=1`;
-5. the secrets master key is in it, at mode `0600`;
+5. the secrets master key is in it, at mode `0600`, **and it is the key the
+   dump's secrets were encrypted with**: every `local_encrypted_v1` secret
+   version in the restored database is decrypted with it (AES-256-GCM, which
+   authenticates, so a wrong key cannot pass by accident) and the plaintext's
+   SHA-256 compared with the row's `value_sha256`. No plaintext is printed;
 6. every run-log file the restored database points at is present in the
    extracted tree **and is the file the server finalized** — size and SHA-256
-   compared with what the database recorded, so a transcript the tar caught
-   mid-write fails rather than passing as present. `--max-missing <n>`
-   tolerates the source's own known dangling refs, as in step 4 above; a
+   compared with what the database recorded — and every unfinalized one ends
+   on a line boundary, so a transcript the tar caught mid-write fails rather
+   than passing as present. `--max-missing <n>` and `--max-torn <n>` tolerate
+   the source's own known dangling and torn transcripts, as in step 4 above; a
    content mismatch is never tolerated;
 7. with `--boot`, the Paperclip image starts against the restored database and
    the extracted tree and its health endpoint reports `ok` — which means the
@@ -673,15 +695,19 @@ PostgreSQL client. In order it checks:
 8. still with `--boot`, a throwaway agent API key is minted *in the restored
    database only* — a random token whose SHA-256 goes into `agent_api_keys`
    the way the server stores its own keys, so nothing valid on the source is
-   created or used — and the server signs it in: the agent's company, agents
-   and issues come back through the API, and one of that agent's finalized run
-   logs is served by the server that owns it: the file step 6 verified on
-   disk, read back the way the UI reads it, and its first NDJSON line parses.
+   created or used — and the server signs it in. Each surface is then held to
+   what the restored database says it should serve: the company's agents and
+   issues are listed and neither list is empty; the company's most recently
+   commented issue comes back with its identifier and exactly as many comments
+   as the database holds; one of the agent's finalized runs comes back with
+   the status and exactly the event count the database recorded; and that
+   run's log is served by the server that owns it — the file step 6 verified
+   on disk, read back the way the UI reads it, its first NDJSON line parsing.
 
 Steps 4 to 6 are the ones a database-only test cannot reach, and they are where
 the silent failures live: an archive extracted one level off, a master key that
-was never in the artifact, transcripts that did not come back, or came back
-torn. Steps 7 and 8 are the ones no file-level test can reach: a Paperclip of
+was never in the artifact or belongs to a different one, transcripts that did
+not come back, or came back torn. Steps 7 and 8 are the ones no file-level test can reach: a Paperclip of
 the version you run actually serving the restored board. Without `--volume` or
 `--boot`, the script says in its own output what it did *not* check
 rather than implying a clean bill of health.
@@ -704,25 +730,33 @@ is exercised here.
 ### A captured run
 
 Artifacts taken from a live deployment while its agents were running — the
-database dump first (215 MB gzipped, 30 s), then a tar of the data directory
-(2.3 GB, 3 min) — and restored with:
+database dump first (221 MB gzipped), then a tar of the instance tree (1.3 GB).
+To keep the test artifact small, that tar left out the backup directories, the
+logs, and the company, project and agent workspaces. A production artifact keeps
+the workspaces, but none of these checks reads them. It was restored with:
 
 ```sh
-scripts/restore-smoke.sh --db db-20260925T135541Z.sql.gz \
-  --volume paperclip-20260925T135541Z.tar.gz --max-missing 11 \
+scripts/restore-smoke.sh --db db-20260926T030018Z.sql.gz \
+  --volume paperclip-20260926T030018Z.tar.gz --max-missing 11 --max-torn 23 \
   --boot ghcr.io/paperclipai/paperclip:nightly
 ```
+
+`--max-missing 11` and `--max-torn 23` are the source's own counts, measured by
+running `restore-verify-logs.sh` against the live tree first; both sets date
+from server restarts a month before the backup.
 
 | step | result |
 |---|---|
 | `gzip -t`, both artifacts | ok |
 | load into clean `postgres:17-alpine`, `ON_ERROR_STOP=1` | ok |
-| `restore-verify.sql` | 7/7 `PASS` — 2 companies, 21 agents, 16 projects, 3140 issues, 10776 comments, 6629 runs, 66952 run events, 284 migrations, no orphans, sequences ahead |
-| master key | present, mode 600 |
-| run logs | 6394 refs, row count matched the database; 6096 byte-identical to the recorded digest, 287 unverifiable (never finalized), 0 mismatches, 11 missing — the 11 the source itself lacks, all from one window a month before the backup |
+| `restore-verify.sql` | 7/7 `PASS` — 2 companies, 21 agents, 16 projects, 3179 issues, 10963 comments, 6730 runs, 68429 run events, 284 migrations, no orphans, sequences ahead |
+| master key | mode 600; 63 of 63 secret versions decrypt with it to their recorded `value_sha256` |
+| run logs | 6502 refs, row count matched the database; 6206 byte-identical to the recorded digest, 0 mismatches; 262 unfinalized ending on a line boundary, 23 torn — the source's 23; 11 missing — the source's 11 |
 | server boot | `/api/health` ok on the restored database and tree, 284 migrations |
 | sign-in and board | minted key signed in as an agent; its company, 13 agents and the first page of issues (500) served |
-| run log through the API | a finalized run's transcript served, first NDJSON line parses |
+| issue and comments | the company's most recently commented issue served with 4 comments, database has 4 |
+| run record and events | a finalized run served as `succeeded` with 16 events, database has `succeeded` and 16 |
+| run log through the API | that run's transcript served, first NDJSON line parses |
 
 `RESTORE SMOKE PASSED (database + data directory + server boots + board
 served)`, exit 0.

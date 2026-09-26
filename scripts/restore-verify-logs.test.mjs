@@ -112,11 +112,35 @@ test("a right-sized file with different bytes still fails: the digest is compare
   }
 });
 
-test("a run the database never finalized is reported as unverifiable, not failed", () => {
+test("an unfinalized transcript ending on a line boundary passes as a clean prefix", () => {
   // No log_bytes/log_sha256 on the row: the run was in flight (or died before
-  // finalize) when the dump was taken, so there is nothing to compare against.
-  // The source can hold torn files for exactly these runs; a faithful restore
-  // brings them back torn, and failing on them would fail every live backup.
+  // finalize) when the dump was taken, so there is no digest. The server
+  // appends whole lines, so a file ending in a newline is an intact prefix
+  // whose every event opens.
+  const { root } = makeTree({
+    "c/a/r1.ndjson": FULL,
+    "c/a/live.ndjson": LINE1,
+    "c/a/empty.ndjson": "",
+  });
+  try {
+    const { status, out } = run(root, [
+      finalized("c/a/r1.ndjson", FULL),
+      inflight("c/a/live.ndjson"),
+      inflight("c/a/empty.ndjson"),
+    ]);
+    assert.equal(status, 0, out);
+    assert.match(out, /run-log check PASSED/);
+    assert.match(out, /1 verified against the database digest/);
+    assert.match(out, /2 unfinalized ending on a line boundary/);
+    assert.doesNotMatch(out, /torn/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unfinalized transcript cut off mid-line fails, even beside a verified one", () => {
+  // The case a digest cannot cover: one intact finalized run, and an
+  // in-flight run's file the tar caught mid-write.
   const { root } = makeTree({
     "c/a/r1.ndjson": FULL,
     "c/a/live.ndjson": TORN,
@@ -124,12 +148,35 @@ test("a run the database never finalized is reported as unverifiable, not failed
   try {
     const { status, out } = run(root, [
       finalized("c/a/r1.ndjson", FULL),
-      inflight("c/a/live.ndjson"),
+      inflight("c/a/live.ndjson", "2026-09-25 08:59:00"),
     ]);
-    assert.equal(status, 0, out);
-    assert.match(out, /run-log check PASSED/);
-    assert.match(out, /1 verified against the database digest/);
-    assert.match(out, /1 unverifiable \(no digest in the database: run never finalized\)/);
+    assert.equal(status, 1, out);
+    assert.match(out, /torn: c\/a\/live\.ndjson\s+unfinalized, ends mid-line\s+\(run created 2026-09-25 08:59:00\)/);
+    assert.match(out, /1 unfinalized transcript\(s\) end mid-line \(tolerance 0\)/);
+    assert.doesNotMatch(out, /run-log check PASSED/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--max-torn tolerates the source's known torn transcripts and not one more", () => {
+  const { root } = makeTree({
+    "c/a/r1.ndjson": FULL,
+    "c/a/old.ndjson": TORN,
+    "c/a/live.ndjson": TORN,
+  });
+  try {
+    const rows = [finalized("c/a/r1.ndjson", FULL), inflight("c/a/old.ndjson"), inflight("c/a/live.ndjson")];
+    const within = run(root, rows, ["--max-torn", "2"]);
+    assert.equal(within.status, 0, within.out);
+    assert.match(within.out, /2 unfinalized torn mid-line \(within tolerance 2\)/);
+
+    const over = run(root, rows, ["--max-torn", "1"]);
+    assert.equal(over.status, 1, over.out);
+    assert.match(over.out, /2 unfinalized transcript\(s\) end mid-line \(tolerance 1\)/);
+
+    const bad = run(root, rows, ["--max-torn", "some"]);
+    assert.equal(bad.status, 2, bad.out);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

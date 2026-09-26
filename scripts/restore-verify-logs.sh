@@ -29,23 +29,32 @@ set -euo pipefail
 #       where log_store = 'local_file' and log_ref is not null" > refs.tsv
 #   scripts/restore-verify-logs.sh /paperclip --expect <count(*) of the same rows> < refs.tsv
 #
-# created_at is echoed next to each missing or mismatching ref — that is what
-# tells a source-side gap from a wrong artifact (see below). log_bytes and
+# created_at is echoed next to each missing, mismatching or torn ref — that is
+# what tells a source-side gap from a wrong artifact (see below). log_bytes and
 # log_sha256 are NULL (empty) for a run the server never finalized: it was in
-# flight when the dump was taken, or died before finalize. Those refs are
-# checked for presence and reported as unverifiable; there is nothing to
-# compare them with, and the source itself holds torn files for exactly those
-# runs. With the database dumped before the tree is tarred (the documented
-# order) every finalized run's file is complete in the tar, so a digest
-# mismatch means a wrong artifact generation or the reverse ordering, and it
-# always fails.
+# flight when the dump was taken, or died before finalize. With the database
+# dumped before the tree is tarred (the documented order) every finalized
+# run's file is complete in the tar, so a digest mismatch means a wrong
+# artifact generation or the reverse ordering, and it always fails.
+#
+# An unfinalized transcript has no digest, but it has a shape: the server
+# appends whole NDJSON lines, so an intact transcript is empty or ends in a
+# newline. Tar reads a file up to the size it saw, so what it can do to a
+# transcript still being written is cut it off mid-line, and that is exactly
+# what a last byte other than a newline shows. Those refs are counted as torn
+# and fail beyond --max-torn. One ending on a line boundary is a clean prefix:
+# every event in it opens, and it is reported as unverifiable, not failed.
+# Measured on one live deployment: 286 unfinalized transcripts, 263 ending
+# on a newline or empty, 23 torn at the source itself (runs interrupted by
+# server restarts weeks earlier), none damaged anywhere but the last line.
 #
 # Check every ref, not a sample. Hashing a gigabyte of transcripts takes
 # seconds, and a sample turns the result into a coin toss (see --max-missing).
 #
 # Usage:
 #   restore-verify-logs.sh <data-dir> [--run-logs-dir <dir>] [--max-missing <n>]
-#                          [--expect <n>] [--allow-empty] [--allow-unverified]
+#                          [--max-torn <n>] [--expect <n>] [--allow-empty]
+#                          [--allow-unverified]
 #
 # <data-dir> is PAPERCLIP_HOME (the restored data directory) or an instance
 # root; the run-log base is resolved from it. --run-logs-dir names the base
@@ -62,6 +71,12 @@ set -euo pipefail
 # was dumped, so the files postdate the archive). Content mismatches have no
 # tolerance: the source never has any (measured: 0 of 6068 finalized runs).
 #
+# --max-torn <n>: tolerate up to n unfinalized transcripts that end mid-line.
+# Same rule as --max-missing: the count the source is known to have, which you
+# get by running this script against the live tree, never whatever makes the
+# check pass. A torn transcript beyond that count was torn by the backup — a
+# run in flight while the tar read its file — and its last event is lost.
+#
 # --expect <n>: the number of rows the database reported for the same query
 # (select count(*) ...). Fewer or more rows on stdin fails before any file is
 # looked at. `docker exec ... | <this script>` has been measured dropping output
@@ -73,17 +88,19 @@ set -euo pipefail
 # two-column form) and report presence only. Without it, such input fails, so
 # a PASSED line always means content was compared.
 #
-# Exits non-zero if more than --max-missing refs are missing (default 0) or any
-# ref's content differs from its recorded digest, so it gates a script.
+# Exits non-zero if more than --max-missing refs are missing (default 0), more
+# than --max-torn unfinalized transcripts are torn (default 0), or any ref's
+# content differs from its recorded digest, so it gates a script.
 
 usage() {
-  echo "usage: $0 <data-dir> [--run-logs-dir <dir>] [--max-missing <n>] [--expect <n>] [--allow-empty] [--allow-unverified]" >&2
+  echo "usage: $0 <data-dir> [--run-logs-dir <dir>] [--max-missing <n>] [--max-torn <n>] [--expect <n>] [--allow-empty] [--allow-unverified]" >&2
   exit 2
 }
 
 DATA_DIR=""
 RUN_LOGS_DIR=""
 MAX_MISSING=0
+MAX_TORN=0
 EXPECT=""
 ALLOW_EMPTY=0
 ALLOW_UNVERIFIED=0
@@ -101,6 +118,14 @@ while [ $# -gt 0 ]; do
         ''|*[!0-9]*) echo "--max-missing needs a non-negative integer, got: $2" >&2; usage ;;
       esac
       MAX_MISSING="$2"
+      shift 2
+      ;;
+    --max-torn)
+      [ $# -ge 2 ] || usage
+      case "$2" in
+        ''|*[!0-9]*) echo "--max-torn needs a non-negative integer, got: $2" >&2; usage ;;
+      esac
+      MAX_TORN="$2"
       shift 2
       ;;
     --expect)
@@ -171,6 +196,7 @@ missing=0
 mismatch=0
 verified=0
 unverified=0
+torn=0
 empty=0
 reported=0
 
@@ -239,8 +265,14 @@ for line in ${rows[@]+"${rows[@]}"}; do
     empty=$((empty + 1))
   fi
   if [ -z "$want_sha" ]; then
-    # The server never finalized this run, so the database holds nothing to
-    # compare against. Presence is all that can be established.
+    # The server never finalized this run, so the database holds no digest.
+    # What can still be established is that the file stops on a line
+    # boundary; a last byte other than a newline is a cut-off event.
+    if [ -s "$path" ] && [ "$(tail -c 1 "$path" | od -An -tx1 | tr -d ' \n')" != "0a" ]; then
+      torn=$((torn + 1))
+      report "torn: $ref  unfinalized, ends mid-line${when:+  (run created $when)}"
+      continue
+    fi
     unverified=$((unverified + 1))
     continue
   fi
@@ -301,6 +333,15 @@ if [ "$missing" -gt "$MAX_MISSING" ]; then
   failed=1
 fi
 
+if [ "$torn" -gt "$MAX_TORN" ]; then
+  echo "FAIL: $checked ref(s) checked, $torn unfinalized transcript(s) end mid-line (tolerance $MAX_TORN)." >&2
+  echo "      If the runs above were in flight when the backup ran, the tar cut" >&2
+  echo "      their files off while they were being written. If they are old," >&2
+  echo "      the source may already hold them torn — run this script against" >&2
+  echo "      the live tree, and pass --max-torn <that count> only once you have." >&2
+  failed=1
+fi
+
 if [ "$failed" -eq 1 ]; then
   exit 1
 fi
@@ -326,7 +367,10 @@ else
   summary="$summary, content NOT verified (no digests on stdin, --allow-unverified given)"
 fi
 if [ "$unverified" -gt 0 ]; then
-  summary="$summary, $unverified unverifiable (no digest in the database: run never finalized)"
+  summary="$summary, $unverified unfinalized ending on a line boundary (no digest to compare)"
+fi
+if [ "$torn" -gt 0 ]; then
+  summary="$summary, $torn unfinalized torn mid-line (within tolerance $MAX_TORN)"
 fi
 if [ "$empty" -gt 0 ]; then
   summary="$summary ($empty zero-byte, which the source also had)"
