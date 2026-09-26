@@ -752,6 +752,113 @@ describe("issue execution policy routes", () => {
     expect(mockIssueApprovalService.listApprovalsForIssue).not.toHaveBeenCalled();
   });
 
+  describe("stage decision preconditions", () => {
+    const firstStageId = "11111111-1111-4111-8111-111111111111";
+    const secondStageId = "22222222-2222-4222-8222-222222222222";
+    const pendingOn = (currentStageId: string) => ({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-1020",
+      title: "Two approval stages",
+      executionPolicy: normalizeIssueExecutionPolicy({
+        stages: [
+          { id: firstStageId, type: "approval", participants: [{ type: "user", userId: "local-board" }] },
+          { id: secondStageId, type: "approval", participants: [{ type: "user", userId: "other-user" }] },
+        ],
+      })!,
+      executionState: {
+        status: "pending",
+        currentStageId,
+        currentStageIndex: currentStageId === firstStageId ? 0 : 1,
+        currentStageType: "approval",
+        currentParticipant: currentStageId === firstStageId
+          ? { type: "user", userId: "local-board" }
+          : { type: "user", userId: "other-user" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: currentStageId === firstStageId ? [] : [firstStageId],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    it("rejects a decision for a stage that has already advanced", async () => {
+      mockIssueService.getById.mockResolvedValue(pendingOn(secondStageId));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "done", comment: "Approved.", expectedExecutionStageId: firstStageId });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toContain("stage has changed");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a decision when the stage advances before the update lock", async () => {
+      mockIssueService.getById.mockResolvedValue(pendingOn(firstStageId));
+      mockIssueService.getByIdForUpdate.mockResolvedValue(pendingOn(secondStageId));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "done", comment: "Approved.", expectedExecutionStageId: firstStageId });
+
+      expect(res.status).toBe(409);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a decision after the same stage was reassigned to another participant", async () => {
+      const reassigned = pendingOn(firstStageId);
+      reassigned.executionState.currentParticipant = { type: "user", userId: "other-user" };
+      mockIssueService.getById.mockResolvedValue(reassigned);
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "done", comment: "Approved.", expectedExecutionStageId: firstStageId });
+
+      expect(res.status).toBe(409);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("records a decision for the expected pending stage", async () => {
+      const issue = pendingOn(firstStageId);
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+      mockIssueService.addComment.mockResolvedValue({
+        id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        issueId: issue.id,
+        companyId: issue.companyId,
+        body: "Approved.",
+      });
+      const insertedDecisions: unknown[] = [];
+      mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => Promise<unknown>) =>
+        callback({
+          select: mockDbSelect,
+          insert: () => ({ values: async (row: unknown) => { insertedDecisions.push(row); } }),
+        }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "done", comment: "Approved.", expectedExecutionStageId: firstStageId });
+
+      expect(res.status).toBe(200);
+      expect(insertedDecisions).toEqual([
+        expect.objectContaining({ stageId: firstStageId, outcome: "approved" }),
+      ]);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toEqual(
+        expect.objectContaining({
+          executionState: expect.objectContaining({ currentStageId: secondStageId, status: "pending" }),
+        }),
+      );
+    });
+  });
+
   it("allows a board user to cancel an active agent review task", async () => {
     const policy = normalizeIssueExecutionPolicy({
       stages: [

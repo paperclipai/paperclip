@@ -1,4 +1,9 @@
-import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
+import type {
+  IssueExecutionPolicy,
+  IssueExecutionStageParticipant,
+  IssueExecutionStagePrincipal,
+  IssueExecutionState,
+} from "@paperclipai/shared";
 import { parseAssigneeValue } from "./assignees";
 
 type StageType = "review" | "approval";
@@ -33,6 +38,47 @@ function newId() {
 
 function principalKey(principal: IssueExecutionStagePrincipal | IssueExecutionStageParticipant) {
   return principal.type === "agent" ? `agent:${principal.agentId}` : `user:${principal.userId}`;
+}
+
+/**
+ * True when a review or approval stage is waiting on this user's decision.
+ * The server records that decision only when status and comment arrive in one
+ * update, so callers route "done" to the decision controls instead.
+ */
+export function isStageDecisionPendingForUser(
+  executionState: IssueExecutionState | null | undefined,
+  userId: string | null | undefined,
+): boolean {
+  return (
+    executionState?.status === "pending"
+    && !!executionState.currentStageType
+    && executionState.currentParticipant?.type === "user"
+    && !!userId
+    && executionState.currentParticipant.userId === userId
+  );
+}
+
+/** Identifies the pending stage a decision belongs to; null when none waits on this user. */
+export function stageDecisionKey(
+  issueId: string,
+  executionState: IssueExecutionState | null | undefined,
+  userId: string | null | undefined,
+): string | null {
+  if (!isStageDecisionPendingForUser(executionState, userId)) return null;
+  return `${issueId}:${executionState?.currentStageId ?? ""}:${userId}`;
+}
+
+const STAGE_DECISION_NOTE_SELECTOR = "[data-stage-decision-note]";
+
+/**
+ * Focuses the visible decision note. Desktop and mobile properties can both be
+ * mounted, so hidden copies are skipped. Returns false when none is visible.
+ */
+export function focusStageDecisionNote(): boolean {
+  const note = Array.from(document.querySelectorAll<HTMLTextAreaElement>(STAGE_DECISION_NOTE_SELECTOR))
+    .find((element) => element.getClientRects().length > 0);
+  note?.focus();
+  return !!note;
 }
 
 export function principalFromSelectionValue(value: string): IssueExecutionStagePrincipal | null {

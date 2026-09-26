@@ -67,6 +67,9 @@ export function buildIssuePropertiesPanelKey(
     executionState: issue.executionState
       ? {
           status: issue.executionState.status,
+          // Consecutive stages can share a type and participant; the decision
+          // controls reset per stage.
+          currentStageId: issue.executionState.currentStageId,
           currentStageType: issue.executionState.currentStageType,
           currentParticipant: issue.executionState.currentParticipant,
           returnAssignee: issue.executionState.returnAssignee,

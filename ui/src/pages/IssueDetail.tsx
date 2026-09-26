@@ -89,6 +89,7 @@ import {
   extractIssueWorkModeChanges,
 } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
+import { focusStageDecisionNote, isStageDecisionPendingForUser } from "../lib/issue-execution-policy";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import {
   mergePendingIssueQueuedComments,
@@ -4021,11 +4022,17 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       return { previousDetailQueries, previousList, selectedCompanyId };
     },
     onSuccess: ({
-      comment: _comment,
+      comment,
       changes: _changes,
       blockedByIssueIds: _blockedByIssueIds,
       ...nextIssue
     }) => {
+      if (comment) {
+        // Stage decisions post their comment through this PATCH.
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.comments(issueId!),
+        });
+      }
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
@@ -4331,10 +4338,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
   });
   const handleIssuePropertiesUpdate = useCallback(
-    (data: Record<string, unknown>) => {
-      updateIssue.mutate(data);
-    },
-    [updateIssue.mutate],
+    // `onError` already reports failures; the boolean lets controls re-enable.
+    (data: Record<string, unknown>) =>
+      updateIssue.mutateAsync(data).then(() => true, () => false),
+    [updateIssue.mutateAsync],
   );
 
   const updateChildIssue = useMutation({
@@ -6886,7 +6893,24 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       status={issue.status} externalConversationState={issue.externalConversationState}
       size="lg"
       blockerAttention={issue.blockerAttention}
-      onChange={(status) => updateIssue.mutate({ status })}
+      onChange={(status) => {
+        if (status === "done" && isStageDecisionPendingForUser(issue.executionState, currentUserId)) {
+          // Approving needs its note in the same update: open the decision
+          // controls instead of sending a status change the server rejects.
+          if (isMobile) setMobilePropsOpen(true);
+          else openTaskSidePanel();
+          window.setTimeout(() => {
+            if (focusStageDecisionNote()) return;
+            pushToast({
+              title: "Add a decision note to approve",
+              body: "Use Approve under Execution in the task properties. The decision needs its note.",
+              tone: "info",
+            });
+          }, 150);
+          return;
+        }
+        updateIssue.mutate({ status });
+      }}
     />
   );
 
@@ -8146,7 +8170,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                         : undefined
                     }
                     onAddSubIssue={openNewSubIssue}
-                    onUpdate={(data) => updateIssue.mutate(data)}
+                    onUpdate={handleIssuePropertiesUpdate}
                     inline
                     hasActiveRun={resolvedHasActiveRun}
                     externalObjects={
@@ -8209,7 +8233,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                             : undefined
                         }
                         onAddSubIssue={openNewSubIssue}
-                        onUpdate={(data) => updateIssue.mutate(data)}
+                        onUpdate={handleIssuePropertiesUpdate}
                         inline
                         hasActiveRun={resolvedHasActiveRun}
                         externalObjects={

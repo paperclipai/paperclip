@@ -130,8 +130,17 @@ vi.mock("../lib/assignees", () => ({
 }));
 
 vi.mock("./StatusIcon", () => ({
-  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
-    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
+  StatusIcon: ({ status, blockerAttention, onChange }: {
+    status: string;
+    blockerAttention?: Issue["blockerAttention"];
+    onChange?: (status: string) => void;
+  }) => (
+    <span data-status-icon-state={blockerAttention?.state}>
+      {status}
+      {onChange ? (
+        <button type="button" data-testid="status-icon-choose-done" onClick={() => onChange("done")} />
+      ) : null}
+    </span>
   ),
 }));
 
@@ -2680,6 +2689,140 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).not.toContain("Run review now");
     expect(container.textContent).not.toContain("Run approval now");
+
+    act(() => root.unmount());
+  });
+
+  function pendingApprovalIssue(executionState: Partial<IssueExecutionState> = {}) {
+    return createIssue({
+      status: "in_review",
+      executionPolicy: createExecutionPolicy({
+        stages: [
+          {
+            id: "approval-stage",
+            type: "approval",
+            approvalsNeeded: 1,
+            participants: [{ id: "participant-1", type: "user", agentId: null, userId: "user-1" }],
+          },
+        ],
+      }),
+      executionState: createExecutionState({
+        status: "pending",
+        currentStageType: "approval",
+        currentParticipant: { type: "user", agentId: null, userId: "user-1" },
+        lastDecisionOutcome: null,
+        ...executionState,
+      }),
+    });
+  }
+
+  // The decision controls depend on the session user, which resolves after the first flush.
+  async function renderPendingApproval(issue: Issue, onUpdate = vi.fn()) {
+    const root = renderProperties(container, { issue, childIssues: [], onUpdate });
+    await flush();
+    await flush();
+    return root;
+  }
+
+  async function typeDecisionNote(note: string) {
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-testid="stage-decision-note"]');
+    expect(textarea).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(textarea!, note);
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+  }
+
+  it("sends an approval with its note once, and re-enables after a failed update", async () => {
+    let settle: (ok: boolean) => void = () => {};
+    const onUpdate = vi.fn(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    const root = await renderPendingApproval(pendingApprovalIssue(), onUpdate);
+
+    const approve = () => container.querySelector<HTMLButtonElement>('[data-testid="stage-decision-approve"]')!;
+    const requestChanges = () => container.querySelector<HTMLButtonElement>('[data-testid="stage-decision-request-changes"]')!;
+    const note = () => container.querySelector<HTMLTextAreaElement>('[data-testid="stage-decision-note"]')!;
+    expect(approve().disabled).toBe(true);
+    expect(requestChanges().disabled).toBe(true);
+
+    await typeDecisionNote("  Approved, ship it.  ");
+    act(() => {
+      approve().click();
+      approve().click();
+    });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(onUpdate).toHaveBeenCalledWith({ status: "done", comment: "Approved, ship it.", expectedExecutionStageId: "stage-1" });
+    expect(approve().disabled).toBe(true);
+    expect(requestChanges().disabled).toBe(true);
+
+    await act(async () => settle(false));
+    await flush();
+    expect(approve().disabled).toBe(false);
+    expect(note().value).toBe("  Approved, ship it.  ");
+
+    act(() => root.unmount());
+  });
+
+  it("requests changes with in_progress and its note", async () => {
+    const onUpdate = vi.fn(async () => true);
+    const root = await renderPendingApproval(pendingApprovalIssue(), onUpdate);
+
+    await typeDecisionNote("Needs the phone port date.");
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="stage-decision-request-changes"]')!.click());
+    expect(onUpdate).toHaveBeenCalledWith({ status: "in_progress", comment: "Needs the phone port date.", expectedExecutionStageId: "stage-1" });
+
+    act(() => root.unmount());
+  });
+
+  it("starts each pending stage with an empty decision note", async () => {
+    const onUpdate = vi.fn(async () => true);
+    const { root, queryClient } = renderPropertiesWithQueryClient(container, {
+      issue: pendingApprovalIssue({ currentStageType: "review", currentStageId: "review-stage" }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+    await flush();
+    await typeDecisionNote("Review looks good.");
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueProperties
+            issue={pendingApprovalIssue({ currentStageType: "approval", currentStageId: "approval-stage" })}
+            childIssues={[]}
+            onUpdate={onUpdate}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="stage-decision-note"]')!.value).toBe("");
+
+    act(() => root.unmount());
+  });
+
+  it("offers stage decisions only to the current participant, and changes only with a return assignee", async () => {
+    const otherParticipant = await renderPendingApproval(
+      pendingApprovalIssue({ currentParticipant: { type: "user", agentId: null, userId: "user-2" } }),
+    );
+    expect(container.querySelector('[data-testid="stage-decision"]')).toBeNull();
+    act(() => otherParticipant.unmount());
+
+    const noReturnAssignee = await renderPendingApproval(pendingApprovalIssue({ returnAssignee: null }));
+    expect(container.querySelector('[data-testid="stage-decision-approve"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="stage-decision-request-changes"]')).toBeNull();
+    act(() => noReturnAssignee.unmount());
+  });
+
+  it("routes Done from the status picker to the decision note while a decision is pending", async () => {
+    const onUpdate = vi.fn();
+    const root = await renderPendingApproval(pendingApprovalIssue(), onUpdate);
+
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="status-icon-choose-done"]')!.click());
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="stage-decision-note"]'));
 
     act(() => root.unmount());
   });

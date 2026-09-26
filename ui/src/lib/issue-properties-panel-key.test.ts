@@ -50,6 +50,27 @@ describe("buildIssuePropertiesPanelKey", () => {
     expect(second).not.toBe(first);
   });
 
+  it("changes when a pending stage advances to another stage of the same type", () => {
+    const stage = (currentStageId: string) => createIssue({
+      executionState: {
+        status: "pending",
+        currentStageId,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", agentId: null, userId: "user-1" },
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    expect(buildIssuePropertiesPanelKey(stage("stage-b"), [])).not.toBe(
+      buildIssuePropertiesPanelKey(stage("stage-a"), []),
+    );
+  });
+
   it("changes when watchdog configuration changes", () => {
     const first = buildIssuePropertiesPanelKey(createIssue({ watchdog: null }), []);
     const second = buildIssuePropertiesPanelKey(

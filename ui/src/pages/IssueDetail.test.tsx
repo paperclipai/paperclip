@@ -2497,6 +2497,61 @@ describe("IssueDetail", () => {
     mockIssuesApi.update.mockReset();
   });
 
+  it("routes Done from the header to the decision controls while a stage waits on this user", async () => {
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", email: "board@example.com", name: "Board", image: null },
+    });
+    const issue = createIssue({
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageId: "approval-stage",
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", agentId: null, userId: "user-1" },
+        returnAssignee: { type: "agent", agentId: "agent-1", userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.update.mockReset();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const statusButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change status (current: in_review)"]',
+    );
+    expect(statusButton).not.toBeNull();
+    mockSetPanelVisible.mockClear();
+    await act(async () => {
+      statusButton!.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+    });
+    expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+    // The properties panel is mocked here, so the note cannot take focus and
+    // the fallback guidance appears instead.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(mockPushToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Add a decision note to approve" }),
+    );
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+  });
+
   it("moves a blocked task back to todo when the no-live-path notice tries again", async () => {
     const activeRecoveryAction = {
       id: "recovery-action-1",

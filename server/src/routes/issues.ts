@@ -12871,6 +12871,7 @@ export function issueRoutes(
         commentClientRequestId,
         attachmentIds: commentAttachmentIds,
         reviewInteractionId: requestedReviewInteractionId,
+        expectedExecutionStageId,
         reviewRequest,
         reopen: reopenRequested,
         resume: resumeRequested,
@@ -12883,6 +12884,27 @@ export function issueRoutes(
       if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
         throw unprocessable("Send conversation messages through the comments endpoint with a clientRequestId");
       }
+      // A participant's decision must act on the stage they decided on. After
+      // the stage advances or is reassigned, the same status change would be a
+      // board override, so reject it instead.
+      const assertExpectedExecutionStage = (issue: { executionState?: unknown } | null) => {
+        if (expectedExecutionStageId === undefined) return;
+        const state = parseIssueExecutionState(issue?.executionState);
+        const currentExecutionStageId = state?.status === "pending" ? state.currentStageId ?? null : null;
+        const participant = state?.currentParticipant;
+        const actorIsCurrentParticipant = participant
+          ? participant.type === "user"
+            ? actor.actorType === "user" && participant.userId === actor.actorId
+            : actor.actorType === "agent" && participant.agentId === actor.agentId
+          : false;
+        if (currentExecutionStageId !== expectedExecutionStageId || !actorIsCurrentParticipant) {
+          throw conflict("This review or approval stage has changed. Reload the task and decide again.", {
+            expectedExecutionStageId,
+            currentExecutionStageId,
+          });
+        }
+      };
+      assertExpectedExecutionStage(existing);
       if (
         deferWakeForGoal === true &&
         (!normalizedAssigneeAgentId ||
@@ -13707,6 +13729,7 @@ export function issueRoutes(
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
       const shouldUseTransactionalIssueUpdate =
+        expectedExecutionStageId !== undefined ||
         Boolean(commentAttachmentIds?.length) ||
         Boolean(decision) ||
         shouldRelayStop ||
@@ -13715,6 +13738,9 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            if (expectedExecutionStageId !== undefined) {
+              assertExpectedExecutionStage(await svc.getByIdForUpdate(id, tx));
+            }
             if (
               reviewPolicySensitiveMutationRequested &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))
