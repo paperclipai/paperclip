@@ -4419,6 +4419,86 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("blocks a reparent whose pre-check raced an in-flight reparent", async () => {
+    // Reparent A -> B and B -> A fired together: both pre-write cycle
+    // checks can pass before either update commits. Every reparent holds one
+    // company-wide transaction-scoped advisory lock through its write, so
+    // this test pins the first edge in an open transaction (taking the same
+    // lock the service takes) and drives the second edge through the real
+    // service. Without the write-boundary lock the service update would
+    // resolve immediately and close the cycle; with it the update stays
+    // blocked, and after the first edge commits the re-check rejects with
+    // the cycle error instead.
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issueA = randomUUID();
+    const issueB = randomUUID();
+    await db.insert(issues).values([
+      { id: issueA, companyId, title: "Mutual A", status: "todo", priority: "medium" },
+      { id: issueB, companyId, title: "Mutual B", status: "todo", priority: "medium" },
+    ]);
+
+    let releaseFirstReparent!: () => void;
+    const firstReparentHeld = new Promise<void>((resolve) => {
+      releaseFirstReparent = resolve;
+    });
+    let firstReparentLocked!: () => void;
+    const holdEstablished = new Promise<void>((resolve) => {
+      firstReparentLocked = resolve;
+    });
+    // Simulates the winning concurrent reparent: it takes the same
+    // `issue-reparent:<companyId>` advisory lock that the service write
+    // boundary takes, writes A -> B, and holds the transaction open.
+    const reparentHolding = db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`issue-reparent:${companyId}`}, 0))`,
+      );
+      await tx.update(issues).set({ parentId: issueB }).where(eq(issues.id, issueA));
+      firstReparentLocked();
+      await firstReparentHeld;
+    });
+    // Start the raced reparent only after the held one owns the lock.
+    await holdEstablished;
+
+    const dbConcurrent = createDb(tempDb!.connectionString);
+    const svcConcurrent = issueService(dbConcurrent);
+    let racedSettled = false;
+    const racedUpdate = svcConcurrent
+      .update(issueB, { parentId: issueA })
+      .then(
+        () => ({ status: 200 }),
+        (error: { status?: number }) => ({ status: error?.status }),
+      )
+      .then((outcome) => {
+        racedSettled = true;
+        return outcome;
+      });
+
+    // The write boundary must park the raced reparent behind the held lock.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(racedSettled).toBe(false);
+
+    // Commit the held edge; the raced reparent must now fail the cycle check.
+    releaseFirstReparent();
+    await reparentHolding;
+    expect(await racedUpdate).toMatchObject({ status: 422 });
+
+    const rows = await db
+      .select({ id: issues.id, parentId: issues.parentId })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    const parents = new Map(rows.map((row) => [row.id, row.parentId]));
+    expect(parents.get(issueA)).toBe(issueB);
+    expect(parents.get(issueB)).toBeNull();
+    await dbConcurrent.$client.end({ timeout: 5 });
+  });
+
   it("rejects reparenting into an already corrupted parent cycle", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

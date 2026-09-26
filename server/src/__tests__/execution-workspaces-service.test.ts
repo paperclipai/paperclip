@@ -959,6 +959,42 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       expect(sweep).toMatchObject({ archived: 0, skippedCooldown: 1 });
       expect(await statusOf(seeded.executionWorkspaceId)).toBe("active");
     }, 20_000);
+
+    it("runs the cooldown tree walk to completion on a corrupted parent cycle", async () => {
+      // The cooldown gate walks the whole issue tree recursively. With the
+      // cycle guard removed that walk loops forever and the sweep hangs, so
+      // this test must archive (not time out) once the cooldown has elapsed.
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      const childId = randomUUID();
+      await db.insert(issues).values({
+        id: childId,
+        companyId: seeded.companyId,
+        projectId: seeded.projectId,
+        parentId: seeded.sourceIssueId,
+        title: "Cyclic descendant",
+        status: "done",
+        priority: "medium",
+      });
+      // Corrupt the graph: the source issue's parent points back at its child.
+      await db
+        .update(issues)
+        .set({ parentId: childId })
+        .where(eq(issues.id, seeded.sourceIssueId));
+      await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date(nowMs - DAY_MS) })
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      // Both cycle members went terminal ten days ago, past the cooldown.
+      await db
+        .update(issues)
+        .set({ completedAt: new Date(nowMs - 10 * DAY_MS) })
+        .where(inArray(issues.id, [seeded.sourceIssueId, childId]));
+
+      const sweep = await cooldownService(7).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 1, skippedCooldown: 0 });
+      expect(await statusOf(seeded.executionWorkspaceId)).toBe("archived");
+    }, 20_000);
   });
 
   it("does not treat an unrelated inbound issue mention as delivery evidence", async () => {

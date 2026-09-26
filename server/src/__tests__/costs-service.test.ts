@@ -776,6 +776,30 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
         occurredAt: new Date("2026-04-10T00:01:00.000Z"),
       },
     ]);
+    // One finished run on each cycle member. The dedupe guard must stop the
+    // walk without dropping either issue, so the summary sees both runs.
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:00:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:01:00.000Z"),
+        contextSnapshot: { issueId: rootIssueId },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:02:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:03:30.000Z"),
+        contextSnapshot: { issueId: childIssueId },
+      },
+    ]);
 
     const summary = await costs.issueTreeSummary(companyId, rootIssueId);
 
@@ -785,9 +809,11 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       costCents: 300,
       inputTokens: 30,
       outputTokens: 6,
-      runCount: 0,
-      runtimeMs: 0,
+      runCount: 2,
     });
+    // 60s on the root plus 90s on the child: the cycle walk must count both
+    // runs exactly once.
+    expect(summary.runtimeMs).toBe(150_000);
   });
 
   it("aggregates run wall-clock duration across the recursive issue tree", async () => {

@@ -10880,6 +10880,19 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        if (data.parentId && data.parentId !== existing.parentId) {
+          // Two concurrent reparents can each pass the pre-write cycle check
+          // and then commit edges that form a cycle (A -> B and B -> A). The
+          // write boundary serializes them: every reparent in the company
+          // takes one transaction-scoped advisory lock before any row lock,
+          // so the lock order is uniform and cannot deadlock, then re-checks
+          // the parent chain. Under READ COMMITTED the second reparent sees
+          // the first one's committed edge and fails the check cleanly.
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${`issue-reparent:${existing.companyId}`}, 0))`,
+          );
+          await assertNoParentCycle(tx, existing.companyId, existing.id, data.parentId);
+        }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
