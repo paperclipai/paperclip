@@ -108,6 +108,46 @@ data paths document their own contract in their own file:
 - [Run-Log Events](../../../../doc/run-log-events.md) — events written to the
   local `heartbeat_run_events` table.
 
+## Connector Events
+
+The three connection events (`connection.created`, `connection.updated`,
+`connection.invoked`) record tool-connector lifecycle and usage for
+connections whose `connection_purpose` is `tool`. The generated contract
+remains the authority for their exact dimensions and optionality. These
+durable rules are not expressible in the generated `string`/`number` types:
+
+- `connector_key` is never a free-text connector name or URL. It carries the
+  connection's `sourceTemplateKey` only when that key resolves to a reviewed
+  first-party catalog definition; every other connection emits the literal
+  `custom`. `connectorKeyForConnection()` in
+  `server/src/services/connector-telemetry.ts` owns this rule. Direct
+  Composio MCP connections (catalog slug `composio`, method `mcp`) therefore
+  report `composio`; session URLs, headers, and the tools reached through the
+  aggregator never appear in any dimension. Records left behind by the retired
+  Composio broker (#13758) can only be removed: a legacy parent reports
+  `composio` with `transport: rest_api`, and a legacy child — which has a
+  `toolkitSlug` but no catalog `sourceTemplateKey` — reports `custom`; raw
+  toolkit or provider strings are never exported.
+- `connection.created` and `connection.updated` are
+  emitted only after the lifecycle write commits, from returned rows. Writes
+  that affect no rows and no-op changes do not emit.
+- `connection.invoked` is emitted when an invocation reaches a
+  terminal status: it records completed invocation attempts and their terminal
+  status, never invocation starts — best-effort, so duplicate and lost events are possible
+  (see the delivery rule below); do not read it as exactly one event per
+  invocation. Its `origin` dimension separates setup tests (the Apps →
+  Test tab) from agent and user calls using the durable test-origin columns.
+  `duration_seconds` is `completedAt - startedAt` rounded to whole seconds and
+  floored at zero; it is omitted when either timestamp is unavailable.
+- Delivery is best-effort and never blocks product writes. A duplicate (never
+  contradictory) `failed` invocation event is possible when failure-path
+  bookkeeping itself fails, and a crash between the product write and emission
+  loses that event. Do not treat these events as an exactly-once ledger.
+
+Use `trackConnectionCreated()`, `trackConnectionUpdated()`,
+and `trackConnectionInvoked()` from `events.ts` to emit these
+events.
+
 ## Dimension Values
 
 Telemetry dimension values must be primitives. Use only the value types allowed

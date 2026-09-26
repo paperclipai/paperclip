@@ -37,6 +37,34 @@ source_ref?: string
 source_ref_hashed?: boolean
 }
 
+export interface PaperclipConnectionCreatedDimensions {
+auth_kind: ("oauth" | "api_key" | "none")
+connector_key: string
+enabled: boolean
+setup_flow: ("gallery" | "api" | "example")
+status: ("draft" | "active" | "disabled" | "archived")
+transport: ("mcp_remote" | "rest_api" | "local_stdio")
+}
+
+export interface PaperclipConnectionInvokedDimensions {
+connector_key: string
+duration_seconds?: number
+origin: ("setup_test" | "agent" | "user" | "system" | "plugin")
+status: ("succeeded" | "failed" | "denied" | "cancelled" | "timed_out" | "rate_limited")
+transport: ("mcp_remote" | "rest_api" | "local_stdio")
+}
+
+export interface PaperclipConnectionUpdatedDimensions {
+auth_kind: ("oauth" | "api_key" | "none")
+change_source: ("api" | "gallery" | "oauth_callback" | "credential_refresh" | "archive" | "example")
+connector_key: string
+enabled: boolean
+previous_enabled: boolean
+previous_status: ("draft" | "active" | "disabled" | "archived")
+status: ("draft" | "active" | "disabled" | "archived")
+transport: ("mcp_remote" | "rest_api" | "local_stdio")
+}
+
 export interface PaperclipErrorHandlerCrashDimensions {
 error_code: string
 }
@@ -105,6 +133,9 @@ export type PaperclipEventName =
   | "agent.task_completed"
   | "agent.task_run"
   | "company.imported"
+  | "connection.created"
+  | "connection.invoked"
+  | "connection.updated"
   | "error.handler_crash"
   | "goal.created"
   | "install.completed"
@@ -122,6 +153,9 @@ export interface EventDimensionsMap {
   "agent.task_completed": PaperclipAgentTaskCompletedDimensions;
   "agent.task_run": PaperclipAgentTaskRunDimensions;
   "company.imported": PaperclipCompanyImportedDimensions;
+  "connection.created": PaperclipConnectionCreatedDimensions;
+  "connection.invoked": PaperclipConnectionInvokedDimensions;
+  "connection.updated": PaperclipConnectionUpdatedDimensions;
   "error.handler_crash": PaperclipErrorHandlerCrashDimensions;
   "goal.created": PaperclipGoalCreatedDimensions;
   "install.completed": PaperclipInstallCompletedDimensions;
@@ -140,6 +174,9 @@ export const PAPERCLIP_EVENTS = {
   "agent.task_completed": "agent.task_completed",
   "agent.task_run": "agent.task_run",
   "company.imported": "company.imported",
+  "connection.created": "connection.created",
+  "connection.invoked": "connection.invoked",
+  "connection.updated": "connection.updated",
   "error.handler_crash": "error.handler_crash",
   "goal.created": "goal.created",
   "install.completed": "install.completed",
@@ -272,6 +309,83 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "catalog": "Import source came from a Paperclip catalog entry.",
       "skills_sh": "Import source came from a Skills.sh-compatible source.",
       "unknown": "Source type could not be classified."
+    }
+  },
+  "connection.created": {
+    "auth_kind": {
+      "oauth": "Connection authenticates with an OAuth flow.",
+      "api_key": "Connection authenticates with a stored API key.",
+      "none": "Connection requires no authentication."
+    },
+    "setup_flow": {
+      "gallery": "Connection was created through the app-gallery setup flow.",
+      "api": "Connection was created through the connections API.",
+      "example": "Connection was created or upserted as a bundled example connection."
+    },
+    "status": {
+      "draft": "Connection row exists but setup has not produced a usable configuration yet.",
+      "active": "Connection is fully configured and available for use.",
+      "disabled": "Connection is disabled and excluded from tool use.",
+      "archived": "Connection is archived and excluded from tool use."
+    },
+    "transport": {
+      "mcp_remote": "Connection talks to a remote MCP server over HTTP.",
+      "rest_api": "Connection calls the provider's REST API directly.",
+      "local_stdio": "Connection runs a local MCP server over stdio."
+    }
+  },
+  "connection.invoked": {
+    "origin": {
+      "setup_test": "A human ran the connection's setup test, identified by durable invocation columns: user actor with no run, issue, or gateway reference and a connection id.",
+      "agent": "An agent run invoked the tool.",
+      "user": "A human invoked the tool outside the setup-test shape.",
+      "system": "A system-initiated process invoked the tool.",
+      "plugin": "A plugin invoked the tool."
+    },
+    "status": {
+      "succeeded": "The tool invocation completed successfully.",
+      "failed": "The tool invocation reached a terminal failure.",
+      "denied": "The tool invocation was denied by policy or by a human approval decision.",
+      "cancelled": "The tool invocation was cancelled before completion. Declared in the application status enum; no current application code path writes this value.",
+      "timed_out": "The tool invocation exceeded its time limit.",
+      "rate_limited": "The tool invocation was rejected by rate limiting."
+    },
+    "transport": {
+      "mcp_remote": "Connection talks to a remote MCP server over HTTP.",
+      "rest_api": "Connection calls the provider's REST API directly.",
+      "local_stdio": "Connection runs a local MCP server over stdio."
+    }
+  },
+  "connection.updated": {
+    "auth_kind": {
+      "oauth": "Connection authenticates with an OAuth flow.",
+      "api_key": "Connection authenticates with a stored API key.",
+      "none": "Connection requires no authentication."
+    },
+    "change_source": {
+      "api": "A connections API update changed the persisted lifecycle state.",
+      "gallery": "An app-gallery setup step (finish, OAuth access finalization, or reconnect; Apps gallery and inline task cards) changed the persisted lifecycle state.",
+      "oauth_callback": "An OAuth callback completion (provider OAuth, Paperclip Cloud connector, or Vercel Connect) changed the persisted lifecycle state.",
+      "credential_refresh": "A credential refresh changed the persisted lifecycle state.",
+      "archive": "An archive operation changed the persisted lifecycle state.",
+      "example": "An example-connection upsert changed the persisted lifecycle state."
+    },
+    "previous_status": {
+      "draft": "Connection row exists but setup has not produced a usable configuration yet.",
+      "active": "Connection is fully configured and available for use.",
+      "disabled": "Connection is disabled and excluded from tool use.",
+      "archived": "Connection is archived and excluded from tool use."
+    },
+    "status": {
+      "draft": "Connection row exists but setup has not produced a usable configuration yet.",
+      "active": "Connection is fully configured and available for use.",
+      "disabled": "Connection is disabled and excluded from tool use.",
+      "archived": "Connection is archived and excluded from tool use."
+    },
+    "transport": {
+      "mcp_remote": "Connection talks to a remote MCP server over HTTP.",
+      "rest_api": "Connection calls the provider's REST API directly.",
+      "local_stdio": "Connection runs a local MCP server over stdio."
     }
   },
   "goal.created": {
