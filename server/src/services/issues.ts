@@ -2525,6 +2525,24 @@ export async function heartbeatRunIsTerminalOrMissing(
 }
 
 /**
+ * Returns whether the given heartbeat run belongs to the given agent. A checkout
+ * held by a live run of the assignee is not a cross-agent lock, so it must not
+ * block the assignee from writing to (or releasing) its own issue.
+ */
+export async function heartbeatRunBelongsToAgent(
+  dbOrTx: Pick<Db, "select">,
+  runId: string,
+  agentId: string,
+): Promise<boolean> {
+  const run = await dbOrTx
+    .select({ agentId: heartbeatRuns.agentId })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .then((rows: Array<{ agentId: string }>) => rows[0] ?? null);
+  return run?.agentId === agentId;
+}
+
+/**
  * Returns whether a specific run's sync-back on a specific execution workspace
  * has settled — i.e. the accept/review gates that guard against a still-in-flight
  * worktree sync no longer need to block on this run.
@@ -7429,6 +7447,10 @@ export function issueService(db: Db) {
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
+    // Checkout acquisition stays strictly per-run: a second run of the same agent
+    // must not steal the lock. Writes are different — the assignee has to be able to
+    // write its own issue — so only that path opts in to yielding to a live sibling.
+    allowSameAgentLiveSibling?: boolean;
   }) {
     return db.transaction(async (tx) => {
       const lockedIssue = await tx
@@ -7465,21 +7487,33 @@ export function issueService(db: Db) {
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
           .then((rows) => rows[0] ?? null),
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
+      // A live sibling run of the SAME agent holds the lock legitimately, but the
+      // assignee must still be able to write its own issue. The lock is stored per
+      // issue yet granted per run, so a second concurrent run of the assignee can
+      // never satisfy sameRunLock. Yield the lock to the actor when the holder is a
+      // non-terminal run of the same agent; the holder can re-adopt on its next
+      // write by the symmetric path.
+      const sameAgentLiveSibling =
+        input.allowSameAgentLiveSibling === true &&
+        existingRun != null &&
+        actorRun != null &&
+        existingRun.agentId === actorRun.agentId &&
+        !TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
       const stale =
         !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
       const actorLive =
         actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
-      if (!stale || !actorLive) {
+      if ((!stale && !sameAgentLiveSibling) || !actorLive) {
         return { adopted: null, latest: lockedIssue };
       }
 
@@ -11650,6 +11684,7 @@ export function issueService(db: Db) {
             actorAgentId,
             actorRunId,
             expectedCheckoutRunId: previousCheckoutRunId,
+            allowSameAgentLiveSibling: true,
           });
 
           if (staleAdoption.adopted) {
@@ -11742,7 +11777,14 @@ export function issueService(db: Db) {
             existing.checkoutRunId,
             tx,
           );
-          if (!stale) {
+          // A live sibling run of the same agent is not a reason to deny the
+          // assignee; releasing is how an agent stops holding a lock.
+          const holderIsSameAgent = await heartbeatRunBelongsToAgent(
+            tx,
+            existing.checkoutRunId,
+            actorAgentId,
+          );
+          if (!stale && !holderIsSameAgent) {
             throw conflict("Only checkout run can release issue", {
               issueId: existing.id,
               assigneeAgentId: existing.assigneeAgentId,
