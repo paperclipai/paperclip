@@ -68,6 +68,19 @@ function baseStalenessFacts(): QueuedRunFacts {
 }
 
 describe("decideScheduledRetryGate", () => {
+  it("allows dependency-held reviewer retries without relaxing pause holds", () => {
+    const facts: ScheduledRetryFacts = { ...baseGateFacts(),
+      dependenciesBlocked: { unresolvedBlockerIssueIds: ["blocker"], unresolvedBlockerCount: 1 },
+      isCurrentStageParticipant: true,
+    };
+    expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
+    expect(decideScheduledRetryGate({ ...facts, activePauseHold: { holdId: "hold-1", rootIssueId: "issue-1" } }, NOW))
+      .toMatchObject({ allowed: false });
+    expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement",
+      isCurrentStageParticipant: true, dependenciesBlocked: facts.dependenciesBlocked }, NOW))
+      .toEqual({ stale: false });
+  });
+
   it("allows the current reviewer and rejects a replaced participant", () => {
     const facts: ScheduledRetryFacts = {
       ...baseGateFacts(), issueStatus: "in_review", issueAssigneeAgentId: "implementor",

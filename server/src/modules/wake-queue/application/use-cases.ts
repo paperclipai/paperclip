@@ -126,7 +126,7 @@ type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts
 
 /**
  * Drains the deferred-wake queue for the issue a run just released, in
- * `requestedAt` order, promoting at most one wake. When the queue empties
+ * current-participant-first, then `requestedAt` order, promoting at most one wake. When the queue empties
  * without a promotion, decides the release-recovery outcome. Every read and
  * write happens through `ports`, already bound to the module's own
  * transaction by the caller.
@@ -156,6 +156,7 @@ async function runReleaseDrain(
   while (true) {
     const candidate = await ports.transaction.findNextDeferredWake({
       companyId: run.companyId, issueId: issue.id,
+      priorityAgentId: currentAgentParticipant(issue)?.agentId,
       ...(handoffWakeIds.length ? { excludedWakeIds: handoffWakeIds } : {}),
     });
     if (!candidate) break;

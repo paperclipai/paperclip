@@ -1,6 +1,9 @@
+import { eq } from "drizzle-orm";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agentWakeupRequests,
   agents,
   approvals,
@@ -9,6 +12,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueRecoveryActions,
+  issueRelations,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -45,8 +49,10 @@ describeEmbeddedPostgres("issue review attention", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(agents);
+    await db.delete(activityLog);
     await db.delete(companies);
   });
 
@@ -98,6 +104,53 @@ describeEmbeddedPostgres("issue review attention", () => {
     });
     return id;
   }
+
+  it.each(["in_review", "in_progress"])("records approval while awaiting blockers from %s and completes after the last blocker resolves", async (status) => {
+    const { companyId, agentId } = await seed();
+    const stageId = randomUUID();
+    const participant = { type: "agent" as const, agentId, userId: null };
+    const policy = normalizeIssueExecutionPolicy({ mode: "normal", stages: [
+      { id: stageId, type: "review", participants: [participant] },
+    ] });
+    const issueId = await insertReview({ companyId, agentId, identifier: "RVA-101", executionPolicy: policy,
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: participant, returnAssignee: null, reviewRequest: null, completedStageIds: [],
+        lastDecisionId: null, lastDecisionOutcome: null } });
+    await db.update(issues).set({ status }).where(eq(issues.id, issueId));
+    const blockerIds = [randomUUID(), randomUUID()];
+    await db.insert(issues).values(blockerIds.map((id, index) => ({ id, companyId, title: `Prerequisite ${index}`,
+      identifier: `RVA-${102 + index}`, status: "backlog" })));
+    await db.insert(issueRelations).values(blockerIds.map((id) => ({ companyId, issueId: id,
+      relatedIssueId: issueId, type: "blocks" })));
+    const issue = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+    const transition = applyIssueExecutionPolicyTransition({ issue, policy, requestedStatus: "done",
+      actor: { agentId, userId: null }, requestedAssigneePatch: {}, allowBoardOverride: false, commentBody: "Approved after review" });
+    expect(transition.decision?.outcome).toBe("approved");
+    const held = await svc.update(issueId, { status: "done", ...transition.patch });
+    expect(held?.status).toBe(status);
+    expect(held?.completedAt).toBeNull();
+    expect(held?.executionState).toMatchObject({ status: "completed", completedStageIds: [stageId],
+      dependencyHold: { unresolvedBlockerIssueIds: expect.arrayContaining(blockerIds) } });
+    const attention = (await svc.listReviewAttention(companyId, [{ id: issueId, companyId, status: "in_review" }])).get(issueId);
+    expect(attention).toMatchObject({ state: "covered" });
+    expect(attention?.reason).toContain("RVA-102");
+    expect(attention?.reason).toContain("RVA-103");
+    await svc.update(blockerIds[0], { status: "done" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe(status);
+    await svc.update(blockerIds[1], { status: "done" });
+    const completed = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+    expect(completed.status).toBe("done");
+    expect(completed.executionState).toMatchObject({ status: "completed", dependencyHold: null });
+  });
+
+  it("refuses a builder completing an issue with unresolved blockers", async () => {
+    const { companyId, agentId } = await seed();
+    const issueId = await insertReview({ companyId, agentId, identifier: "RVA-104" });
+    const blockerId = randomUUID();
+    await db.insert(issues).values({ id: blockerId, companyId, title: "Unfinished prerequisite", status: "todo" });
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+    await expect(svc.update(issueId, { status: "done" })).rejects.toThrow("Issue is blocked by unresolved blockers");
+  });
 
   it("surfaces a pathless agent-owned review as stalled and a queued recovery as covered", async () => {
     const { companyId, agentId } = await seed();

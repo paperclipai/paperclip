@@ -114,7 +114,7 @@ export function stalledReviewDecisionService(db: Db) {
           issueId: updated.id,
           details: {
             action: input.action,
-            status,
+            status: updated.status,
             identifier: updated.identifier,
             commentId: comment?.id ?? null,
             authorUserId: comment ? input.actor.userId : null,

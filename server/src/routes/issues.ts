@@ -1,3 +1,4 @@
+import { holdReviewedIssueForDependencies } from "../services/review-dependency-hold.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -1395,6 +1396,10 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
+  "issue_comment_already_answered",
+  "execution_review_requested",
+  "execution_approval_requested",
+  "execution_stage_pending_rewake",
   "issue_assigned",
   "issue_blockers_resolved",
   "issue_commented",
@@ -1569,6 +1574,11 @@ function buildIssueWakeDiagnosis(input: {
     } wake requests and ${input.maxActivityRecords} activity records over ${
       input.lookbackDays
     } days, so the diagnosis only covers returned records.`;
+  }
+
+  const unresolvedReviewBlockers = input.blockerDiagnostics.blockers.filter((blocker) => blocker.isUnresolved);
+  if (input.issue.status === "in_review" && unresolvedReviewBlockers.length > 0) {
+    return `Review may proceed; completion is awaiting blockers: ${unresolvedReviewBlockers.map(blockerDiagnosticLabel).join(", ")}.`;
   }
 
   const latest = input.events[0];
@@ -13246,6 +13256,24 @@ export function issueRoutes(
         };
       }
       Object.assign(updateFields, transition.patch);
+
+      // Avoid terminal run side effects for a final approval waiting on the
+      // existing dependency set. The service rechecks readiness under its lock,
+      // including a blocker set edited by this same request.
+      if (updateFields.status === "done" && req.body.blockedByIssueIds === undefined &&
+          holdReviewedIssueForDependencies({ status: existing.status,
+            executionState: updateFields.executionState ?? existing.executionState,
+            unresolvedBlockerIssueIds: [], now: new Date() })) {
+        const readiness = await svc.getDependencyReadiness(existing.id);
+        if (!readiness.isDependencyReady) {
+          const hold = holdReviewedIssueForDependencies({ status: existing.status,
+            executionState: updateFields.executionState ?? existing.executionState,
+            unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds, now: new Date() });
+          if (hold) Object.assign(updateFields, hold);
+        }
+      }
+
+
 
       const nextStatus = updateFields.status ?? existing.status;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {

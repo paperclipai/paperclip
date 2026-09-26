@@ -1,3 +1,4 @@
+import { automationWakeCommentsWereAnswered } from "../../../services/answered-wake-comments.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
@@ -200,7 +201,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return { id: agent.id, companyId: agent.companyId, name: agent.name, invokable: invokability.invokable };
     },
 
-    async findNextDeferredWake({ companyId, issueId, excludedWakeIds }) {
+    async findNextDeferredWake({ companyId, issueId, priorityAgentId, excludedWakeIds }) {
       while (true) {
         const row = await tx
           .select()
@@ -215,11 +216,24 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               interruptQueueId ? eq(agentWakeupRequests.agentId, run.agentId) : undefined,
             ),
           )
-          .orderBy(asc(agentWakeupRequests.requestedAt))
+          .orderBy(
+            ...(priorityAgentId ? [sql`case when ${agentWakeupRequests.agentId} = ${priorityAgentId} then 0 else 1 end`] : []),
+            asc(agentWakeupRequests.requestedAt),
+            asc(agentWakeupRequests.id),
+          )
           .limit(1)
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
         const candidate = toDeferredWakeCandidate(row);
+        if (!candidate.preservesIndependentContinuation && candidate.payload.mutation !== "interaction" &&
+          await automationWakeCommentsWereAnswered(tx, { companyId, issueId, agentId: candidate.agentId,
+            commentIds: [...new Set([...candidate.queuedCommentIds, ...candidate.deferredCommentIds])] })) {
+          await tx.update(agentWakeupRequests).set({ status: "cancelled", reason: "issue_comment_already_answered",
+            error: "Automation comments were already delivered to a run that replied", finishedAt: new Date(), updatedAt: new Date() })
+            .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, row.id),
+              eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS)));
+          continue;
+        }
         try {
           const authorizedFailedChatRetry = await authorizeFailedChatRunRetryWake(
             db,

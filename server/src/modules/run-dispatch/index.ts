@@ -1,3 +1,4 @@
+export { isCurrentStageParticipant } from "./domain/stage-participant.js";
 import type { Db } from "@paperclipai/db";
 import { createPostgresRunDispatchAdapter } from "./adapters/postgres.js";
 import {

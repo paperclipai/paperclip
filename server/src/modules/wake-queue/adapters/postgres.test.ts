@@ -1,3 +1,4 @@
+import { createRunDispatch } from "../../run-dispatch/index.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -10,6 +11,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueRecoveryActions,
   issues,
@@ -61,6 +63,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await db.delete(issueComments);
     // `heartbeat_runs.wakeup_request_id` references `agent_wakeup_requests.id`,
     // so the run row must go first.
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRecoveryActions);
@@ -152,6 +155,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     companyId: string;
     agentId: string;
     issueId: string;
+    reason?: string;
     requestedByActorType?: string;
     requestedByActorId?: string | null;
     payload?: Record<string, unknown>;
@@ -162,7 +166,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       companyId: input.companyId,
       agentId: input.agentId,
       source: "automation",
-      reason: "issue_commented",
+      reason: input.reason ?? "issue_commented",
       status: "deferred_issue_execution",
       requestedByActorType: input.requestedByActorType ?? "user",
       requestedByActorId: input.requestedByActorId ?? null,
@@ -317,6 +321,89 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
     });
   }
+
+  it.each(["deferred", "queued"].flatMap((mode) =>
+    ["automation", "human", "mixed", "unrelated_reply", "edited"].map((kind) => ({ mode, kind }))))(
+    "revalidates $mode comments without dropping human feedback ($kind)", async ({ mode, kind }) => {
+      const companyId = await seedCompany();
+      const builderId = await seedAgent({ companyId });
+      const sourceAgentId = await seedAgent({ companyId });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: builderId });
+      const commentId = randomUUID();
+      const old = new Date(Date.now() - 60_000);
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId, body: "A question",
+        authorType: kind === "human" ? "user" : "agent", authorUserId: kind === "human" ? "board" : null,
+        authorAgentId: kind === "human" ? null : sourceAgentId, createdAt: old, updatedAt: old });
+      const ids = [commentId];
+      if (kind === "mixed") {
+        ids.push(randomUUID());
+        await db.insert(issueComments).values({ id: ids[1], companyId, issueId, body: "Human feedback",
+          authorType: "user", authorUserId: "board", createdAt: old, updatedAt: old });
+      }
+      const receiptRunId = await seedRun({ companyId, agentId: builderId, status: "succeeded",
+        contextSnapshot: { issueId, wakeCommentIds: kind === "unrelated_reply" ? [] : ids } });
+      await db.insert(issueComments).values({ companyId, issueId, body: "Reply from the receiving run",
+        authorType: "agent", authorAgentId: builderId, createdByRunId: receiptRunId,
+        createdAt: new Date(old.getTime() + 10_000) });
+      if (kind === "edited") await db.update(issueComments).set({ updatedAt: new Date() }).where(eq(issueComments.id, commentId));
+      if (mode === "deferred") {
+        await db.update(issues).set({ executionRunId: receiptRunId }).where(eq(issues.id, issueId));
+        const wakeId = await seedDeferredWake({ companyId, agentId: builderId, issueId,
+          payload: { commentId, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: ids } } });
+        const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+          recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} } });
+        await release({ companyId, runId: receiptRunId, now: new Date(), suppressImmediateRecovery: true });
+        const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+        expect(wake.status).toBe(kind === "automation" ? "cancelled" : "queued");
+        if (kind === "automation") expect(wake.reason).toBe("issue_comment_already_answered");
+      } else {
+        const queuedRunId = await seedRun({ companyId, agentId: builderId, status: "queued",
+          contextSnapshot: { issueId, wakeReason: "issue_commented", wakeCommentId: commentId, wakeCommentIds: ids } });
+        await db.update(issues).set({ executionRunId: queuedRunId }).where(eq(issues.id, issueId));
+        const result = await createRunDispatch(db).cancelStaleQueuedRun({ companyId, runId: queuedRunId, expectedStatus: "queued" });
+        expect(result.outcome).toBe(kind === "automation" ? "cancelled" : "not_stale");
+      }
+      expect(await db.select().from(issueComments).where(eq(issueComments.id, commentId))).toHaveLength(1);
+    },
+  );
+
+  it.each(["succeeded", "cancelled"])(
+    "honors reviewer priority and execution holds after %s", async (status) => {
+      const companyId = await seedCompany();
+      const builderId = await seedAgent({ companyId, name: "Builder" });
+      const reviewerId = await seedAgent({ companyId, name: "Reviewer" });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: reviewerId, status: "in_review" });
+      const runId = await seedRun({ companyId, agentId: builderId, status, contextSnapshot: { issueId } });
+      await db.update(issues).set({ executionRunId: runId, executionState: {
+        status: "pending", currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId },
+      } }).where(eq(issues.id, issueId));
+      const builderWakeId = await seedDeferredWake({ companyId, agentId: builderId, issueId, reason: "issue_assigned" });
+      const reviewerWakeId = await seedDeferredWake({ companyId, agentId: reviewerId, issueId, reason: "execution_review_requested" });
+      await seedDeferredWake({ companyId, agentId: reviewerId, issueId, reason: "execution_review_requested" });
+      await db.update(agentWakeupRequests).set({ requestedAt: new Date(Date.now() - 60_000) })
+        .where(eq(agentWakeupRequests.id, builderWakeId));
+      await db.update(agentWakeupRequests).set({ requestedAt: new Date(Date.now() - 30_000) })
+        .where(eq(agentWakeupRequests.id, reviewerWakeId));
+      const release = createReleaseIssueExecution({
+        issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+        recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+      });
+      const result = await release({ companyId, runId, now: new Date(), suppressImmediateRecovery: true });
+      if (status === "cancelled") {
+        expect(result.outcome.kind).toBe("released");
+        const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, reviewerWakeId));
+        expect(held.status).toBe("deferred_issue_execution");
+        expect(held.runId).toBeNull();
+        return;
+      }
+      expect(result.outcome.kind).toBe("promoted");
+      const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, reviewerWakeId));
+      expect(promoted.status).toBe("queued");
+      expect(promoted.runId).not.toBeNull();
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, builderWakeId)))[0].status)
+        .toBe("deferred_issue_execution");
+    },
+  );
 
   it("releases an acknowledged native handoff without blocking or restarting the old owner", async () => {
     const companyId = await seedCompany();

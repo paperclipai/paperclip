@@ -1,3 +1,5 @@
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { holdReviewedIssueForDependencies, reconcileReviewDependencyHolds } from "./review-dependency-hold.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
@@ -244,6 +246,10 @@ export type IssuePostCommitAction = {
   runId: string;
   issueId: string;
   issueStatus: string;
+} | {
+  type: "reconcile_review_dependencies";
+  companyId: string;
+  issueId: string;
 };
 
 /** Execute side effects that must never run before the issue transaction commits. */
@@ -252,14 +258,22 @@ export async function executeIssuePostCommitActions(
   actions: readonly IssuePostCommitAction[],
 ): Promise<void> {
   if (actions.length === 0) return;
-  const { heartbeatService } = await import("./heartbeat.js");
-  const heartbeat = heartbeatService(db);
+  const needsHeartbeat = actions.some((action) => action.type === "cancel_native_question_run");
+  const heartbeat = needsHeartbeat ? (await import("./heartbeat.js")).heartbeatService(db) : null;
   const cancelledRunIds = new Set<string>();
   for (const action of actions) {
+    if (action.type === "reconcile_review_dependencies") {
+      try {
+        await reconcileReviewDependencyHolds(db, { companyId: action.companyId, issueId: action.issueId });
+      } catch (err) {
+        logger.warn({ err, issueId: action.issueId }, "Review dependency reconciliation deferred to the scheduler");
+      }
+      continue;
+    }
     if (cancelledRunIds.has(action.runId)) continue;
     cancelledRunIds.add(action.runId);
     try {
-      await heartbeat.cancelRun(
+      await heartbeat!.cancelRun(
         action.runId,
         "Task closed while waiting for operator input",
         {
@@ -4438,6 +4452,8 @@ function reviewPathLabel(
         : "Queued review wake";
     case "recovery":
       return "Open review recovery";
+    case "blocker":
+      return "Awaiting blocker";
   }
 }
 
@@ -4758,7 +4774,24 @@ async function listIssueReviewAttentionMap(
     ]),
   );
 
+  const heldReviewIds = reviewIssues.filter((issue) => {
+    const state = parseIssueExecutionState(issue.executionState);
+    return state?.status === "completed" && Boolean(state.dependencyHold);
+  }).map((issue) => issue.id);
+  const heldReadiness = await listIssueDependencyReadinessMap(dbOrTx, companyId, heldReviewIds);
   for (const issue of reviewIssues) {
+    const held = heldReadiness.get(issue.id);
+    if (held && !held.isDependencyReady) {
+      const blockers = await listUnresolvedBlockerDetails(dbOrTx, companyId, held.unresolvedBlockerIssueIds,
+        held.pendingFinalizeBlockerIssueIds);
+      result.set(issue.id, {
+        state: "covered",
+        reason: `Review approved; awaiting blockers: ${blockers.map((blocker) => blocker.identifier ?? blocker.issueId).join(", ")}.`,
+        paths: blockers.map((blocker) => ({ kind: "blocker", label: `Awaiting ${blocker.identifier ?? blocker.issueId}`,
+          responder: null, since: null, ref: blocker.issueId })),
+      });
+      continue;
+    }
     const pathFacts = classifyIssueReviewPaths(
       livenessInput,
       livenessInput.issues.find((entry) => entry.id === issue.id)!,
@@ -10867,6 +10900,28 @@ export function issueService(db: Db) {
             ? getIssueRelationSummaryMap(existing.companyId, [id], tx)
             : Promise.resolve(new Map<string, IssueRelationSummaryMap>()),
         ]);
+        if (patch.status === "done" && receiptExisting.status !== "done") {
+          // The issue lock serializes completion with edits to its blocker set.
+          // Apply a supplied set before checking, inside the same transaction.
+          if (blockedByIssueIds !== undefined) {
+            await syncBlockedByIssueIds(id, existing.companyId, blockedByIssueIds,
+              { agentId: actorAgentId ?? null, userId: actorUserId ?? null }, tx);
+          }
+          const readiness = (await listIssueDependencyReadinessMap(tx, existing.companyId, [id])).get(id);
+          if (readiness && !readiness.isDependencyReady) {
+            const hold = holdReviewedIssueForDependencies({ status: receiptExisting.status,
+              executionState: patch.executionState ?? receiptExisting.executionState,
+              unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds, now: new Date() });
+            if (!hold) throw unprocessable("Issue is blocked by unresolved blockers", {
+              unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+            });
+            Object.assign(patch, hold);
+          } else {
+            const state = parseIssueExecutionState(patch.executionState ?? receiptExisting.executionState);
+            if (state?.dependencyHold) patch.executionState = { ...state, dependencyHold: null };
+          }
+        }
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -11047,7 +11102,7 @@ export function issueService(db: Db) {
             tx,
           );
         }
-        if (blockedByIssueIds !== undefined) {
+        if (blockedByIssueIds !== undefined && !(issueData.status === "done" && receiptExisting.status !== "done")) {
           await syncBlockedByIssueIds(
             updated.id,
             existing.companyId,
@@ -11095,6 +11150,9 @@ export function issueService(db: Db) {
               })
               .where(eq(executionWorkspaces.id, workspace.id));
           }
+        }
+        if ((updated.status === "done" && receiptExisting.status !== "done") || blockedByIssueIds !== undefined) {
+          queuedPostCommitActions.push({ type: "reconcile_review_dependencies", companyId: updated.companyId, issueId: updated.id });
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
         const nextBlockedByIssueIds =

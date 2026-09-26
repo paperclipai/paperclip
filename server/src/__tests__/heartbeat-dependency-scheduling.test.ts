@@ -361,6 +361,41 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(recoveredIntent).toMatchObject({ status: "coalesced" });
   });
 
+  it.each(["execution_review_requested", "execution_stage_pending_rewake"])(
+    "runs the current reviewer with an open merge blocker (%s)", async (reason) => {
+      const companyId = randomUUID();
+      const reviewerId = randomUUID();
+      const issueId = randomUUID();
+      const blockerId = randomUUID();
+      const stageId = randomUUID();
+      const participant = { type: "agent", agentId: reviewerId, userId: null };
+      await db.insert(companies).values({ id: companyId, name: "Review dependencies", issuePrefix: "RDP",
+        requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+      await db.insert(agents).values({ id: reviewerId, companyId, name: "Reviewer", role: "engineer",
+        status: "active", adapterType: "codex_local", adapterConfig: {}, permissions: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Post-review prerequisite", status: "backlog" },
+        { id: issueId, companyId, title: "Review before prerequisite", status: "in_review",
+          assigneeAgentId: reviewerId, responsibleUserId: "responsible-user",
+          executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", participants: [participant] }] },
+          executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0,
+            currentStageType: "review", currentParticipant: participant, returnAssignee: null,
+            reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+            pendingSince: new Date().toISOString() } },
+      ]);
+      await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+      const run = await heartbeat.wakeup(reviewerId, { source: "automation", triggerDetail: "system", reason,
+        payload: { issueId }, contextSnapshot: { issueId, wakeReason: reason } });
+      expect(run).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+      const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+      expect(persisted.status).toBe("succeeded");
+      expect(mockAdapterExecute).toHaveBeenCalled();
+      expect((await db.select().from(issues).where(eq(issues.id, blockerId)))[0].status).toBe("backlog");
+    },
+  );
+
   it("keeps blocked descendants idle until their blockers resolve", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
