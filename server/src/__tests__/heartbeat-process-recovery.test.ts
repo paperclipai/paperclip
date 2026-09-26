@@ -10642,6 +10642,266 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("assigns open unassigned issues that block nobody back to their creator agent", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const orphanIssueId = randomUUID();
+    const freshOrphanIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "SecurityEngineer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: orphanIssueId,
+        companyId,
+        title: "Orphan with no blocked sibling",
+        status: "blocked",
+        priority: "high",
+        createdByAgentId: creatorAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+        updatedAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000),
+      },
+      {
+        id: freshOrphanIssueId,
+        companyId,
+        title: "Just created, assignment still in flight",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: creatorAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+        updatedAt: new Date(),
+      },
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.orphanBlockersAssigned).toBe(1);
+    expect(result.issueIds).toContain(orphanIssueId);
+    expect(result.issueIds).not.toContain(freshOrphanIssueId);
+
+    const orphan = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, orphanIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(orphan?.assigneeAgentId).toBe(creatorAgentId);
+
+    // The grace window is what keeps recovery from racing a caller that
+    // creates an issue and assigns it in a second write.
+    const freshOrphan = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, freshOrphanIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(freshOrphan?.assigneeAgentId).toBeNull();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, orphanIssueId));
+    expect(comments[0]?.body).toContain("Assigned Orphan Issue");
+    expect(comments[0]?.body).toContain("no blocked sibling to pull it back");
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, orphanIssueId));
+    expect(
+      activity.map((row) => (row.details as { source?: string })?.source),
+    ).toContain("recovery.reconcile_unassigned_orphan_issue");
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, creatorAgentId));
+    expect(wakeups).toEqual([
+      expect.objectContaining({
+        reason: "issue_assigned",
+        payload: expect.objectContaining({ issueId: orphanIssueId }),
+      }),
+    ]);
+
+    const orphanRunId = wakeups[0]?.runId;
+    if (orphanRunId) {
+      await waitForRunToSettle(heartbeat, orphanRunId);
+    }
+  });
+
+  // A candidate whose creator is gone or terminated is unadoptable on this pass
+  // and on every future one. Selected oldest-first, a pile of them would hold
+  // the head of the scan window forever and starve every recoverable orphan
+  // behind it, so they must never occupy a scan slot at all.
+  it("adopts a recoverable orphan queued behind a scan window of unadoptable ones", async () => {
+    const companyId = randomUUID();
+    const liveCreatorAgentId = randomUUID();
+    const deadCreatorAgentId = randomUUID();
+    const recoverableIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: liveCreatorAgentId,
+        companyId,
+        name: "LiveEngineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: deadCreatorAgentId,
+        companyId,
+        name: "TerminatedEngineer",
+        role: "engineer",
+        status: "terminated",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    // Fill the whole scan window with older, permanently unadoptable orphans.
+    const unadoptableCount = 200;
+    await db.insert(issues).values(
+      Array.from({ length: unadoptableCount }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        title: `Orphan whose creator is terminated ${index + 1}`,
+        status: "todo" as const,
+        priority: "high" as const,
+        createdByAgentId: deadCreatorAgentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: index + 1,
+        identifier: `${issuePrefix}-${index + 1}`,
+        updatedAt: new Date(Date.now() - (10 * 24 * 60 * 60 * 1000 + index)),
+      })),
+    );
+    // Newer than every one of them, so an oldest-first sweep reaches it last.
+    await db.insert(issues).values({
+      id: recoverableIssueId,
+      companyId,
+      title: "Recoverable orphan behind the pile",
+      status: "todo",
+      priority: "high",
+      createdByAgentId: liveCreatorAgentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: unadoptableCount + 1,
+      identifier: `${issuePrefix}-${unadoptableCount + 1}`,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.orphanBlockersAssigned).toBe(1);
+    expect(result.issueIds).toEqual([recoverableIssueId]);
+
+    const recoverable = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, recoverableIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(recoverable?.assigneeAgentId).toBe(liveCreatorAgentId);
+
+    const recoverableRunId = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, liveCreatorAgentId))
+      .then((rows) => rows[0]?.runId ?? null);
+    if (recoverableRunId) {
+      await waitForRunToSettle(heartbeat, recoverableRunId);
+    }
+  });
+
+  // Adoption reads the row as unowned, then does several awaits of work before
+  // it writes. The guard is what makes it lose that race instead of clobbering
+  // whoever claimed the issue in between.
+  it("leaves an issue alone when it gained an owner after being read as unowned", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const claimedIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "CreatorEngineer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: claimedIssueId,
+      companyId,
+      title: "Claimed by the board while the sweep was working",
+      status: "todo",
+      priority: "high",
+      createdByAgentId: creatorAgentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      // The board got here first; this is the state the write must refuse.
+      assigneeUserId: "board-user",
+      updatedAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000),
+    });
+
+    const updated = await issueService(db).update(claimedIssueId, {
+      assigneeAgentId: creatorAgentId,
+      assigneeUserId: null,
+      companyGuard: companyId,
+      unassignedGuard: true,
+    });
+
+    expect(updated).toBeNull();
+
+    const claimed = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, claimedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(claimed?.assigneeUserId).toBe("board-user");
+    expect(claimed?.assigneeAgentId).toBeNull();
+  });
+
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({

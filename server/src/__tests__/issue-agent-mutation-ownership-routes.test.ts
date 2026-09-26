@@ -1702,6 +1702,73 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  // An orphan has no assignee by definition, so reading ownership only from the
+  // persisted row made the resume gate reject the very request that hands the
+  // issue an owner: recovering a lost issue took two calls (owner first, status
+  // second) and the obvious single PATCH read as "I am not allowed".
+  it("allows an agent to adopt an orphan issue in the same PATCH that hands it an owner", async () => {
+    const orphan = makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: null });
+    mockIssueService.getById.mockResolvedValue(orphan);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...orphan,
+      ...patch,
+    }));
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo", assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      assigneeAgentId: peerAgentId,
+      status: "todo",
+    });
+  });
+
+  // A human assignee owns the issue just as much as an agent does. Reading the
+  // orphan exception off `assigneeAgentId` alone would let an agent name itself
+  // on work parked on a person and walk through the resume gate, which is the
+  // exact shape of every board-owned issue waiting on a human click.
+  it("refuses an agent that names itself on an issue owned by a human", async () => {
+    const boardOwned = makeIssue({
+      status: "blocked",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+    });
+    mockIssueService.getById.mockResolvedValue(boardOwned);
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo", assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue follow-up requires an assigned agent");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("still refuses an orphan status follow-up that hands the issue no owner", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: null }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue follow-up requires an assigned agent");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["board", "board"],
     ["a company user", { userId: "board-user" }],

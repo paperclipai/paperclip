@@ -10538,6 +10538,7 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        unassignedGuard?: boolean;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10555,10 +10556,22 @@ export function issueService(db: Db) {
       // call is not a boundary: `issues.company_id` can change between
       // that check and this write, so the predicate must carry the
       // company itself.
-      const idPredicate =
-        data.companyGuard !== undefined
-          ? and(eq(issues.id, id), eq(issues.companyId, data.companyGuard))
-          : eq(issues.id, id);
+      //
+      // `unassignedGuard` carries the same reasoning for ownership: a caller
+      // that only means to adopt an issue *nobody* owns must not clobber an
+      // assignment that landed between its own read and this write. Carried
+      // in the predicate, the locked re-read and the write agree, and a row
+      // that gained an owner in the meantime updates nothing and returns
+      // null, which callers already treat as "skip this candidate".
+      const guards = [eq(issues.id, id)];
+      if (data.companyGuard !== undefined) {
+        guards.push(eq(issues.companyId, data.companyGuard));
+      }
+      if (data.unassignedGuard === true) {
+        guards.push(isNull(issues.assigneeAgentId));
+        guards.push(isNull(issues.assigneeUserId));
+      }
+      const idPredicate = guards.length === 1 ? guards[0] : and(...guards);
       const existing = await dbOrTx
         .select()
         .from(issues)
@@ -10583,6 +10596,7 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         companyGuard,
+        unassignedGuard,
         ...issueData
       } = data;
       if (

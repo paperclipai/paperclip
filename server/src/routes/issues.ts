@@ -6526,7 +6526,10 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: Parameters<typeof decideIssueAccess>[1],
-    options: { resumeIntent?: boolean } = {},
+    options: {
+      resumeIntent?: boolean;
+      incomingAssigneeAgentId?: string | null;
+    } = {},
   ) {
     if (
       await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
@@ -6594,19 +6597,30 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
-    if (!issue.assigneeAgentId) {
+    // An orphan has no assignee by definition, so reading ownership only from
+    // the persisted row would make the request that hands the issue an owner
+    // fail for not having one yet. The incoming assignee counts only while the
+    // row is unowned by *anyone*: a human assignee owns the issue just as much
+    // as an agent does, so an issue parked on a person keeps answering to the
+    // persisted row and an agent cannot name itself past this gate.
+    const persistedOwnerless =
+      !issue.assigneeAgentId && !issue.assigneeUserId;
+    const effectiveAssigneeAgentId =
+      issue.assigneeAgentId ??
+      (persistedOwnerless ? (options.incomingAssigneeAgentId ?? null) : null);
+    if (!effectiveAssigneeAgentId) {
       res.status(409).json({
         error: "Issue follow-up requires an assigned agent",
         details: { issueId: issue.id, actorAgentId },
       });
       return false;
     }
-    if (issue.assigneeAgentId === actorAgentId) return true;
+    if (effectiveAssigneeAgentId === actorAgentId) return true;
     if (
       await hasActiveCheckoutManagementOverride(
         actorAgentId,
         issue.companyId,
-        issue.assigneeAgentId,
+        effectiveAssigneeAgentId,
       )
     ) {
       return true;
@@ -6622,7 +6636,7 @@ export function issueRoutes(
       error: "Agent cannot request follow-up for another agent's issue",
       details: {
         issueId: issue.id,
-        assigneeAgentId: issue.assigneeAgentId,
+        assigneeAgentId: effectiveAssigneeAgentId,
         actorAgentId,
       },
     });
@@ -12949,6 +12963,7 @@ export function issueRoutes(
         resumeRequested === true &&
         !(await assertExplicitResumeIntentAllowed(req, res, existing, {
           resumeIntent: true,
+          incomingAssigneeAgentId: normalizedAssigneeAgentId ?? null,
         }))
       )
         return;
@@ -12962,7 +12977,11 @@ export function issueRoutes(
         req.actor.type === "agent" &&
         reopenRequested === true
       ) {
-        if (!(await assertExplicitResumeIntentAllowed(req, res, existing)))
+        if (
+          !(await assertExplicitResumeIntentAllowed(req, res, existing, {
+            incomingAssigneeAgentId: normalizedAssigneeAgentId ?? null,
+          }))
+        )
           return;
       }
       await assertIssueEnvironmentSelection(
@@ -13012,7 +13031,9 @@ export function issueRoutes(
       if (
         resumeRequested !== true &&
         agentStatusTransitionRequiresResumeAuthority &&
-        !(await assertExplicitResumeIntentAllowed(req, res, existing))
+        !(await assertExplicitResumeIntentAllowed(req, res, existing, {
+          incomingAssigneeAgentId: normalizedAssigneeAgentId ?? null,
+        }))
       ) {
         return;
       }
