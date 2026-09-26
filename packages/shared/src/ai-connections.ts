@@ -225,6 +225,12 @@ export interface LocalAiLoginStatus {
 export interface LocalAiLoginAttempt {
   sessionId: string;
   command: string;
+  /**
+   * Browser (localhost callback) sign-in into the same isolated home. Offered
+   * when `command` uses device code sign-in, which some provider workspaces
+   * disable. It only works from a browser on the machine running Paperclip.
+   */
+  browserCommand?: string;
   expiresAt: string;
 }
 

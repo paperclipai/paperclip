@@ -469,9 +469,10 @@ export function ProviderApiKeyCard({
 /** Shared instructions for local subscription setup in every authentication host. */
 export function LocalProviderLoginInstructions({ adapterType, login }: {
   adapterType: string;
-  login?: { isolated?: boolean; command?: string; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
+  login?: { isolated?: boolean; command?: string; browserCommand?: string; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
   const [showCommand, setShowCommand] = useState(false);
+  const [showBrowserCommand, setShowBrowserCommand] = useState(false);
   const provider = adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
   const command = isolated ? login?.command : "claude auth login";
@@ -488,6 +489,13 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
         <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs"><code>{command}</code></pre>
         <LoginCardCopyButton value={command} label="Copy sign-in command" />
       </div>}
+      {login?.browserCommand && (showBrowserCommand ? <>
+        <p>If your workspace blocks device code sign-in, run this instead. Finish signing in from a browser on the machine running Paperclip.</p>
+        <div className="flex min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted p-3 text-foreground">
+          <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs"><code>{login.browserCommand}</code></pre>
+          <LoginCardCopyButton value={login.browserCommand} label="Copy browser sign-in command" />
+        </div>
+      </> : <button type="button" className="underline underline-offset-4" onClick={() => setShowBrowserCommand(true)}>Device code sign-in blocked?</button>)}
     </>}
     {login?.error && <p role="alert">{login.error}</p>}
     {login && !login.preparing && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
