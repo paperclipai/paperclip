@@ -14023,6 +14023,8 @@ export function issueRoutes(
             ),
           },
         });
+      // A read during post-commit logging may have cached the previous lastActivityAt.
+      invalidateCompanyIssueListCache(issue.companyId);
 
       if (
         existing.status === "in_progress" &&

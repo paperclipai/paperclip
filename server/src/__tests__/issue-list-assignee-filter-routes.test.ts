@@ -684,6 +684,47 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(afterFailure.body.map((row: { status: string }) => row.status)).toEqual(mutation === "update" ? ["backlog"] : []);
   });
 
+  it("refreshes activity timestamps cached while post-commit logging is pending", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Activity cache", issuePrefix: uniqueIssuePrefix() });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Activity timestamp", status: "todo", priority: "medium" });
+    let started!: () => void;
+    let release!: () => void;
+    const activityStarted = new Promise<void>((resolve) => { started = resolve; });
+    const activityReleased = new Promise<void>((resolve) => { release = resolve; });
+    const activityAt = new Date(Date.now() + 60_000);
+    const originalLogActivity = services.logActivity;
+    vi.spyOn(services, "logActivity").mockImplementation(async (...args) => {
+      if (args[1].entityId !== issueId || args[1].action !== "issue.updated") {
+        return originalLogActivity(...args);
+      }
+      started();
+      await activityReleased;
+      await originalLogActivity(...args);
+      // Make the two database timestamps distinct without sleeping past the cache TTL.
+      await db.update(activityLog).set({ createdAt: activityAt }).where(eq(activityLog.entityId, issueId));
+    });
+    const app = createApp(companyId);
+    const read = () => request(app).get(`/api/companies/${companyId}/issues`).query({ view: "compact" });
+    const write = request(app).patch(`/api/issues/${issueId}`).send({ status: "backlog" }).then((response) => response);
+    await activityStarted;
+    try {
+      const duringActivity = await read();
+      expect(duringActivity.body[0].status).toBe("backlog");
+      expect(new Date(duringActivity.body[0].lastActivityAt).getTime()).toBeLessThan(activityAt.getTime());
+      expect((await read()).headers["x-paperclip-request-cache"]).toBe("hit");
+    } finally {
+      release();
+      expect((await write).status).toBe(200);
+    }
+    const afterActivity = await read();
+    expect(afterActivity.headers["x-paperclip-request-cache"]).toBe("miss");
+    expect(afterActivity.body[0].lastActivityAt).toBe(activityAt.toISOString());
+    expect((await read()).headers["x-paperclip-request-cache"]).toBe("hit");
+  });
+
   it("does not reuse or cache a compact read started before an update", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
