@@ -1,4 +1,8 @@
-import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
+import type {
+  AdapterModel,
+  AdapterRuntimeCommandSpec,
+  ServerAdapterModule,
+} from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
@@ -41,6 +45,7 @@ import {
   agentConfigurationDoc as codexAgentConfigurationDoc,
   models as codexModels,
 } from "@paperclipai/adapter-codex-local";
+import { createServerAdapter as createDevinLocalServerAdapter } from "@paperclipai/adapter-devin-local/server";
 import {
   execute as cursorExecute,
   listCursorSkills,
@@ -665,6 +670,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   loginCapability: codexLoginCapability,
 };
 
+const devinLocalAdapter: ServerAdapterModule = createDevinLocalServerAdapter();
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   runtimeToolDelivery: "environment",
@@ -856,6 +863,7 @@ function registerBuiltInAdapters() {
     claudeLocalAdapter,
     codexLocalAdapter,
     paperclipRunnerAdapter,
+    devinLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
@@ -1028,7 +1036,7 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(type: string): Promise<AdapterModel[]> {
   const declaredModels = getDeclaredAdapterModels();
   if (declaredModels && declaredModels[type]?.length) {
     return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
@@ -1042,7 +1050,7 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
   return adapter.models ?? [];
 }
 
-export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function refreshAdapterModels(type: string): Promise<AdapterModel[]> {
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.refreshModels) {

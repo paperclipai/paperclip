@@ -6,7 +6,7 @@ import { readProcessStartedAt } from "./hot-restart.js";
 // replay the action itself, so those adapters retain their recovery contract.
 export const CONVERSATION_ADAPTER_TYPES = [
   "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
-  "pi_local", "grok_local", "kimi_local", "hermes_local",
+  "pi_local", "grok_local", "kimi_local", "hermes_local", "devin_local",
 ] as const;
 
 export function isConversationAdapter(adapterType: string): boolean {

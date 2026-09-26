@@ -12,7 +12,7 @@ import {
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useId } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Settings2 } from "lucide-react";
@@ -49,6 +49,13 @@ import {
 } from "@/lib/provider-credential";
 import { defaultCreateValues } from "../agent-config-defaults";
 import { ModelDropdown } from "../AgentConfigForm";
+import { DevinModelPicker } from "@/adapters/devin-local/model-picker";
+import {
+  devinModelActionError,
+  devinModelView,
+  type DevinModelDraftStatus,
+} from "@/adapters/devin-local/model-selection";
+import { buildDevinEffortOptions } from "@/adapters/devin-local/effort-options";
 import { Field } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
 import { Button } from "../ui/button";
@@ -138,6 +145,21 @@ function Setup({
   const [model, setModel] = useState("");
   const efforts = isRunner ? [] : setupEfforts(adapterType, model);
   const [effort, setEffort] = useState("");
+  const createModelScopeId = useId();
+  const [modelResetRevision] = useState(0);
+  const [modelDraftEntry, setModelDraftEntry] = useState<{
+    scopeKey: string;
+    status: DevinModelDraftStatus;
+  } | null>(null);
+  const modelSelectionRevisionRef = useRef(0);
+  const modelDraftRef = useRef<DevinModelDraftStatus>({
+    view: "default",
+    dirty: false,
+    pending: false,
+    message: null,
+  });
+  const modelRef = useRef(model);
+  const modelScopeRef = useRef("");
   const [modelOpen, setModelOpen] = useState(false);
   const [environmentOverride, setEnvironmentOverride] = useState("");
   const [provider, setProvider] = useState("openrouter");
@@ -259,6 +281,36 @@ function Setup({
         : "Could not resolve the environment.";
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
+  const modelScopeKey = JSON.stringify([
+    companyId,
+    "create",
+    createModelScopeId,
+    adapterType,
+    environmentId,
+    modelResetRevision,
+  ]);
+  const modelDraftStatus: DevinModelDraftStatus =
+    modelDraftEntry && modelDraftEntry.scopeKey === modelScopeKey
+      ? modelDraftEntry.status
+      : { view: devinModelView(model, models.data ?? []), dirty: false, pending: false, message: null };
+  modelDraftRef.current = modelDraftStatus;
+  modelRef.current = model;
+  modelScopeRef.current = modelScopeKey;
+  const devinFusionView =
+    adapterType === "devin_local" && modelDraftStatus.view === "fusion";
+  const devinEffortOptions =
+    adapterType === "devin_local"
+      ? buildDevinEffortOptions(
+          models.data?.find((entry) => entry.id === model)?.efforts,
+          effort,
+        ).filter((option) => option.id !== "")
+      : [];
+  const visibleEfforts =
+    adapterType === "devin_local"
+      ? devinFusionView
+        ? []
+        : devinEffortOptions
+      : efforts.map((id) => ({ id, label: id }));
   const sandboxProvider =
     typeof environment?.config?.provider === "string"
       ? environment.config.provider
@@ -381,6 +433,10 @@ function Setup({
     return config;
   }
   function preparedConfig(nextConnection = connection) {
+    if (adapterType === "devin_local") {
+      const modelError = devinModelActionError(model, modelDraftStatus);
+      if (modelError) throw new Error(modelError);
+    }
     if (multiProvider && (!model.trim() || !model.includes("/")))
       throw new Error("Choose or enter a model in provider/model format.");
     if (
@@ -427,7 +483,18 @@ function Setup({
     setResult(null);
     setError(null);
     try {
+      const testScope = modelScopeKey;
+      const testRevision = modelSelectionRevisionRef.current;
       const config = await preparedConfig(nextConnection);
+      if (adapterType === "devin_local") {
+        const stale =
+          modelScopeRef.current !== testScope ||
+          modelSelectionRevisionRef.current !== testRevision;
+        const recheck = devinModelActionError(modelRef.current, modelDraftRef.current);
+        if (stale || recheck) {
+          throw new Error(recheck ?? "The model selection changed during setup. Run the test again.");
+        }
+      }
       const tested = await testAgentSetup({
         companyId,
         adapterType,
@@ -438,6 +505,15 @@ function Setup({
         environmentId,
       });
       if (run !== generation.current) return false;
+      if (
+        adapterType === "devin_local" &&
+        (modelScopeRef.current !== testScope ||
+          modelSelectionRevisionRef.current !== testRevision)
+      ) {
+        throw new Error(
+          "The model selection changed during setup. Run the test again.",
+        );
+      }
       setResult(tested);
       setTestState(blocking(tested) ? "fail" : tested.status);
       return (
@@ -476,6 +552,8 @@ function Setup({
     let hired = false;
     try {
       const config = preparedConfig();
+      const finishScope = modelScopeKey;
+      const finishRevision = modelSelectionRevisionRef.current;
       const credentials = pendingCredentials();
       // Untested entered keys must pass a probe before they can be stored.
       if (Object.keys(credentials).length && !(await runTest())) return;
@@ -497,6 +575,15 @@ function Setup({
       const leader = existing.find(
         (agent) => agent.role === "ceo" && agent.status !== "terminated",
       );
+      if (adapterType === "devin_local") {
+        const stale =
+          modelScopeRef.current !== finishScope ||
+          modelSelectionRevisionRef.current !== finishRevision;
+        const recheck = devinModelActionError(modelRef.current, modelDraftRef.current);
+        if (stale || recheck) {
+          throw new Error(recheck ?? "The model selection changed during setup. Review it and finish again.");
+        }
+      }
       const response = await agentsApi.hire(companyId, {
         name: name.trim(),
         appearance: appearanceDraft.appearance,
@@ -608,6 +695,11 @@ function Setup({
       : (createdKimiModel as { value?: string } | undefined)?.value) ||
     model ||
     "Default";
+  const confirmationModelLabel =
+    adapterType === "devin_local"
+      ? (models.data?.find((entry) => entry.id === confirmationModel)?.label ??
+        confirmationModel)
+      : confirmationModel;
   const environmentLabel =
     adapterType === "cursor_cloud"
       ? "Cursor Cloud"
@@ -762,7 +854,7 @@ function Setup({
                           <>
                             <dt className="text-muted-foreground">Model</dt>
                             <dd className="break-all">
-                              {String(confirmationModel)}
+                              {String(confirmationModelLabel)}
                             </dd>
                           </>
                         )}
@@ -828,9 +920,66 @@ function Setup({
                         )}
                         {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
                         {((showModel && !usingKimiApi) ||
-                          efforts.length > 0) && (
+                          visibleEfforts.length > 0) && (
                           <div className="grid items-start gap-5 sm:grid-cols-2">
-                            {showModel && !usingKimiApi && (
+                            {showModel && !usingKimiApi && adapterType === "devin_local" && (
+                              <div className="min-w-0 sm:col-span-2">
+                                <DevinModelPicker
+                                  models={models.data ?? []}
+                                  value={model}
+                                  onChange={(uid) => {
+                                    modelSelectionRevisionRef.current += 1;
+                                    setModel(uid);
+                                    setEffort("");
+                                    resetTest();
+                                  }}
+                                  open={modelOpen}
+                                  onOpenChange={setModelOpen}
+                                  allowDefault={!multiProvider}
+                                  required={multiProvider}
+                                  creatable
+                                  groupByProvider={false}
+                                  scopeKey={modelScopeKey}
+                                  catalogState={
+                                    models.isPending
+                                      ? "loading"
+                                      : models.error
+                                        ? "error"
+                                        : "ready"
+                                  }
+                                  catalogError={
+                                    models.error instanceof Error
+                                      ? models.error.message
+                                      : null
+                                  }
+                                  onRefreshModels={async () => {
+                                    const refreshed = await agentsApi.adapterModels(
+                                      companyId,
+                                      brandType,
+                                      { refresh: true, provider: aiBinding?.provider },
+                                    );
+                                    cache.setQueryData(
+                                      queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
+                                      refreshed,
+                                    );
+                                  }}
+                                  refreshingModels={models.isFetching}
+                                  onDraftStatusChange={(status) => {
+                                    if (status.dirty || status.pending) {
+                                      modelSelectionRevisionRef.current += 1;
+                                    }
+                                    setModelDraftEntry({ scopeKey: modelScopeKey, status });
+                                    if (status.dirty || status.pending) resetTest();
+                                  }}
+                                />
+                                {modelDraftStatus.pending && (
+                                  <p role="status" className="mt-1 text-xs text-muted-foreground">
+                                    {modelDraftStatus.message ?? "Complete the model selection before continuing."}
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                            {showModel && !usingKimiApi && adapterType !== "devin_local" && (
                               <ModelDropdown
                                 models={models.data ?? []}
                                 value={model}
@@ -863,7 +1012,7 @@ function Setup({
                                 groupByProvider={multiProvider}
                               />
                             )}
-                            {efforts.length > 0 && (
+                            {visibleEfforts.length > 0 && (
                               <Field label="Thinking effort">
                                 <select
                                   aria-label="Thinking effort"
@@ -875,9 +1024,9 @@ function Setup({
                                   }}
                                 >
                                   <option value="">Auto</option>
-                                  {efforts.map((value) => (
-                                    <option key={value} value={value}>
-                                      {value}
+                                  {visibleEfforts.map((option) => (
+                                    <option key={option.id} value={option.id}>
+                                      {option.label}
                                     </option>
                                   ))}
                                 </select>

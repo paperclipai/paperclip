@@ -43,6 +43,9 @@ export interface AgentKey {
 export interface AdapterModel {
   id: string;
   label: string;
+  /** Reasoning-effort tiers this model supports, when the adapter discovers them per model. */
+  efforts?: string[];
+  fusion?: import("@paperclipai/adapter-utils").AdapterModelFusion;
 }
 
 export interface DetectedAdapterModel {

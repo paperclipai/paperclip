@@ -2365,11 +2365,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
-  it("recovers legacy startup before adapter.invoke using the claimed adapter identity", async () => {
-    const f = await seedRunFixture({ agentStatus: "idle", adapterType: "claude_local" });
+  it.each(["claude_local", "devin_local"])("recovers legacy startup before adapter.invoke using the claimed %s identity", async (adapterType) => {
+    const f = await seedRunFixture({ agentStatus: "idle", adapterType });
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
     await db.update(heartbeatRuns).set({ runnerProfileJson: {
-      adapterDispatch: { adapterType: "claude_local" },
+      adapterDispatch: { adapterType },
     } }).where(eq(heartbeatRuns.id, f.runId));
     await heartbeatService(db).reapOrphanedRuns();
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));

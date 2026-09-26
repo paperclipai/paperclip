@@ -562,7 +562,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         run.execution.cause === "legacy_execution_requires_reconciliation" &&
         [
           "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
-          "pi_local", "grok_local", "kimi_local", "hermes_local",
+          "pi_local", "grok_local", "kimi_local", "hermes_local", "devin_local",
         ].includes(run.adapterType ?? "")
       ) return false;
       return [

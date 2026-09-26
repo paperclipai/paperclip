@@ -3,7 +3,7 @@ import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { setupEfforts } from "../lib/agent-setup-fields";
 import { RuntimeTestCard } from "./RuntimeTestCard";
-import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, useId, Children, isValidElement, type ReactNode } from "react";
 import type { AdapterConfigSection } from "../adapters/types";
 import { useConfigSchema } from "../adapters/schema-config-fields";
 import { schemaFieldSection } from "../adapters/config-sections";
@@ -73,7 +73,18 @@ import {
 } from "./agent-config-primitives";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
+import { buildDevinEffortOptions } from "../adapters/devin-local/effort-options";
+import { DevinModelPicker } from "../adapters/devin-local/model-picker";
+import { isFusionModelId } from "@paperclipai/adapter-devin-local/ui";
+import {
+  devinModelActionError,
+  devinModelView,
+  type DevinModelDraftStatus,
+} from "../adapters/devin-local/model-selection";
+import { ModelDropdown } from "./ModelDropdown";
+export { ModelDropdown } from "./ModelDropdown";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
+import { DevinLocalConfigFields } from "../adapters/devin-local/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
@@ -136,6 +147,8 @@ type AgentConfigFormProps = {
   canConfigureProviderTrace?: boolean;
   /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
   hidePromptTemplate?: boolean;
+  onModelDraftStatusChange?: (status: DevinModelDraftStatus) => void;
+  modelScopeKey?: string;
   /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
   content?: "configuration" | "secrets";
   /** Keep variable bindings beside secret access in a unified edit surface. */
@@ -173,7 +186,7 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
+  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local" || adapterType === "devin_local";
 }
 
 export function resolvePaperclipRunnerTransitionModel(
@@ -468,6 +481,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Edit mode: overlay for dirty tracking ----
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
+  const [modelScopeResetRevision, setModelScopeResetRevision] = useState(0);
+  const [modelDraftEntry, setModelDraftEntry] = useState<{ scopeKey: string; status: DevinModelDraftStatus } | null>(null);
+  const [modelGateError, setModelGateError] = useState<string | null>(null);
+  const modelActionErrorRef = useRef<string | null>(null);
+  const modelScopeKeyRef = useRef("");
+  const modelSelectionRevisionRef = useRef(0);
+  const refreshModelsRequestRef = useRef(0);
+  const createModelScopeId = useId();
   const [environmentDraftDirty, setEnvironmentDraftDirty] = useState(false);
   const [environmentEditorKey, setEnvironmentEditorKey] = useState(0);
   const agentRef = useRef<Agent | null>(null);
@@ -499,12 +520,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         setOverlay((prev) =>
           persisted ? subtractPersistedOverlay(prev, persisted) : { ...emptyOverlay },
         );
+        if (!persisted) {
+          setModelDraftEntry(null);
+          setModelGateError(null);
+          setModelScopeResetRevision((key) => key + 1);
+        }
       }
       agentRef.current = props.agent;
     }
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isDirty = !isCreate && (isOverlayDirty(overlay) || environmentDraftDirty);
+  const isDirty = !isCreate && (isOverlayDirty(overlay) || environmentDraftDirty || (modelDraftEntry !== null && modelDraftEntry.scopeKey === modelScopeKeyRef.current && modelDraftEntry.status.dirty));
 
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "debug" | "runtime";
 
@@ -555,10 +581,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setOverlay({ ...emptyOverlay });
     setEnvironmentDraftDirty(false);
     setEnvironmentEditorKey(key => key + 1);
+    setModelDraftEntry(null);
+    setModelGateError(null);
+    setModelScopeResetRevision(key => key + 1);
   }, []);
 
   const handleSave = useCallback(async () => {
     if (isCreate) return;
+    const modelError = modelActionErrorRef.current;
+    setModelGateError(modelError);
+    if (modelError) return;
     const flushedEnv = flushEnvironmentDraft();
     const nextOverlay = flushedEnv
       ? {
@@ -611,6 +643,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  const usesNativeDevinRunPolicy = adapterType === "devin_local" && uiAdapter.ConfigFields === DevinLocalConfigFields;
   const supportedEnvironmentDrivers = useMemo(
     () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
     [adapterType],
@@ -901,6 +934,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const {
     data: fetchedModels,
     error: fetchedModelsError,
+    isPending: fetchedModelsPending,
   } = useQuery({
     queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
@@ -937,6 +971,37 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(!isCreate && selectedCompanyId),
   });
 
+  // Current model for display
+  const currentModelValue = isCreate
+    ? val!.model ?? ""
+    : eff("adapterConfig", "model", String(config.model ?? ""));
+  const currentModelId = typeof currentModelValue === "string" ? currentModelValue : "";
+
+  const modelScopeKey = props.modelScopeKey ?? JSON.stringify([
+    selectedCompanyId,
+    isCreate ? "create" : "edit",
+    isCreate ? createModelScopeId : props.agent.id,
+    adapterType,
+    currentDefaultEnvironmentId || null,
+    modelScopeResetRevision,
+  ]);
+  const modelDraftStatus: DevinModelDraftStatus =
+    modelDraftEntry && modelDraftEntry.scopeKey === modelScopeKey
+      ? modelDraftEntry.status
+      : { view: devinModelView(currentModelId, models), dirty: false, pending: false, message: null };
+  modelActionErrorRef.current =
+    adapterType === "devin_local"
+      ? devinModelActionError(currentModelId, modelDraftStatus)
+      : null;
+  modelScopeKeyRef.current = modelScopeKey;
+  const effectiveCommand = isCreate
+    ? (val!.command ?? "")
+    : String(eff("adapterConfig", "command", String(config.command ?? "")) ?? "");
+  const devinCustomCommand =
+    adapterType === "devin_local" &&
+    effectiveCommand.trim().length > 0 &&
+    effectiveCommand.trim() !== "devin";
+
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
     mode,
@@ -953,6 +1018,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // every adapter without a per-adapter edit.
     hideInstructionsFile: hideInstructionsFile || hideHostPaths,
     managedSandboxOnly: hideHostPaths,
+    fusionView: adapterType === "devin_local" && modelDraftStatus.view === "fusion",
   };
 
   // Section toggle state — advanced always starts collapsed
@@ -970,6 +1036,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
 
   function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
+    const modelGate = modelActionErrorRef.current;
+    if (modelGate) throw new Error(modelGate);
     if (isCreate) {
       const next = uiAdapter.buildAdapterConfig(val!);
       if (adapterConfigPatch) {
@@ -990,6 +1058,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) {
         throw new Error("Select an organization to test adapter environment");
       }
+      const earlyModelGate = modelActionErrorRef.current;
+      if (earlyModelGate) throw new Error(earlyModelGate);
+      const selectionScope = modelScopeKey;
+      const selectionRevision = modelSelectionRevisionRef.current;
+      const selectionCurrent = () =>
+        modelScopeKeyRef.current === selectionScope &&
+        modelSelectionRevisionRef.current === selectionRevision;
       const flushedEnv = flushEnvironmentDraft();
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
       // Probe where a real run would actually execute: the agent's own
@@ -1059,20 +1134,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // managed sandbox instead of sending the hidden local id to the server.
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
+      if (!selectionCurrent()) {
+        throw new Error("The model selection changed while resolving the environment. Run the test again.");
+      }
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
+      if (!selectionCurrent()) {
+        throw new Error("The model selection changed while resolving the environment. Run the test again.");
+      }
       const agentId = isCreate ? undefined : props.agent.id;
       const aiConnection = isCreate ? undefined : aiConnectionBindingSchema.safeParse(
         (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
       ).data;
+      const staleTestError =
+        "The model selection changed while the test ran. Run the test again.";
       if (props.compactTestFeedback) {
         const providerAdapter = adapterType === "paperclip_runner"
           ? adapterConfig.provider === "codex" ? "codex_local"
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
-        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId });
+        const tested = await testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId });
+        if (!selectionCurrent()) throw new Error(staleTestError);
+        return tested;
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId });
+      const outcome = await agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId });
+      if (!selectionCurrent()) throw new Error(staleTestError);
+      return outcome;
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1242,25 +1329,39 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     effectiveLoginEnvironmentId,
   ]);
 
-  // Current model for display
-  const currentModelValue = isCreate
-    ? val!.model ?? ""
-    : eff("adapterConfig", "model", String(config.model ?? ""));
-  const currentModelId = typeof currentModelValue === "string" ? currentModelValue : "";
-
   async function handleRefreshModels() {
     if (!selectedCompanyId) return;
+    const scope = modelScopeKey;
+    const revision = modelSelectionRevisionRef.current;
+    const requestId = ++refreshModelsRequestRef.current;
+    const capturedQueryKey = modelQueryKey;
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
       const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider });
-      queryClient.setQueryData(modelQueryKey, refreshed);
+      queryClient.setQueryData(capturedQueryKey, refreshed);
     } catch (error) {
-      setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
+      if (
+        modelScopeKeyRef.current === scope &&
+        modelSelectionRevisionRef.current === revision
+      ) {
+        setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
+      }
     } finally {
-      setRefreshingModels(false);
+      if (
+        modelScopeKeyRef.current === scope &&
+        refreshModelsRequestRef.current === requestId
+      ) {
+        setRefreshingModels(false);
+      }
     }
   }
+
+  useEffect(() => {
+    refreshModelsRequestRef.current += 1;
+    setRefreshingModels(false);
+    setRefreshModelsError(null);
+  }, [modelScopeKey]);
 
   const thinkingEffortKey =
     adapterType === "codex_local"
@@ -1270,27 +1371,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? "variant"
           : adapterType === "grok_local" ? "reasoningEffort"
-          : adapterType === "pi_local" ? "thinking" : "effort";
-  const thinkingEffortOptions =
-    adapterType === "codex_local"
-      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
-          id: option.value,
-          label: option.label,
-        }))
-      : adapterType === "cursor"
-        ? cursorModeOptions
-        : adapterType === "opencode_local"
-          ? openCodeThinkingEffortOptions
-          : adapterType === "kimi_local"
-            ? kimiThinkingEffortOptions
-            : adapterType === "pi_local"
-              ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : adapterType === "claude_local" || adapterType === "grok_local"
-                ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType, currentModelId).map((id) => ({
-                    id,
-                    label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
-                  }))]
-                : claudeThinkingEffortOptions;
+          : adapterType === "devin_local"
+            ? "thinkingEffort"
+            : adapterType === "pi_local" ? "thinking" : "effort";
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1304,9 +1387,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
+  const thinkingEffortOptions =
+    adapterType === "codex_local"
+      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
+          id: option.value,
+          label: option.label,
+        }))
+      : adapterType === "cursor"
+        ? cursorModeOptions
+        : adapterType === "opencode_local"
+          ? openCodeThinkingEffortOptions
+          : adapterType === "kimi_local"
+            ? kimiThinkingEffortOptions
+            : adapterType === "devin_local"
+              ? buildDevinEffortOptions(models.find((m) => m.id === currentModelId)?.efforts, currentThinkingEffort ?? "")
+              : adapterType === "pi_local"
+                ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
+                : adapterType === "claude_local" || adapterType === "grok_local"
+                  ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType, currentModelId).map((id) => ({
+                      id,
+                      label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
+                    }))]
+                  : claudeThinkingEffortOptions;
   const showThinkingEffort = adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
-    && adapterType !== "paperclip_runner";
+    && adapterType !== "paperclip_runner"
+    && !(adapterType === "devin_local" && modelDraftStatus.view === "fusion");
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -1716,6 +1822,105 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {renderAdapterFields("adapter")}
           {isLocal && (<>
+              {adapterType === "devin_local" ? (
+              <DevinModelPicker
+                models={models}
+                value={currentModelId}
+                onChange={(uid) => {
+                  modelSelectionRevisionRef.current += 1;
+                  setRefreshModelsError(null);
+                  resetTestEnvironmentRef.current();
+                  const option = models.find((m) => m.id === uid);
+                  const fusionChoice = Boolean(option?.fusion) || isFusionModelId(uid);
+                  const wasFusion =
+                    modelDraftStatus.view === "fusion" ||
+                    isFusionModelId(currentModelId) ||
+                    Boolean(models.find((m) => m.id === currentModelId)?.fusion);
+                  if (isCreate) {
+                    const schemaValues = { ...(val!.adapterSchemaValues ?? {}) };
+                    if (fusionChoice) {
+                      delete schemaValues.thinkingEffort;
+                      delete schemaValues.contextSize;
+                      delete schemaValues.fastMode;
+                      delete schemaValues.priority;
+                    } else if (wasFusion) {
+                      delete schemaValues.thinkingEffort;
+                    }
+                    set!({
+                      model: uid,
+                      ...(fusionChoice || wasFusion
+                        ? { thinkingEffort: "", adapterSchemaValues: schemaValues }
+                        : {}),
+                    });
+                    return;
+                  }
+                  setOverlay((previous) => ({
+                    ...previous,
+                    adapterConfig: {
+                      ...previous.adapterConfig,
+                      model: uid || undefined,
+                      ...(fusionChoice
+                        ? {
+                            thinkingEffort: undefined,
+                            contextSize: undefined,
+                            fastMode: undefined,
+                            priority: undefined,
+                          }
+                        : wasFusion
+                          ? { thinkingEffort: undefined }
+                          : {}),
+                    },
+                  }));
+                }}
+                open={modelOpen}
+                onOpenChange={setModelOpen}
+                allowDefault
+                required={false}
+                groupByProvider={false}
+                creatable
+                detectedModel={detectedModel}
+                detectedModelCandidates={detectedModelCandidates}
+                onDetectModel={async () => {
+                  const result = await refetchDetectedModel();
+                  if (result.error) throw result.error;
+                  return result.data?.model ?? null;
+                }}
+                onRefreshModels={handleRefreshModels}
+                refreshingModels={refreshingModels}
+                detectModelLabel="Detect model"
+                emptyDetectHint="No model detected. Select or enter one manually."
+                scopeKey={modelScopeKey}
+                catalogState={
+                  refreshModelsError || fetchedModelsError
+                    ? "error"
+                    : externalModels
+                      ? "ready"
+                      : fetchedModelsPending
+                        ? "loading"
+                        : "ready"
+                }
+                catalogError={
+                  refreshModelsError ??
+                  (fetchedModelsError instanceof Error
+                    ? fetchedModelsError.message
+                    : null)
+                }
+                customCommand={devinCustomCommand}
+                onDraftStatusChange={(status) => {
+                  if (modelScopeKey !== modelScopeKeyRef.current) return;
+                  modelSelectionRevisionRef.current += 1;
+                  if (status.dirty || status.pending) {
+                    resetTestEnvironmentRef.current();
+                  }
+                  modelActionErrorRef.current = devinModelActionError(
+                    currentModelId,
+                    status,
+                  );
+                  setModelDraftEntry({ scopeKey: modelScopeKey, status });
+                  props.onModelDraftStatusChange?.(status);
+                }}
+              />
+              ) : (
               <ModelDropdown
                 models={models}
                 value={currentModelId}
@@ -1761,7 +1966,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
-              {(refreshModelsError || fetchedModelsError) && (
+              )}
+              {modelGateError && (
+                <p role="alert" className="text-xs text-destructive">
+                  {modelGateError}
+                </p>
+              )}
+              {(adapterType !== "devin_local" && (refreshModelsError || fetchedModelsError)) && (
                 <p className="text-xs text-destructive">
                   {refreshModelsError
                     ?? (fetchedModelsError instanceof Error
@@ -1780,7 +1991,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {showThinkingEffort && (
                 <>
                   <ThinkingEffortDropdown
-                    value={currentThinkingEffort}
+                    value={adapterType === "devin_local" && currentThinkingEffort === "auto" ? "" : currentThinkingEffort}
                     options={thinkingEffortOptions}
                     onChange={(v) =>
                       isCreate
@@ -1990,13 +2201,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
                 <>
-                  {!configSchema?.fields.some((field) => field.key === "timeoutSec") && (
+                  {(usesNativeDevinRunPolicy || !configSchema?.fields.some((field) => field.key === "timeoutSec")) && (
                   <Field label="Timeout (sec)" hint={help.timeoutSec}>
                     <DraftNumberInput
                       value={eff(
                         "adapterConfig",
                         "timeoutSec",
-                        Number(config.timeoutSec ?? 0),
+                        Number(config.timeoutSec ?? (usesNativeDevinRunPolicy ? 1800 : 0)),
                       )}
                       onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
                       immediate
@@ -2004,7 +2215,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     />
                   </Field>
                   )}
-                  {!configSchema?.fields.some((field) => field.key === "graceSec") && (
+                  {(usesNativeDevinRunPolicy || !configSchema?.fields.some((field) => field.key === "graceSec")) && (
                   <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
                     <DraftNumberInput
                       value={eff(
@@ -3689,324 +3900,6 @@ function ExperimentalBadge() {
   );
 }
 
-export function ModelDropdown({
-  models,
-  value,
-  onChange,
-  open,
-  onOpenChange,
-  allowDefault,
-  required,
-  groupByProvider,
-  creatable,
-  detectedModel,
-  detectedModelCandidates,
-  onDetectModel,
-  onRefreshModels,
-  refreshingModels,
-  detectModelLabel,
-  emptyDetectHint,
-  defaultLabel,
-}: {
-  models: AdapterModel[];
-  value: string;
-  onChange: (id: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  allowDefault: boolean;
-  required: boolean;
-  groupByProvider: boolean;
-  creatable?: boolean;
-  detectedModel?: string | null;
-  detectedModelCandidates?: string[];
-  onDetectModel?: () => Promise<string | null>;
-  onRefreshModels?: () => Promise<void>;
-  refreshingModels?: boolean;
-  detectModelLabel?: string;
-  emptyDetectHint?: string;
-  defaultLabel?: string;
-}) {
-  const [modelSearch, setModelSearch] = useState("");
-  const [detectingModel, setDetectingModel] = useState(false);
-  const selected = models.find((m) => m.id === value);
-  const manualModel = modelSearch.trim();
-  const canCreateManualModel = Boolean(
-    creatable &&
-      manualModel &&
-      !models.some((m) => m.id.toLowerCase() === manualModel.toLowerCase()),
-  );
-  // Model IDs already shown as detected/candidate badges — exclude from regular list
-  const promotedModelIds = useMemo(() => {
-    const set = new Set<string>();
-    if (detectedModel) set.add(detectedModel);
-    for (const c of detectedModelCandidates ?? []) {
-      if (c) set.add(c);
-    }
-    return set;
-  }, [detectedModel, detectedModelCandidates]);
-
-  const filteredModels = useMemo(() => {
-    return models.filter((m) => {
-      if (promotedModelIds.has(m.id)) return false;
-      if (!modelSearch.trim()) return true;
-      const q = modelSearch.toLowerCase();
-      const provider = extractProviderId(m.id) ?? "";
-      return (
-        m.id.toLowerCase().includes(q) ||
-        m.label.toLowerCase().includes(q) ||
-        provider.toLowerCase().includes(q)
-      );
-    });
-  }, [models, modelSearch, promotedModelIds]);
-  const groupedModels = useMemo(() => {
-    if (!groupByProvider) {
-      return [
-        {
-          provider: "models",
-          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id)),
-        },
-      ];
-    }
-    const map = new Map<string, AdapterModel[]>();
-    for (const model of filteredModels) {
-      const provider = extractProviderId(model.id) ?? "other";
-      const group = map.get(provider) ?? [];
-      group.push(model);
-      map.set(provider, group);
-    }
-    return Array.from(map.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([provider, entries]) => ({
-        provider,
-        entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
-      }));
-  }, [filteredModels, groupByProvider]);
-
-  async function handleDetectModel() {
-    if (!onDetectModel) return;
-    setDetectingModel(true);
-    try {
-      const nextModel = await onDetectModel();
-      if (nextModel) {
-        onChange(nextModel);
-        onOpenChange(false);
-        setModelSearch("");
-      }
-    } finally {
-      setDetectingModel(false);
-    }
-  }
-
-  return (
-    <Field label="Model" hint={help.model}>
-      <Popover
-        open={open}
-        onOpenChange={(nextOpen) => {
-          onOpenChange(nextOpen);
-          if (!nextOpen) setModelSearch("");
-        }}
-      >
-        <PopoverTrigger asChild>
-          <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>
-              {selected
-                ? selected.label
-                : value
-                  || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
-            </span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
-          <div className="relative mb-1">
-            <input
-              className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
-              placeholder={creatable ? "Search models... (type to create)" : "Search models..."}
-              value={modelSearch}
-              onChange={(e) => setModelSearch(e.target.value)}
-              autoFocus
-            />
-            {modelSearch && (
-              <button
-                type="button"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                onClick={() => setModelSearch("")}
-              >
-                <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            )}
-          </div>
-          {onDetectModel && !modelSearch.trim() && (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
-              onClick={() => {
-                void handleDetectModel();
-              }}
-              disabled={detectingModel}
-            >
-              <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-                <path d="M3 3v5h5" />
-              </svg>
-              {detectingModel ? "Detecting..." : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
-            </button>
-          )}
-          {onRefreshModels && !modelSearch.trim() && (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
-              onClick={() => {
-                void onRefreshModels();
-              }}
-              disabled={refreshingModels}
-            >
-              <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 12a9 9 0 0 1 15.28-6.36L21 8" />
-                <path d="M21 3v5h-5" />
-                <path d="M21 12a9 9 0 0 1-15.28 6.36L3 16" />
-                <path d="M8 16H3v5" />
-              </svg>
-              {refreshingModels ? "Refreshing..." : "Refresh models"}
-            </button>
-          )}
-          {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
-            <button
-              type="button"
-              className={cn(
-                "flex items-center w-full px-2 py-1.5 text-sm rounded bg-accent/50",
-              )}
-              onClick={() => {
-                onOpenChange(false);
-              }}
-            >
-              <span className="block w-full text-left truncate font-mono text-xs" title={value}>
-                {models.find((m) => m.id === value)?.label ?? value}
-              </span>
-              <Badge variant="outline" className="ml-auto text-(length:--text-nano) px-1.5 bg-green-500/15 text-green-400 border-green-500/20">
-                current
-              </Badge>
-            </button>
-          )}
-          {detectedModel && detectedModel !== value && (
-            <button
-              type="button"
-              className={cn(
-                "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-              )}
-              onClick={() => {
-                onChange(detectedModel);
-                onOpenChange(false);
-              }}
-            >
-              <span className="block w-full text-left truncate font-mono text-xs" title={detectedModel}>
-                {models.find((m) => m.id === detectedModel)?.label ?? detectedModel}
-              </span>
-              <Badge variant="outline" className="ml-auto text-(length:--text-nano) px-1.5 bg-blue-500/15 text-blue-400 border-blue-500/20">
-                detected
-              </Badge>
-            </button>
-          )}
-          {detectedModelCandidates
-            ?.filter((candidate) => candidate && candidate !== detectedModel && candidate !== value)
-            .map((candidate) => {
-              const entry = models.find((m) => m.id === candidate);
-              return (
-                <button
-                  key={`detected-${candidate}`}
-                  type="button"
-                  className={cn(
-                    "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                  )}
-                  onClick={() => {
-                    onChange(candidate);
-                    onOpenChange(false);
-                  }}
-                >
-                  <span className="block w-full text-left truncate font-mono text-xs" title={candidate}>
-                    {entry?.label ?? candidate}
-                  </span>
-                  <Badge variant="outline" className="ml-auto text-(length:--text-nano) px-1.5 bg-sky-500/15 text-sky-400 border-sky-500/20">
-                    config
-                  </Badge>
-                </button>
-              );
-            })}
-          <div className="max-h-(--sz-240px) overflow-y-auto">
-            {allowDefault && (
-              <button
-                type="button"
-                className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                  !value && "bg-accent",
-                )}
-                onClick={() => {
-                  onChange("");
-                  onOpenChange(false);
-                }}
-              >
-                Default
-              </button>
-            )}
-            {canCreateManualModel && (
-              <button
-                type="button"
-                className="flex items-center justify-between gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50"
-                onClick={() => {
-                  onChange(manualModel);
-                  onOpenChange(false);
-                  setModelSearch("");
-                }}
-              >
-                <span>Use manual model</span>
-                <span className="text-xs font-mono text-muted-foreground">{manualModel}</span>
-              </button>
-            )}
-            {groupedModels.map((group) => (
-              <div key={group.provider} className="mb-1 last:mb-0">
-                {groupByProvider && (
-                  <div className="px-2 py-1 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    {group.provider} ({group.entries.length})
-                  </div>
-                )}
-                {group.entries.map((m) => (
-                  <button
-                    type="button"
-                    key={m.id}
-                    className={cn(
-                      "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                      m.id === value && "bg-accent",
-                    )}
-                    onClick={() => {
-                      onChange(m.id);
-                      onOpenChange(false);
-                    }}
-                  >
-                    <span className="block w-full text-left truncate" title={m.id}>
-                      {groupByProvider ? extractModelName(m.id) : m.label}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ))}
-            {filteredModels.length === 0 && !canCreateManualModel && promotedModelIds.size === 0 && (
-              <div className="px-2 py-2 space-y-2">
-                <p className="text-xs text-muted-foreground">
-                  {onDetectModel
-                    ? (emptyDetectHint ?? "No model detected yet. Enter a provider/model manually.")
-                    : "No models found."}
-                </p>
-              </div>
-            )}
-          </div>
-        </PopoverContent>
-      </Popover>
-    </Field>
-  );
-}
 
 function ThinkingEffortDropdown({
   value,

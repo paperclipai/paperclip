@@ -231,6 +231,133 @@ describe("adapter model refresh route", () => {
     expect(mockListOpenCodeModels).not.toHaveBeenCalled();
   });
 
+  it("serves Devin Fusion leaf models with parsed metadata over the models route", async () => {
+    const fusionPair = "fusion-alpha-1-high-sidekick-beta-2-medium";
+    const fusionFixture = [
+      {
+        family_label: "SWE-1.7",
+        family_uid: "swe-1.7",
+        slug: "swe-1-7",
+        aliases: [],
+        variants: [
+          {
+            model_uid: "swe-1-7",
+            label: "SWE-1.7 Max",
+            max_context_tokens: 200_000,
+            max_output_tokens: 8_192,
+            cost_tier: "Free",
+            cost_summary: null,
+            is_new: false,
+            is_beta: true,
+          },
+        ],
+      },
+      {
+        family_label: "Fusion",
+        family_uid: "fusion",
+        slug: "fusion",
+        aliases: [],
+        variants: [
+          {
+            model_uid: fusionPair,
+            label: "Fusion (Alpha 1 High + Beta 2 Medium)",
+            command: "devin-internal-marker-command",
+            install_path: "/private/marker/catalog-path",
+            auth_token: "marker-secret-value",
+            max_context_tokens: 1_000_000,
+            max_output_tokens: 8_192,
+            cost_tier: "High cost",
+            cost_summary:
+              "$2 / 1M Input · $0.2 / 1M Cached input · $8 / 1M Output · $1 / 1M Sidekick input · $0 / 1M Sidekick cached input · $4 / 1M Sidekick output",
+            is_new: false,
+            is_beta: false,
+          },
+        ],
+      },
+    ];
+    const { requireServerAdapter, registerServerAdapter } = await import("../adapters/index.js");
+    const { buildDiscoveredModels } = await import(
+      "../../../packages/adapters/devin-local/src/server/models.js"
+    );
+    const base = requireServerAdapter("devin_local");
+    const projected = buildDiscoveredModels(fusionFixture as never).models;
+    registerServerAdapter({
+      ...base,
+      listModels: async () => projected,
+      refreshModels: async () => projected,
+    });
+    try {
+      const app = await createApp();
+      const normal = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/adapters/devin_local/models"),
+      );
+      const refreshed = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/adapters/devin_local/models?refresh=1"),
+      );
+      for (const res of [normal, refreshed]) {
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const leaf = res.body.find((m: { id: string }) => m.id === fusionPair);
+        expect(leaf).toBeDefined();
+        expect(leaf.fusion).toMatchObject({
+          version: 1,
+          kind: "fusion",
+          components: {
+            orchestrator: { id: "alpha-1-high", effortKey: "high", effortSource: "uid" },
+            worker: { id: "beta-2-medium", effortKey: "medium", effortSource: "uid" },
+          },
+          rates: {
+            orchestrator: {
+              inputPerMillion: 2,
+              cachedInputPerMillion: 0.2,
+              outputPerMillion: 8,
+            },
+            worker: {
+              inputPerMillion: 1,
+              cachedInputPerMillion: 0,
+              outputPerMillion: 4,
+            },
+          },
+        });
+        expect(leaf.fusion?.costSummary).toContain("Sidekick output");
+        expect(Object.keys(leaf).sort()).toEqual(["fusion", "id", "label"]);
+        expect(Object.keys(leaf.fusion).sort()).toEqual([
+          "components",
+          "costSummary",
+          "kind",
+          "rates",
+          "version",
+        ]);
+        expect(Object.keys(leaf.fusion.components.orchestrator).sort()).toEqual([
+          "effortKey",
+          "effortLabel",
+          "effortSource",
+          "id",
+          "label",
+          "modelKey",
+          "modelLabel",
+          "modifiers",
+        ]);
+        expect(Object.keys(leaf.fusion.rates.orchestrator).sort()).toEqual([
+          "cachedInputPerMillion",
+          "inputPerMillion",
+          "outputPerMillion",
+        ]);
+        const wire = JSON.stringify(res.body);
+        for (const marker of [
+          "devin-internal-marker-command",
+          "/private/marker/catalog-path",
+          "marker-secret-value",
+        ]) {
+          expect(wire).not.toContain(marker);
+        }
+        expect(res.body.some((m: { id: string }) => m.id === "fusion")).toBe(false);
+        expect(res.body.some((m: { id: string }) => m.id === "swe-1.7")).toBe(true);
+      }
+    } finally {
+      await unregisterTestAdapter("devin_local");
+    }
+  });
+
   it("keeps OpenCode model discovery enabled for local environments", async () => {
     mockEnvironmentService.getById.mockResolvedValue({
       id: "env-1",
