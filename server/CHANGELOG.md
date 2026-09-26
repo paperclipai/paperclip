@@ -4,6 +4,7 @@
 
 ### Patch Changes
 
+- Keyed blocker-resolution wakes on the full blocker set and canonical unblock intent instead of the blocked transition timestamp. Repeated restores of an unchanged blocked state now coalesce, while a changed blocker set or unblock intent wakes normally.
 - Bound full-tree workspace Git scans with process-wide concurrency, queue, timeout, cancellation, coalescing, and short-lived changed-file caching. Saturated or timed-out changed-file requests now return a retryable degraded response, and hidden file-browser panels no longer initiate scans.
 
 ## 0.3.1

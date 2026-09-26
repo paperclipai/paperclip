@@ -5573,6 +5573,7 @@ export function recoveryService(
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
             blockedTransitionAt: issues.blockedTransitionAt,
+            unblockDescriptor: issues.unblockDescriptor,
             totalCount: sql<number>`count(*) over()::int`,
           })
           .from(issueRelations)
@@ -5589,6 +5590,7 @@ export function recoveryService(
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
           blockedTransitionAt: issues.blockedTransitionAt,
+          unblockDescriptor: issues.unblockDescriptor,
           totalCount: sql<number>`count(*) over()::int`,
         })
         .from(issues)
@@ -5682,6 +5684,7 @@ export function recoveryService(
           dependentIssueId: candidate.id,
           blockerIssueIds: readiness.blockerIssueIds,
           blockedTransitionAt: candidate.blockedTransitionAt,
+          unblockDescriptor: candidate.unblockDescriptor,
         });
         const existingWake =
           await findExistingIssueBlockersResolvedWakeForReadyState(db, {
@@ -5689,6 +5692,7 @@ export function recoveryService(
             dependentIssueId: candidate.id,
             blockerIssueIds: readiness.blockerIssueIds,
             blockedTransitionAt: candidate.blockedTransitionAt,
+            unblockDescriptor: candidate.unblockDescriptor,
           });
         if (existingWake) {
           result.existingWakeSkipped += 1;
