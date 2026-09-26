@@ -18,11 +18,6 @@ export function isAllInterfacesHost(host: string | null | undefined): boolean {
   return normalized === "0.0.0.0" || normalized === "::";
 }
 
-export function isAllInterfacesHost(host: string | null | undefined): boolean {
-  const normalized = normalizeHost(host)?.toLowerCase();
-  return normalized === "0.0.0.0" || normalized === "::";
-}
-
 export function inferBindModeFromHost(
   host: string | null | undefined,
   opts?: { tailnetBindHost?: string | null | undefined },
