@@ -8117,6 +8117,7 @@ export function issueRoutes(
       includeLiveDescendantSummary: includeLiveDescendantSummary === true,
       hasPlanDocument,
       q: req.query.q as string | undefined,
+      identifier: req.query.identifier as string | undefined,
       limit,
       offset,
       sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,

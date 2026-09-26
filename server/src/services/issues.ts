@@ -1825,6 +1825,8 @@ export interface IssueFilters {
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
   q?: string;
+  /** Exact issue identifier (e.g. "TES-8"). Case-insensitive. */
+  identifier?: string;
   limit?: number;
   offset?: number;
   sortField?: "updated" | "id";
@@ -6269,6 +6271,9 @@ async function blockedInboxIssueConditions(
   if (filters?.originKindPrefix)
     conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+  if (filters?.identifier) {
+    conditions.push(sql`lower(${issues.identifier}) = lower(${filters.identifier})`);
+  }
   if (filters?.hasPlanDocument !== undefined) {
     conditions.push(
       hasPlanDocumentCondition(companyId, filters.hasPlanDocument),
@@ -7957,6 +7962,11 @@ export function issueService(db: Db) {
         );
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.identifier) {
+        conditions.push(
+          sql`lower(${issues.identifier}) = lower(${filters.identifier})`,
+        );
+      }
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(
           hasPlanDocumentCondition(companyId, filters.hasPlanDocument),
@@ -8223,6 +8233,11 @@ export function issueService(db: Db) {
         );
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.identifier) {
+        conditions.push(
+          sql`lower(${issues.identifier}) = lower(${filters.identifier})`,
+        );
+      }
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(
           hasPlanDocumentCondition(companyId, filters.hasPlanDocument),
