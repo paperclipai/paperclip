@@ -148,6 +148,8 @@ import {
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { listAdapterModels } from "../adapters/registry.js";
+import { assertKnownIssueAssigneeAdapterModel } from "./issue-assignee-adapter-overrides.js";
 import {
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
   isExternalChatPresentationContext,
@@ -9761,6 +9763,23 @@ export function issueService(db: Db) {
           }
         }
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
+        if (data.assigneeAgentId) {
+          const assignee = await tx
+            .select({ adapterType: agents.adapterType })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, companyId),
+                eq(agents.id, data.assigneeAgentId),
+              ),
+            )
+            .then((rows) => rows[0]);
+          assertKnownIssueAssigneeAdapterModel(
+            assignee?.adapterType ?? "",
+            data.assigneeAdapterOverrides,
+            await listAdapterModels(assignee?.adapterType ?? ""),
+          );
+        }
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
         if (allowDuplicate === false) {
           const titleGuardKey = `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
@@ -10854,6 +10873,31 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        const lockedNextAssigneeAgentId =
+          issueData.assigneeAgentId !== undefined
+            ? issueData.assigneeAgentId
+            : receiptExisting.assigneeAgentId;
+        if (lockedNextAssigneeAgentId) {
+          const assignee = await tx
+            .select({ adapterType: agents.adapterType })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, receiptExisting.companyId),
+                eq(agents.id, lockedNextAssigneeAgentId),
+              ),
+            )
+            .then((rows: Array<{ adapterType: string }>) => rows[0]);
+          const nextOverrides =
+            issueData.assigneeAdapterOverrides !== undefined
+              ? issueData.assigneeAdapterOverrides
+              : receiptExisting.assigneeAdapterOverrides;
+          assertKnownIssueAssigneeAdapterModel(
+            assignee?.adapterType ?? "",
+            nextOverrides,
+            await listAdapterModels(assignee?.adapterType ?? ""),
+          );
+        }
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);
           if (review) throw conflict("This task is waiting for a connection review. Finish unrelated work, then yield in_review without retrying the governed call.", { code: "tool_review_pending", actionRequestId: review.id });
