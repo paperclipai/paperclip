@@ -11,6 +11,7 @@ import {
   decisionTriageEvents,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueRecoveryActions,
   issueThreadInteractions,
   issueWorkProducts,
@@ -279,6 +280,15 @@ async function sourceIssueId(
         .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.id, sourceId)))
         .then((rows) => rows[0] ?? null);
       return { exists: Boolean(row), issueId: null };
+    }
+    case "mention": {
+      // Mention rows address issues (subject.id), not comments: queue and
+      // decision reads pass the subject id, so gate on the issue itself.
+      const row = await db.select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, sourceId), isNull(issues.hiddenAt)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(row), issueId: row?.id ?? null };
     }
   }
 }
