@@ -1021,6 +1021,21 @@ export async function createApp(
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
+      // Catch all non-asset GET routes so the browser never sees Express's
+      // default "Cannot GET /path" message. SPA routes like /BRA/issues land
+      // here when the UI hasn't been built yet.
+      app.get(/.*/, (req, res) => {
+        if (req.path.startsWith("/assets/")) {
+          res.status(404).end();
+          return;
+        }
+        res.status(200).json({
+          name: "Paperclip API",
+          message:
+            "This is the Paperclip API server. The UI bundle was not found — build the ui package first (pnpm build).",
+          api: "/api",
+        });
+      });
     }
     if (process.env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE === "tailscale_https") {
       // The managed-runtime supervisor waits for the app port AND its derived
@@ -1115,6 +1130,23 @@ export async function createApp(
       }
     });
     app.use(vite.middlewares);
+  }
+
+  // In API-only mode (no uiMode set) there is no catch-all SPA handler, so any
+  // GET falls through to Express's default 404 "Cannot GET /path". Return a
+  // helpful JSON response for all routes so the cause is immediately clear.
+  if (opts.uiMode === "none") {
+    app.get(/.*/, (req, res) => {
+      if (req.path.startsWith("/assets/")) {
+        res.status(404).end();
+        return;
+      }
+      res.status(200).json({
+        name: "Paperclip API",
+        message: "This is the Paperclip API server. Open the web UI in your browser to use Paperclip.",
+        api: "/api",
+      });
+    });
   }
 
   app.use(errorHandler);
