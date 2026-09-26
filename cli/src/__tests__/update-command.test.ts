@@ -104,6 +104,45 @@ describe("update command", () => {
     expect(detectInstallMode(path.join(source, "cli", "src", "index.ts"), paths)).toBe("source");
   });
 
+  it("detects pnpm, yarn, and bun global installs instead of reporting them as npm", () => {
+    const paths = resolveInstallStorePaths();
+    const entry = (...segments: string[]) => path.join(root, ...segments, "node_modules", "paperclipai", "dist", "index.js");
+    const env = {};
+    expect(detectInstallMode(entry(".local", "share", "pnpm", "global", "v11", "abc123"), paths, env)).toBe("global-pnpm");
+    expect(detectInstallMode(entry("AppData", "Local", "pnpm", "global", "5"), paths, env)).toBe("global-pnpm");
+    expect(detectInstallMode(entry("custom-pnpm-home", "store", "v11"), paths, { PNPM_HOME: path.join(root, "custom-pnpm-home") })).toBe("global-pnpm");
+    expect(detectInstallMode(entry(".config", "yarn", "global"), paths, env)).toBe("global-yarn");
+    expect(detectInstallMode(entry("AppData", "Local", "Yarn", "Data", "global"), paths, env)).toBe("global-yarn");
+    expect(detectInstallMode(entry(".bun", "install", "global"), paths, env)).toBe("global-bun");
+    expect(detectInstallMode(entry("lib"), paths, { PNPM_HOME: path.join(root, "custom-pnpm-home") })).toBe("global-npm");
+  });
+
+  it("prints the pnpm command for a pnpm global install and never runs npm install", async () => {
+    const paths = resolveInstallStorePaths();
+    const executable = path.join(root, ".local", "share", "pnpm", "global", "v11", "abc123", "node_modules", "paperclipai", "dist", "index.js");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const runCommand = vi.fn(async () => ({ stdout: '"99.0.0"\n', stderr: "" }));
+    await updateCommand({ json: true }, { paths, executablePath: executable, runCommand });
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(runCommand).toHaveBeenCalledWith("npm", expect.arrayContaining(["view"]), expect.anything());
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toEqual({
+      mode: "global-pnpm",
+      action: "manual",
+      targetVersion: "99.0.0",
+      command: ["pnpm", "add", "-g", "paperclipai@99.0.0", "--registry=https://registry.npmjs.org"],
+    });
+  });
+
+  it("reports update availability for a pnpm global install", async () => {
+    const paths = resolveInstallStorePaths();
+    const executable = path.join(root, ".local", "share", "pnpm", "global", "v11", "abc123", "node_modules", "paperclipai", "dist", "index.js");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const runCommand = vi.fn(async () => ({ stdout: '"99.0.0"\n', stderr: "" }));
+    await updateCommand({ check: true, json: true }, { paths, executablePath: executable, runCommand });
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({ mode: "global-pnpm", targetVersion: "99.0.0", updateAvailable: true });
+    expect(process.exitCode).toBe(10);
+  });
+
   it("resolves channels and keeps pinned installs pinned by default", () => {
     const manifest = { channel: "pinned", version: "1.2.3" } as InstallManifest;
     expect(resolveUpdateRequest(manifest, {})).toEqual({ spec: "1.2.3", channel: "pinned", explicit: false });
