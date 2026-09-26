@@ -450,6 +450,37 @@ export interface AcpTargetDescriptor {
   };
 }
 
+/**
+ * Optional context handed to adapter model discovery.
+ *
+ * Discovery historically read provider credentials from the Paperclip server's
+ * own `process.env`. That breaks when an agent is pointed at a self-hosted
+ * gateway (CLIProxyAPI, LiteLLM, an OpenRouter proxy, …) through its own
+ * `adapterConfig.env`: the server has no such vars, so discovery silently falls
+ * back to the adapter's hardcoded model list. Passing the agent's resolved env
+ * here lets the adapter enumerate the catalog of the gateway the agent will
+ * actually run against.
+ */
+export interface AdapterModelDiscoveryContext {
+  /**
+   * Agent `adapterConfig.env` with secret refs already materialized.
+   *
+   * An adapter must read this instead of `process.env`, never layered over it.
+   * Merging the two pairs an agent's endpoint with the server's credential.
+   */
+  env?: Record<string, string>;
+  /**
+   * Egress-guarded `fetch` for any request to an endpoint named by `env`.
+   *
+   * That endpoint is caller-configured, so an unguarded request would let an
+   * agent config aim a credentialed server-side call at loopback, an RFC 1918
+   * host, or cloud instance metadata. The server supplies a fetch that applies
+   * its remote-HTTP endpoint policy and pins DNS answers against rebinding.
+   * An adapter must use it whenever `env` is present.
+   */
+  fetch?: typeof globalThis.fetch;
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -463,14 +494,14 @@ export interface ServerAdapterModule {
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
   models?: AdapterModel[];
-  listModels?: () => Promise<AdapterModel[]>;
+  listModels?: (ctx?: AdapterModelDiscoveryContext) => Promise<AdapterModel[]>;
   /**
    * Optional explicit refresh hook for model discovery.
    * Use this when the adapter caches discovered models and needs a bypass path
    * so the UI can fetch newly released models without waiting for cache expiry
    * or a Paperclip code update.
    */
-  refreshModels?: () => Promise<AdapterModel[]>;
+  refreshModels?: (ctx?: AdapterModelDiscoveryContext) => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).

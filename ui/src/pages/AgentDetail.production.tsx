@@ -2105,9 +2105,13 @@ function ConfigurationTab({
   const { data: adapterModels } = useQuery({
     queryKey:
       companyId
-        ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
+        ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider, agent.id)
         : ["agents", "none", "adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
+    queryFn: () =>
+      agentsApi.adapterModels(companyId!, agent.adapterType, {
+        provider: catalogProvider,
+        agentId: agent.id,
+      }),
     enabled: Boolean(companyId) && content === "configuration",
   });
 

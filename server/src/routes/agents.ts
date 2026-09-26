@@ -100,6 +100,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterModelDiscoveryContext,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
@@ -122,6 +123,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
+import { createModelDiscoveryFetch } from "../adapters/model-discovery-fetch.js";
 import {
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
@@ -2334,6 +2336,81 @@ export function agentRoutes(
     return resolved.agent.id;
   }
 
+  /**
+   * Env keys forwarded to adapter model discovery.
+   *
+   * Discovery only ever needs to know which endpoint to ask and how to
+   * authenticate to it, so the agent's env is filtered down to that instead of
+   * handing the whole (secret-bearing) environment to a listing call.
+   */
+  const MODEL_DISCOVERY_ENV_KEYS = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+  ];
+
+  /**
+   * Resolve the requesting agent's own provider env so model discovery
+   * enumerates the endpoint that agent actually runs against (e.g. a
+   * self-hosted CLIProxyAPI/LiteLLM gateway) rather than the Paperclip server's
+   * ambient environment. Returns undefined when no agent is named or the agent
+   * contributes nothing relevant, which preserves the pre-existing behaviour.
+   *
+   * Naming an agent here resolves that agent's provider credential and spends
+   * it on an outbound request, so the caller must be entitled to it. A user or
+   * board caller with company access already administers every agent in the
+   * company, and reads this catalog to configure them. An agent caller does
+   * not: Paperclip gives one agent no claim on another agent's credential, so
+   * an agent may only name itself. A rejected pairing falls back to the
+   * server's own environment rather than erroring, which keeps the response
+   * free of any signal about the named agent.
+   */
+  async function buildModelDiscoveryContext(
+    req: Request,
+    companyId: string,
+    rawAgentId: string | null | undefined,
+  ): Promise<AdapterModelDiscoveryContext | undefined> {
+    if (!rawAgentId) return undefined;
+    let agent: Awaited<ReturnType<typeof svc.getById>> | null = null;
+    try {
+      agent = await svc.getById(await normalizeAgentReference(req, rawAgentId));
+    } catch {
+      // A stale or unresolvable agentId must not break the model list.
+      return undefined;
+    }
+    if (!agent || agent.companyId !== companyId) return undefined;
+
+    const actor = getActorInfo(req);
+    if (actor.actorType === "agent" && actor.agentId !== agent.id) return undefined;
+
+    const agentEnv = parseObject((agent.adapterConfig as Record<string, unknown> | null)?.env);
+    const discoveryBindings = Object.fromEntries(
+      Object.entries(agentEnv).filter(([key]) => MODEL_DISCOVERY_ENV_KEYS.includes(key)),
+    );
+    if (Object.keys(discoveryBindings).length === 0) return undefined;
+
+    try {
+      const { env } = await secretsSvc.resolveEnvBindings(
+        companyId,
+        discoveryBindings,
+        buildActorSecretContext(req, { consumerType: "agent", consumerId: agent.id }),
+      );
+      // The endpoint in this env is agent-configured, so discovery dials it
+      // through the guarded transport instead of plain fetch.
+      return Object.keys(env).length > 0 ? { env, fetch: createModelDiscoveryFetch() } : undefined;
+    } catch (err) {
+      console.warn("[paperclip] Model discovery env resolution failed", {
+        agentId: agent.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+  }
+
   function parseSourceIssueIds(input: {
     sourceIssueId?: string | null;
     sourceIssueIds?: string[];
@@ -3245,9 +3322,10 @@ export function agentRoutes(
       res.json(requireServerAdapter(modelAdapterType).models ?? []);
       return;
     }
+    const discoveryCtx = await buildModelDiscoveryContext(req, companyId, asNonEmptyString(req.query.agentId));
     const models = refresh
-      ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType);
+      ? await refreshAdapterModels(modelAdapterType, discoveryCtx)
+      : await listAdapterModels(modelAdapterType, discoveryCtx);
     res.json(models);
   });
 

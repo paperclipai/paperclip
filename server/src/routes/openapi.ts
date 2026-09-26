@@ -3688,6 +3688,13 @@ registry.registerPath({
         .optional(),
       environmentId: z.string().optional(),
       refresh: z.string().optional(),
+      agentId: z
+        .string()
+        .optional()
+        .describe(
+          "Discover against this agent's configured provider endpoint instead of the server's own environment. "
+            + "An agent caller may only name itself. An unusable value falls back to the server environment.",
+        ),
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },

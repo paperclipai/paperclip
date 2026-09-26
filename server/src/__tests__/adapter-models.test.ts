@@ -195,6 +195,281 @@ describe("adapter model listing", () => {
     ]));
   });
 
+  describe("agent-scoped discovery context", () => {
+    const gatewayEnv = {
+      ANTHROPIC_BASE_URL: "http://gateway.local:8317",
+      ANTHROPIC_API_KEY: "sk-gateway",
+    };
+
+    // The route never hands an adapter an agent env without the egress-guarded
+    // transport, and the adapter now refuses the pairing if it ever did. These
+    // cases are about catalog shape rather than egress, so they supply a guard
+    // that delegates to global `fetch` and let the spies below observe it.
+    const guardedFetch = ((...args: Parameters<typeof fetch>) => fetch(...args)) as typeof fetch;
+    const agentCtx = (env: Record<string, string>) => ({ env, fetch: guardedFetch });
+
+    it("enumerates the agent's gateway when the server has no provider env", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [{ id: "kimi-k3", owned_by: "kimi" }],
+        }),
+      } as Response);
+
+      // Without a context this falls back to the static list (no server env).
+      expect(await listAdapterModels("claude_local")).toEqual(claudeFallbackModels);
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const scoped = await listAdapterModels("claude_local", agentCtx(gatewayEnv));
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]?.[0]).toBe("http://gateway.local:8317/v1/models");
+      expect(scoped).toEqual([{ id: "kimi-k3", label: "kimi-k3 (kimi)" }]);
+    });
+
+    it("prefers the OpenAI dialect for a custom gateway so upstreams keep canonical IDs", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: "grok-4.6", owned_by: "xai" }] }),
+      } as Response);
+
+      await listAdapterModels("claude_local", agentCtx(gatewayEnv));
+
+      const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+      expect(headers.authorization).toBe("Bearer sk-gateway");
+      expect(headers["x-api-key"]).toBeUndefined();
+    });
+
+    it("falls back to the Anthropic dialect when the gateway returns no OpenAI listing", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ data: [{ id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" }] }),
+        } as Response);
+
+      const models = await listAdapterModels("claude_local", agentCtx(gatewayEnv));
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      const headers = fetchSpy.mock.calls[1]?.[1]?.headers as Record<string, string>;
+      expect(headers["x-api-key"]).toBe("sk-gateway");
+      expect(models).toEqual([{ id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" }]);
+    });
+
+    it("does not append first-party Anthropic models a gateway cannot route", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: "kimi-k3", owned_by: "kimi" }] }),
+      } as Response);
+
+      const models = await listAdapterModels("claude_local", agentCtx(gatewayEnv));
+
+      expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(false);
+    });
+
+    it("accepts ANTHROPIC_AUTH_TOKEN as the discovery credential", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: "kimi-k3", owned_by: "kimi" }] }),
+      } as Response);
+
+      await listAdapterModels(
+        "claude_local",
+        agentCtx({ ANTHROPIC_BASE_URL: "http://gateway.local:8317", ANTHROPIC_AUTH_TOKEN: "tok-123" }),
+      );
+
+      const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+      expect(headers.authorization).toBe("Bearer tok-123");
+    });
+
+    it("caches per base URL so two agents on different gateways do not collide", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ data: [{ id: "kimi-k3", owned_by: "kimi" }] }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ data: [{ id: "grok-4.6", owned_by: "xai" }] }),
+        } as Response);
+
+      const first = await listAdapterModels("claude_local", agentCtx(gatewayEnv));
+      const second = await listAdapterModels(
+        "claude_local",
+        agentCtx({ ANTHROPIC_BASE_URL: "http://other.local:9000", ANTHROPIC_API_KEY: "sk-other" }),
+      );
+      // Re-reading the first gateway is served from cache, not a third fetch.
+      const firstAgain = await listAdapterModels("claude_local", agentCtx(gatewayEnv));
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(first).toEqual([{ id: "kimi-k3", label: "kimi-k3 (kimi)" }]);
+      expect(second).toEqual([{ id: "grok-4.6", label: "grok-4.6 (xai)" }]);
+      expect(firstAgain).toEqual(first);
+    });
+
+    it("honours a Bedrock agent env without reaching the network", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+      const models = await listAdapterModels("claude_local", {
+        env: { CLAUDE_CODE_USE_BEDROCK: "1" },
+      });
+
+      expect(models[0]?.id).toBe("us.anthropic.claude-opus-4-8");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("never pairs an agent endpoint with the server's ambient credential", async () => {
+      // The server holds a first-party Anthropic key; the agent names only a
+      // gateway. Merging the two would post the server's key to that gateway.
+      process.env.ANTHROPIC_API_KEY = "sk-ant-server";
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: "kimi-k3", owned_by: "kimi" }] }),
+      } as Response);
+
+      const models = await listAdapterModels(
+        "claude_local",
+        agentCtx({ ANTHROPIC_BASE_URL: "http://gateway.local:8317" }),
+      );
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(models).toEqual(claudeFallbackModels);
+    });
+
+    it("keeps the server's own Bedrock mode out of an agent's gateway scope", async () => {
+      // Bedrock is read from the same scope as the endpoint, so a server-side
+      // Bedrock switch must not shadow the agent's gateway catalog.
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: "kimi-k3", owned_by: "kimi" }] }),
+      } as Response);
+
+      const models = await listAdapterModels("claude_local", agentCtx(gatewayEnv));
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(models).toEqual([{ id: "kimi-k3", label: "kimi-k3 (kimi)" }]);
+    });
+
+    it("routes an agent-scoped request through the supplied guarded fetch", async () => {
+      const plainFetch = vi.spyOn(globalThis, "fetch");
+      const guarded = vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: [{ id: "kimi-k3", owned_by: "kimi" }] }),
+      } as Response));
+
+      const models = await listAdapterModels("claude_local", {
+        env: gatewayEnv,
+        fetch: guarded as unknown as typeof fetch,
+      });
+
+      expect(guarded).toHaveBeenCalledTimes(1);
+      expect(guarded.mock.calls[0]?.[0]).toBe("http://gateway.local:8317/v1/models");
+      expect(plainFetch).not.toHaveBeenCalled();
+      expect(models).toEqual([{ id: "kimi-k3", label: "kimi-k3 (kimi)" }]);
+    });
+
+    it("falls back to the built-in list when the guard rejects the endpoint", async () => {
+      const guarded = vi.fn(async () => {
+        throw new Error("Model discovery endpoint is not allowed to reach a private address");
+      });
+
+      const models = await listAdapterModels("claude_local", {
+        env: { ANTHROPIC_BASE_URL: "http://169.254.169.254", ANTHROPIC_API_KEY: "sk-gateway" },
+        fetch: guarded as unknown as typeof fetch,
+      });
+
+      // Both dialects are attempted, and neither escapes the guard.
+      expect(guarded).toHaveBeenCalledTimes(2);
+      expect(models).toEqual(claudeFallbackModels);
+    });
+
+    it("refuses an agent gateway when no guarded fetch accompanies the agent env", async () => {
+      // The route always supplies the guard. If some other caller does not, the
+      // credential must not reach a caller-named host over plain fetch.
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: "kimi-k3", owned_by: "kimi" }] }),
+      } as Response);
+
+      const models = await listAdapterModels("claude_local", { env: gatewayEnv });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(models).toEqual(claudeFallbackModels);
+    });
+
+    it("still discovers Anthropic's own API without a guarded fetch", async () => {
+      // Only a caller-named gateway needs the guard. The first-party endpoint is
+      // a constant in this file, so an agent that supplies just a key still works.
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" }] }),
+      } as Response);
+
+      const models = await listAdapterModels("claude_local", { env: { ANTHROPIC_API_KEY: "sk-ant-agent" } });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://api.anthropic.com/v1/models");
+      expect(models.some((model) => model.id === "claude-sonnet-4-6")).toBe(true);
+    });
+
+    it.each([
+      ["a non-HTTP scheme", "file:///etc/passwd"],
+      ["userinfo in the authority", "http://user:pass@gateway.local:8317"],
+    ])("never sends the credential to an endpoint with %s", async (_label, baseUrl) => {
+      const guarded = vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: [{ id: "kimi-k3", owned_by: "kimi" }] }),
+      } as Response));
+
+      const models = await listAdapterModels("claude_local", {
+        env: { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: "sk-gateway" },
+        fetch: guarded as unknown as typeof fetch,
+      });
+
+      expect(guarded).not.toHaveBeenCalled();
+      expect(models).toEqual(claudeFallbackModels);
+    });
+
+    it("bounds the cache instead of retaining every historical gateway", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: "kimi-k3", owned_by: "kimi" }] }),
+      } as Response);
+
+      // One more distinct endpoint than the cache holds, so the first is evicted.
+      for (let index = 0; index < 33; index += 1) {
+        await listAdapterModels(
+          "claude_local",
+          agentCtx({ ANTHROPIC_BASE_URL: `http://gateway-${index}.local`, ANTHROPIC_API_KEY: "sk-gateway" }),
+        );
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(33);
+
+      fetchSpy.mockClear();
+      fetchSpy.mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: "grok-4.6", owned_by: "xai" }] }),
+      } as Response);
+
+      // The evicted endpoint re-fetches rather than serving a catalog the cache
+      // should no longer be holding.
+      const evicted = await listAdapterModels(
+        "claude_local",
+        agentCtx({ ANTHROPIC_BASE_URL: "http://gateway-0.local", ANTHROPIC_API_KEY: "sk-gateway" }),
+      );
+      // The most recent endpoint is still cached, so it does not re-fetch.
+      const retained = await listAdapterModels(
+        "claude_local",
+        agentCtx({ ANTHROPIC_BASE_URL: "http://gateway-32.local", ANTHROPIC_API_KEY: "sk-gateway" }),
+      );
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(evicted).toEqual([{ id: "grok-4.6", label: "grok-4.6 (xai)" }]);
+      expect(retained).toEqual([{ id: "kimi-k3", label: "kimi-k3 (kimi)" }]);
+    });
+  });
+
   it("loads codex models dynamically and merges fallback options", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({

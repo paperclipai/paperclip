@@ -1417,6 +1417,31 @@ credentials, query strings, fragments, and wildcards are ignored. Matching is
 by exact normalized origin, so allowing one port does not allow another.
 Link-local destinations remain denied even when explicitly listed.
 
+## Model Discovery Private Endpoints
+
+An agent can point an adapter at its own provider endpoint through
+`adapterConfig.env` — for example `ANTHROPIC_BASE_URL` against a self-hosted
+CLIProxyAPI or LiteLLM gateway. The model picker discovers that endpoint's
+catalog so the agent offers the models it can actually run.
+
+That endpoint is agent-configured, so discovery sends its request through the
+same guard as HTTP adapters: public HTTP(S) only, DNS answers pinned, no
+redirects, and loopback, RFC1918/private, link-local, and cloud-metadata
+destinations rejected. A rejected endpoint is not an error — the picker falls
+back to the adapter's built-in model list.
+
+A gateway on the LAN is the common case, so server owners opt one in by exact
+origin:
+
+```sh
+PAPERCLIP_MODEL_DISCOVERY_PRIVATE_ENDPOINT_ALLOWLIST=http://192.168.5.235:8317,https://gateway.internal.example
+```
+
+Entries follow the same rules as the HTTP adapter allowlist above: scheme,
+hostname, and optional port only, matched by exact normalized origin. An agent
+config cannot widen this list. Link-local destinations remain denied even when
+explicitly listed.
+
 ## Company Deletion Toggle
 
 Company deletion is intended as a dev/debug capability and can be disabled at runtime:
