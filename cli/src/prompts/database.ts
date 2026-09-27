@@ -17,7 +17,6 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
     backup: {
       enabled: true,
       intervalMinutes: 60,
-      retentionDays: 30,
       dir: defaultBackupDir,
     },
   };
@@ -118,7 +117,6 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
   }
 
   const backupIntervalDefault = String(base.backup.intervalMinutes || 60);
-  const backupRetentionDefault = String(base.backup.retentionDays || 30);
   const backupIntervalInput = await p.text({
     message: "Backup interval (minutes)",
     defaultValue: backupIntervalDefault,
@@ -135,22 +133,6 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
     process.exit(0);
   }
 
-  const backupRetentionInput = await p.text({
-    message: "Backup retention (days)",
-    defaultValue: backupRetentionDefault,
-    placeholder: "30",
-    validate: (val) => {
-      const n = Number(val || backupRetentionDefault);
-      if (!Number.isInteger(n) || n < 1) return "Retention must be a positive integer";
-      if (n > 3650) return "Retention must be 3650 days or less";
-      return undefined;
-    },
-  });
-  if (p.isCancel(backupRetentionInput)) {
-    p.cancel("Setup cancelled.");
-    process.exit(0);
-  }
-
   return {
     mode,
     connectionString,
@@ -159,7 +141,6 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
     backup: {
       enabled: backupEnabled,
       intervalMinutes: Number(backupIntervalInput || backupIntervalDefault),
-      retentionDays: Number(backupRetentionInput || backupRetentionDefault),
       dir: backupDirInput || defaultBackupDir,
     },
   };

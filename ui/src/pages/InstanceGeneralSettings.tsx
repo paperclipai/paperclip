@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
 import {
+  HOURLY_RETENTION_PRESETS,
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
@@ -19,6 +20,50 @@ import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+
+function RetentionTierControl<T extends number>({
+  label,
+  values,
+  selected,
+  formatValue,
+  onSelect,
+  disabled,
+}: {
+  label: string;
+  values: readonly T[];
+  selected: T;
+  formatValue: (value: T) => string;
+  onSelect: (value: T) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</h3>
+      <div className="flex flex-wrap gap-2">
+        {values.map((value) => {
+          const active = selected === value;
+          return (
+            <button
+              key={value}
+              type="button"
+              disabled={disabled}
+              aria-pressed={active}
+              className={cn(
+                "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                active
+                  ? "border-foreground bg-accent text-foreground"
+                  : "border-border bg-background hover:bg-accent/50",
+              )}
+              onClick={() => onSelect(value)}
+            >
+              <div className="text-sm font-medium">{formatValue(value)}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -181,100 +226,51 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Backup retention</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Configure how long automatic database backups are retained. Backups run roughly
-              every hour and are compressed with gzip. Within the daily window all backups are
-              kept; beyond that, one backup per week and one per month are preserved.
+              Configure how automatic database backups are downsampled. Paperclip keeps the newest
+              backup in each retained hour, then the newest backup per day, week, and month.
             </p>
           </div>
 
-          <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Daily</h3>
-            <div className="flex flex-wrap gap-2">
-              {DAILY_RETENTION_PRESETS.map((days) => {
-                const active = backupRetention.dailyDays === days;
-                return (
-                  <button
-                    key={days}
-                    type="button"
-                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
-                    className={cn(
-                      "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-                      active
-                        ? "border-foreground bg-accent text-foreground"
-                        : "border-border bg-background hover:bg-accent/50",
-                    )}
-                    onClick={() =>
-                      updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, dailyDays: days },
-                      })
-                    }
-                  >
-                    <div className="text-sm font-medium">{days} days</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Weekly</h3>
-            <div className="flex flex-wrap gap-2">
-              {WEEKLY_RETENTION_PRESETS.map((weeks) => {
-                const active = backupRetention.weeklyWeeks === weeks;
-                const label = weeks === 1 ? "1 week" : `${weeks} weeks`;
-                return (
-                  <button
-                    key={weeks}
-                    type="button"
-                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
-                    className={cn(
-                      "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-                      active
-                        ? "border-foreground bg-accent text-foreground"
-                        : "border-border bg-background hover:bg-accent/50",
-                    )}
-                    onClick={() =>
-                      updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, weeklyWeeks: weeks },
-                      })
-                    }
-                  >
-                    <div className="text-sm font-medium">{label}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Monthly</h3>
-            <div className="flex flex-wrap gap-2">
-              {MONTHLY_RETENTION_PRESETS.map((months) => {
-                const active = backupRetention.monthlyMonths === months;
-                const label = months === 1 ? "1 month" : `${months} months`;
-                return (
-                  <button
-                    key={months}
-                    type="button"
-                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
-                    className={cn(
-                      "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-                      active
-                        ? "border-foreground bg-accent text-foreground"
-                        : "border-border bg-background hover:bg-accent/50",
-                    )}
-                    onClick={() =>
-                      updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, monthlyMonths: months },
-                      })
-                    }
-                  >
-                    <div className="text-sm font-medium">{label}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <RetentionTierControl
+            label="Hourly"
+            values={HOURLY_RETENTION_PRESETS}
+            selected={backupRetention.hourlyHours}
+            formatValue={(hours) => `${hours} hours`}
+            onSelect={(hourlyHours) => updateGeneralMutation.mutate({
+              backupRetention: { ...backupRetention, hourlyHours },
+            })}
+            disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+          />
+          <RetentionTierControl
+            label="Daily"
+            values={DAILY_RETENTION_PRESETS}
+            selected={backupRetention.dailyDays}
+            formatValue={(days) => `${days} days`}
+            onSelect={(dailyDays) => updateGeneralMutation.mutate({
+              backupRetention: { ...backupRetention, dailyDays },
+            })}
+            disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+          />
+          <RetentionTierControl
+            label="Weekly"
+            values={WEEKLY_RETENTION_PRESETS}
+            selected={backupRetention.weeklyWeeks}
+            formatValue={(weeks) => weeks === 1 ? "1 week" : `${weeks} weeks`}
+            onSelect={(weeklyWeeks) => updateGeneralMutation.mutate({
+              backupRetention: { ...backupRetention, weeklyWeeks },
+            })}
+            disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+          />
+          <RetentionTierControl
+            label="Monthly"
+            values={MONTHLY_RETENTION_PRESETS}
+            selected={backupRetention.monthlyMonths}
+            formatValue={(months) => months === 1 ? "1 month" : `${months} months`}
+            onSelect={(monthlyMonths) => updateGeneralMutation.mutate({
+              backupRetention: { ...backupRetention, monthlyMonths },
+            })}
+            disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+          />
         </div>
       </section>
       )}

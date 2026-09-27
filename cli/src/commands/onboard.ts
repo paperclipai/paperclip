@@ -80,7 +80,6 @@ const ONBOARD_ENV_KEYS = [
   "DATABASE_URL",
   "PAPERCLIP_DB_BACKUP_ENABLED",
   "PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES",
-  "PAPERCLIP_DB_BACKUP_RETENTION_DAYS",
   "PAPERCLIP_DB_BACKUP_DIR",
   "PAPERCLIP_DEPLOYMENT_MODE",
   "PAPERCLIP_DEPLOYMENT_EXPOSURE",
@@ -247,10 +246,6 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
     1,
     parseNumberFromEnv(process.env.PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES) ?? 60,
   );
-  const databaseBackupRetentionDays = Math.max(
-    1,
-    parseNumberFromEnv(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS) ?? 30,
-  );
   const defaults: OnboardDefaults = {
     database: {
       mode: databaseUrl ? "postgres" : "embedded-postgres",
@@ -260,7 +255,6 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
       backup: {
         enabled: databaseBackupEnabled,
         intervalMinutes: databaseBackupIntervalMinutes,
-        retentionDays: databaseBackupRetentionDays,
         dir: resolvePathFromEnv(process.env.PAPERCLIP_DB_BACKUP_DIR) ?? resolveDefaultBackupDir(instanceId),
       },
     },

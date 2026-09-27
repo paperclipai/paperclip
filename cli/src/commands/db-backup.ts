@@ -2,6 +2,7 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
+import { DEFAULT_BACKUP_RETENTION, formatBackupRetentionPolicy } from "@paperclipai/shared";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,
@@ -13,7 +14,6 @@ import { printPaperclipCliBanner } from "../utils/banner.js";
 type DbBackupOptions = {
   config?: string;
   dir?: string;
-  retentionDays?: number;
   filenamePrefix?: string;
   json?: boolean;
 };
@@ -34,14 +34,6 @@ function resolveConnectionString(configPath?: string): { value: string; source: 
   };
 }
 
-function normalizeRetentionDays(value: number | undefined, fallback: number): number {
-  const candidate = value ?? fallback;
-  if (!Number.isInteger(candidate) || candidate < 1) {
-    throw new Error(`Invalid retention days '${String(candidate)}'. Use a positive integer.`);
-  }
-  return candidate;
-}
-
 function resolveBackupDir(raw: string): string {
   return path.resolve(expandHomePrefix(raw.trim()));
 }
@@ -56,16 +48,13 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
   const defaultDir = resolveDefaultBackupDir(resolvePaperclipInstanceId());
   const configuredDir = opts.dir?.trim() || config?.database.backup.dir || defaultDir;
   const backupDir = resolveBackupDir(configuredDir);
-  const retentionDays = normalizeRetentionDays(
-    opts.retentionDays,
-    config?.database.backup.retentionDays ?? 30,
-  );
   const filenamePrefix = opts.filenamePrefix?.trim() || "paperclip";
 
   p.log.message(pc.dim(`Config: ${configPath}`));
   p.log.message(pc.dim(`Connection source: ${connection.source}`));
+  const retention = DEFAULT_BACKUP_RETENTION;
   p.log.message(pc.dim(`Backup dir: ${backupDir}`));
-  p.log.message(pc.dim(`Retention: ${retentionDays} day(s)`));
+  p.log.message(pc.dim(`Retention: ${formatBackupRetentionPolicy(retention)}`));
 
   const spinner = p.spinner();
   spinner.start("Creating database backup...");
@@ -73,7 +62,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
     const result = await runDatabaseBackup({
       connectionString: connection.value,
       backupDir,
-      retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
+      retention,
       filenamePrefix,
     });
     spinner.stop(`Backup saved: ${formatDatabaseBackupResult(result)}`);
@@ -86,7 +75,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
             sizeBytes: result.sizeBytes,
             prunedCount: result.prunedCount,
             backupDir,
-            retentionDays,
+            retention,
             connectionSource: connection.source,
           },
           null,

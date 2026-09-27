@@ -263,7 +263,6 @@ export function buildWorktreeConfig(input: {
       backup: {
         enabled: false,
         intervalMinutes: source?.database.backup.intervalMinutes ?? 60,
-        retentionDays: source?.database.backup.retentionDays ?? 30,
         dir: paths.backupDir,
       },
     },

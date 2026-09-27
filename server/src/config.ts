@@ -81,7 +81,6 @@ export interface Config extends StorageConfig {
   embeddedPostgresPort: number;
   databaseBackupEnabled: boolean;
   databaseBackupIntervalMinutes: number;
-  databaseBackupRetentionDays: number;
   databaseBackupDir: string;
   gitCacheExpirationEnabled: boolean;
   gitBaseExpirationEnabled: boolean;
@@ -277,12 +276,6 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
       fileDatabaseBackup?.intervalMinutes ||
       60,
   );
-  const databaseBackupRetentionDays = Math.max(
-    1,
-    Number(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS) ||
-      fileDatabaseBackup?.retentionDays ||
-      7,
-  );
   const databaseBackupDir = resolveHomeAwarePath(
     process.env.PAPERCLIP_DB_BACKUP_DIR ??
       fileDatabaseBackup?.dir ??
@@ -292,8 +285,7 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
   // becomes terminal before it archives the workspace. A person can reopen the
   // work inside this window. A value of 0 disables the cooldown and restores
   // immediate reaping. A negative or non-numeric value falls back to the
-  // default. The day granularity obeys the PAPERCLIP_DB_BACKUP_RETENTION_DAYS
-  // precedent above. The default is 1 day: regenerable files are compacted
+  // default. The default is 1 day: regenerable files are compacted
   // after a few hours anyway, so a longer hold only keeps source checkouts of
   // delivered work, and a recurring task produces one workspace per run.
   const workspaceReaperCooldownDaysEnv =
@@ -386,7 +378,6 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
     embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
     databaseBackupEnabled,
     databaseBackupIntervalMinutes,
-    databaseBackupRetentionDays,
     databaseBackupDir,
     gitCacheExpirationEnabled: process.env.PAPERCLIP_GIT_CACHE_EXPIRATION_ENABLED === "true",
     gitBaseExpirationEnabled: process.env.PAPERCLIP_GIT_BASE_EXPIRATION_ENABLED === "true",

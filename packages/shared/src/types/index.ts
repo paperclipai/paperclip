@@ -116,6 +116,7 @@ export type {
   ManagedExperimentalFeatureKey,
   ManagedSettingMetadata,
   BackupRetentionPolicy,
+  DatabaseBackupRetentionPolicy,
 } from "./instance.js";
 export type {
   SmokeLabServiceStatus,
@@ -133,10 +134,12 @@ export {
   SMOKE_RUN_TRIGGERS,
 } from "./smoke-lab.js";
 export {
+  HOURLY_RETENTION_PRESETS,
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  formatBackupRetentionPolicy,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./instance.js";
 export {

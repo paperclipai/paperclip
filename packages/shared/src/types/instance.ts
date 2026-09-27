@@ -1,19 +1,33 @@
 import type { FeedbackDataSharingPreference } from "./feedback.js";
 
+export const HOURLY_RETENTION_PRESETS = [12, 24, 48] as const;
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
-export interface BackupRetentionPolicy {
+export interface DatabaseBackupRetentionPolicy {
+  hourlyHours: number;
+  dailyDays: number;
+  weeklyWeeks: number;
+  monthlyMonths: number;
+}
+
+export interface BackupRetentionPolicy extends DatabaseBackupRetentionPolicy {
+  hourlyHours: (typeof HOURLY_RETENTION_PRESETS)[number];
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
   monthlyMonths: (typeof MONTHLY_RETENTION_PRESETS)[number];
 }
 
 export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
+  hourlyHours: 24,
   dailyDays: 7,
   weeklyWeeks: 4,
   monthlyMonths: 1,
 };
+
+export function formatBackupRetentionPolicy(retention: DatabaseBackupRetentionPolicy): string {
+  return `${retention.hourlyHours} hourly, ${retention.dailyDays} daily, ${retention.weeklyWeeks} weekly, ${retention.monthlyMonths} monthly`;
+}
 
 /**
  * Instance-wide execution policy.

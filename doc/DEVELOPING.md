@@ -3250,7 +3250,8 @@ schemas. Defaults:
 
 - enabled
 - every 60 minutes
-- retain 30 days
+- keep the newest backup per hour for 24 hours
+- then keep the newest backup per day for 7 days, per week for 4 weeks, and per month for 1 month
 - backup dir: `~/.paperclip/instances/default/data/backups`
 
 Automatic backups are disabled for isolated worktree instances created with
@@ -3258,13 +3259,16 @@ Automatic backups are disabled for isolated worktree instances created with
 configs are migrated to the disabled setting when their server next starts. The
 main/default instance keeps the normal enabled-by-default behavior.
 
-Configure these in:
+Configure the backup schedule and directory with:
 
 ```sh
 pnpm paperclipai configure --section database
 ```
 
-Run a one-off backup manually:
+Configure automatic retention tiers in **Instance Settings → General → Backup retention**.
+Changes take effect on the next backup without a server restart.
+
+Run a one-off backup manually. One-off backups use the default `24 hourly / 7 daily / 4 weekly / 1 monthly` policy and print the effective policy before pruning:
 
 ```sh
 pnpm paperclipai db:backup
@@ -3279,7 +3283,6 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED=1` enables verified final backups
   for owned idle sleep, with restart catch-up. Off by default; see
   [idle sleep safety](idle-sleep-safety.md) for the hosting and storage contract.
-- `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
 - `PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS=<hours>` controls the `/api/health`
   stale-backup warning threshold

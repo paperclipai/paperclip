@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE } from "../types/feedback.js";
 import {
+  HOURLY_RETENTION_PRESETS,
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
@@ -17,6 +18,7 @@ function presetSchema<T extends readonly number[]>(presets: T, label: string) {
 }
 
 export const backupRetentionPolicySchema = z.object({
+  hourlyHours: presetSchema(HOURLY_RETENTION_PRESETS, "hourlyHours").default(DEFAULT_BACKUP_RETENTION.hourlyHours),
   dailyDays: presetSchema(DAILY_RETENTION_PRESETS, "dailyDays").default(DEFAULT_BACKUP_RETENTION.dailyDays),
   weeklyWeeks: presetSchema(WEEKLY_RETENTION_PRESETS, "weeklyWeeks").default(DEFAULT_BACKUP_RETENTION.weeklyWeeks),
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),

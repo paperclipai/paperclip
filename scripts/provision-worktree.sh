@@ -542,7 +542,6 @@ async function main() {
       backup: {
         enabled: sourceConfig?.database?.backup?.enabled ?? true,
         intervalMinutes: sourceConfig?.database?.backup?.intervalMinutes ?? 60,
-        retentionDays: sourceConfig?.database?.backup?.retentionDays ?? 30,
         dir: path.resolve(instanceRoot, "data", "backups"),
       },
     },

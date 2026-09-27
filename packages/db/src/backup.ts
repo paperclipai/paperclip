@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { formatDatabaseBackupResult, runDatabaseBackup } from "./backup-lib.js";
+import { DEFAULT_BACKUP_RETENTION, formatBackupRetentionPolicy } from "@paperclipai/shared";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,
@@ -14,7 +15,6 @@ type PartialConfig = {
     embeddedPostgresPort?: number;
     backup?: {
       dir?: string;
-      retentionDays?: number;
     };
   };
 };
@@ -60,26 +60,22 @@ function resolveBackupDir(config: PartialConfig | null): string {
   return resolveDefaultBackupDir();
 }
 
-function resolveRetentionDays(config: PartialConfig | null): number {
-  return asPositiveInt(config?.database?.backup?.retentionDays) ?? 7;
-}
-
 async function main() {
   const configPath = resolvePaperclipConfigPathForInstance();
   const config = readConfig(configPath);
   const connectionString = resolveConnectionString(config);
   const backupDir = resolveBackupDir(config);
-  const retentionDays = resolveRetentionDays(config);
 
   console.log(`Config path: ${configPath}`);
   console.log(`Backing up database to: ${backupDir}`);
-  console.log(`Retention window: ${retentionDays} day(s)`);
+  const retention = DEFAULT_BACKUP_RETENTION;
+  console.log(`Retention policy: ${formatBackupRetentionPolicy(retention)}`);
 
   try {
     const result = await runDatabaseBackup({
       connectionString,
       backupDir,
-      retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
+      retention,
       filenamePrefix: "paperclip",
     });
 

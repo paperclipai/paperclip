@@ -29,6 +29,7 @@ function createBackupService(overrides: Partial<InstanceDatabaseBackupService> =
       prunedCount: 2,
       backupDir: "/tmp",
       retention: {
+        hourlyHours: 24,
         dailyDays: 7,
         weeklyWeeks: 4,
         monthlyMonths: 1,
@@ -65,6 +66,7 @@ describe("instance database backup routes", () => {
       prunedCount: 2,
       backupDir: "/tmp",
       retention: {
+        hourlyHours: 24,
         dailyDays: 7,
         weeklyWeeks: 4,
         monthlyMonths: 1,
