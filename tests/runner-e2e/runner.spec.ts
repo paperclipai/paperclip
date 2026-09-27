@@ -2421,7 +2421,7 @@ for (const execution of executions) {
       if (execution.suite.id === "api-response-reading") {
         // File delivery renders a card instead of an exact summary bubble.
         // Prove the visible link points to the same independently checked bytes.
-        const proofLink = page.getByRole("link", { name: "Open api-response-proof.txt", exact: true });
+        const proofLink = page.getByRole("link", { name: "Open api-response-proof.txt", exact: true }).first();
         await expect(proofLink).toBeVisible({ timeout: 30_000 });
         await expect(proofLink).toHaveAttribute("href", `/api/attachments/${downloadedResponseProof!.attachmentId}/content`);
       } else if (execution.task.flow === "warm_three_turn") {
