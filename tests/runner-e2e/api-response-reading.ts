@@ -41,7 +41,8 @@ export const apiResponseReadingTask: RunnerTaskFixture = {
   attemptTimeoutMs: { local: 10 * 60_000, daytona: 10 * 60_000 },
   expectedTerminalState: { issue: "done", run: "succeeded" },
   buildTitle: nonce => `Read large API evidence ${nonce}`,
-  buildVisibleMarker: nonce => `API_RESPONSE_READ_${nonce}`,
+  // Delivered files render as an attachment card, which can replace the finish summary.
+  buildVisibleMarker: () => "api-response-proof.txt",
   buildPrompt: nonce => [
     "Inspect diagnostic evidence task {{API_RESPONSE_SOURCE_ID}} using the Paperclip API tools.",
     "Discover GET /api/issues/{id}, call it for that task, and retain the returned response artifact.",
@@ -53,7 +54,7 @@ export const apiResponseReadingTask: RunnerTaskFixture = {
   ].join("\n"),
   buildMatchers: (nonce, execution) => [
     { kind: "file_exact", path: "api-response-proof.txt", expected: `${responseEvidenceCode(nonce)}\n` },
-    { kind: "message_contains", expected: `API_RESPONSE_READ_${nonce}` },
+    { kind: "message_contains", expected: "api-response-proof.txt" },
     { kind: "issue_status", expected: "done" },
     { kind: "run_status", expected: "succeeded" },
     { kind: "runtime_mode", expected: execution.profile.expectedRuntimeMode },
