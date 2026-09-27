@@ -608,6 +608,48 @@ describe("runner API request boundary", () => {
     expect(saveResponse).not.toHaveBeenCalled();
     expect(request.mock.calls.every(([, options]) => new Headers(options?.headers).get("Authorization") === "Bearer private-agent-token")).toBe(true);
   });
+  it("pages a ten MiB asset with linear transfer and UTF-8 boundaries", async () => {
+    const bytes = Buffer.from("🧭é".repeat(Math.floor(10 * 1024 * 1024 / 6)));
+    let transferred = 0;
+    const request = vi.fn<typeof fetch>(async (_url, init) => {
+      const range = new Headers(init?.headers).get("range");
+      const match = /^bytes=(\d+)-(\d+)$/.exec(range ?? "");
+      if (!match) { transferred += bytes.length; return new Response(bytes, { headers: { "content-type": "text/plain" } }); }
+      const start = Number(match[1]), end = Math.min(Number(match[2]), bytes.length - 1);
+      const part = bytes.subarray(start, end + 1); transferred += part.length;
+      return new Response(part, { status: 206, headers: { "content-type": "text/plain", "content-range": `bytes ${start}-${end}/${bytes.length}` } });
+    });
+    let offsetBytes: number | null = 0;
+    const parts: string[] = [];
+    do {
+      const page: any = await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "large" }, responseText: { offsetBytes } }, context, io(request));
+      expect(page.ok).toBe(true);
+      parts.push(page.data); offsetBytes = page.responseText.nextOffsetBytes;
+    } while (offsetBytes !== null);
+    expect(parts.join("")).toBe(bytes.toString());
+    expect(transferred).toBeLessThan(bytes.length + request.mock.calls.length * 5);
+    expect(request.mock.calls.every(([, init]) => new Headers(init?.headers).has("range"))).toBe(true);
+  });
+  it.each([
+    ["bytes 4-8/20", "12345"], // wrong start
+    ["bytes 3-7/20", "12345"], // early end
+    ["bytes 3-8/20", "12345"], // truncated body
+    ["bytes 3-8/10485761", "123456"], // total exceeds transfer policy
+    ["bytes 3-8/*", "123456"], // unknown total
+    [null, "123456"],
+  ])("rejects inconsistent partial asset receipts: %s", async (range, body) => {
+    const result = await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "saved" }, responseText: { offsetBytes: 4, limitBytes: 4 } }, context, io(async () => new Response(body, { status: 206, headers: { "content-type": "text/plain", ...(range ? { "content-range": range } : {}) } })));
+    expect(result).toMatchObject({ ok: false, error: "response_text_invalid_range" });
+  });
+  it("accepts EOF and rejects an offset inside a UTF-8 code point in ranged assets", async () => {
+    const call = (offsetBytes: number, bytes: Buffer, range: string) => executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "saved" }, responseText: { offsetBytes, limitBytes: 4 } }, context, io(async () => new Response(new Uint8Array(bytes), { status: 206, headers: { "content-type": "text/plain", "content-range": range } })));
+    expect(await call(2, Buffer.from([0xa9]), "bytes 1-1/2")).toMatchObject({ ok: true, data: "", responseText: { nextOffsetBytes: null, totalBytes: 2 } });
+    expect(await call(1, Buffer.from("é"), "bytes 0-1/2")).toMatchObject({ ok: false, error: "response_text_invalid_offset" });
+  });
+  it("does not silently accept an asset server that ignores the byte range", async () => {
+    const result = await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "saved" }, responseText: { limitBytes: 4 } }, context, io(async () => new Response("unbounded", { headers: { "content-type": "text/plain" } })));
+    expect(result).toMatchObject({ ok: false, error: "api_transport_failure" });
+  });
   it.each([{ offsetBytes: -1 }, { limitBytes: 0 }, { limitBytes: 3 }, { limitBytes: 24577 }, { offsetBytes: 0.5 }])("rejects invalid text windows before dispatch: %j", async responseText => {
     const request = vi.fn<typeof fetch>();
     await expect(executeRunnerApi({ operationId: projects, responseText }, context, io(request))).rejects.toThrow("Invalid call_api arguments");

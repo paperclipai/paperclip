@@ -328,13 +328,31 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const asset = await getAccessibleResource(req, res, svc.getById(assetId), "Asset not found");
     if (!asset) return;
 
-    const object = await storage.getObject(asset.companyId, asset.objectKey);
+    // Use the persisted size only after resource authorization. Single ranges
+    // keep saved API text pages bounded all the way to disk or object storage.
+    const rawRange = req.headers.range;
+    const rangeSyntax = rawRange && /^bytes=(\d*)-(\d*)$/i.exec(rawRange);
+    const emptyRead = asset.byteSize === 0 && rangeSyntax?.[1] === "0";
+    const ranges = rawRange && !emptyRead ? req.range(asset.byteSize) : undefined;
+    res.setHeader("Accept-Ranges", "bytes");
+    if (rawRange && (!rangeSyntax || (!rangeSyntax[1] && !rangeSyntax[2])
+      || (!emptyRead && (!Array.isArray(ranges) || ranges.length !== 1)))) {
+      res.setHeader("Content-Range", `bytes */${asset.byteSize}`);
+      res.status(416).end();
+      return;
+    }
+    const range = Array.isArray(ranges) ? ranges[0] : undefined;
+    const object = await storage.getObject(asset.companyId, asset.objectKey, range ? { range } : undefined);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
     const mediaType = responseContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
     const inlineSafe = mediaType !== SVG_CONTENT_TYPE
       && isInlineAttachmentContentType(mediaType);
     res.setHeader("Content-Type", responseContentType);
-    res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
+    res.setHeader("Content-Length", String(range ? range.end - range.start + 1 : asset.byteSize || object.contentLength || 0));
+    if (range) {
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${asset.byteSize}`);
+    }
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (!inlineSafe) {
@@ -349,6 +367,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     object.stream.on("error", (err) => {
       next(err);
     });
+    res.on("close", () => object.stream.destroy());
     object.stream.pipe(res);
   });
 

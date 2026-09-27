@@ -69,6 +69,12 @@ and offsets inside a code point or beyond the response. This option only works
 with GET; never repeat a mutation to retrieve another part of its response.
 Read the saved artifact for a stable snapshot instead of paging a changing live
 response. The existing 10 MiB transfer limit and all route authorization remain.
+Saved asset pages use authenticated HTTP byte ranges. The storage provider reads
+only the requested window, with at most two extra bytes for UTF-8/EOF handling.
+The client validates `Content-Range`, the total size, and the received byte count;
+it rejects unsupported or inconsistent ranges instead of downloading the whole
+asset for every page. Other GET routes retain their existing bounded full-response
+read, so use the saved asset for large responses.
 
 Tool responses identify the HTTP route with `apiOperationId`. The native protocol
 reserves `operationId` and `callId` for semantic tool-call identity; API metadata

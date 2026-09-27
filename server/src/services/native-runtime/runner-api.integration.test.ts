@@ -258,17 +258,26 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const initial = await call(fixture.authority, asset.id);
     expect(initial).toMatchObject({ status: 200, artifact: { byteSize: Buffer.byteLength(text) } });
     const before = (await fixture.snapshot()).assets.length;
+    const reads = vi.spyOn(server.storage, "getObject");
     let offsetBytes = 0;
     let result = "";
-    do {
-      const page = await call(fixture.authority, initial.artifact.artifactId, { offsetBytes, limitBytes: 4096 });
-      expect(page).toMatchObject({ status: 200, responseText: { offsetBytes, totalBytes: Buffer.byteLength(text) } });
-      result += page.data;
-      offsetBytes = page.responseText.nextOffsetBytes;
-    } while (offsetBytes !== null);
-    expect(JSON.parse(result)).toEqual(JSON.parse(text));
-    expect((await fixture.snapshot()).assets).toHaveLength(before);
-    expect(await call(foreign.authority, initial.artifact.artifactId, { offsetBytes: 0 })).toMatchObject({ ok: false, status: 404 });
+    try {
+      do {
+        const page = await call(fixture.authority, initial.artifact.artifactId, { offsetBytes, limitBytes: 4096 });
+        expect(page).toMatchObject({ status: 206, responseText: { offsetBytes, totalBytes: Buffer.byteLength(text) } });
+        result += page.data;
+        offsetBytes = page.responseText.nextOffsetBytes;
+      } while (offsetBytes !== null);
+      expect(JSON.parse(result)).toEqual(JSON.parse(text));
+      expect(reads.mock.calls.length).toBeGreaterThan(1);
+      expect(reads.mock.calls.every(([, , options]) => options?.range)).toBe(true);
+      const storageBytes = reads.mock.calls.reduce((total, [, , options]) => total + options!.range!.end - options!.range!.start + 1, 0);
+      expect(storageBytes).toBeLessThan(Buffer.byteLength(text) + reads.mock.calls.length * 5);
+      expect((await fixture.snapshot()).assets).toHaveLength(before);
+      expect(await call(foreign.authority, initial.artifact.artifactId, { offsetBytes: 0 })).toMatchObject({ ok: false, status: 404 });
+    } finally {
+      reads.mockRestore();
+    }
   });
 
   it("contains workspace files, checks artifact ownership, and persists downloads", async () => {
