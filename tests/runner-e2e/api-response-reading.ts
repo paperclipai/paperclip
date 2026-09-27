@@ -1,5 +1,24 @@
 import { createHash } from "node:crypto";
 import type { RunnerTaskFixture } from "./types.js";
+import type { RunnerApi } from "./api.js";
+import type { IssueAttachment } from "../../packages/shared/src/types/issue.js";
+
+/** Verify delivered bytes through the same public download path the user receives. */
+export async function readResponseProof(api: RunnerApi, issueId: string, runId: string) {
+  const attachments = await api.get<IssueAttachment[]>(`/api/issues/${issueId}/attachments`);
+  const proofs = attachments.filter(attachment =>
+    attachment.issueId === issueId && attachment.originatingRunId === runId &&
+    attachment.originalFilename === "api-response-proof.txt");
+  if (proofs.length !== 1) throw new Error(`Expected one proof attachment from the tested run; observed ${proofs.length}`);
+  const proof = proofs[0]!;
+  const response = await api.request.get(`/api/attachments/${encodeURIComponent(proof.id)}/content?download=1`);
+  if (!response.ok()) throw new Error(`Proof download returned ${response.status()}`);
+  const bytes = await response.body();
+  if (bytes.length !== proof.byteSize || createHash("sha256").update(bytes).digest("hex") !== proof.sha256) {
+    throw new Error("Downloaded proof disagrees with stored attachment bytes");
+  }
+  return { attachmentId: proof.id, content: bytes.toString("utf8"), sha256: proof.sha256 };
+}
 
 export function responseEvidenceCode(nonce: string) {
   return createHash("sha256").update(`bounded-response-evidence:${nonce}`).digest("hex");
@@ -29,7 +48,7 @@ export const apiResponseReadingTask: RunnerTaskFixture = {
     "Read the saved artifact through GET /api/assets/{assetId}/content with responseText: {offsetBytes:0,limitBytes:8192}.",
     "Continue using responseText.nextOffsetBytes until null. Extract the Evidence code at the end of its description.",
     "The large response must be read with bounded responseText pages. Do not use other tools or API routes to obtain the evidence; if bounded reading fails, report the failure instead of substituting a different reader.",
-    "Write only that code followed by a newline to api-response-proof.txt in the current workspace. Do not edit the evidence task or create child tasks.",
+    "Write only that code followed by a newline to api-response-proof.txt in the current workspace and deliver that file as an attachment. Do not edit the evidence task or create child tasks.",
     `Verify the proof file and finish this task with paperclip_finish, reportedWorkDisposition done, and summary API_RESPONSE_READ_${nonce}.`,
   ].join("\n"),
   buildMatchers: (nonce, execution) => [

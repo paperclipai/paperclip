@@ -1,4 +1,4 @@
-import { responseEvidenceDescription, successfulApiReadCount } from "./api-response-reading.js";
+import { readResponseProof, responseEvidenceDescription, successfulApiReadCount } from "./api-response-reading.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
 import { runAccountingFlow } from "./accounting-flow.js";
 import type { Issue } from "../../packages/shared/src/types/issue.js";
@@ -1952,6 +1952,11 @@ for (const execution of executions) {
             ]),
         ),
       );
+      if (execution.suite.id === "api-response-reading") {
+        const proof = await readResponseProof(api, issue.id, run.id);
+        fileObservations["api-response-proof.txt"] = proof.content;
+        await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", proof, secrets);
+      }
       matcherResults = await Promise.all(
         taskMatchers.map((matcher) =>
           evaluateMatcher(matcher, {
