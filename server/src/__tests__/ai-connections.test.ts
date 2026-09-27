@@ -395,6 +395,25 @@ describe("managed AI connections", () => {
     expect(app).toMatchObject({ status: "active", archivedAt: null });
   });
 
+  it("keeps the provider application active when a new account races the removal of the last one", async () => {
+    const raceCompanyId = randomUUID();
+    await db.insert(companies).values({ id: raceCompanyId, name: "Racing provider app", issuePrefix: "AIR" });
+    await db.insert(companyMemberships).values({ companyId: raceCompanyId, principalId: "dave", principalType: "user", status: "active", membershipRole: "member" });
+    const account = { provider: "anthropic", method: "api_key", ownership: "personal", apiKey: "fixture", agentIds: [], allAgents: true } as const;
+    let last = await service.save(raceCompanyId, "dave", { ...account, name: "Initial" }, "fixture-initial");
+    for (let round = 0; round < 8; round += 1) {
+      const [, next] = await Promise.all([
+        toolAccessService(db).archiveConnection(last.connectionId, raceCompanyId),
+        service.save(raceCompanyId, "dave", { ...account, name: `Round ${round}` }, `fixture-${round}`),
+      ]);
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, next.connectionId));
+      const [app] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection!.applicationId));
+      expect(connection!.status).toBe("active");
+      expect(app?.status).toBe("active");
+      last = next;
+    }
+  });
+
   it("preserves connection identity and defaults through reconnect; revocation wins over older attempts", async () => {
     const current = await service.select({ ...input, userId: "bob" });
     const reconnect = { ...binding, ownership: "personal" as const, name: current.connection.name, apiKey: "fixture", agentIds: [], allAgents: true, connectionId: current.connection.id };
