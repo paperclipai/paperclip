@@ -27,12 +27,83 @@ export function responseEvidenceDescription(nonce: string) {
   return `${"Synthetic diagnostic padding.\n".repeat(1400)}\nEvidence code: ${responseEvidenceCode(nonce)}\n`;
 }
 
-export function successfulApiReadCount(events: readonly { eventType?: string; payload?: unknown }[]) {
-  return events.filter(event => {
-    const outer = event.payload as { prpEvent?: { payload?: { name?: string; status?: string } } } | null;
-    const payload = outer?.prpEvent?.payload;
-    return event.eventType === "tool.execution.completed" && payload?.name === "call_api" && payload.status === "completed";
-  }).length;
+/** Correlate trusted PRP call inputs, results, and completion receipts. */
+export function gradeApiResponsePaging(events: readonly { eventType?: string; payload?: unknown }[], sourceIssueId: string) {
+  const object = (value: unknown): Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const inputs = new Map<string, Record<string, unknown>>();
+  const results = new Map<string, Record<string, unknown>>();
+  const completed = new Set<string>();
+  for (const event of events) {
+    const payload = object(object(object(event.payload).prpEvent).payload);
+    const item = object(payload.item);
+    if (event.eventType === "item.started" && item.type === "tool_use" && item.name === "call_api" && typeof item.id === "string") {
+      inputs.set(item.id, object(item.input));
+    }
+    if (event.eventType === "item.completed" && item.type === "tool_result" && typeof item.id === "string" &&
+      (item.tool_use_id === undefined || item.tool_use_id === item.id)) results.set(item.id, object(item.result));
+    if (event.eventType === "tool.execution.completed" && payload.name === "call_api" && payload.status === "completed" && typeof payload.executionId === "string") {
+      completed.add(payload.executionId);
+    }
+  }
+  const calls = [...inputs].flatMap(([id, input]) => {
+    const result = results.get(id);
+    return completed.has(id) && result?.ok === true && [200, 206].includes(Number(result.status)) ? [{ input, result }] : [];
+  });
+  const sourceOperation = "GET /api/issues/{id}";
+  const assetOperation = "GET /api/assets/{assetId}/content";
+  const sources = calls.filter(call => call.input.operationId === sourceOperation && call.result.apiOperationId === sourceOperation &&
+    object(call.input.pathParams).id === sourceIssueId);
+  let failure = "No successful call_api source read with a saved response artifact";
+  for (const source of sources) {
+    const artifact = object(source.result.artifact);
+    const assetId = artifact.artifactId;
+    const total = artifact.byteSize;
+    if (typeof assetId !== "string" || typeof total !== "number" || !Number.isSafeInteger(total) || total <= 24 * 1024 || total > 1024 * 1024 ||
+      typeof artifact.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(artifact.sha256) || artifact.url !== `/api/assets/${assetId}/content`) continue;
+    const pages = new Map<number, { bytes: Buffer; next: number | null }>();
+    let malformed = false;
+    for (const call of calls) {
+      if (call.input.operationId !== assetOperation || object(call.input.pathParams).assetId !== assetId) continue;
+      const requested = object(call.input.responseText);
+      const returned = object(call.result.responseText);
+      const offset = requested.offsetBytes;
+      const limit = requested.limitBytes;
+      const next = returned.nextOffsetBytes;
+      const data = call.result.data;
+      if (call.result.apiOperationId !== assetOperation || typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0 || offset >= total ||
+        typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 8192 || returned.offsetBytes !== offset || returned.totalBytes !== total ||
+        typeof data !== "string") { malformed = true; break; }
+      const bytes = Buffer.from(data, "utf8");
+      const end = offset + bytes.length;
+      if (bytes.length === 0 || bytes.length > limit || end > total || (end === total ? next !== null : next !== end)) {
+        malformed = true; break;
+      }
+      const prior = pages.get(offset);
+      if (prior && (!prior.bytes.equals(bytes) || prior.next !== next)) { malformed = true; break; }
+      pages.set(offset, { bytes, next: next as number | null });
+    }
+    if (malformed) { failure = "Artifact paging request, returned offsets, bytes, or EOF disagree"; continue; }
+    const chunks: Buffer[] = [];
+    const offsets: number[] = [];
+    let offset = 0;
+    let eofReached = false;
+    while (pages.has(offset)) {
+      const page = pages.get(offset)!;
+      chunks.push(page.bytes); offsets.push(offset);
+      if (page.next === null) { eofReached = true; break; }
+      offset = page.next;
+    }
+    if (!eofReached || offsets.length < 2) { failure = "Saved artifact pages do not cover offset zero through EOF without gaps"; continue; }
+    const bytes = Buffer.concat(chunks);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (bytes.length !== total || digest !== artifact.sha256) { failure = "Paged bytes disagree with the source response artifact digest"; continue; }
+    try {
+      if (object(JSON.parse(bytes.toString("utf8"))).id !== sourceIssueId) { failure = "Paged artifact belongs to another source issue"; continue; }
+    } catch { failure = "Paged source response is not complete JSON"; continue; }
+    return { passed: true, sourceIssueId, artifactId: assetId, totalBytes: total, pageCount: offsets.length, offsets, eofReached, sha256: digest };
+  }
+  return { passed: false, sourceIssueId, failure };
 }
 
 export const apiResponseReadingTask: RunnerTaskFixture = {

@@ -1,4 +1,4 @@
-import { readResponseProof, responseEvidenceDescription, successfulApiReadCount } from "./api-response-reading.js";
+import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
 import { runAccountingFlow } from "./accounting-flow.js";
 import type { Issue } from "../../packages/shared/src/types/issue.js";
@@ -535,6 +535,7 @@ for (const execution of executions) {
     const marker = execution.task.buildVisibleMarker(nonce);
     const title = execution.task.buildTitle(nonce);
     let prompt = execution.task.buildPrompt(nonce);
+    let apiResponseSourceId: string | undefined;
     let lifecycleBlockerId: string | null = null;
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
@@ -801,6 +802,7 @@ for (const execution of executions) {
           title: `Synthetic diagnostic evidence ${nonce}`,
           description: responseEvidenceDescription(nonce), status: "backlog",
         });
+        apiResponseSourceId = source.id;
         prompt = prompt.replaceAll("{{API_RESPONSE_SOURCE_ID}}", source.id);
       }
 
@@ -1896,8 +1898,9 @@ for (const execution of executions) {
       }
 
       if (execution.suite.id === "api-response-reading") {
-        const completedReads = successfulApiReadCount(runEventsByRun.flatMap(captured => captured.events));
-        if (completedReads < 3) invariantFailures.push(`Expected source read and multiple bounded artifact reads; observed ${completedReads} completed API calls`);
+        const paging = gradeApiResponsePaging(runEventsByRun.flatMap(captured => captured.events), apiResponseSourceId ?? "");
+        await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);
+        if (!paging.passed) invariantFailures.push(`Bounded response paging was not proven: ${paging.failure}`);
       }
 
       const context = record(run.contextSnapshot);
