@@ -262,3 +262,7 @@ named existing controls on legacy and native Codex. Discover it with
 results and follow-up coverage are recorded in that suite's guide.
 
 Continuation accounting has an explicit-only eight-cell Product E2E [baseline suite](../tests/runner-e2e/CONTINUATION-ACCOUNTING.md), complementing the deterministic lifecycle inventory.
+
+The explicit-only Product E2E `api-response-reading` suite verifies retrieval of
+large saved API responses on local and Daytona native Codex runs. See the
+[Runner E2E guide](../tests/runner-e2e/README.md#bounded-api-response-reading).

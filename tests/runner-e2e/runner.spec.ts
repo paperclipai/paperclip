@@ -1,3 +1,4 @@
+import { responseEvidenceDescription, successfulApiReadCount } from "./api-response-reading.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
 import { runAccountingFlow } from "./accounting-flow.js";
 import type { Issue } from "../../packages/shared/src/types/issue.js";
@@ -793,6 +794,14 @@ for (const execution of executions) {
         credentials,
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
       });
+
+      if (execution.suite.id === "api-response-reading") {
+        const source = await api.post<{ id: string }>(`/api/companies/${fixtures.company.id}/issues`, {
+          title: `Synthetic diagnostic evidence ${nonce}`,
+          description: responseEvidenceDescription(nonce), status: "backlog",
+        });
+        prompt = prompt.replaceAll("{{API_RESPONSE_SOURCE_ID}}", source.id);
+      }
 
       if (execution.suite.id === "lifecycle-baseline" && lifecycleLiveCase(execution.task.id)?.family === "blocker") {
         const prerequisite = await api.post<{ id: string }>(`/api/companies/${fixtures.company.id}/issues`, {
@@ -1883,6 +1892,11 @@ for (const execution of executions) {
             `run ${captured.runId} events query failed: ${captured.error}`,
           );
         }
+      }
+
+      if (execution.suite.id === "api-response-reading") {
+        const completedReads = successfulApiReadCount(runEventsByRun.flatMap(captured => captured.events));
+        if (completedReads < 3) invariantFailures.push(`Expected source read and multiple bounded artifact reads; observed ${completedReads} completed API calls`);
       }
 
       const context = record(run.contextSnapshot);

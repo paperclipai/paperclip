@@ -28,7 +28,7 @@ export const callApiAction = {
   },
   "documentation": {
     "title": "Call the Paperclip API",
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "note": "Production HTTP fallback; does not grant privileges or replace dedicated tools."
   },
   "examples": {
@@ -51,7 +51,7 @@ export const callApiAction = {
       "operationId": "call_api",
       "version": 1,
       "title": "Call the Paperclip API",
-      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool.",
+      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
       "exposure": "optional",
       "requiredClaims": [
         "api:call"
@@ -95,6 +95,15 @@ export const callApiAction = {
           "contentType": {
             "type": "string",
             "maxLength": 120
+          },
+          "responseText": {
+            "description": "GET only: return a bounded UTF-8 text window inline, including JSON as text, without saving another artifact. Offsets and limits are bytes. Use the returned nextOffsetBytes to continue; null means complete. Prefer reading a saved artifact for a stable snapshot. The 10 MiB transfer limit still applies.",
+            "type": "object",
+            "properties": {
+              "offsetBytes": { "type": "integer", "minimum": 0, "maximum": 10485760, "default": 0 },
+              "limitBytes": { "type": "integer", "minimum": 4, "maximum": 24576, "default": 24576 }
+            },
+            "additionalProperties": false
           },
           "files": {
             "type": "array",

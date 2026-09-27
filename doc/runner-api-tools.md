@@ -54,6 +54,22 @@ can be supplied. Routes still validate payloads and enforce permissions.
 Requests have a 30-second HTTP timeout, 16 KiB URL limit and 10 MiB payload/response
 transfer limit. Responses above 24 KiB and binary responses become company-owned
 assets with retrievable references; text previews are limited to 2,000 bytes.
+To inspect saved text without creating another artifact, call its authorized
+content operation with `responseText`:
+
+```json
+{"operationId":"GET /api/assets/{assetId}/content","pathParams":{"assetId":"RETURNED_ARTIFACT_ID"},"responseText":{"offsetBytes":0,"limitBytes":8192}}
+```
+
+The result contains `data` as text (including JSON), plus `responseText` with
+`offsetBytes`, `nextOffsetBytes`, and `totalBytes`. Continue at `nextOffsetBytes`
+until it is null. Windows end at UTF-8 boundaries. The limit defaults to 24 KiB
+and accepts 4–24,576 bytes. The server rejects binary content, invalid UTF-8,
+and offsets inside a code point or beyond the response. This option only works
+with GET; never repeat a mutation to retrieve another part of its response.
+Read the saved artifact for a stable snapshot instead of paging a changing live
+response. The existing 10 MiB transfer limit and all route authorization remain.
+
 Tool responses identify the HTTP route with `apiOperationId`. The native protocol
 reserves `operationId` and `callId` for semantic tool-call identity; API metadata
 must not masquerade as that envelope. Saved mutation receipts are normalized at

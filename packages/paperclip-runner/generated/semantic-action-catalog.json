@@ -112,7 +112,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -198,6 +198,25 @@
         },
         "query": {
           "additionalProperties": true,
+          "type": "object"
+        },
+        "responseText": {
+          "additionalProperties": false,
+          "description": "GET only: return a bounded UTF-8 text window inline, including JSON as text, without saving another artifact. Offsets and limits are bytes. Use the returned nextOffsetBytes to continue; null means complete. Prefer reading a saved artifact for a stable snapshot. The 10 MiB transfer limit still applies.",
+          "properties": {
+            "limitBytes": {
+              "default": 24576,
+              "maximum": 24576,
+              "minimum": 4,
+              "type": "integer"
+            },
+            "offsetBytes": {
+              "default": 0,
+              "maximum": 10485760,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
           "type": "object"
         }
       },

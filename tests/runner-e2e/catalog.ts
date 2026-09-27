@@ -1,3 +1,4 @@
+import { apiResponseReadingTask } from "./api-response-reading.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks } from "./continuation-cases.js";
 import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-live-cases.js";
@@ -911,6 +912,14 @@ const everydayProfiles = [
 ].map(productionStoryProfile);
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  {
+    id: "api-response-reading", label: "Bounded API response reading", manualOnly: true,
+    description: "Retrieve evidence beyond a saved API preview through authorized bounded text windows.",
+    groups: [], environments: runnerEnvironments,
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [apiResponseReadingTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
+  },
   {
     id: "continuation-accounting", label: "Continuation accounting baseline", manualOnly: true,
     description: "Structured productive steps, bounded repair, restart and late gates; comments cannot buy more attempts.",

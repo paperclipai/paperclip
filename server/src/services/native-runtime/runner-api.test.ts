@@ -591,6 +591,51 @@ describe("runner API request boundary", () => {
       ).toThrow("inline JSON object");
     }
   });
+  it("reads complete large text without recursively saving response artifacts", async () => {
+    const text = "prefix\n" + "🧭é\n".repeat(6000) + "END-OF-EVIDENCE";
+    const saveResponse = vi.fn(io(fetch).saveResponse);
+    const request = vi.fn<typeof fetch>(async () => new Response(text, { headers: { "content-type": "application/json" } }));
+    let offsetBytes = 0;
+    let received = "";
+    do {
+      const result = await executeRunnerApi({ operationId: projects, responseText: { offsetBytes, limitBytes: 4096 } }, context, { ...io(request), saveResponse }) as any;
+      expect(result).toMatchObject({ ok: true, responseText: { offsetBytes, totalBytes: Buffer.byteLength(text) } });
+      expect(Buffer.byteLength(result.data)).toBeLessThanOrEqual(4096);
+      received += result.data;
+      offsetBytes = result.responseText.nextOffsetBytes;
+    } while (offsetBytes !== null);
+    expect(received).toBe(text);
+    expect(saveResponse).not.toHaveBeenCalled();
+    expect(request.mock.calls.every(([, options]) => new Headers(options?.headers).get("Authorization") === "Bearer private-agent-token")).toBe(true);
+  });
+  it.each([{ offsetBytes: -1 }, { limitBytes: 0 }, { limitBytes: 3 }, { limitBytes: 24577 }, { offsetBytes: 0.5 }])("rejects invalid text windows before dispatch: %j", async responseText => {
+    const request = vi.fn<typeof fetch>();
+    await expect(executeRunnerApi({ operationId: projects, responseText }, context, io(request))).rejects.toThrow("Invalid call_api arguments");
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("does not page mutation responses by repeating the mutation", async () => {
+    const request = vi.fn<typeof fetch>();
+    await expect(executeRunnerApi({ operationId: createProject, body: { name: "Once" }, responseText: {} }, context, io(request))).rejects.toThrow("GET");
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("rejects binary, invalid UTF-8 and offsets that split text", async () => {
+    for (const [body, type, offsetBytes] of [
+      [Buffer.from("binary"), "application/octet-stream", 0],
+      [Buffer.from([0xff]), "text/plain", 0],
+      [Buffer.concat([Buffer.from([0xc2]), Buffer.alloc(24576, 0x80)]), "text/plain", 0],
+      [Buffer.from("é"), "text/plain", 1],
+      [Buffer.from("short"), "text/plain", 6],
+    ] as const) {
+      const saveResponse = vi.fn(io(fetch).saveResponse);
+      const result = await executeRunnerApi({ operationId: projects, responseText: { offsetBytes } }, context, { ...io(async () => new Response(body, { headers: { "content-type": type } })), saveResponse });
+      expect(result).toMatchObject({ ok: false, error: expect.stringContaining("response_text") });
+      expect(saveResponse).not.toHaveBeenCalled();
+    }
+  });
+  it("preserves denials and the transfer limit for bounded text reads", async () => {
+    expect(await executeRunnerApi({ operationId: projects, responseText: {} }, context, io(async () => Response.json({ error: "denied" }, { status: 403 })))).toMatchObject({ ok: false, status: 403, data: '{"error":"denied"}' });
+    expect(await executeRunnerApi({ operationId: projects, responseText: {} }, context, io(async () => new Response("small", { headers: { "content-type": "text/plain", "content-length": String(10 * 1024 * 1024 + 1) } })))).toMatchObject({ ok: false, status: null, outcome: "read_failed" });
+  });
   it("bounds streamed responses even without content-length", async () => {
     await expect(
       readBoundedResponse(new Response("too large"), 3),

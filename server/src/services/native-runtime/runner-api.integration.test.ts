@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { documents, heartbeatRuns, issues, routineDocuments, routines } from "@paperclipai/db";
+import { assets, documents, heartbeatRuns, issues, routineDocuments, routines } from "@paperclipai/db";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
@@ -246,6 +246,29 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
       } })).rejects.toThrow("binding_not_authorized");
       expect((await fixture.snapshot()).assets).toHaveLength(2);
     } finally { getObject.mockRestore(); }
+  });
+
+  it("retrieves every byte of a saved large response without creating an artifact loop", async () => {
+    const fixture = await server.fixture();
+    const foreign = await server.fixture();
+    const text = JSON.stringify({ padding: "🧭é".repeat(6000), evidence: "last-field-is-readable" });
+    const stored = await server.storage.putFile({ companyId: fixture.companyId, namespace: "eval", originalFilename: "evidence.json", contentType: "application/json", body: Buffer.from(text) });
+    const [asset] = await server.db.insert(assets).values({ ...stored, companyId: fixture.companyId, createdByAgentId: fixture.agentId }).returning();
+    const call = (authority: typeof fixture.authority, assetId: string, responseText?: object) => authority.execute({ tool: "call_api", callId: randomUUID(), arguments: { operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId }, ...(responseText ? { responseText } : {}) } }) as Promise<any>;
+    const initial = await call(fixture.authority, asset.id);
+    expect(initial).toMatchObject({ status: 200, artifact: { byteSize: Buffer.byteLength(text) } });
+    const before = (await fixture.snapshot()).assets.length;
+    let offsetBytes = 0;
+    let result = "";
+    do {
+      const page = await call(fixture.authority, initial.artifact.artifactId, { offsetBytes, limitBytes: 4096 });
+      expect(page).toMatchObject({ status: 200, responseText: { offsetBytes, totalBytes: Buffer.byteLength(text) } });
+      result += page.data;
+      offsetBytes = page.responseText.nextOffsetBytes;
+    } while (offsetBytes !== null);
+    expect(JSON.parse(result)).toEqual(JSON.parse(text));
+    expect((await fixture.snapshot()).assets).toHaveLength(before);
+    expect(await call(foreign.authority, initial.artifact.artifactId, { offsetBytes: 0 })).toMatchObject({ ok: false, status: 404 });
   });
 
   it("contains workspace files, checks artifact ownership, and persists downloads", async () => {

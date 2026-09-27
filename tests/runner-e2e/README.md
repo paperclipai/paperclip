@@ -1094,3 +1094,15 @@ keys with low request limits. It can only lower the configured campaign limit.
 Keep subscription qualification separate from API-key results.
 
 The explicit-only eight-cell [continuation accounting baseline](CONTINUATION-ACCOUNTING.md) tests productive work, bounded repair, restart and late gates with real providers.
+
+### Bounded API response reading
+
+`api-response-reading` is an explicit-only, two-cell native Codex suite (local
+and Daytona). Each cell creates synthetic diagnostic evidence over 24 KiB via
+the public API, outside the agent assignment. The browser starts one ordinary
+task which must read the saved response in bounded text pages and persist the
+exact hidden evidence code. The oracle also requires completed API tool events;
+missing events or a narrative completion cannot pass. Existing run, copyback,
+screenshot, billing and environment cleanup checks apply. Use
+`--id api-response-reading.runner-codex.daytona.saved-text-pages` with an
+immutable Daytona image; no private hooks or fixture database writes are used.
