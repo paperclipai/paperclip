@@ -1515,6 +1515,7 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Assignee"
+                mobileTitle="Select assignee"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
                 contentStyle={entityPickerViewportStyle}
@@ -1576,6 +1577,7 @@ export function NewIssueDialog() {
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
                 placeholder="Project"
+                mobileTitle="Select project"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
                 contentStyle={entityPickerViewportStyle}
