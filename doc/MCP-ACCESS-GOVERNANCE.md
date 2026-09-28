@@ -128,12 +128,13 @@ V1 does not claim host-wide MCP enforcement. If an unmanaged external client, ha
 
 ## Managed connections
 
-A connection is an enabled, governed link to one MCP server. Two transports are supported:
+A connection is an enabled, governed link to one MCP server. Three transports are supported:
 
 | Transport | When to use | Trust posture |
 | --- | --- | --- |
 | `remote_http` | Hosted SaaS MCP servers (GitHub, Linear, custom remote MCP). Default for cloud. | Paperclip authenticates with stored credential refs and proxies calls. Process supervision is upstream's problem. |
 | `local_stdio` | Local fixtures or approved stdio templates that must run as a child process. | Only allowed when the host is explicitly trusted; see [Local trusted deployment](#local-trusted-deployment). Cloud public deployments fail closed unless a trusted runtime host is configured. |
+| `connector` | MCP servers on a private network behind an internet-facing (`authenticated/public`) Paperclip. | An operator-installed [outbound MCP connector](./connections/MCP-CONNECTOR.md) dials out to Paperclip and relays calls to upstreams named in its own config. Paperclip addresses upstreams by name only and never dials private addresses; governance is identical to `remote_http`. |
 
 Operators do not paste arbitrary `command` / `args` for stdio. Allowed stdio entries are limited to the approved template catalog (e.g. `paperclip.echo-calculator-time`, `paperclip.synthetic-todo-kv`). To add a new template, ship a code change.
 
@@ -386,6 +387,7 @@ The decision matrix:
 In all modes:
 
 - `remote_http` is the preferred path. If you can replace a local stdio fixture with a remote_http endpoint, do.
+- In `authenticated/public`, `remote_http` refuses private and reserved addresses (`remote_http_private_endpoint`) and there is no override. To reach an MCP server on a private network, run an [outbound MCP connector](./connections/MCP-CONNECTOR.md) inside that network instead of exposing the server or hand-writing a workspace `.mcp.json`.
 - Never set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` on the same worker that serves public HTTP traffic.
 - Treat the approved-template list as a code-review surface: a PR that adds a new template ships a new code-execution path.
 

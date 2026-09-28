@@ -23,6 +23,7 @@ COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/google-sheets-mcp-server/package.json packages/google-sheets-mcp-server/
 COPY packages/kv-demo-mcp-server/package.json packages/kv-demo-mcp-server/
+COPY packages/mcp-connector/package.json packages/mcp-connector/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/paperclip-eval-kernel/package.json packages/paperclip-eval-kernel/
 COPY packages/paperclip-runner/package.json packages/paperclip-runner/
@@ -49,7 +50,12 @@ COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
-RUN pnpm install --frozen-lockfile
+# PRs cannot commit lockfile updates. Preserve a current verified lockfile;
+# only resolve a newly added workspace package if frozen install rejects it.
+RUN if ! pnpm install --frozen-lockfile; then \
+      pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile \
+      && pnpm install --frozen-lockfile; \
+    fi
 
 FROM base AS rust-toolchain
 WORKDIR /app

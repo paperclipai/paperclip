@@ -41,12 +41,14 @@ import {
 
 export const TRANSPORT_LABEL: Record<string, string> = {
   mcp_remote: "remote http",
+  connector: "connector",
   local_stdio: "local stdio",
 };
 
 /** Mono URL (remote) or command-template (stdio) subtitle for a connection row. */
 export function connectionEndpoint(conn: ToolConnection): string | null {
   const config = { ...(conn.transportConfig ?? {}), ...(conn.config ?? {}) } as Record<string, unknown>;
+  if (conn.transport === "connector" && typeof config.upstream === "string") return `connector → ${config.upstream}`;
   const url = config.url ?? config.endpoint ?? config.endpointUrl;
   if (typeof url === "string" && url.trim()) return redactUrlSecrets(url);
   const template = config.templateId ?? config.template ?? config.command;

@@ -4567,6 +4567,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     .filter(
       (connection) =>
         (connection.transport === "mcp_remote" ||
+          connection.transport === "connector" ||
           connection.transport === "local_stdio") &&
         !allInstalledConnectionIds.has(connection.id),
     )
@@ -4583,12 +4584,14 @@ export async function buildPaperclipRuntimeMcpServers(input: {
           connection.transportConfig?.sourceTemplateKey === "github")) ||
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
       (connection.transport === "mcp_remote" ||
+          connection.transport === "connector" ||
         connection.transport === "local_stdio" || githubBotConnectionIds.has(connection.id)),
   );
   const unhealthyConnections = resolvedInstalledConnections.filter(
     (connection) =>
       permittedConnectionIds.has(connection.id) &&
       (connection.transport === "mcp_remote" ||
+          connection.transport === "connector" ||
         connection.transport === "local_stdio") &&
       (!connection.enabled ||
         connection.status !== "active" ||

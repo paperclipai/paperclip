@@ -2661,6 +2661,27 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("rejects reusing a same-named application whose type does not match the transport", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    await service.createApplication(company.id, {
+      name: "Shared name fixture",
+      type: "rest_api",
+    });
+
+    await expect(service.createConnection(company.id, {
+      applicationName: "Shared name fixture",
+      name: "Shared name fixture",
+      transport: "local_stdio",
+      config: { templateId: "paperclip.echo-calculator-time" },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Connection transport must match application type",
+    });
+    expect(await db.select().from(toolConnections)
+      .where(eq(toolConnections.companyId, company.id))).toEqual([]);
+  });
+
   it("rejects the obsolete Anthropic REST setup before storing credentials", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

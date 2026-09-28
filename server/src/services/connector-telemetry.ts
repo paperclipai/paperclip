@@ -73,8 +73,11 @@ export function invocationOrigin(
   return isTestOrigin ? "setup_test" : invocation.actorType;
 }
 
-function isToolPurpose(connection: Pick<ToolConnectionRow, "connectionPurpose">): boolean {
-  return connection.connectionPurpose === "tool";
+function isToolPurpose(connection: Pick<ToolConnectionRow, "connectionPurpose" | "transport">): boolean {
+  // `transport: "connector"` is not part of the telemetry contract yet. Emit
+  // nothing for it rather than an undeclared dimension value; adding it needs
+  // the generated contract update and privacy review (AGENTS.md §5.7).
+  return connection.connectionPurpose === "tool" && connection.transport !== "connector";
 }
 
 /**
