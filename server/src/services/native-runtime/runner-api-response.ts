@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, open, rm, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
+import { RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiResponseLimitError, RunnerApiResponseCleanupError } from "./runner-api-response-limits.js";
 
 export type RunnerApiResponseBody = Buffer | { path: string; byteSize: number; sha256: string };
 
@@ -25,11 +25,13 @@ export async function captureRunnerApiResponse(response: Response, inlineBytes: 
   const prefix: Buffer[] = [];
   const hash = createHash("sha256");
   const dispose = async () => {
-    try { await file?.close(); }
-    finally {
-      file = undefined;
-      if (directory) await rm(directory, { recursive: true, force: true });
-    }
+    try {
+      try { await file?.close(); }
+      finally {
+        file = undefined;
+        if (directory) await rm(directory, { recursive: true, force: true });
+      }
+    } catch (error) { throw new RunnerApiResponseCleanupError(error); }
   };
   try {
     if (Number(response.headers.get("content-length")) > maxBytes) {

@@ -53,7 +53,7 @@ describe("bounded response capture receipts", () => {
     input.reserveResponseCapture = async () => settle;
     input.saveResponse = async () => { throw new Error("storage unavailable"); };
     await expect(executeRunnerApi({ operationId: projects }, context, input)).rejects.toThrow("storage unavailable");
-    expect(settle).toHaveBeenCalledExactlyOnceWith(bytes.length);
+    expect(settle).toHaveBeenCalledExactlyOnceWith(bytes.length, true);
   });
 });
 

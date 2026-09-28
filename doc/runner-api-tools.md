@@ -73,8 +73,25 @@ of existing assets need no reservation. Concurrent large captures are limited
 to **two per company and four per server process**, including the storage upload
 and temporary-file cleanup. Budget exhaustion returns `api_response_capture_limit`;
 concurrency exhaustion returns `api_response_capture_busy` without queuing more
-large transfers. These are capture safeguards, not a company-wide storage quota:
-normal retention, storage capacity, and backend limits still apply across runs.
+large transfers. A **20 GiB company-wide quota** counts all stored `runner-api` snapshots plus
+unattached reservations. Admission uses a company database lock, so runs and
+server processes share the same quota. Existing snapshots from before this
+change count too. Attaching an asset converts its reservation to actual stored
+bytes; deleting the asset frees that capacity. Small binary snapshots also need
+storage admission. Ordinary inline text/JSON and existing-asset pages do not.
+
+Operators can set `PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES` to a positive
+safe integer of at least 1 GiB. Invalid values fall back to 20 GiB. No zero or
+unlimited setting is accepted. This quota covers API snapshots, not all company
+attachments. Storage capacity and backend limits still apply.
+
+Handled pre-storage failures release the company reservation after temporary
+file cleanup, but retain the run's charge against retry loops. A crash, failed
+cleanup, or ambiguous storage write keeps an unattached reservation. Operators
+must reconcile possible orphan files/objects before deleting that reservation
+from `runner_api_response_reservations`; no automatic expiry silently refunds
+possibly occupied space. Linked rows are removed with their asset. Deleting a
+run does not release its unattached company reservations.
 
 Temporary files are removed on success or failure. Long captures revalidate the
 active run at least every MiB or at the next chunk after one second, and again

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { access, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { captureRunnerApiResponse } from "./runner-api-response.js";
-import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
+import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
 
 const controller = () => new AbortController();
 describe("streamed API response capture", () => {
@@ -116,6 +116,16 @@ describe("streamed API response capture", () => {
 });
 
 describe("large response concurrency", () => {
+  it("only accepts finite positive operator quotas, never unlimited settings", () => {
+    try {
+      for (const value of ["0", "-1", "Infinity", "NaN", "1", "9007199254740992"]) {
+        vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", value);
+        expect(runnerApiCompanyCaptureMaxBytes()).toBe(20 * RUNNER_API_RESPONSE_MAX_BYTES);
+      }
+      vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+      expect(runnerApiCompanyCaptureMaxBytes()).toBe(2 * RUNNER_API_RESPONSE_MAX_BYTES);
+    } finally { vi.unstubAllEnvs(); }
+  });
   it("limits each company and the server and releases slots idempotently", () => {
     const releases: Array<() => void> = [];
     try {

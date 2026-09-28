@@ -28,11 +28,13 @@ import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
-import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
+import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  assets,
+  runnerApiResponseReservations,
   agents,
   agentWakeupRequests,
   chatEndpoints,
@@ -529,6 +531,8 @@ export class PaperclipRunnerToolAuthority {
     const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, bound.actor.adapterType, this.binding.runId, bound.run.responsibleUserId);
     if (!token) throw new Error("Paperclip run authentication is unavailable");
     const execute = async () => {
+      let reservationId: string | undefined;
+      let storageAttempted = false;
       const current = await this.#boundContext();
       if (!runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled)) throw new Error("paperclip_runner_tool_not_advertised");
       return executeRunnerApi(input, { ...context, workMode: current.issue.workMode }, {
@@ -539,11 +543,22 @@ export class PaperclipRunnerToolAuthority {
           validateRunnerApiCall(input, { ...context, workMode: fresh.issue.workMode });
         },
         readFile: (file) => this.#readApiFile(file),
-        reserveResponseCapture: () => this.#reserveApiResponseCapture(),
+        reserveResponseCapture: async () => {
+          const reservation = await this.#reserveApiResponseCapture();
+          reservationId = reservation.id;
+          return (completedBytes, cleaned) => reservation.settle(completedBytes, cleaned, storageAttempted);
+        },
         saveResponse: async (bytes, contentType) => {
+          if (!reservationId) throw new Error("API response storage reservation is missing");
           const storage = this.binding.storage ?? getStorageService();
+          storageAttempted = true;
           const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, ...(Buffer.isBuffer(bytes) ? { body: bytes } : { body: createReadStream(bytes.path), byteSize: bytes.byteSize, sha256: bytes.sha256 }) });
-          const asset = await assetService(this.db).create(this.binding.companyId, { ...saved, createdByAgentId: this.binding.agentId }).catch(async error => {
+          const asset = await this.db.transaction(async tx => {
+            await this.#lockApiCaptureCompany(tx as unknown as Db);
+            const asset = await assetService(tx as unknown as Db).create(this.binding.companyId, { ...saved, createdByAgentId: this.binding.agentId });
+            await tx.update(runnerApiResponseReservations).set({ assetId: asset.id, reservedBytes: asset.byteSize }).where(and(eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId)));
+            return asset;
+          }).catch(async error => {
             await storage.deleteObject(this.binding.companyId, saved.objectKey).catch(() => {});
             throw error;
           });
@@ -595,10 +610,16 @@ export class PaperclipRunnerToolAuthority {
     return result;
   }
 
-  async #reserveApiResponseCapture(): Promise<(completedBytes?: number) => Promise<void>> {
+  async #lockApiCaptureCompany(tx: Db): Promise<void> {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`runner-api-capture:${this.binding.companyId}`}, 0))`);
+  }
+
+  async #reserveApiResponseCapture() {
     const release = acquireRunnerApiResponseSlot(this.binding.companyId);
+    let id: string;
     try {
-      await this.db.transaction(async tx => {
+      id = await this.db.transaction(async tx => {
+        await this.#lockApiCaptureCompany(tx as unknown as Db);
         const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
         const resultJson = record(locked.run.resultJson);
         const used = resultJson.apiResponseCaptureBytes ?? 0;
@@ -606,19 +627,40 @@ export class PaperclipRunnerToolAuthority {
           || used + RUNNER_API_RESPONSE_MAX_BYTES > RUNNER_API_RESPONSE_RUN_MAX_BYTES) {
           throw new RunnerApiResponseLimitError("api_response_capture_limit", "This run has insufficient capture budget (4 GiB per run). Read an existing asset or narrow the query.");
         }
+        // One company lock covers all runs/processes. Stored assets include
+        // snapshots from before reservations existed; attached reservations
+        // are excluded so completed snapshots are counted exactly once.
+        const [usage] = await tx.select({ bytes: sql<string>`
+          coalesce((select sum(${assets.byteSize}) from ${assets}
+            where ${assets.companyId} = ${this.binding.companyId}
+              and ${assets.objectKey} like ${`${this.binding.companyId}/runner-api/%`}), 0)
+          + coalesce((select sum(${runnerApiResponseReservations.reservedBytes}) from ${runnerApiResponseReservations}
+            where ${runnerApiResponseReservations.companyId} = ${this.binding.companyId}
+              and ${runnerApiResponseReservations.assetId} is null), 0)` }).from(heartbeatRuns).where(eq(heartbeatRuns.id, this.binding.runId));
+        const companyBytes = Number(usage.bytes);
+        if (!Number.isSafeInteger(companyBytes) || companyBytes < 0 || companyBytes + RUNNER_API_RESPONSE_MAX_BYTES > runnerApiCompanyCaptureMaxBytes()) {
+          throw new RunnerApiResponseLimitError("api_response_company_storage_limit", "Company API snapshot storage quota is exhausted. Read an existing asset or ask the operator to remove old snapshots or increase the quota.");
+        }
         // Reserve worst-case bytes durably before creating a temporary file.
         // Interrupted/failed captures keep the reservation, preventing retry
         // loops and process restarts from resetting this run's disk-I/O budget.
         await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used + RUNNER_API_RESPONSE_MAX_BYTES } }).where(eq(heartbeatRuns.id, this.binding.runId));
+        const [reservation] = await tx.insert(runnerApiResponseReservations).values({ companyId: this.binding.companyId, runId: this.binding.runId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES }).returning({ id: runnerApiResponseReservations.id });
+        return reservation.id;
       });
     } catch (error) { release(); throw error; }
     let settled = false;
-    return async completedBytes => {
+    return { id, settle: async (completedBytes?: number, cleaned?: boolean, storageAttempted?: boolean) => {
       if (settled) return;
       settled = true;
       try {
-        if (completedBytes === undefined) return;
         await this.db.transaction(async tx => {
+          await this.#lockApiCaptureCompany(tx as unknown as Db);
+          // Reclaim a handled pre-storage failure only after disk cleanup.
+          // Crashes, failed cleanup, and ambiguous storage failures keep their
+          // reservation until an operator reconciles the possible orphan data.
+          if (cleaned && !storageAttempted) await tx.delete(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.id, id), isNull(runnerApiResponseReservations.assetId)));
+          if (completedBytes === undefined) return;
           const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("update");
           if (!run) return;
           const resultJson = record(run.resultJson);
@@ -627,7 +669,7 @@ export class PaperclipRunnerToolAuthority {
           await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used - RUNNER_API_RESPONSE_MAX_BYTES + completedBytes } }).where(eq(heartbeatRuns.id, run.id));
         });
       } finally { release(); }
-    };
+    } };
   }
 
   async #readApiFile(file: RunnerApiFile): Promise<{ bytes: Buffer; filename: string; contentType: string }> {

@@ -3,7 +3,7 @@ import { badRequest, forbidden, unprocessable } from "../../errors.js";
 import { runnerApiOperation, type RunnerApiOperation } from "./runner-api-catalog.js";
 import { captureRunnerApiResponse, type RunnerApiResponseBody } from "./runner-api-response.js";
 import { runnerApiRestriction } from "./runner-api-policy.js";
-import { RunnerApiResponseLimitError, RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
+import { RunnerApiResponseLimitError, RunnerApiResponseCleanupError, RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
 
 /** Request/upload bound only. Response capture has a separate streamed limit. */
 export const RUNNER_API_MAX_BYTES = 10 * 1024 * 1024;
@@ -42,7 +42,7 @@ export interface RunnerApiIo {
   /** Revalidate server-owned authority after asynchronous file preparation. */
   beforeDispatch?(): Promise<void>;
   /** Reserve before spilling. Settle completed bytes; failed captures retain their reservation. */
-  reserveResponseCapture?(): Promise<(completedBytes?: number) => Promise<void>>;
+  reserveResponseCapture?(): Promise<(completedBytes?: number, cleanupSucceeded?: boolean) => Promise<void>>;
   readFile(file: RunnerApiFile): Promise<{ bytes: Buffer; filename: string; contentType: string }>;
   saveResponse(bytes: RunnerApiResponseBody, contentType: string): Promise<Record<string, unknown>>;
 }
@@ -197,10 +197,16 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
   let response: Response;
   let bytes: Buffer;
   let captured: Awaited<ReturnType<typeof captureRunnerApiResponse>> | undefined;
-  let settleCapture: ((completedBytes?: number) => Promise<void>) | undefined;
-  const disposeCapture = async () => {
-    try { await captured?.dispose(); }
-    finally { await settleCapture?.(captured?.byteSize); }
+  let settleCapture: ((completedBytes?: number, cleanupSucceeded?: boolean) => Promise<void>) | undefined;
+  const disposeCapture = async (priorCleanupSucceeded = true) => {
+    let cleaned = false;
+    try { await captured?.dispose(); cleaned = priorCleanupSucceeded; }
+    finally { await settleCapture?.(captured?.byteSize, cleaned); }
+  };
+  const saveResponse = async (body: RunnerApiResponseBody, type: string) => {
+    // Small binary responses also create assets and need storage admission.
+    settleCapture ??= await io.reserveResponseCapture?.();
+    return io.saveResponse(body, type);
   };
   await io.beforeDispatch?.();
   const controller = new AbortController();
@@ -221,7 +227,7 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
         input.responseText ? textLimit + 1 : RUNNER_API_INLINE_BYTES);
     }
   } catch (error) {
-    await disposeCapture();
+    await disposeCapture(!(error instanceof RunnerApiResponseCleanupError));
     return { ok: false, status: null, operationId: operation.operationId,
       error: error instanceof RunnerApiResponseLimitError ? error.code : "api_transport_failure",
       ...(error instanceof RunnerApiResponseLimitError ? { message: error.message, maxResponseBytes: RUNNER_API_RESPONSE_MAX_BYTES } : {}),
@@ -275,7 +281,7 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
       }
       const nextOffset = baseOffset + end;
       const artifact = captured && captured.byteSize > RUNNER_API_INLINE_BYTES
-        ? await io.saveResponse(captured.body, type) : undefined;
+        ? await saveResponse(captured.body, type) : undefined;
       return { ...base, data, ...(artifact ? { artifact, guidance: "Continue reading this saved artifact with GET /api/assets/{assetId}/content and responseText.nextOffsetBytes for a stable snapshot." } : {}), responseText: { offsetBytes, nextOffsetBytes: nextOffset < totalBytes ? nextOffset : null, totalBytes } };
     }
     if (assetTextRange && response.ok && (totalBytes > RUNNER_API_INLINE_BYTES || !/json|^text\//i.test(type))) {
@@ -289,7 +295,7 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
     }
     if (!totalBytes) return { ...base, data: null };
     if (totalBytes > RUNNER_API_INLINE_BYTES || !/json|^text\//i.test(type)) {
-      return { ...base, artifact: await io.saveResponse(captured?.body ?? bytes, type), byteSize: totalBytes, preview: /json|^text\//i.test(type) ? bytes.subarray(0, 2000).toString("utf8") : null,
+      return { ...base, artifact: await saveResponse(captured?.body ?? bytes, type), byteSize: totalBytes, preview: /json|^text\//i.test(type) ? bytes.subarray(0, 2000).toString("utf8") : null,
         ...(/json|^text\//i.test(type) ? { guidance: "Read the saved artifact with GET /api/assets/{assetId}/content and responseText: { offsetBytes: 0 }. Continue with responseText.nextOffsetBytes until null. Do not repeat a mutation to read its response." } : {}) };
     }
     const text = bytes.toString("utf8");
@@ -298,5 +304,10 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
       catch { return { ...base, ok: false, error: "invalid_json_response", data: text, ...(mutation ? uncertainty : {}) }; }
     }
     return { ...base, data: text };
+  } catch (error) {
+    if (!(error instanceof RunnerApiResponseLimitError)) throw error;
+    return { ok: false, status: response.status, operationId: operation.operationId, error: error.code, message: error.message,
+      outcome: ["GET", "HEAD", "OPTIONS"].includes(operation.method) ? "read_failed" : "unknown",
+      guidance: "Inspect current state before retrying a mutation; it may already have succeeded." };
   } finally { await disposeCapture(); }
 }
