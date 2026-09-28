@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { execute, mapFinalResultForTest, parseSseFramesForTest, rateLimitRetryDelayForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import { parseHermesGatewayStdoutLine } from "../ui/parse-stdout.js";
 
@@ -623,6 +623,111 @@ describe("execute", () => {
     expect(result.errorMessage).toContain("Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY");
   });
 
+  it("retries run create on gateway 429 before succeeding", async () => {
+    vi.useFakeTimers();
+    try {
+      let createCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          createCalls += 1;
+          if (createCalls === 1) {
+            return new Response(JSON.stringify({ error: "rate limit exceeded" }), { status: 429, headers: { "retry-after": "1" } });
+          }
+          return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          return new Response(
+            sseStream(["event: run.completed", "data: {\"status\":\"completed\",\"output\":\"done\"}", ""].join("\n")),
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(0);
+      expect(result.summary).toBe("done");
+      expect(createCalls).toBe(2);
+      expect(ctx.onDispatch).toHaveBeenCalledTimes(1);
+      const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
+      expect(logText).toContain("run create rate limited (HTTP 429)");
+      expect(logText).toContain("retry 1/3");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces the 429 for transient retry scheduling after exhausting create retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          return new Response(JSON.stringify({ error: "rate limit exceeded" }), { status: 429, headers: { "retry-after": "1" } });
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(120_000);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.retryNotBefore).toBe("1");
+      const createCalls = fetchMock.mock.calls.filter(
+        ([input, init]) => String(input).endsWith("/v1/runs") && init?.method === "POST",
+      );
+      expect(createCalls).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry when the gateway Retry-After exceeds the in-process budget", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ error: "rate limit exceeded" }), { status: 429, headers: { "retry-after": "45" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 60,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    expect(result.retryNotBefore).toBe("45");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry non-429 run create failures", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "bad key" }), { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 60,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_auth_failed");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("includes network causes in connection failure messages", async () => {
     const cause = Object.assign(new Error("getaddrinfo ENOTFOUND host.docker.internal"), { code: "ENOTFOUND" });
     vi.stubGlobal("fetch", vi.fn(async () => {
@@ -1139,5 +1244,35 @@ describe("mapFinalResultForTest", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
+  });
+});
+
+describe("rateLimitRetryDelayForTest", () => {
+  it("schedules jittered exponential backoff when no Retry-After is present", () => {
+    expect(rateLimitRetryDelayForTest(0, null, () => 0)).toBe(2_000);
+    expect(rateLimitRetryDelayForTest(0, null, () => 0.999)).toBeLessThan(3_000);
+    expect(rateLimitRetryDelayForTest(1, undefined, () => 0)).toBe(8_000);
+    expect(rateLimitRetryDelayForTest(1, "", () => 0.999)).toBeLessThan(9_000);
+    expect(rateLimitRetryDelayForTest(2, "not-a-date", () => 0)).toBe(30_000);
+  });
+
+  it("floors the wait at a bounded server Retry-After", () => {
+    expect(rateLimitRetryDelayForTest(0, "5", () => 0)).toBe(5_000);
+    expect(rateLimitRetryDelayForTest(1, "1", () => 0)).toBe(8_000);
+    expect(rateLimitRetryDelayForTest(2, "0", () => 0)).toBe(30_000);
+    expect(rateLimitRetryDelayForTest(0, "30", () => 0)).toBe(30_000);
+  });
+
+  it("parses HTTP-date Retry-After values as deltas from now", () => {
+    const at = new Date(Date.now() + 10_000).toUTCString();
+    const delay = rateLimitRetryDelayForTest(0, at, () => 0);
+    // toUTCString truncates to whole seconds, so the delta loses up to 1s.
+    expect(delay).toBeGreaterThanOrEqual(9_000);
+    expect(delay).toBeLessThanOrEqual(10_000);
+  });
+
+  it("returns null when retries are exhausted or Retry-After exceeds the budget", () => {
+    expect(rateLimitRetryDelayForTest(3, null, () => 0)).toBeNull();
+    expect(rateLimitRetryDelayForTest(0, "45", () => 0)).toBeNull();
   });
 });

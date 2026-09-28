@@ -19,6 +19,9 @@ import {
   DEFAULT_EVENT_RECONNECT_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_TIMEOUT_SEC,
+  RATE_LIMIT_RETRY_AFTER_MAX_MS,
+  RATE_LIMIT_RETRY_DELAYS_MS,
+  RATE_LIMIT_RETRY_JITTER_MS,
   STOP_GRACE_MS,
 } from "../shared/constants.js";
 import {
@@ -473,6 +476,34 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
   return body;
 }
 
+function parseRetryAfterMs(raw: string | null | undefined): number | null {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return Number.parseInt(value, 10) * 1_000;
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, at - Date.now());
+}
+
+/**
+ * Wait before the next run-create attempt after an HTTP 429, or null when the
+ * attempt budget is exhausted or the gateway's Retry-After asks for more wait
+ * than the invocation should hold. Callers then surface the 429 untouched so
+ * the platform's transient retry scheduling can honor the Retry-After.
+ */
+export function rateLimitRetryDelayForTest(
+  attempt: number,
+  retryAfterRaw: string | null | undefined,
+  random: () => number = Math.random,
+): number | null {
+  const scheduled = RATE_LIMIT_RETRY_DELAYS_MS[attempt];
+  if (scheduled === undefined) return null;
+  const retryAfter = parseRetryAfterMs(retryAfterRaw);
+  if (retryAfter !== null && retryAfter > RATE_LIMIT_RETRY_AFTER_MAX_MS) return null;
+  const base = retryAfter !== null ? Math.max(scheduled, retryAfter) : scheduled;
+  return base + Math.floor(random() * RATE_LIMIT_RETRY_JITTER_MS);
+}
+
 function extractRunId(value: unknown): string | null {
   const record = asRecord(value);
   return nonEmpty(record?.run_id) ?? nonEmpty(record?.runId) ?? nonEmpty(record?.id);
@@ -592,11 +623,11 @@ async function handleEvent(
   }
 }
 
-async function delay(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return;
+async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
   await new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
+    signal?.addEventListener(
       "abort",
       () => {
         clearTimeout(timer);
@@ -994,11 +1025,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // remote create request is its dispatch boundary. Report it before the
     // request can block so continuation gates may release their issue lock.
     ctx.onDispatch?.();
-    const created = await fetchJson(createRunUrl, {
-      method: "POST",
-      headers: runHeaders,
-      body: JSON.stringify(body),
-    });
+    let created: unknown;
+    let rateLimitAttempt = 0;
+    // Gateway rate-limit bursts (many seat wakes landing in the same minute)
+    // surface as HTTP 429 on the create call and used to fail the run at
+    // invocation. Retry with jittered backoff, honoring a bounded server
+    // Retry-After, before surfacing the 429 for the platform's own transient
+    // retry scheduling.
+    while (true) {
+      try {
+        created = await fetchJson(createRunUrl, {
+          method: "POST",
+          headers: runHeaders,
+          body: JSON.stringify(body),
+        });
+        break;
+      } catch (err) {
+        const delayMs = (err as HermesHttpError).status === 429
+          ? rateLimitRetryDelayForTest(rateLimitAttempt, (err as HermesHttpError).retryNotBefore)
+          : null;
+        if (delayMs === null) throw err;
+        await ctx.onLog(
+          "stderr",
+          `[hermes-gateway] run create rate limited (HTTP 429); retrying in ${Math.round(delayMs / 100) / 10}s (retry ${rateLimitAttempt + 1}/${RATE_LIMIT_RETRY_DELAYS_MS.length})\n`,
+        );
+        await delay(delayMs, ctx.signal);
+        if (ctx.signal?.aborted) throw err;
+        rateLimitAttempt += 1;
+      }
+    }
     runId = extractRunId(created);
     if (!runId) {
       return {
