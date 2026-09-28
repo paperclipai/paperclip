@@ -591,6 +591,46 @@ describe("TaskChatComposer", () => {
     expect(onAdd.mock.calls[0]?.[3]).toEqual([id]);
   });
 
+  it("names a pending upload that blocks the send and clears it after", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const id = "22222222-2222-4222-8222-222222222222";
+    let resolveUpload!: (value: unknown) => void;
+    const onAttachImage = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        resolveUpload = resolve;
+      }),
+    );
+    render(
+      <TaskChatComposer
+        onAdd={onAdd}
+        workMode="standard"
+        onAttachImage={onAttachImage}
+      />,
+    );
+    const alert = () =>
+      container.querySelector('[data-testid="task-chat-goal-error"]');
+    typeText("Inspect the picture.");
+    const upload = mdxEditorMockState.imagePluginOptions!.imageUploadHandler!(
+      new File(["png"], "image.png", { type: "image/png" }),
+    );
+    await flushAsync();
+    expect(alert()).toBeNull();
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(alert()?.textContent).toBe(
+      "Waiting for the attachment upload to finish.",
+    );
+    resolveUpload({
+      id,
+      contentPath: `/api/attachments/${id}/content`,
+      originalFilename: "image.png",
+    });
+    await upload;
+    await flushAsync();
+    expect(alert()).toBeNull();
+  });
+
   it("does not infer binding from arbitrary pasted attachment Markdown", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
