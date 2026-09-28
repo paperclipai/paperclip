@@ -14,6 +14,10 @@ const sessionManagement: AdapterSessionManagement = {
     maxSessionRuns: 0,
     maxRawInputTokens: 0,
     maxSessionAgeHours: 0,
+    maxCachedInputTokens: 0,
+    rotateOnZeroOpenIssues: false,
+    rotateOnNewIssueWake: false,
+    maxSessionTurns: 0,
   },
 };
 
