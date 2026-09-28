@@ -7,6 +7,9 @@ import { and, eq } from "drizzle-orm";
 import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
+  ZAI_ANTHROPIC_BASE_URL,
+  ZAI_DEFAULT_MODEL,
+  ZAI_FAST_MODEL,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
@@ -178,6 +181,42 @@ function managedAiHomeEnvironment(home: string): Record<string, string> {
   };
 }
 
+/**
+ * Z.AI is Anthropic Messages-compatible: route the Claude Code runtime at its
+ * endpoint and map Claude Code's internal model tiers onto the GLM family,
+ * because claude-* ids are not served by this provider. An explicit agent
+ * model (config.model or env.ANTHROPIC_MODEL) keeps precedence over the GLM
+ * default.
+ */
+export function applyZaiRuntimeRouting(
+  env: Record<string, unknown>,
+  config: Record<string, unknown>,
+): void {
+  env.ANTHROPIC_BASE_URL = ZAI_ANTHROPIC_BASE_URL;
+  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = ZAI_FAST_MODEL;
+  env.ANTHROPIC_DEFAULT_SONNET_MODEL = ZAI_DEFAULT_MODEL;
+  env.ANTHROPIC_DEFAULT_OPUS_MODEL = ZAI_DEFAULT_MODEL;
+  // Agent config env holds bindings (plain strings or {type:"plain"} records),
+  // so resolve either shape before deciding the default model.
+  const explicitBindingValue = (value: unknown): string | null => {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (
+      value &&
+      typeof value === "object" &&
+      (value as { type?: unknown }).type === "plain"
+    ) {
+      const inner = (value as { value?: unknown }).value;
+      if (typeof inner === "string" && inner.trim()) return inner.trim();
+    }
+    return null;
+  };
+  const configuredEnv = config.env as Record<string, unknown> | undefined;
+  const explicitModel =
+    explicitBindingValue(config.model) ??
+    explicitBindingValue(configuredEnv?.ANTHROPIC_MODEL);
+  if (!explicitModel) env.ANTHROPIC_MODEL = ZAI_DEFAULT_MODEL;
+}
+
 /** Only the server-created credential home is volatile; retain all other config. */
 export function managedAiSessionFingerprintConfig(
   config: Record<string, unknown>,
@@ -292,6 +331,9 @@ export async function prepareManagedAiRuntime(
         provider: { openrouter: { options: { apiKey: value } } },
       });
       env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+    }
+    if (input.binding.provider === "zai") {
+      applyZaiRuntimeRouting(env, input.config);
     }
     const generation = createHash("sha256")
       .update(value)

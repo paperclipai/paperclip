@@ -13,6 +13,9 @@ const PROVIDER_AUTH_ENV_KEYS: Record<AiProvider, readonly string[]> = {
   openai: ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_HOME", "OPENAI_BASE_URL"],
   openrouter: ["OPENROUTER_API_KEY", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "PAPERCLIP_OPENCODE_PROVIDERS"],
   xai: ["XAI_API_KEY", "GROK_API_KEY", "GROK_HOME", "XAI_BASE_URL"],
+  // Z.AI runs on the same ANTHROPIC_* surface through its Anthropic-compatible
+  // endpoint, so the same keys express a child auth override.
+  zai: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"],
 };
 
 /** A hire inherits a connection choice, never its manager's credentials or identity. */
