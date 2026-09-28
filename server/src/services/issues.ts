@@ -2051,6 +2051,52 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
+/**
+ * Timer wakes often start with no `issueId`/`taskId` in `contextSnapshot`.
+ * After checkout, same-issue comment/status PATCH still goes through
+ * `observeCrossIssueInfluence`, which fails closed when the run has no source
+ * issue (`cross_issue_influence_run_context_required`).
+ *
+ * Stamp the checked-out issue only when the run has no source attribution yet.
+ * Never overwrite an existing task-scoped wake's issueId/taskId.
+ * Only stamp live checkout runs (`queued` / `running`) so a stale same-agent
+ * run id cannot gain issue attribution after the fact.
+ */
+export async function stampMissingIssueIdsOntoRunContext(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    issueId: string;
+  },
+): Promise<boolean> {
+  const updated = await db
+    .update(heartbeatRuns)
+    .set({
+      contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || jsonb_build_object(
+        'issueId', ${input.issueId}::text,
+        'taskId', ${input.issueId}::text
+      )`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+        sql`coalesce(
+          nullif(trim(coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', '')), ''),
+          nullif(trim(coalesce(${heartbeatRuns.contextSnapshot} ->> 'taskId', '')), '')
+        ) is null`,
+      ),
+    )
+    .returning({ id: heartbeatRuns.id })
+    .then((rows) => rows[0] ?? null);
+  return Boolean(updated);
+}
+
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
   "succeeded",
   "interrupted",
@@ -11327,6 +11373,21 @@ export function issueService(db: Db) {
         kind: "work",
       });
 
+      const stampAndEnrich = async <T extends Record<string, unknown>>(
+        row: T,
+      ) => {
+        if (checkoutRunId) {
+          await stampMissingIssueIdsOntoRunContext(db, {
+            companyId: issueCompany.companyId,
+            agentId,
+            runId: checkoutRunId,
+            issueId: id,
+          });
+        }
+        const [enriched] = await withIssueLabels(db, [row as never]);
+        return enriched;
+      };
+
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         issueCompany.companyId,
@@ -11418,8 +11479,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
-        const [enriched] = await withIssueLabels(db, [updated]);
-        return enriched;
+        return stampAndEnrich(updated);
       }
 
       const current = await db
@@ -11465,7 +11525,7 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (adopted) return stampAndEnrich(adopted);
       }
 
       if (
@@ -11488,8 +11548,7 @@ export function issueService(db: Db) {
             .where(eq(issues.id, id))
             .then((rows) => rows[0] ?? null);
           if (!row) throw notFound("Issue not found");
-          const [enriched] = await withIssueLabels(db, [row]);
-          return enriched;
+          return stampAndEnrich(row);
         }
       }
 
@@ -11536,8 +11595,7 @@ export function issueService(db: Db) {
             .returning()
             .then((rows) => rows[0] ?? null);
           if (adopted) {
-            const [enriched] = await withIssueLabels(db, [adopted]);
-            return enriched;
+            return stampAndEnrich(adopted);
           }
         }
       }
@@ -11554,8 +11612,7 @@ export function issueService(db: Db) {
           .where(eq(issues.id, id))
           .then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
-        const [enriched] = await withIssueLabels(db, [row]);
-        return enriched;
+        return stampAndEnrich(row);
       }
 
       throw conflict("Issue checkout conflict", {

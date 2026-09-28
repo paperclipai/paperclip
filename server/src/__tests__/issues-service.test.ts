@@ -41,7 +41,9 @@ import {
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  stampMissingIssueIdsOntoRunContext,
 } from "../services/issues.ts";
+import { observeCrossIssueInfluence } from "../services/cross-issue-influence-limit.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -7221,5 +7223,214 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .from(issueComments)
       .where(eq(issueComments.createdByRunId, runId));
     expect(duplicates).toHaveLength(1);
+  });
+});
+
+describeEmbeddedPostgres("issueService checkout stamps timer-wake run context", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-checkout-stamp-issueid-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedTimerWakeCheckout() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TimerWakeAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "timer",
+      // Unscoped timer wake: no issueId/taskId (the bug under test).
+      contextSnapshot: { wakeReason: "heartbeat_timer", source: "timer" },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs disposition after timer checkout",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    return { companyId, agentId, runId, issueId };
+  }
+
+  it("stamps missing issueId/taskId onto the checkout run contextSnapshot", async () => {
+    const seeded = await seedTimerWakeCheckout();
+
+    // Before: timer-wake run has no source issue → influence check fails closed.
+    await expect(
+      observeCrossIssueInfluence(db, {
+        companyId: seeded.companyId,
+        runId: seeded.runId,
+        agentId: seeded.agentId,
+        targetIssueId: seeded.issueId,
+        kind: "update",
+      }),
+    ).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+
+    await svc.checkout(seeded.issueId, seeded.agentId, ["todo"], seeded.runId);
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, seeded.runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run?.contextSnapshot).toMatchObject({
+      wakeReason: "heartbeat_timer",
+      source: "timer",
+      issueId: seeded.issueId,
+      taskId: seeded.issueId,
+    });
+
+    // After: same-issue writes no longer fail closed on missing run context.
+    await expect(
+      observeCrossIssueInfluence(db, {
+        companyId: seeded.companyId,
+        runId: seeded.runId,
+        agentId: seeded.agentId,
+        targetIssueId: seeded.issueId,
+        kind: "update",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("does not overwrite an existing source issue on the run", async () => {
+    const seeded = await seedTimerWakeCheckout();
+    const otherIssueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          wakeReason: "issue_assigned",
+          issueId: otherIssueId,
+          taskId: otherIssueId,
+        },
+      })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+
+    await svc.checkout(seeded.issueId, seeded.agentId, ["todo"], seeded.runId);
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, seeded.runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId: otherIssueId,
+      taskId: otherIssueId,
+    });
+  });
+
+  it("stamp helper is a no-op when issueId is already present", async () => {
+    const seeded = await seedTimerWakeCheckout();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          wakeReason: "heartbeat_timer",
+          issueId: seeded.issueId,
+        },
+      })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+
+    await expect(
+      stampMissingIssueIdsOntoRunContext(db, {
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        runId: seeded.runId,
+        issueId: randomUUID(),
+      }),
+    ).resolves.toBe(false);
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, seeded.runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.contextSnapshot).toMatchObject({ issueId: seeded.issueId });
+    expect(
+      (run?.contextSnapshot as Record<string, unknown> | null)?.taskId,
+    ).toBeUndefined();
+  });
+
+  it("does not stamp a terminal same-agent run", async () => {
+    const seeded = await seedTimerWakeCheckout();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded" })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+
+    await expect(
+      stampMissingIssueIdsOntoRunContext(db, {
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        runId: seeded.runId,
+        issueId: seeded.issueId,
+      }),
+    ).resolves.toBe(false);
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, seeded.runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run?.contextSnapshot).toMatchObject({
+      wakeReason: "heartbeat_timer",
+      source: "timer",
+    });
+    expect(
+      (run?.contextSnapshot as Record<string, unknown> | null)?.issueId,
+    ).toBeUndefined();
+    expect(
+      (run?.contextSnapshot as Record<string, unknown> | null)?.taskId,
+    ).toBeUndefined();
   });
 });
