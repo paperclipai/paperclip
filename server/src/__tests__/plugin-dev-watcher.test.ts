@@ -12,7 +12,11 @@ vi.mock("chokidar", () => ({
   default: chokidarMock,
 }));
 
-import { createPluginDevWatcher, resolvePluginWatchTargets } from "../services/plugin-dev-watcher.js";
+import {
+  createPluginDevWatcher,
+  resolvePluginWatchTargets,
+  shouldEnablePluginDevWatcher,
+} from "../services/plugin-dev-watcher.js";
 
 const tempDirs: string[] = [];
 
@@ -144,5 +148,19 @@ describe("createPluginDevWatcher", () => {
     expect(lifecycle.restartWorker).toHaveBeenCalledWith("plugin-1");
 
     devWatcher.close();
+  });
+});
+
+describe("shouldEnablePluginDevWatcher", () => {
+  it("does not watch plugins in production without explicit opt-in", () => {
+    expect(shouldEnablePluginDevWatcher({ nodeEnv: "production", uiMode: "static", optIn: undefined })).toBe(false);
+    expect(shouldEnablePluginDevWatcher({ nodeEnv: "production", uiMode: "vite-dev", optIn: undefined })).toBe(false);
+    expect(shouldEnablePluginDevWatcher({ nodeEnv: undefined, uiMode: "static", optIn: undefined })).toBe(false);
+  });
+
+  it("retains local Vite development reload and allows an explicit opt-in", () => {
+    expect(shouldEnablePluginDevWatcher({ nodeEnv: undefined, uiMode: "vite-dev", optIn: undefined })).toBe(true);
+    expect(shouldEnablePluginDevWatcher({ nodeEnv: "production", uiMode: "static", optIn: "1" })).toBe(true);
+    expect(shouldEnablePluginDevWatcher({ nodeEnv: "production", uiMode: "static", optIn: "true" })).toBe(false);
   });
 });

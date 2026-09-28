@@ -165,7 +165,7 @@ import {
 } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { setPluginEventBus } from "./services/activity-log.js";
-import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
+import { createPluginDevWatcher, shouldEnablePluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
@@ -1241,11 +1241,17 @@ export async function createApp(
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
-  const devWatcher = createPluginDevWatcher(
-    lifecycle,
-    async (pluginId) =>
-      (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
-  );
+  const devWatcher = shouldEnablePluginDevWatcher({
+    nodeEnv: process.env.NODE_ENV,
+    uiMode: opts.uiMode,
+    optIn: process.env.PAPERCLIP_PLUGIN_DEV_WATCH,
+  })
+    ? createPluginDevWatcher(
+        lifecycle,
+        async (pluginId) =>
+          (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
+      )
+    : null;
   // Auto-provision bundled plugins so their providers are registered for
   // agent runs. Bundles are excluded from the pnpm
   // workspace and built standalone into the image (see Dockerfile), then
