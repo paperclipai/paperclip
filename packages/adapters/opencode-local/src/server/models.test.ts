@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 import {
   discoverOpenCodeModels,
@@ -8,10 +10,30 @@ import {
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
 
+const OPEN_CODE_TEST_ENV_KEYS = [
+  "PAPERCLIP_OPENCODE_COMMAND",
+  "PAPERCLIP_OPENCODE_PROVIDERS",
+  "OPENCODE_ALLOW_ALL_MODELS",
+] as const;
+
+type OpenCodeTestEnv = Record<(typeof OPEN_CODE_TEST_ENV_KEYS)[number], string | undefined>;
+let originalOpenCodeEnv: OpenCodeTestEnv;
+
 describe("openCode models", () => {
+  beforeEach(() => {
+    originalOpenCodeEnv = Object.fromEntries(
+      OPEN_CODE_TEST_ENV_KEYS.map((key) => [key, process.env[key]]),
+    ) as OpenCodeTestEnv;
+    for (const key of OPEN_CODE_TEST_ENV_KEYS) delete process.env[key];
+  });
+
   afterEach(() => {
-    delete process.env.PAPERCLIP_OPENCODE_COMMAND;
-    delete process.env.OPENCODE_ALLOW_ALL_MODELS;
+    vi.unstubAllEnvs();
+    for (const key of OPEN_CODE_TEST_ENV_KEYS) {
+      const value = originalOpenCodeEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     resetOpenCodeModelsCacheForTests();
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -21,6 +43,83 @@ describe("openCode models", () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND =
       "__paperclip_missing_opencode_command__";
     await expect(listOpenCodeModels()).resolves.toEqual([]);
+  });
+
+  it("materializes global provider configuration before catalog discovery", async () => {
+    vi.stubEnv("PAPERCLIP_OPENCODE_PROVIDERS", JSON.stringify({
+      "9router": {
+        npm: "@ai-sdk/openai-compatible",
+        options: { baseURL: "https://router.example/v1" },
+        models: { "muse-spark-1.2-contributor-combo": { name: "Muse Spark" } },
+      },
+    }));
+    let capturedRuntimeConfig: { provider?: Record<string, { models?: Record<string, unknown> }> } | undefined;
+    const spy = vi.spyOn(serverUtils, "runChildProcess").mockImplementation(async (...args) => {
+      const options = args[3] as { env?: Record<string, string> };
+      const runtimeConfigHome = options.env?.XDG_CONFIG_HOME;
+      capturedRuntimeConfig = JSON.parse(
+        await fs.readFile(path.join(runtimeConfigHome!, "opencode", "opencode.json"), "utf8"),
+      ) as typeof capturedRuntimeConfig;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "9router/muse-spark-1.2-contributor-combo\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      };
+    });
+
+    await expect(listOpenCodeModels()).resolves.toEqual([
+      {
+        id: "9router/muse-spark-1.2-contributor-combo",
+        label: "9router/muse-spark-1.2-contributor-combo",
+      },
+    ]);
+
+    const options = spy.mock.calls[0]?.[3] as { env?: Record<string, string> };
+    const runtimeConfigHome = options.env?.XDG_CONFIG_HOME;
+    expect(
+      capturedRuntimeConfig?.provider?.["9router"]?.models?.["muse-spark-1.2-contributor-combo"],
+    ).toEqual({ name: "Muse Spark" });
+    expect(options.env?.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("true");
+    expect(spy.mock.calls[0]?.[2]).toEqual(["models"]);
+    await expect(fs.access(runtimeConfigHome!)).rejects.toThrow();
+  });
+
+  it("invalidates the catalog cache when global provider configuration changes", async () => {
+    let discoveryCount = 0;
+    vi.spyOn(serverUtils, "runChildProcess").mockImplementation(async () => {
+      discoveryCount += 1;
+      const model = discoveryCount === 1 ? "model-a" : "model-b";
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: `9router/${model}\n`,
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      };
+    });
+
+    vi.stubEnv(
+      "PAPERCLIP_OPENCODE_PROVIDERS",
+      JSON.stringify({ "9router": { models: { "model-a": {} } } }),
+    );
+    await expect(listOpenCodeModels()).resolves.toEqual([
+      { id: "9router/model-a", label: "9router/model-a" },
+    ]);
+
+    vi.stubEnv(
+      "PAPERCLIP_OPENCODE_PROVIDERS",
+      JSON.stringify({ "9router": { models: { "model-b": {} } } }),
+    );
+    await expect(listOpenCodeModels()).resolves.toEqual([
+      { id: "9router/model-b", label: "9router/model-b" },
+    ]);
+    expect(discoveryCount).toBe(2);
   });
 
   it("rejects when model is missing", async () => {

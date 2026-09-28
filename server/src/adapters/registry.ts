@@ -1028,9 +1028,14 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
+function hasOpenCodeProviderConfiguration(): boolean {
+  return (process.env.PAPERCLIP_OPENCODE_PROVIDERS ?? "").trim().length > 0;
+}
+
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
   const declaredModels = getDeclaredAdapterModels();
-  if (declaredModels && declaredModels[type]?.length) {
+  const useDeclaredModels = type !== "opencode_local" || !hasOpenCodeProviderConfiguration();
+  if (useDeclaredModels && declaredModels && declaredModels[type]?.length) {
     return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
   }
   const adapter = findActiveServerAdapter(type);

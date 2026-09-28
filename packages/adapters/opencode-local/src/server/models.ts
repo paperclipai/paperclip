@@ -7,6 +7,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
+import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -108,6 +109,7 @@ function normalizeEnv(input: unknown): Record<string, string> {
 }
 
 function isVolatileEnvKey(key: string): boolean {
+  if (key === "PAPERCLIP_OPENCODE_PROVIDERS") return false;
   if (VOLATILE_ENV_KEY_EXACT.has(key)) return true;
   return VOLATILE_ENV_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
@@ -214,12 +216,14 @@ export async function discoverOpenCodeModelsCached(
     command?: unknown;
     cwd?: unknown;
     env?: unknown;
+    cacheKeyEnv?: unknown;
   } = {},
 ): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const key = discoveryCacheKey(command, cwd, env);
+  const cacheKeyEnv = normalizeEnv(input.cacheKeyEnv ?? input.env);
+  const key = discoveryCacheKey(command, cwd, cacheKeyEnv);
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);
   const cached = discoveryCache.get(key);
@@ -354,10 +358,31 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
 }
 
 export async function listOpenCodeModels(): Promise<AdapterModel[]> {
+  const discoveryEnv = normalizeEnv(process.env);
+  const hasGlobalProviderConfig = Boolean(
+    discoveryEnv.PAPERCLIP_OPENCODE_PROVIDERS?.trim(),
+  );
+  let preparedRuntimeConfig: Awaited<ReturnType<typeof prepareOpenCodeRuntimeConfig>> | null = null;
   try {
-    return await discoverOpenCodeModelsCached();
+    if (!hasGlobalProviderConfig) return await discoverOpenCodeModelsCached();
+
+    // Keep model discovery consistent with the execution and environment-test
+    // paths. PAPERCLIP_OPENCODE_PROVIDERS is an adapter-level declaration, not
+    // an OpenCode-native environment variable; materialize it into the same
+    // temporary opencode.json used by real runs before invoking the CLI.
+    preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+      env: discoveryEnv,
+      config: {},
+      copySourceConfig: "file",
+    });
+    return await discoverOpenCodeModelsCached({
+      env: preparedRuntimeConfig.env,
+      cacheKeyEnv: discoveryEnv,
+    });
   } catch {
     return [];
+  } finally {
+    await preparedRuntimeConfig?.cleanup().catch(() => {});
   }
 }
 
