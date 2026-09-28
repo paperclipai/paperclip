@@ -5692,6 +5692,70 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
+  it("re-commits a 'Just me' key when the stored grant timestamp carries sub-millisecond precision", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([
+      { name: "query_insight", annotations: { readOnlyHint: true } },
+    ]);
+    const actor = { actorType: "user" as const, actorId: "carol" };
+    const connectInput = {
+      galleryKey: "posthog",
+      connectionMethodKey: "mcp-api-key",
+      configValues: { projectId: "12345", mode: "tools" },
+      grantKind: "user" as const,
+    };
+
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        ...connectInput,
+        credentialValues: { "credentials.authorization": "phx_first-secret" },
+      },
+      actor,
+    );
+
+    // `connection_grants.updated_at` is `timestamptz`, so Postgres keeps
+    // microseconds, but the driver returns a JS `Date` that only carries
+    // milliseconds. Pin a value with sub-millisecond digits — the shape every
+    // grant still holding its `defaultNow()` insert value has — so the retry
+    // below exercises the compare-and-swap against a timestamp the client
+    // cannot represent exactly.
+    await db
+      .update(connectionGrants)
+      .set({ updatedAt: sql`timestamptz '2026-09-28 20:58:10.775053+00'` })
+      .where(eq(connectionGrants.connectionId, connected.connectionId));
+
+    mockToolsList([
+      { name: "query_insight", annotations: { readOnlyHint: true } },
+    ]);
+    await expect(
+      service.connectGalleryApp(
+        company.id,
+        {
+          ...connectInput,
+          credentialValues: {
+            "credentials.authorization": "phx_rotated-secret",
+          },
+          resumeConnectionId: connected.connectionId,
+        },
+        actor,
+      ),
+    ).resolves.toMatchObject({ connectionId: connected.connectionId });
+
+    const { grants } = await service.listConnectionGrants(
+      connected.connectionId,
+      company.id,
+    );
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toMatchObject({
+      kind: "user",
+      subjectUserId: actor.actorId,
+      status: "active",
+    });
+    expect(grants[0]!.credentialSecretRefs.length).toBeGreaterThan(0);
+  });
+
   it("keeps the shared-credential default when no grant kind is chosen", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

@@ -12858,7 +12858,14 @@ export function toolAccessService(
               .where(
                 and(
                   eq(connectionGrants.id, currentGrant.id),
-                  eq(connectionGrants.updatedAt, currentGrant.updatedAt),
+                  // `updated_at` is `timestamptz` (microsecond precision), but the
+                  // driver hands it back as a JS `Date`, which only carries
+                  // milliseconds. Comparing the round-tripped value against the
+                  // column directly therefore never matches a row whose stored
+                  // timestamp has sub-millisecond digits — including every grant
+                  // still holding its `defaultNow()` insert value. Compare both
+                  // sides at the precision the client can actually represent.
+                  sql`date_trunc('milliseconds', ${connectionGrants.updatedAt}) = ${currentGrant.updatedAt.toISOString()}::timestamptz`,
                 ),
               )
               .returning();
