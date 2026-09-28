@@ -22,7 +22,7 @@ Chat work-product rows and branch/runtime cards keep their existing rendering.
 | Pull request | Work-product title, summary, status, and GitHub metadata (`repo`, `number`, `baseRef`, `headRef`, `additions`, `deletions`, `changedFiles`, `state`) |
 | Commit | Work-product title, summary, `repo`, `sha`, `branch`, and diff counts |
 | Document | Issue document body/revision, or the existing materialized Markdown attachment review document |
-| Data | Authenticated attachment CSV content, parsed locally with a 1 MiB limit, at most 200 preview rows and 50 columns; downloads retain the original file |
+| Data | User-requested authenticated attachment CSV content, parsed locally with a 1 MiB limit, at most 200 preview rows and 50 columns; downloads retain the original file |
 | Image | Attachment content path, filename, optional `alt`, `width`, and `height` metadata |
 | Video | Attachment content path, filename, optional `posterUrl` and `durationLabel` metadata; native playback controls |
 | Link preview | Preview work-product URL, title, summary, optional `imageUrl` and `imageAlt` metadata |
@@ -40,7 +40,8 @@ video posters must use local authenticated attachment content URLs; remote
 metadata cannot silently trigger requests from the operator’s browser. Markdown
 card previews follow the same rule; remote images appear as explicit links.
 
-CSV previews only fetch local attachment content endpoints. Malformed, oversized,
+CSV previews load only after the operator clicks **Preview data**. Opening a task
+does not fetch its CSV contents. Previews only fetch local attachment content endpoints. Malformed, oversized,
 or unavailable files retain the download action and explain the preview failure.
 The existing company-scoped APIs continue to authorize all content access.
 Markdown attachments retain the existing server materialization and annotation

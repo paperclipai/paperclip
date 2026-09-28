@@ -675,6 +675,7 @@ export interface FileCardProps extends ArtifactIdentity {
   entries: string[];
   downloadUrl: string;
   openUrl?: string;
+  actions?: ReactNode;
 }
 export function FileCard(props: FileCardProps) {
   return (
@@ -709,6 +710,7 @@ export function FileCard(props: FileCardProps) {
         {...props}
         action={
           <div className="flex flex-wrap items-center gap-2">
+            {props.actions}
             {props.openUrl && (
               <SourceLink url={props.openUrl}>Open file</SourceLink>
             )}

@@ -52,6 +52,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
   const { metadata = null } = props;
   const openGallery = useContext(IssueGalleryContext);
   const [galleryOpen, setGalleryOpen] = useState(false);
+  const [csvRequested, setCsvRequested] = useState(false);
   const image = isImageLikeOutput(props.contentType, props.filename);
   const video = isVideoLikeOutput(props.contentType, props.filename);
   const csv =
@@ -65,7 +66,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
   const data = useQuery({
     queryKey: ["artifact-csv", props.id, props.contentPath, props.updatedAt],
     queryFn: ({ signal }) => loadArtifactCsv(props.contentPath, signal),
-    enabled: localCsv && !tooLarge,
+    enabled: localCsv && !tooLarge && csvRequested,
     retry: false,
     staleTime: Infinity,
   });
@@ -124,16 +125,26 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
         entries={[]}
         downloadUrl={downloadPath}
         openUrl={artifactUrl(props.openPath) || contentPath}
+        actions={
+          localCsv && !tooLarge && !data.isError ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={data.isFetching}
+              onClick={() => setCsvRequested(true)}
+            >
+              {data.isFetching ? "Loading preview…" : "Preview data"}
+            </Button>
+          ) : undefined
+        }
       />
-      {csv && (
+      {csv && (tooLarge || data.isError || !localCsv) && (
         <div className="px-2 text-xs text-muted-foreground" role="status">
           {tooLarge
             ? "CSV is too large to preview. Download the file to view it."
             : data.isError
               ? data.error.message
-              : localCsv
-                ? "Loading CSV preview…"
-                : "CSV preview is unavailable. Download the file to view it."}
+              : "CSV preview is unavailable. Download the file to view it."}
           {data.isError && (
             <Button
               variant="ghost"
