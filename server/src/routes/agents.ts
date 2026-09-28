@@ -6803,26 +6803,54 @@ export function agentRoutes(
     ));
   });
 
+export function decideCancelAuth(actor: any, run: any) {
+  if (!actor.agentId) {
+    return { authorized: true, actorType: "user", actorId: actor.userId };
+  }
+
+  if (actor.agentId !== run.agentId) {
+    return { authorized: false, reason: "Board access required" };
+  }
+
+  if (run.source !== "automation" && run.source !== "on_demand") {
+    return { authorized: false, reason: "Board access required" };
+  }
+
+  return { authorized: true, actorType: "agent", actorId: actor.agentId };
+}
+
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
-    assertBoard(req);
+    assertAuthenticated(req);
     const runId = readHeartbeatRunId(req);
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
-    // Stamp the cancellation as operator-initiated (this route is board-only).
+
+    const auth = decideCancelAuth(req.actor, existing);
+    if (!auth.authorized) {
+      throw forbidden(auth.reason);
+    }
+
+    const isTerminal = ["completed", "failed", "cancelled", "timed_out", "succeeded"].includes(existing.status);
+    if (isTerminal && auth.actorType === "agent") {
+      throw conflict("Run is already terminal");
+    }
+
+    // Stamp the cancellation as operator-initiated or agent self-cancel.
     // Recovery reads this to stand down instead of classifying the cancelled
     // run as agent stranding and re-waking the agent the operator just stopped.
-    const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+    const run = await heartbeat.cancelRun(runId, auth.actorType === "agent" ? "Cancelled by the agent itself" : "Cancelled by a board operator", {
       resultJson: {
-        cancelledByActorType: "user",
-        cancelledByUserId: req.actor.userId ?? null,
+        cancelledByActorType: auth.actorType,
+        cancelledByUserId: auth.actorType === "user" ? (auth.actorId ?? null) : null,
+        cancelledByAgentId: auth.actorType === "agent" ? auth.actorId : null,
       },
     });
 
     if (run) {
       await logActivity(db, {
         companyId: run.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorType: auth.actorType as any,
+        actorId: auth.actorId ?? "board",
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: run.id,
