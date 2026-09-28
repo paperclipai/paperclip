@@ -361,13 +361,17 @@ export interface AcpxTerminalSessionFailure {
 
 export type AcpxTerminalFailureClassification = Pick<
   AdapterExecutionResult,
-  "errorCode" | "errorFamily" | "retryNotBefore"
+  "errorCode" | "errorFamily" | "retryNotBefore" | "errorMessage"
 >;
 
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
-  /** Inspect terminal provider text in memory; return only recovery labels and a timestamp. */
+  /**
+   * Inspect terminal provider text in memory; return only recovery labels, a
+   * timestamp, and optionally a fixed adapter-authored message. The message
+   * must never echo provider text.
+   */
   classifyTerminalSessionFailure?: (
     failure: AcpxTerminalSessionFailure,
     now: Date,
@@ -4967,15 +4971,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           skipRemoteClose: channelLost,
         };
 
+        const classifiedFailure = !timedOut && !channelLost && terminal.status === "failed"
+          ? terminalFailureClassification
+          : null;
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : channelLost
             ? channelLostMessage
-            : resultErrorMessage(terminal);
+            : classifiedFailure?.errorMessage ?? resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
-        const classifiedFailure = !timedOut && !channelLost && terminal.status === "failed"
-          ? terminalFailureClassification
-          : null;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
@@ -5032,7 +5036,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           },
           summary: buildAcpxRunSummary({
             outputSegments,
-            fallback: terminalStopReason || terminal.status,
+            fallback: classifiedFailure?.errorMessage || terminalStopReason || terminal.status,
           }),
           clearSession,
         };

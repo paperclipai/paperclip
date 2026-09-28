@@ -54,6 +54,14 @@ settings apply only to local targets when resolving the model.
 The default does not change explicitly configured agent models or the separate
 Paperclip Runner's qualified provider profiles.
 
+Some Claude accounts cannot use a model. For example, an organization can
+restrict older models. A subscription connection authenticates with a setup
+token, so Claude Code cannot select a permitted fallback model. When the
+provider refuses the model on the ACP engine, the run fails with the
+`provider_model_unavailable` error code. Paperclip does not retry the run. It
+blocks the issue as a configuration problem. Set `model` to a model that the
+account can use, for example `claude-opus-5-5`, and then retry.
+
 ## Prompt Templates
 
 Templates support `{{variable}}` substitution:

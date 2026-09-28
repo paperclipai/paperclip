@@ -128,6 +128,57 @@ it("fails closed on a typed ACP session failure in persistent mode", async () =>
   expect(result.summary).toContain("terminal request failure");
 });
 
+it.each(["oneshot", "persistent"])(
+  "reports a classified terminal failure with its fixed message in %s mode",
+  async (mode) => {
+    // Regression: a refused model (for example Claude's "issue with the selected
+    // model (claude-opus-5)") used to surface only as the generic terminal
+    // request failure with 0 tokens used.
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-acpx-classified-failure-"),
+    );
+    tempRoots.push(root);
+    const providerText = "classified-provider-error-canary-must-not-escape";
+    const fixedMessage = "The configured model is not available to this account.";
+    const seen: Array<{ category: string; title?: string }> = [];
+    const logs: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      classifyTerminalSessionFailure: (failure) => {
+        seen.push({ category: failure.category, title: failure.title });
+        return { errorCode: "provider_model_unavailable", errorMessage: fixedMessage };
+      },
+    });
+
+    const result = await execute({
+      runId: `classified-failure-${mode}`,
+      agent: { id: "spawn-agent", companyId: "spawn-company" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`,
+        mode,
+        warmHandleIdleMs: 0,
+        stateDir: path.join(root, "state"),
+        cwd: repoRoot,
+        env: { PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: providerText },
+      },
+      context: {},
+      onLog: async (_stream: string, text: string) => logs.push(text),
+      onMeta: async () => {},
+    } as never);
+
+    expect(seen).toEqual([{ category: "request", title: providerText }]);
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "provider_model_unavailable",
+      errorMessage: fixedMessage,
+      summary: fixedMessage,
+    });
+    expect(JSON.stringify(result)).not.toContain(providerText);
+    expect(logs.join("\n")).not.toContain(providerText);
+  },
+);
+
 it("preserves ordinary assistant text even when it resembles a provider error", async () => {
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "paperclip-acpx-error-shaped-answer-"),

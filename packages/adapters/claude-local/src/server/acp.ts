@@ -316,10 +316,26 @@ async function prepareClaudeRemoteManagedHome(
   return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
 }
 
+// Claude Code's wording when the API refuses the selected model, e.g. "There's
+// an issue with the selected model (claude-opus-5). It may not exist or you may
+// not have access to it." An organization model restriction does this for a
+// managed setup-token, which gets no client-side fallback model.
+const CLAUDE_MODEL_UNAVAILABLE_RE =
+  /\bissue with the selected model\b|\bmay not exist or you may not have access to it\b/i;
+
+export const CLAUDE_MODEL_UNAVAILABLE_MESSAGE =
+  "The configured Claude model is not available to this Claude account. Choose a model this account can use in the agent configuration, then retry.";
+
 export function classifyClaudeTerminalSessionFailure(
   failure: AcpxTerminalSessionFailure,
   now: Date,
 ): AcpxTerminalFailureClassification | null {
+  if (failure.category === "request") {
+    const text = [failure.title, failure.details].filter(Boolean).join("\n");
+    return CLAUDE_MODEL_UNAVAILABLE_RE.test(text)
+      ? { errorCode: "provider_model_unavailable", errorMessage: CLAUDE_MODEL_UNAVAILABLE_MESSAGE }
+      : null;
+  }
   // `limit` also includes context, turn, rate and configured budget limits.
   // Only the provider's quota wording qualifies for a quota wait.
   if (failure.category !== "limit") return null;
