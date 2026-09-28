@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, secretAccessEvents } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { acceptSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
 
@@ -217,11 +217,11 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
-  it("does not deadlock identity initialization against a task mutation that also updates the run", async () => {
+  it.each(["update", "no key update"] as const)("serializes identity initialization behind a task's %s lock", async (lockMode) => {
     const input = await seed();
     let initialization!: ReturnType<typeof initializeRunIdentity>;
     await db.transaction(async (tx) => {
-      await tx.select().from(issues).where(eq(issues.id, input.issueId)).for("update");
+      await tx.select().from(issues).where(eq(issues.id, input.issueId)).for(lockMode);
       const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
       initialization = initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
       // Wait until initialization is blocked by this task mutation, rather than
@@ -240,6 +240,43 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     await expect(initialization).resolves.toMatchObject({ responsibleUserId: "A" });
   });
+
+  it.each(["initialize", "capture"] as const)(
+    "can %s identity while an audit append holds foreign-key locks",
+    async (operation) => {
+      const input = await seed();
+      if (operation === "capture") {
+        await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
+      }
+      // A real append holds KEY SHARE on both parent rows until it commits.
+      // Bound the other connection's wait so a conflicting lock fails this
+      // regression instead of leaving both transactions waiting for each other.
+      const identityDb = createDb(`${database.connectionString}?options=-c%20lock_timeout%3D1000`);
+      await db.transaction(async (audit) => {
+        await audit.insert(secretAccessEvents).values({
+          companyId: input.companyId,
+          heartbeatRunId: input.runId,
+          issueId: input.issueId,
+          provider: "local_encrypted",
+          actorType: "agent",
+          actorId: input.agentId,
+          consumerType: "agent",
+          consumerId: input.agentId,
+          outcome: "granted",
+        });
+        if (operation === "initialize") {
+          await expect(initializeRunIdentity(identityDb, {
+            ...input, messageIds: [], responsibleUserId: "A", cause: "instruction",
+          })).resolves.toMatchObject({ responsibleUserId: "A" });
+        } else {
+          await expect(captureRunIdentity(identityDb, input)).resolves.toMatchObject({
+            run: { responsibleUserId: "A" },
+            context: { responsibleUserId: "A" },
+          });
+        }
+      });
+    },
+  );
 
   it("does not turn a company-default fallback into personal consent on continuation", async () => {
     const input = await seed();
