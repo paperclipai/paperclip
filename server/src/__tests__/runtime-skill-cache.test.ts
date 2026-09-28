@@ -136,14 +136,16 @@ describe("runtime skill revision cache", () => {
     expect((await fs.stat(path.join(spec.root, displaced[0]!))).mode & 0o222).toBe(0);
   });
 
-  it("rebuilds an entry that an interrupted publisher left writable", async () => {
+  it("reuses and locks an entry that an interrupted publisher left writable", async () => {
     const spec = runtimeSkillCacheSpec(root, skill)!;
     const source = await resolveRuntimeSkillCache(spec, reader());
     await fs.chmod(spec.entry, 0o700);
+    // The interrupted publisher also leaves its lock behind.
+    await fs.writeFile(path.join(path.dirname(spec.root), `${skill.id}.lock`), JSON.stringify({ pid: 999_999, host: os.hostname() }));
     const read = reader();
-    expect(await resolveRuntimeSkillCache(spec, read, false)).toBeNull();
+    expect(await resolveRuntimeSkillCache(spec, read, false)).toBe(source);
     expect(await resolveRuntimeSkillCache(spec, read)).toBe(source);
-    expect(read).toHaveBeenCalledTimes(2);
+    expect(read).not.toHaveBeenCalled();
     expect((await fs.stat(spec.entry)).mode & 0o222).toBe(0);
   });
 

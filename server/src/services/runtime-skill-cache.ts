@@ -93,8 +93,6 @@ async function inventory(directory: string, base = ""): Promise<string[]> {
 async function matches(spec: CacheSpec, entry = spec.entry): Promise<boolean> {
   try {
     await assertDirectories(path.join(entry, "files"), path.dirname(path.dirname(spec.root)));
-    // A publisher that exits between its rename and chmod leaves the entry writable.
-    if ((await fs.lstat(entry)).mode & 0o222) return false;
     const manifest = JSON.parse((await readRegularFile(path.join(entry, "manifest.json"))).toString("utf8"));
     if (manifest.format !== FORMAT || manifest.fingerprint !== spec.fingerprint || !Array.isArray(manifest.files)
       || manifest.files.length !== spec.paths.length) return false;
@@ -176,6 +174,17 @@ async function renameDirectory(from: string, to: string): Promise<void> {
   await fs.chmod(to, 0o555);
 }
 
+// A publisher that exits between its rename and chmod leaves a complete entry writable, and
+// its lock blocks a rebuild. matches() has validated the files/ tree, so lock the entry again.
+async function reuse(entry: string): Promise<string> {
+  const stat = await fs.lstat(entry).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (stat && stat.mode & 0o222) await fs.chmod(entry, 0o555);
+  return path.join(entry, "files");
+}
+
 async function removeTree(directory: string): Promise<void> {
   await setTreeMode(directory, false);
   await fs.rm(directory, { recursive: true, force: true });
@@ -185,7 +194,7 @@ export async function resolveRuntimeSkillCache(
   spec: CacheSpec, read: (relativePath: string) => Promise<string>, materialize = true,
   stillInstalled: () => Promise<boolean> = async () => true,
 ): Promise<string | null> {
-  if (await matches(spec)) return path.join(spec.entry, "files");
+  if (await matches(spec)) return reuse(spec.entry);
   if (!materialize) return null;
   const active = inFlight.get(spec.entry);
   if (active) return active;
@@ -196,7 +205,7 @@ export async function resolveRuntimeSkillCache(
     return publishLocked(namespace, path.basename(spec.root), async () => {
       if (!await stillInstalled()) throw new Error("Skill was renamed or removed during preparation");
       await assertDirectories(spec.root, path.dirname(namespace), true);
-      if (await matches(spec)) return path.join(spec.entry, "files");
+      if (await matches(spec)) return reuse(spec.entry);
       const staging = await fs.mkdtemp(path.join(spec.root, ".staging-"));
       try {
         await fs.mkdir(path.join(staging, "files"));
