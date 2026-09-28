@@ -207,6 +207,7 @@ import {
   checkStagedGrokCredentialReadiness,
   promoteGrokDeviceLoginCredential,
 } from "@paperclipai/adapter-grok-local/server";
+import { createMuseDeviceLoginPromotion } from "../services/muse-device-login-promotion.js";
 import {
   AdapterAuthSessionConflictError,
   createDeviceLoginService,
@@ -1096,6 +1097,15 @@ export function agentRoutes(
           }
         },
       },
+      muse_local: createMuseDeviceLoginPromotion({
+        store: adapterLoginStore,
+        saveAiConnection: (companyId, userId, intent, credential, sessionId) =>
+          aiConnectionService(db).save(companyId, userId, intent, credential, sessionId),
+        log: (line, context) => {
+          // Fixed status lines only: no key, token, or account identity.
+          logger.info({ sessionId: context.sessionId }, line);
+        },
+      }),
     } satisfies Partial<Record<AgentAdapterType, CredentialPromotion>>,
     recordActivity: (event) => {
       // The event carries no URL, no code, no credential, no account identifier,
@@ -2539,6 +2549,7 @@ export function agentRoutes(
     claude_local: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
     codex_local: ["OPENAI_API_KEY", "CODEX_API_KEY"],
     grok_local: ["XAI_API_KEY"],
+    muse_local: ["META_API_KEY"],
   };
 
   function isInheritableCredentialReference(value: unknown): value is Record<string, unknown> {
@@ -3327,7 +3338,7 @@ export function agentRoutes(
       return result;
     }
     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
-      const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider];
+      const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local", meta: "muse_local" }[binding.provider];
       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
       result.checks.push(...probe.checks);
       result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";

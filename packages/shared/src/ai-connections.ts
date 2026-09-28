@@ -31,6 +31,7 @@ export const AI_PROVIDERS = [
   "openai",
   "openrouter",
   "xai",
+  "meta",
 ] as const;
 export const aiProviderSchema = z.enum(AI_PROVIDERS);
 export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
@@ -105,6 +106,13 @@ export const AI_CONNECTION_CAPABILITIES: Record<
     methods: {
       subscription: { adapters: ["grok_local"], envKey: "GROK_HOME" },
       api_key: { adapters: ["grok_local"], envKey: "XAI_API_KEY" },
+    },
+  },
+  meta: {
+    name: "Muse",
+    methods: {
+      subscription: { adapters: ["muse_local"], envKey: "META_API_KEY" },
+      api_key: { adapters: ["muse_local"], envKey: "META_API_KEY" },
     },
   },
 };

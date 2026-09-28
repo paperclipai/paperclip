@@ -143,6 +143,7 @@ export async function validateAiApiKey(
     openai: "https://api.openai.com/v1/models",
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
+    meta: "https://api.meta.ai/v1/models",
   };
   let response: Response;
   try {
@@ -302,7 +303,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       assertLocalLoginAvailable();
       if (input.provider === "anthropic" && !localSessionId) assertLocalOperator(req);
       const userId = await assertAiConnectionCreateAccess(db, req, companyId, input);
-      if (localSessionId || input.provider === "openai" || input.provider === "xai") {
+      if (localSessionId || input.provider === "openai" || input.provider === "xai" || input.provider === "meta") {
         if (!localSessionId) throw unprocessable("Start a separate local sign-in for this connection before connecting.");
         res.status(201).json(await localLogin.complete(companyId, userId, localSessionId, input));
         return;

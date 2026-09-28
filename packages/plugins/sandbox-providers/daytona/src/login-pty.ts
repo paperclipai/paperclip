@@ -53,7 +53,7 @@ import { sendPtyInputInChunks } from "./pty-chunked-input.js";
  * compile-time command. A value outside this set fails closed before the module
  * touches the filesystem.
  */
-export type LoginCommandKey = "claude" | "codex" | "grok";
+export type LoginCommandKey = "claude" | "codex" | "grok" | "muse";
 
 /**
  * The host-resolved launch descriptor. It carries the closed command key and the
@@ -78,6 +78,7 @@ const LOGIN_COMMAND_BY_KEY: Readonly<Record<LoginCommandKey, string>> = {
   claude: "claude setup-token",
   codex: "codex login --device-auth",
   grok: "grok login --device-auth",
+  muse: "muse login",
 };
 
 /** The fixed root for a login session home. */
@@ -109,7 +110,7 @@ export function encodePosixShellArg(value: string): string {
 
 /** Reports whether a value is a member of the closed login command key set. */
 export function isLoginCommandKey(value: unknown): value is LoginCommandKey {
-  return value === "claude" || value === "codex" || value === "grok";
+  return value === "claude" || value === "codex" || value === "grok" || value === "muse";
 }
 
 /**
@@ -130,6 +131,16 @@ export function composeLaunchLine(descriptor: LoginPtyLaunchDescriptor): string 
   }
   if (descriptor.loginCommandKey === "grok") {
     return `exec env GROK_HOME=${encodedHome} ${command}`;
+  }
+  if (descriptor.loginCommandKey === "muse") {
+    const encodedXdg = encodePosixShellArg(`${descriptor.sessionHome}/xdg`);
+    const encodedXdgData = encodePosixShellArg(`${descriptor.sessionHome}/xdg-data`);
+    // stdin from /dev/null: with a TTY on stdin Muse blocks on "Press Enter to
+    // open it in your browser". The file backend keeps the login out of any
+    // keychain, and the copy puts the credential where the host's
+    // descriptor-bound reader expects it (<sessionHome>/auth.json). The session
+    // home reaches the inner shell as $0, never interpolated into the script.
+    return `exec env XDG_CONFIG_HOME=${encodedXdg} XDG_DATA_HOME=${encodedXdgData} TBH_CREDENTIAL_BACKEND=file MUSE_NO_AUTO_UPDATE=1 sh -c '${command} </dev/null && install -m 0600 "$XDG_CONFIG_HOME/muse/auth.json" "$0/auth.json"' ${encodedHome}`;
   }
   return `exec ${command}`;
 }

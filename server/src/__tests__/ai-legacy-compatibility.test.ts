@@ -1,6 +1,6 @@
 import { beforeAll, afterAll, it, expect, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, mkdir, rm, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
@@ -172,4 +172,41 @@ it("blocks preview-era copied subscriptions until isolated reconnect, leaving le
   expect(agent.runtimeConfig.aiConnection).toBeUndefined();
   const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
   expect(grant.status).toBe("active");
+});
+
+it("signs in to Muse in an isolated XDG home and stores only the Meta API key", async () => {
+  // The credential reader refuses symlinked path components (macOS
+  // O_NOFOLLOW_ANY); os.tmpdir() lives under the /var -> /private/var symlink.
+  vi.stubEnv("PAPERCLIP_HOME", await realpath(home));
+  const museIntent = { provider: "meta", method: "subscription", name: "Isolated Muse", ownership: "personal", agentIds: [], allAgents: true } as const;
+  const museKey = "LLM|333333333333333|musefixturekey0000000000";
+  const fetch = vi.fn(async () => new Response("{}"));
+  vi.stubGlobal("fetch", fetch);
+  const login = localAiLoginService(db);
+  const attempt = await login.start(companyId, owner, { ...museIntent, agentIds: [] });
+  const directory = directoryFor(attempt.sessionId);
+  expect(attempt.command).toBe(
+    `(export XDG_CONFIG_HOME='${path.join(directory, "xdg")}' XDG_DATA_HOME='${path.join(directory, "xdg-data")}' TBH_CREDENTIAL_BACKEND=file MUSE_NO_AUTO_UPDATE=1 && mkdir -p "$XDG_CONFIG_HOME" && muse login)`,
+  );
+  expect(await login.check(companyId, owner, { ...museIntent, agentIds: [] }, attempt.sessionId)).toEqual({ status: "sign_in_required" });
+  // What `muse login` writes with the file backend.
+  await mkdir(path.join(directory, "xdg", "muse"), { recursive: true });
+  await writeFile(path.join(directory, "xdg", "muse", "auth.json"), JSON.stringify({ schema_version: 1, providers: { meta: {
+    mechanism: "oauth", obtained_via: "device_code", api_base_url: "https://api.meta.ai/v1", api_key: museKey,
+    access_token: "dca:fixture-oauth-token", user_email: "muse-user@example.com", user_full_name: "Muse User",
+  } } }), { mode: 0o600 });
+  expect(await login.check(companyId, owner, { ...museIntent, agentIds: [] }, attempt.sessionId)).toEqual({ status: "ready" });
+  const saved = await login.complete(companyId, owner, attempt.sessionId, { ...museIntent, agentIds: [] });
+  expect(fetch).toHaveBeenCalledWith("https://api.meta.ai/v1/models", expect.objectContaining({ redirect: "error" }));
+  const selected = await aiConnectionService(db).select({ companyId, agentId, userId: owner, adapterType: "muse_local", binding: { provider: "meta", method: "subscription", mode: "responsible_user" } });
+  expect(selected.grant.id).toBe(saved.grantId);
+  const stored = await aiConnectionService(db).credential(selected);
+  expect(stored).toBe(museKey);
+  const summary = JSON.stringify(await aiConnectionService(db).list(companyId, owner));
+  expect(summary).not.toContain("muse-user@example.com");
+  expect(summary).not.toContain("dca:");
+  const run = await prepareManagedAiRuntime(db, { companyId, agentId, adapterType: "muse_local", responsibleUserId: owner, binding: { provider: "meta", method: "subscription", mode: "responsible_user" }, config: { cwd: home, model: "muse-spark-1.3" } });
+  try {
+    expect(run.config.env.META_API_KEY).toBe(museKey);
+  } finally { await run.cleanup(); vi.stubEnv("PAPERCLIP_HOME", home); }
 });

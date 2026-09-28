@@ -118,7 +118,7 @@ function Setup({
         : "codex_local"
     : adapterType;
   const connectionAdapter =
-    brandType === "claude_local" || brandType === "codex_local" || brandType === "grok_local"
+    brandType === "claude_local" || brandType === "codex_local" || brandType === "grok_local" || brandType === "muse_local"
       ? brandType
       : null;
   const multiProvider =
@@ -713,7 +713,7 @@ function Setup({
                     <div className="mb-8">
                       <OnboardingHeading
                         title="Connect a model"
-                        lede={`Connect ${name} to ${connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : "OpenAI"}.`}
+                        lede={`Connect ${name} to ${connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : connectionAdapter === "muse_local" ? "Muse" : "OpenAI"}.`}
                         center
                       />
                     </div>
@@ -923,6 +923,7 @@ function Setup({
                                             : ({
                                                 google: "Google",
                                                 xai: "xAI",
+                                                meta: "Meta",
                                                 groq: "Groq",
                                                 opencode: "OpenCode",
                                               }[key] ?? key)}

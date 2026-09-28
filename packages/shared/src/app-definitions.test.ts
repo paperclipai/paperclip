@@ -242,6 +242,14 @@ describe("AppDefinition catalog", () => {
     expect(getAvailableConnectionMethod(anthropic, "api-key")).toBeNull();
   });
 
+  it("offers Muse as a runtime_auth AI provider", () => {
+    const meta = APP_DEFINITIONS.find((app) => app.slug === "meta");
+    expect(meta?.name).toBe("Muse");
+    expect(meta?.methods.map((method) => method.key)).toEqual(["ai-subscription", "ai-api_key"]);
+    expect(meta?.methods.every((method) => method.purpose === "ai" && method.transport === "runtime_auth" && method.ai?.provider === "meta")).toBe(true);
+    expect(CONNECTABLE_APP_DEFINITIONS.some((app) => app.slug === "meta")).toBe(true);
+  });
+
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
   it("contains every established provider plus the reviewed self-serve catalog", () => {
@@ -719,7 +727,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(56);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(57);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

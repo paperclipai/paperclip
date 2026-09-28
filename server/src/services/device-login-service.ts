@@ -25,6 +25,10 @@ import {
   GROK_DEVICE_LOGIN_COMMAND as DEFAULT_GROK_LOGIN_COMMAND,
   parseGrokDeviceLoginPrompt,
 } from "@paperclipai/adapter-grok-local/server";
+import {
+  MUSE_DEVICE_LOGIN_COMMAND as DEFAULT_MUSE_LOGIN_COMMAND,
+  parseMuseDeviceLoginPrompt,
+} from "@paperclipai/adapter-muse-local/server";
 import type { AdapterLoginPrompt } from "@paperclipai/adapter-utils";
 import {
   createLoginPtyTransport,
@@ -84,6 +88,7 @@ export const LOGIN_LEASE_SESSION_TAG_KEY = "adapterLoginSessionId";
 export const DISPLAYED_CODE_ADAPTER_TYPES: readonly AgentAdapterType[] = [
   "codex_local",
   "grok_local",
+  "muse_local",
 ];
 
 /**
@@ -851,6 +856,15 @@ export const DISPLAYED_CODE_PROFILES: Readonly<
     command: DEFAULT_GROK_LOGIN_COMMAND,
     homeEnvVar: "GROK_HOME",
     parsePrompt: parseGrokDeviceLoginPrompt,
+    timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
+    promotion: UNCONFIGURED_PROMOTION,
+  },
+  // `muse login` writes under XDG_CONFIG_HOME; the Daytona launch line copies
+  // the credential to <sessionHome>/auth.json for the descriptor-bound read.
+  muse_local: {
+    command: DEFAULT_MUSE_LOGIN_COMMAND,
+    homeEnvVar: "XDG_CONFIG_HOME",
+    parsePrompt: parseMuseDeviceLoginPrompt,
     timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
     promotion: UNCONFIGURED_PROMOTION,
   },

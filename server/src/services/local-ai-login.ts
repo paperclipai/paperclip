@@ -24,7 +24,11 @@ function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiL
       ? `(export CODEX_HOME=${shellQuote(directory)} && mkdir -p "$CODEX_HOME" && codex -c 'cli_auth_credentials_store="file"' login --device-auth)`
       : provider === "anthropic"
         ? `(export CLAUDE_CONFIG_DIR=${shellQuote(directory)} && mkdir -p "$CLAUDE_CONFIG_DIR" && claude auth login)`
-        : `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)`,
+        : provider === "meta"
+          // The file backend keeps the login out of the OS keychain, so it
+          // lands in this attempt's own XDG config home.
+          ? `(export XDG_CONFIG_HOME=${shellQuote(path.join(directory, "xdg"))} XDG_DATA_HOME=${shellQuote(path.join(directory, "xdg-data"))} TBH_CREDENTIAL_BACKEND=file MUSE_NO_AUTO_UPDATE=1 && mkdir -p "$XDG_CONFIG_HOME" && muse login)`
+          : `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)`,
   };
 }
 async function prepareHome(id: string, provider: string) {
@@ -65,12 +69,12 @@ export function localAiLoginService(db: Db) {
   }
 
   async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent, restart = false): Promise<LocalAiLoginAttempt> {
-    if (intent.provider !== "openai" && intent.provider !== "xai" && intent.provider !== "anthropic")
+    if (intent.provider !== "openai" && intent.provider !== "xai" && intent.provider !== "anthropic" && intent.provider !== "meta")
       throw unprocessable("This provider does not use a separate local login home.");
     await reapExpired();
     return db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-local-login:${companyId}:${userId}:${intent.provider}`}, 0))`);
-      const adapterType = intent.provider === "openai" ? "codex_local" : intent.provider === "anthropic" ? "claude_local" : "grok_local";
+      const adapterType = intent.provider === "openai" ? "codex_local" : intent.provider === "anthropic" ? "claude_local" : intent.provider === "meta" ? "muse_local" : "grok_local";
       const [existing] = await tx.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.companyId, companyId), eq(adapterAuthSessions.startedByUserId, userId),
         eq(adapterAuthSessions.adapterType, adapterType),

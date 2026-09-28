@@ -16,6 +16,7 @@ describe("resolveLoginCommandKey", () => {
     expect(resolveLoginCommandKey("claude_local")).toBe("claude");
     expect(resolveLoginCommandKey("codex_local")).toBe("codex");
     expect(resolveLoginCommandKey("grok_local")).toBe("grok");
+    expect(resolveLoginCommandKey("muse_local")).toBe("muse");
   });
 
   it("fails closed for an unmapped adapter type", () => {
@@ -48,6 +49,7 @@ describe("isLoginCommandKey", () => {
     expect(isLoginCommandKey("claude")).toBe(true);
     expect(isLoginCommandKey("codex")).toBe(true);
     expect(isLoginCommandKey("grok")).toBe(true);
+    expect(isLoginCommandKey("muse")).toBe(true);
     expect(isLoginCommandKey("gemini")).toBe(false);
     expect(isLoginCommandKey("rm -rf /")).toBe(false);
     expect(isLoginCommandKey(undefined)).toBe(false);
@@ -61,6 +63,7 @@ describe("isLoginCommandSupportedAdapterType", () => {
     expect(isLoginCommandSupportedAdapterType("claude_local")).toBe(true);
     expect(isLoginCommandSupportedAdapterType("codex_local")).toBe(true);
     expect(isLoginCommandSupportedAdapterType("grok_local")).toBe(true);
+    expect(isLoginCommandSupportedAdapterType("muse_local")).toBe(true);
     expect(isLoginCommandSupportedAdapterType("gemini_local")).toBe(false);
     expect(isLoginCommandSupportedAdapterType("daytona")).toBe(false);
     expect(isLoginCommandSupportedAdapterType("")).toBe(false);

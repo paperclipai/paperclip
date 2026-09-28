@@ -35,6 +35,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/muse-local",
+    "name": "@paperclipai/adapter-muse-local",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/hermes",
     "name": "@paperclipai/hermes-paperclip-adapter",
     "publishFromCi": true

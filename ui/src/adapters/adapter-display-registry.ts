@@ -96,6 +96,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Grok Build harness",
     icon: Bot,
   },
+  muse_local: {
+    label: "Muse Code",
+    description: "Meta Muse Code harness",
+    icon: Bot,
+  },
   kimi_local: {
     label: "Kimi Code",
     description: "Kimi Code CLI harness",

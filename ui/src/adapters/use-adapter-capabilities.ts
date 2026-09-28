@@ -15,7 +15,7 @@ const ALL_FALSE: AdapterCapabilities = {
  * Synchronous fallback for known built-in adapter types so capability checks
  * return correct values on first render before the /api/adapters call resolves.
  *
- * The `login` value for `claude_local`, `codex_local`, and `grok_local` mirrors
+ * The `login` value for `claude_local`, `codex_local`, `grok_local`, and `muse_local` mirrors
  * the server's login capability declaration in `server/src/adapters/registry.ts`.
  * Reconcile the two together if any adapter's login flow changes.
  */
@@ -27,6 +27,7 @@ const KNOWN_DEFAULTS: Record<string, AdapterCapabilities> = {
   gemini_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: true },
   grok_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false, login: { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" } },
   kimi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: true },
+  muse_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false, login: { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" } },
   opencode_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false },
   pi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false },
   openclaw_gateway: ALL_FALSE,

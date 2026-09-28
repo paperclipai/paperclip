@@ -23,6 +23,7 @@ describe("adapter display registry", () => {
       cursor: "Cursor",
       gemini_local: "Gemini CLI",
       grok_local: "Grok Build",
+      muse_local: "Muse Code",
       kimi_local: "Kimi Code",
       hermes_local: "Hermes",
       hermes_gateway: "Hermes Gateway",

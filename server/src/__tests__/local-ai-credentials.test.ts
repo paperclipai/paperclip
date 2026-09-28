@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
-const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeIsolatedKeychain: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
+const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeIsolatedKeychain: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn(), muse: vi.fn() }));
 vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, readIsolatedClaudeKeychainToken: mocks.claudeIsolatedKeychain, fetchClaudeQuota: mocks.claudeQuota }));
 vi.mock("@paperclipai/adapter-codex-local/server", () => ({ readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota }));
+vi.mock("@paperclipai/adapter-muse-local/server", () => ({ parseMuseAuthApiKey: mocks.muse }));
 vi.mock("../services/local-ai-credential-file.js", () => ({ readLocalAiCredentialFile: mocks.credentialFile }));
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile } }));
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllGlobals(); });
@@ -79,9 +80,28 @@ describe("explicit local subscription import", () => {
     await expect(readVerifiedLocalAiCredential("openai", "/isolated/login")).rejects.toThrow("sign-in command shown");
     expect(mocks.codexQuota).not.toHaveBeenCalled();
   });
-  it.each(["openai", "xai"] as const)("never clones the ambient rotating %s login", async (provider) => {
+  it.each(["openai", "xai", "meta"] as const)("never clones the ambient rotating %s login", async (provider) => {
     await expect(readVerifiedLocalAiCredential(provider)).rejects.toThrow("separate local sign-in");
     expect(mocks.codex).not.toHaveBeenCalled();
     expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.credentialFile).not.toHaveBeenCalled();
+  });
+  it("verifies a Muse subscription from the isolated login's XDG config and stores only the api key", async () => {
+    const raw = JSON.stringify({ providers: { meta: { api_key: "LLM|fixture", access_token: "dca:secret", user_email: "x@y.z" } } });
+    mocks.credentialFile.mockResolvedValue(raw);
+    mocks.muse.mockReturnValue("LLM|fixture");
+    const fetch = vi.fn().mockResolvedValue(new Response("{}")); vi.stubGlobal("fetch", fetch);
+    await expect(readVerifiedLocalAiCredential("meta", "/isolated/muse")).resolves.toBe("LLM|fixture");
+    expect(mocks.credentialFile).toHaveBeenCalledWith("/isolated/muse/xdg/muse/auth.json");
+    expect(mocks.muse).toHaveBeenCalledWith(raw);
+    expect(fetch).toHaveBeenCalledWith("https://api.meta.ai/v1/models", expect.objectContaining({ redirect: "error", headers: { Authorization: "Bearer LLM|fixture" } }));
+  });
+  it("rejects a Muse login the provider refuses, without leaking the key", async () => {
+    mocks.credentialFile.mockResolvedValue("{}");
+    mocks.muse.mockReturnValue("LLM|fixture");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("key LLM|fixture rejected", { status: 401 })));
+    const error = await readVerifiedLocalAiCredential("meta", "/isolated/muse").catch((e: Error) => e);
+    expect(String(error)).toContain("sign-in command shown");
+    expect(String(error)).not.toContain("LLM|fixture");
   });
 });

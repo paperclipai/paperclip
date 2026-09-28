@@ -22,6 +22,7 @@ The shared `AI_CONNECTION_CAPABILITIES` contract defines these combinations:
 | OpenAI | ChatGPT/Codex subscription or OpenAI API key | Codex |
 | OpenRouter | API key | OpenCode, with an `openrouter/` model |
 | Grok / xAI | Grok subscription or xAI API key | Grok |
+| Muse / Meta | Muse Code subscription or Meta API key (both run as `META_API_KEY`) | Muse Code |
 
 Native runner supports the corresponding existing Codex, OpenCode, and Claude
 ACP profiles. Connections creation and reconnect mount `AgentProviderConnection`,
@@ -223,7 +224,7 @@ Claude Code login. Authenticated self-hosted users instead get a separate
 `CLAUDE_CONFIG_DIR` for `claude auth login`; checking and saving only read that
 attempt’s credential files, never the server operator’s account or Keychain.
 
-Codex and Grok start a separate terminal sign-in for each connection or reconnect.
+Codex, Grok and Muse start a separate terminal sign-in for each connection or reconnect.
 The shared component shows a server-generated command with a fresh `CODEX_HOME`
 or `GROK_HOME`. Codex uses file credential storage in that home and `login --device-auth`, so
 signing in from another computer does not depend on a localhost callback. The home is never
@@ -231,6 +232,19 @@ seeded with the operator's existing login: copying a rotating refresh token woul
 allow managed runs to invalidate credentials still used by legacy agents or the
 operator's terminal. The user completes browser sign-in from that command, then
 clicks Connect. This does not require a sandbox or change the host login.
+
+Muse runs `muse login` with the attempt's own `XDG_CONFIG_HOME` and
+`TBH_CREDENTIAL_BACKEND=file`, so the login lands in
+`<attempt>/xdg/muse/auth.json` instead of the OS keychain. Connect stores only
+that file's `LLM|` Meta API key (verified with `GET https://api.meta.ai/v1/models`),
+never its OAuth token or account email. Runs receive the key as `META_API_KEY`,
+so Muse has no credential file to refresh or merge. In sandbox environments
+the device login runs `muse login </dev/null` (stdin must not be a TTY, or Muse
+waits for "Press Enter to open it in your browser") with an isolated XDG home
+and copies `auth.json` to the session home for the descriptor-bound read; only
+the key is promoted. Remote (SSH and sandbox) Muse runs reach the Paperclip API
+through the standard bridge, which needs a run token, so the instance must have
+`PAPERCLIP_AGENT_JWT_SECRET` set (onboarding writes it).
 
 Attempts reuse `adapter_auth_sessions`, binding company, owner, provider, access
 intent, reconnect target, and a 30-minute expiry. Validation and completion are

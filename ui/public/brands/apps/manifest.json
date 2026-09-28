@@ -464,6 +464,12 @@
       "darkAsset": "/brands/apps/xai-dark.svg"
     },
     {
+      "slug": "meta",
+      "provider": "Muse",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/meta.png"
+    },
+    {
       "slug": "imessage-photon",
       "provider": "iMessage Photon",
       "catalogVisible": true,

@@ -28,6 +28,11 @@ describe("isSandboxProviderSupportedForAdapter", () => {
     ).toBe(false);
   });
 
+  it("treats muse_local as a remote-managed local adapter", () => {
+    expect(adapterSupportsRemoteManagedEnvironments("muse_local")).toBe(true);
+    expect(supportedEnvironmentDriversForAdapter("muse_local")).toEqual(["local", "ssh", "sandbox"]);
+  });
+
   it("treats grok_local as a remote-managed local adapter", () => {
     expect(adapterSupportsRemoteManagedEnvironments("grok_local")).toBe(true);
     expect(supportedEnvironmentDriversForAdapter("grok_local")).toEqual(["local", "ssh", "sandbox"]);

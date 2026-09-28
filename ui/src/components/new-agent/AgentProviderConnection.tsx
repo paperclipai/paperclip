@@ -46,7 +46,7 @@ export function AgentProviderConnection({
   managedAccount,
 }: {
   companyId: string;
-  adapterType: "claude_local" | "codex_local" | "grok_local";
+  adapterType: "claude_local" | "codex_local" | "grok_local" | "muse_local";
   environmentId: string | null;
   canLogin: boolean;
   localEnvironment?: boolean;
@@ -89,10 +89,10 @@ export function AgentProviderConnection({
   const [error, setError] = useState<string | null>(null);
   const [storedConnection, setStoredConnection] =
     useState<ProviderConnection | null>(null);
-  const provider = adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
+  const provider = adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : adapterType === "muse_local" ? "Muse" : "OpenAI";
   const envKey =
-    adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : "OPENAI_API_KEY";
-  const aiProvider = adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : "openai";
+    adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : adapterType === "muse_local" ? "META_API_KEY" : "OPENAI_API_KEY";
+  const aiProvider = adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : adapterType === "muse_local" ? "meta" : "openai";
   const availableKeys = useSavedProviderKeys(companyId, envKey);
   // Add/reconnect creates the requested account, never copies a saved account's
   // credential or silently changes its ownership. Agent setup retains reuse.

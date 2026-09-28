@@ -65,6 +65,12 @@ describe("buildAdapterCapabilities login projection", () => {
     expect(caps.login).not.toHaveProperty("completionClaim");
   });
 
+  it("projects panelMode and timeoutPolicy for the registered muse_local adapter, with no function member", () => {
+    const caps = buildAdapterCapabilities(requireServerAdapter("muse_local"));
+    expect(caps.login).toEqual({ panelMode: "displayed_code", timeoutPolicy: "caller_bounded" });
+    expect(caps.login).not.toHaveProperty("parsePrompt");
+  });
+
   it("projects panelMode and timeoutPolicy for the registered grok_local adapter, with no function member", () => {
     const caps = buildAdapterCapabilities(requireServerAdapter("grok_local"));
     expect(caps.login).toEqual({

@@ -29,6 +29,24 @@ type Props = {
 };
 
 /** Connections hosts the same provider step as agent setup, with its own save intent. */
+/** The local harness whose sign-in flow authenticates a subscription provider. */
+export function subscriptionLoginAdapterType(provider: AiProvider): "claude_local" | "codex_local" | "grok_local" | "muse_local" {
+  switch (provider) {
+    case "anthropic": return "claude_local";
+    case "openai": return "codex_local";
+    case "xai": return "grok_local";
+    case "meta": return "muse_local";
+    default: throw new Error(`No subscription sign-in for provider ${provider}`);
+  }
+}
+
+/** Providers whose harness has a sandbox device-login profile. New providers default to closed. */
+const SANDBOX_DEVICE_LOGIN_PROVIDERS = new Set<AiProvider>(["anthropic", "openai", "xai", "meta"]);
+
+export function supportsSandboxDeviceLogin(provider: AiProvider): boolean {
+  return SANDBOX_DEVICE_LOGIN_PROVIDERS.has(provider);
+}
+
 export function AiConnectionCredentialStep(props: Props) {
   if (props.provider === "openrouter") return <ApiKeyConnectionStep {...props} />;
   return <SubscriptionConnectionStep {...props} />;
@@ -69,7 +87,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
   const sandboxProvider = typeof environment?.config.provider === "string" ? environment.config.provider : "";
-  const canLogin = environment?.driver === "sandbox" && caps.data?.sandboxProviders?.[sandboxProvider]?.supportsLoginPty === true;
+  const canLogin = supportsSandboxDeviceLogin(provider) && environment?.driver === "sandbox" && caps.data?.sandboxProviders?.[sandboxProvider]?.supportsLoginPty === true;
   const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending);
   const error = environmentError ?? [envs, caps, settings, experimental, general].find((query) => query.error)?.error?.message;
   const intent: AiConnectionLoginIntent = { provider, method: "subscription", name, ownership, agentIds, allAgents, connectionId };
@@ -83,7 +101,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
     {loading ? <p role="status" className="text-sm text-muted-foreground">Preparing sign-in…</p> : <AgentProviderConnection
       key={environmentId ?? "local"}
       companyId={companyId}
-      adapterType={provider === "anthropic" ? "claude_local" : provider === "xai" ? "grok_local" : "codex_local"}
+      adapterType={subscriptionLoginAdapterType(provider)}
       environmentId={environmentId}
       canLogin={canLogin}
       localEnvironment={environment?.driver === "local"}

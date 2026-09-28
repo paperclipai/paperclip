@@ -4,13 +4,14 @@ import path from "node:path";
 import { readClaudeToken, readIsolatedClaudeKeychainToken, fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
 import { readCodexAuthInfo, fetchCodexQuota } from "@paperclipai/adapter-codex-local/server";
 import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
+import { parseMuseAuthApiKey } from "@paperclipai/adapter-muse-local/server";
 import type { AiProvider } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 /** Read an owned login home, or an explicitly authorized local-operator import. */
 export async function readVerifiedLocalAiCredential(provider: AiProvider, loginHome?: string): Promise<string> {
   if (provider === "openrouter") throw unprocessable("OpenRouter requires an API key.");
-  if ((provider === "openai" || provider === "xai") && !loginHome)
+  if ((provider === "openai" || provider === "xai" || provider === "meta") && !loginHome)
     throw unprocessable("Start a separate local sign-in for this connection before connecting.");
   try {
     if (provider === "anthropic") {
@@ -42,6 +43,21 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
       if (!auth?.accessToken || !auth.refreshToken || !auth.idToken) throw new Error("Missing login");
       await fetchCodexQuota(auth.accessToken, auth.accountId);
       return JSON.stringify({ tokens: { access_token: auth.accessToken, refresh_token: auth.refreshToken, id_token: auth.idToken, account_id: auth.accountId }, last_refresh: auth.lastRefresh });
+    }
+    if (provider === "meta") {
+      // `muse login` ran with XDG_CONFIG_HOME=<loginHome>/xdg and the file
+      // credential backend. Only the Meta API key is stored; the file's OAuth
+      // token and identity fields never leave this function.
+      const raw = await readLocalAiCredentialFile(path.join(loginHome!, "xdg", "muse", "auth.json"));
+      const key = parseMuseAuthApiKey(raw);
+      if (!key) throw new Error("Missing login");
+      const response = await fetch("https://api.meta.ai/v1/models", {
+        headers: { Authorization: `Bearer ${key}` },
+        redirect: "error", signal: AbortSignal.timeout(15000),
+      });
+      await response.body?.cancel();
+      if (!response.ok) throw new Error("Invalid login");
+      return key;
     }
     const raw = await fs.readFile(path.join(loginHome!, "auth.json"), "utf8");
     const payload = parseGrokAuthPayload(JSON.parse(raw));

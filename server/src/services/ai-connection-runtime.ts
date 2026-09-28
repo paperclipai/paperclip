@@ -31,6 +31,7 @@ export const AI_AUTH_ENV_KEYS = [
   "OPENROUTER_API_KEY",
   "XAI_API_KEY",
   "GROK_API_KEY",
+  "META_API_KEY",
   "CODEX_HOME",
   "GROK_HOME",
   "CLAUDE_CONFIG_DIR",
@@ -234,9 +235,12 @@ export async function prepareManagedAiRuntime(
     runnerProvider: input.config.provider,
     acpxAgent: input.config.acpxAgent,
   });
+  // Muse subscriptions store the bare Meta API key, so they are injected as
+  // an environment variable like Anthropic's token, not staged as a file.
   const subscriptionFile =
     selection.attribution.method === "subscription" &&
-    input.binding.provider !== "anthropic";
+    input.binding.provider !== "anthropic" &&
+    input.binding.provider !== "meta";
   let home: string | undefined;
   try {
     const selectedGrantId = selection.grant.id;

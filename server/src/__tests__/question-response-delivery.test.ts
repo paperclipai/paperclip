@@ -46,6 +46,7 @@ const DIRECT_ADAPTER_TYPES = [
   "cursor",
   "gemini_local",
   "grok_local",
+  "muse_local",
   "hermes_gateway",
   "hermes_local",
   "kimi_local",

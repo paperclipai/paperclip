@@ -30,6 +30,7 @@ export function aiProviderForAdapter(
       codex_local: "openai",
       opencode_local: "openrouter",
       grok_local: "xai",
+      muse_local: "meta",
     } as Record<string, AiProvider>
   )[adapterType];
 }
@@ -160,7 +161,7 @@ export function AiConnectionField({
             companyId={companyId}
             provider={provider}
             initialMethod={method}
-            name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
+            name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : provider === "meta" ? "Muse" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
             ownership="personal"
             agentIds={agentId ? [agentId] : []}
             allAgents={false}

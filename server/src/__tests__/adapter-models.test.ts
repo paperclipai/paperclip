@@ -173,6 +173,7 @@ describe("adapter model listing", () => {
   it.each([
     ["gemini_local", ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"]],
     ["grok_local", ["grok-build", "grok-4.7", "grok-4.6", "grok-4.5"]],
+    ["muse_local", ["muse-spark-1.3", "muse-spark-1.3-contributor"]],
     ["kimi_local", ["kimi-code/kimi-for-coding", "kimi-code/k3", "kimi-code/k3-256k"]],
   ])("lists current %s models without a provider login", async (adapter, expectedIds) => {
     const models = await listAdapterModels(adapter as string);

@@ -1,6 +1,7 @@
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import { claudeLocalReasoningEffortsForModel, DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
+import { museLocalReasoningEffortsForModel } from "@paperclipai/adapter-muse-local";
 import { codexReasoningEffortOptions } from "./codex-reasoning-effort";
 import { PROVIDER_ENV_KEYS } from "./provider-credential";
 
@@ -38,6 +39,8 @@ export function setupEfforts(adapter: string, model = ""): string[] {
       return ["off", "minimal", "low", "medium", "high", "xhigh"];
     case "grok_local":
       return [...grokLocalReasoningEffortsForModel(model)];
+    case "muse_local":
+      return [...museLocalReasoningEffortsForModel(model)];
     default:
       return [];
   }
@@ -52,6 +55,8 @@ export const SETUP_LOGIN_HINTS: Record<string, string> = {
     "Use a Kimi API key and model settings below, or run kimi login on the selected environment's host.",
   grok_local:
     "Grok Build uses its CLI sign-in. Run grok login on the selected environment's host, then test the connection here.",
+  muse_local:
+    "Muse Code uses its CLI sign-in. Run muse login on the selected environment's host (or bind META_API_KEY), then test the connection here.",
   hermes_local:
     "Use a provider API key, or the existing Hermes provider configuration on the selected environment's host.",
 };

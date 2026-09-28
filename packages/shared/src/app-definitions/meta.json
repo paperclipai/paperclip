@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "slug": "meta",
+  "name": "Muse",
+  "description": "Connect Muse accounts for your agents.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/meta.png"
+  },
+  "urlPatterns": [
+    "https://api.meta.ai/*"
+  ],
+  "methods": [
+    {
+      "key": "ai-subscription",
+      "label": "Muse subscription",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "oauth",
+      "ai": {
+        "provider": "meta",
+        "method": "subscription"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3"
+    },
+    {
+      "key": "ai-api_key",
+      "label": "Muse API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "meta",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "META_API_KEY"
+      }
+    }
+  ]
+}

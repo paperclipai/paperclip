@@ -83,6 +83,25 @@ describe("managed AI connections", () => {
     } finally { await Promise.all([subRun.cleanup(), apiRun.cleanup()]); }
   });
 
+  it("runs a muse_local agent with each responsible user's Muse subscription or API key as META_API_KEY", async () => {
+    const subscriptionUser = "meta-subscription-user";
+    const apiUser = "meta-api-user";
+    await db.insert(companyMemberships).values([subscriptionUser, apiUser].map(principalId => ({ companyId, principalId, principalType: "user", status: "active", membershipRole: "member" })));
+    const subscriptionKey = "LLM|111111111111111|subscriptionfixturekey0000";
+    const apiKey = "LLM|222222222222222|apifixturekey00000000000";
+    await service.save(companyId, subscriptionUser, { provider: "meta", method: "subscription", ownership: "personal", name: "Muse subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, subscriptionKey);
+    await service.save(companyId, apiUser, { provider: "meta", method: "api_key", ownership: "personal", name: "Muse API", apiKey: "fixture", allAgents: true, agentIds: [] }, apiKey);
+    const bot = { ...input, adapterType: "muse_local", binding: { provider: "meta", method: "subscription", mode: "responsible_user" } as const, config: { model: "muse-spark-1.3", env: { META_API_KEY: "ambient-override" } } };
+    const [subRun, apiRun] = await Promise.all([subscriptionUser, apiUser].map(responsibleUserId => prepareManagedAiRuntime(db, { ...bot, responsibleUserId })));
+    try {
+      const subEnv = subRun.config.env as Record<string, string>;
+      const apiEnv = apiRun.config.env as Record<string, string>;
+      expect(subEnv.META_API_KEY).toBe(subscriptionKey);
+      expect(apiEnv.META_API_KEY).toBe(apiKey);
+      await expect(access(path.join(subRun.home!, "provider", "auth.json"))).rejects.toThrow();
+    } finally { await Promise.all([subRun.cleanup(), apiRun.cleanup()]); }
+  });
+
   it("has one provider default across methods, retains unavailable defaults and honors explicit account methods", async () => {
     const userId = "provider-default-user";
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
@@ -612,6 +631,13 @@ describe("managed AI connections", () => {
     const request = vi.fn().mockResolvedValue(new Response("secret-provider-body", { status: 401 }));
     await expect(validateAiApiKey("anthropic", "fixture", request)).rejects.toThrow("rejected");
     expect(request.mock.calls[0][1].redirect).toBe("error");
+  });
+  it("validates Muse API keys against the fixed Meta endpoint", async () => {
+    const ok = vi.fn().mockResolvedValue(new Response("{}"));
+    await validateAiApiKey("meta", "LLM|fixture", ok);
+    expect(ok).toHaveBeenCalledWith("https://api.meta.ai/v1/models", expect.objectContaining({ redirect: "error", headers: { Authorization: "Bearer LLM|fixture" } }));
+    const rejected = vi.fn().mockResolvedValue(new Response("secret-provider-body", { status: 401 }));
+    await expect(validateAiApiKey("meta", "LLM|fixture", rejected)).rejects.toThrow("The provider rejected this API key.");
   });
   it("uses the authenticated responsible user for agent-originated configuration and tests", async () => {
     const req = { actor: { type: "agent", agentId, onBehalfOfUserId: "alice" } } as express.Request;

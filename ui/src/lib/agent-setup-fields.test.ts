@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 import { setupEfforts } from "./agent-setup-fields";
 
 describe("model-specific setup efforts", () => {
+  it("lists Muse reasoning efforts", () => {
+    expect(setupEfforts("muse_local", "muse-spark-1.3")).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+  });
+
   it("offers current Claude efforts without offering them on Haiku", () => {
     expect(setupEfforts("claude_local", "claude-fable-5-1")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(setupEfforts("claude_local", "claude-haiku-4-5")).toEqual([]);

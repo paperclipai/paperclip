@@ -37,6 +37,17 @@ describe("built-in adapter login capabilities", () => {
     expect(() => assertValidAdapterLoginCapability(capability, "grok_local")).not.toThrow();
   });
 
+  it("registers the Muse device-login capability", () => {
+    const capability = requireServerAdapter("muse_local").loginCapability;
+    expect(capability).toBeDefined();
+    if (!capability) return;
+    expect(capability.panelMode).toBe("displayed_code");
+    expect(capability.timeoutPolicy).toBe("caller_bounded");
+    expect(capability.getCommand?.()).toBe("muse login");
+    expect(capability.parsePrompt?.("Open this page to sign in:\n  https://auth.meta.com/oauth/device/?code=QWMM-NVMF\nconfirm this code matches:\n  QWMM-NVMF\n")).toEqual({ url: "https://auth.meta.com/oauth/device/?code=QWMM-NVMF", code: "QWMM-NVMF" });
+    expect(() => assertValidAdapterLoginCapability(capability, "muse_local")).not.toThrow();
+  });
+
   it("registers the Claude setup-token capability", () => {
     const capability = requireServerAdapter("claude_local").loginCapability;
     expect(capability).toBeDefined();
@@ -60,6 +71,7 @@ describe("built-in runtime connection tool delivery", () => {
     ["cursor", "environment"],
     ["gemini_local", "environment"],
     ["grok_local", "environment"],
+    ["muse_local", "environment"],
     ["hermes_gateway", "invocation_context"],
     ["hermes_local", "environment"],
     ["kimi_local", "environment"],

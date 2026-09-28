@@ -1982,6 +1982,8 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
     it("carries the CODEX_HOME variable name on the codex_local profile", () => {
       // The home variable name has no consuming call site yet in this phase; the
       // profile only carries it, ready for a later phase to read it.
+      expect(DISPLAYED_CODE_PROFILES.muse_local?.command).toBe("muse login");
+      expect(DISPLAYED_CODE_PROFILES.muse_local?.parsePrompt("Open this page to sign in:\n  https://auth.meta.com/oauth/device/?code=QWMM-NVMF\nconfirm this code matches:\n  QWMM-NVMF\n")).toEqual({ url: "https://auth.meta.com/oauth/device/?code=QWMM-NVMF", code: "QWMM-NVMF" });
       expect(DISPLAYED_CODE_PROFILES.codex_local?.homeEnvVar).toBe("CODEX_HOME");
     });
 

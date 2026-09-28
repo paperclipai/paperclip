@@ -1982,6 +1982,13 @@
       "when": 1790439010225,
       "tag": "0284_petite_genesis",
       "breakpoints": true
+    },
+    {
+      "idx": 285,
+      "version": "7",
+      "when": 1790464009721,
+      "tag": "0285_rare_blue_blade",
+      "breakpoints": true
     }
   ]
 }

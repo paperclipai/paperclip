@@ -35,6 +35,7 @@ COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
 COPY packages/adapters/grok-local/package.json packages/adapters/grok-local/
+COPY packages/adapters/muse-local/package.json packages/adapters/muse-local/
 COPY packages/adapters/kimi-local/package.json packages/adapters/kimi-local/
 COPY packages/adapters/hermes/package.json packages/adapters/hermes/
 COPY packages/adapters/hermes-gateway/package.json packages/adapters/hermes-gateway/
@@ -163,6 +164,20 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
+
+# Muse Code (muse_local) ships as a launcher script plus a native binary that
+# the launcher installs next to itself; there is no npm package. Runs set
+# MUSE_NO_AUTO_UPDATE=1, so this root-owned install never self-updates.
+# The launcher is pinned by SHA-256 (keep in sync with MUSE_LAUNCHER_SHA256 in
+# packages/adapters/muse-local/src/index.ts); it then verifies the native
+# binary against the SHA-256 in Meta's release manifest.
+ARG MUSE_LAUNCHER_SHA256=c6db294799a190ca380da274beb3b9c0e160e0da9681a3d364ce8b0e5fa3a4bc
+RUN curl -fsSL https://api.meta.ai/muse-launcher.sh -o /tmp/muse-launcher.sh \
+  && echo "${MUSE_LAUNCHER_SHA256}  /tmp/muse-launcher.sh" | sha256sum -c - \
+  && install -m 0755 /tmp/muse-launcher.sh /usr/local/bin/muse \
+  && rm -f /tmp/muse-launcher.sh \
+  && MUSE_LAUNCHER_INSTALL=1 /usr/local/bin/muse \
+  && command -v muse
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

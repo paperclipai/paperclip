@@ -4,7 +4,7 @@ import type { AppDefinition, ConnectionMethodDef, FieldDef } from "./types/app-d
 import type { ToolConnectionOwnership } from "./types/tool-access.js";
 
 export const CONNECTABLE_APP_SLUGS = new Set([
-  "anthropic", "openai", "openrouter", "xai",
+  "anthropic", "openai", "openrouter", "xai", "meta",
   "agentmail",
   "cognee",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),

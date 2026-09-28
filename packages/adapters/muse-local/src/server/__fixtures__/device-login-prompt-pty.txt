@@ -1,0 +1,6 @@
+Open this page to sign in:
+  https://auth.meta.com/oauth/device/?code=QWMM-NVMF
+confirm this code matches:
+  QWMM-NVMF
+
+Waiting for approval…

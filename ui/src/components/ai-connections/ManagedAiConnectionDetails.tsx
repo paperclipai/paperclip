@@ -15,7 +15,7 @@ export function ManagedAiConnectionRow({
 }) {
   const metadata = connection.config?.ai as
     | {
-        provider: "anthropic" | "openai" | "openrouter" | "xai";
+        provider: "anthropic" | "openai" | "openrouter" | "xai" | "meta";
         method: "subscription" | "api_key";
       }
     | undefined;

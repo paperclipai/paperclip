@@ -4,6 +4,7 @@ import {
   createDaytonaLoginHomeFs,
   createDaytonaLoginPtySessionOpener,
   encodePosixShellArg,
+  isLoginCommandKey,
   openDaytonaLoginPtySession,
   type DaytonaExecResult,
   type DaytonaLoginHomeFs,
@@ -22,6 +23,7 @@ const HOME = "/tmp/paperclip-adapter-login/11111111-2222-4333-8444-555555555555"
 const CLAUDE: LoginPtyLaunchDescriptor = { loginCommandKey: "claude", sessionHome: HOME };
 const CODEX: LoginPtyLaunchDescriptor = { loginCommandKey: "codex", sessionHome: HOME };
 const GROK: LoginPtyLaunchDescriptor = { loginCommandKey: "grok", sessionHome: HOME };
+const MUSE: LoginPtyLaunchDescriptor = { loginCommandKey: "muse", sessionHome: HOME };
 
 /**
  * A fake login-home filesystem. It records each path the caller asks to create
@@ -167,6 +169,17 @@ describe("composeLaunchLine", () => {
     expect(line.endsWith("grok login --device-auth")).toBe(true);
     // The Codex encoded variable never leaks into the Grok line.
     expect(line).not.toContain("CODEX_HOME");
+  });
+
+  it("composes the Muse line: isolated XDG home, file backend, stdin from /dev/null, credential copied into the session home", () => {
+    const line = composeLaunchLine(MUSE);
+    expect(line).toBe(
+      `exec env XDG_CONFIG_HOME='${HOME}/xdg' XDG_DATA_HOME='${HOME}/xdg-data' TBH_CREDENTIAL_BACKEND=file MUSE_NO_AUTO_UPDATE=1 sh -c 'muse login </dev/null && install -m 0600 "$XDG_CONFIG_HOME/muse/auth.json" "$0/auth.json"' '${HOME}'`,
+    );
+    expect(line.match(/XDG_CONFIG_HOME=/g)).toHaveLength(1);
+    expect(line).not.toContain("CODEX_HOME");
+    expect(line).not.toContain("GROK_HOME");
+    expect(isLoginCommandKey("muse")).toBe(true);
   });
 
   it("composes the launch line from the closed command map only, and ignores a command string smuggled onto the descriptor", () => {

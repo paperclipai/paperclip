@@ -85,6 +85,20 @@ import {
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
 import {
+  execute as museExecute,
+  MUSE_DEVICE_LOGIN_COMMAND,
+  parseMuseDeviceLoginPrompt,
+  listMuseSkills,
+  syncMuseSkills,
+  testEnvironment as museTestEnvironment,
+  sessionCodec as museSessionCodec,
+} from "@paperclipai/adapter-muse-local/server";
+import {
+  agentConfigurationDoc as museAgentConfigurationDoc,
+  models as museModels,
+  MUSE_SANDBOX_INSTALL_COMMAND,
+} from "@paperclipai/adapter-muse-local";
+import {
   execute as kimiExecute,
   listKimiSkills,
   syncKimiSkills,
@@ -247,6 +261,19 @@ const grokLoginCapability: AdapterLoginCapability = {
   getCommand: () => GROK_DEVICE_LOGIN_COMMAND,
   parsePrompt: (output) => {
     const prompt = parseGrokDeviceLoginPrompt(output);
+    return prompt ? { url: prompt.url, code: prompt.code } : null;
+  },
+};
+
+// The Muse interactive login capability, the same displayed-code shape as Grok.
+// `getCommand` is descriptive only: the login path selects the real command
+// from the closed key map in `login-command.ts`.
+const museLoginCapability: AdapterLoginCapability = {
+  panelMode: "displayed_code",
+  timeoutPolicy: "caller_bounded",
+  getCommand: () => MUSE_DEVICE_LOGIN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseMuseDeviceLoginPrompt(output);
     return prompt ? { url: prompt.url, code: prompt.code } : null;
   },
 };
@@ -751,6 +778,29 @@ const grokLocalAdapter: ServerAdapterModule = {
   loginCapability: grokLoginCapability,
 };
 
+const museLocalAdapter: ServerAdapterModule = {
+  type: "muse_local",
+  runtimeToolDelivery: "environment",
+  execute: museExecute,
+  testEnvironment: museTestEnvironment,
+  listSkills: listMuseSkills,
+  syncSkills: syncMuseSkills,
+  sessionCodec: museSessionCodec,
+  sessionManagement: getAdapterSessionManagement("muse_local") ?? undefined,
+  models: museModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "muse"),
+    detectCommand: readConfiguredCommand(config, "muse"),
+    installCommand: MUSE_SANDBOX_INSTALL_COMMAND,
+  }),
+  agentConfigurationDoc: museAgentConfigurationDoc,
+  loginCapability: museLoginCapability,
+};
+
 const kimiLocalAdapter: ServerAdapterModule = {
   type: "kimi_local",
   runtimeToolDelivery: "environment",
@@ -862,6 +912,7 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     grokLocalAdapter,
+    museLocalAdapter,
     kimiLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,

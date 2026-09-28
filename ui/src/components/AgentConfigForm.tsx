@@ -1269,7 +1269,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : adapterType === "grok_local" ? "reasoningEffort"
+          : adapterType === "grok_local" || adapterType === "muse_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
@@ -1285,7 +1285,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : adapterType === "claude_local" || adapterType === "grok_local"
+              : adapterType === "claude_local" || adapterType === "grok_local" || adapterType === "muse_local"
                 ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType, currentModelId).map((id) => ({
                     id,
                     label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
@@ -1721,7 +1721,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={currentModelId}
                 onChange={(v) => {
                   const supportedEfforts = setupEfforts(adapterType, v);
-                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(adapterType)
+                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local", "muse_local"].includes(adapterType)
                     && Boolean(currentThinkingEffort)
                     && !supportedEfforts.includes(String(currentThinkingEffort));
                   if (isCreate) {
