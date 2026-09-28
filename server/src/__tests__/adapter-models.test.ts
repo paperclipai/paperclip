@@ -251,7 +251,17 @@ describe("adapter model listing", () => {
       await expect(refreshAdapterModels("codex_local")).resolves.toEqual(customModels);
       expect(listModels).toHaveBeenCalledOnce();
       expect(refreshModels).toHaveBeenCalledOnce();
+
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+        codex_local: [{ id: "declared-codex", label: "Declared Codex" }],
+      });
+      const declared = [{ id: "declared-codex", label: "Declared Codex" }];
+      await expect(listAdapterModels("codex_local")).resolves.toEqual(declared);
+      await expect(refreshAdapterModels("codex_local")).resolves.toEqual(declared);
+      expect(listModels).toHaveBeenCalledOnce();
+      expect(refreshModels).toHaveBeenCalledOnce();
     } finally {
+      delete process.env.PAPERCLIP_ADAPTER_MODELS;
       unregisterServerAdapter("codex_local");
     }
   });
