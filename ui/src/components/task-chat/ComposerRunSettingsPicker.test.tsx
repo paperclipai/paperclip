@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { agentsApi } from "@/api/agents";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
 
 const agent = {
@@ -46,6 +47,7 @@ function render(onAssigneeChange: (value: string) => void, onSettingsChange: () 
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   flushSync(() => root?.unmount());
   root = null;
   container?.remove();
@@ -71,7 +73,12 @@ describe("composer assignee picker", () => {
   });
 
   it("offers the Codex CLI catalog instead of unrelated OpenAI API models", async () => {
+    vi.spyOn(agentsApi, "adapterModels").mockResolvedValueOnce([
+      { id: "gpt-6-sol", label: "GPT-6 Sol" },
+      { id: "gpt-5.5", label: "GPT-5.5" },
+    ]);
     render(vi.fn(), vi.fn(), true);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await click("Select assignee, model and effort");
     await click("Choose exact model");
     const options = [...document.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
@@ -81,6 +88,24 @@ describe("composer assignee picker", () => {
     expect(options.some((item) => item.includes("gpt-image"))).toBe(false);
     expect(options.some((item) => item.includes("text-embedding"))).toBe(false);
     expect(document.body.textContent).not.toContain("Loading models…");
+  });
+
+  it("shows an instance-declared Codex model list instead of bundled alternatives", async () => {
+    const loadModels = vi.spyOn(agentsApi, "adapterModels").mockResolvedValueOnce([
+      { id: "private-codex", label: "Private Codex" },
+    ]);
+    render(vi.fn(), vi.fn(), true);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(loadModels).toHaveBeenCalledWith("company-1", "codex_local", {
+      environmentId: null,
+      provider: undefined,
+    });
+    await click("Select assignee, model and effort");
+    await click("Choose exact model");
+    const choices = [...document.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
+      .map((item) => item.textContent ?? "");
+    expect(choices.some((item) => item.includes("Private Codex"))).toBe(true);
+    expect(choices.some((item) => item.includes("GPT-6 Sol"))).toBe(false);
   });
 
   it("preserves settings when the selected assignee is chosen again", async () => {

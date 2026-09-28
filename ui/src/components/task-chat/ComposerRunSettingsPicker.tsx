@@ -2,7 +2,6 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
 import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
-import { models as codexLocalModels } from "@paperclipai/adapter-codex-local";
 import { agentsApi, type AdapterModel } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -107,14 +106,13 @@ export function ComposerRunSettingsPicker({
     queryFn: () => agentsApi.adapterModels(companyId, agent!.adapterType, {
       environmentId: agent!.defaultEnvironmentId ?? null, provider,
     }),
-    enabled: Boolean(agent && modelSupported && !modelOptionsOverride && agent.adapterType !== "codex_local"),
+    enabled: Boolean(agent && modelSupported && !modelOptionsOverride),
   });
-  // The OpenAI API catalog also contains image, audio, embedding, and other models
-  // that the Codex CLI cannot run. Use its curated adapter catalog in the composer;
-  // people can still paste an unlisted Codex model ID into the search field.
+  // The server resolves instance-declared models first and otherwise returns the
+  // adapter's curated catalog. Do not replace a declared Codex list locally.
   const models: readonly (AdapterModel & { detail?: string })[] = modelOptionsOverride
-    ?? (agent?.adapterType === "codex_local" ? codexLocalModels : fetchedModels);
-  const catalogPending = modelsPending && !modelOptionsOverride && agent?.adapterType !== "codex_local";
+    ?? fetchedModels;
+  const catalogPending = modelsPending && !modelOptionsOverride;
   const base = assigneeValue === currentAssigneeValue
     ? readComposerRunSettings(overrides, agent?.adapterType)
     : DEFAULT_COMPOSER_RUN_SETTINGS;
