@@ -32,6 +32,19 @@ describe("streamed API response capture", () => {
     try { expect(captured.body).toEqual(Buffer.from("small")); }
     finally { await captured.dispose(); }
   });
+  it("stops a long capture when its run loses authority", async () => {
+    let checks = 0;
+    let cancelled = false;
+    const response = new Response(new ReadableStream({
+      pull(target) { target.enqueue(Buffer.alloc(64 * 1024)); },
+      cancel() { cancelled = true; },
+    }));
+    await expect(captureRunnerApiResponse(response, 24 * 1024, controller(), 1000, async () => {
+      if (++checks === 2) throw new Error("run stopped");
+    })).rejects.toThrow("run stopped");
+    expect(cancelled).toBe(true);
+    expect(checks).toBe(2);
+  });
   it("allows active downloads longer than the idle timeout", async () => {
     let chunks = 0;
     const response = new Response(new ReadableStream({

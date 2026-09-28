@@ -608,6 +608,20 @@ describe("runner API request boundary", () => {
     expect(saveResponse).toHaveBeenCalled();
     expect(request.mock.calls.every(([, options]) => new Headers(options?.headers).get("Authorization") === "Bearer private-agent-token")).toBe(true);
   });
+  it.each(["text/plain", "application/octet-stream"])("does not duplicate an unpaged multi-gigabyte asset (%s)", async contentType => {
+    const totalBytes = 3 * 1024 * 1024 * 1024;
+    const saveResponse = vi.fn(io(fetch).saveResponse);
+    const request = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(new Headers(init?.headers).get("range")).toBe("bytes=0-24576");
+      return new Response(Buffer.alloc(24577, 65), { status: 206, headers: {
+        "content-type": contentType, "content-range": `bytes 0-24576/${totalBytes}`, etag: `"${"a".repeat(64)}"`,
+      } });
+    });
+    const result = await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "existing" } }, context, { ...io(request), saveResponse });
+    expect(result).toMatchObject({ ok: true, status: 206, byteSize: totalBytes, artifact: { artifactId: "existing", byteSize: totalBytes, sha256: "a".repeat(64) } });
+    expect(saveResponse).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it("reads a page beyond ten MiB in a multi-gigabyte asset", async () => {
     const offsetBytes = 3 * 1024 * 1024 * 1024;
     const totalBytes = offsetBytes + 100;

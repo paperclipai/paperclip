@@ -9,7 +9,7 @@ export type RunnerApiResponseBody = Buffer | { path: string; byteSize: number; s
  * Only the inline prefix and one HTTP chunk are held in memory. The caller must
  * dispose the capture after saving it or reading its requested text window.
  */
-export async function captureRunnerApiResponse(response: Response, inlineBytes: number, controller: AbortController, idleTimeoutMs: number) {
+export async function captureRunnerApiResponse(response: Response, inlineBytes: number, controller: AbortController, idleTimeoutMs: number, checkAuthority?: () => Promise<void>) {
   const reader = response.body?.getReader();
   let directory: string | undefined;
   let file: FileHandle | undefined;
@@ -25,6 +25,9 @@ export async function captureRunnerApiResponse(response: Response, inlineBytes: 
     }
   };
   try {
+    let checkedAt = Date.now();
+    let checkedBytes = 0;
+    await checkAuthority?.();
     if (reader) {
       while (true) {
         controller.signal.throwIfAborted();
@@ -52,8 +55,14 @@ export async function captureRunnerApiResponse(response: Response, inlineBytes: 
         if (file) await file.writeFile(chunk);
         else prefix.push(chunk);
         byteSize += chunk.length;
+        if (checkAuthority && (Date.now() - checkedAt >= 1000 || byteSize - checkedBytes >= 1024 * 1024)) {
+          await checkAuthority();
+          checkedAt = Date.now();
+          checkedBytes = byteSize;
+        }
       }
     }
+    await checkAuthority?.();
     const bytes = file ? undefined : Buffer.concat(prefix);
     const body: RunnerApiResponseBody = path ? { path, byteSize, sha256: hash.digest("hex") } : bytes!;
     return {

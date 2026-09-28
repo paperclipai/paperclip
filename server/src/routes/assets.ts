@@ -335,6 +335,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const emptyRead = asset.byteSize === 0 && rangeSyntax?.[1] === "0";
     const ranges = rawRange && !emptyRead ? req.range(asset.byteSize) : undefined;
     res.setHeader("Accept-Ranges", "bytes");
+    if (/^[a-f0-9]{64}$/.test(asset.sha256)) res.setHeader("ETag", `"${asset.sha256}"`);
     if (rawRange && (!rangeSyntax || (!rangeSyntax[1] && !rangeSyntax[2])
       || (!emptyRead && (!Array.isArray(ranges) || ranges.length !== 1)))) {
       res.setHeader("Content-Range", `bytes */${asset.byteSize}`);

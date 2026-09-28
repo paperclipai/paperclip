@@ -58,7 +58,9 @@ Responses above 24 KiB stream into a private temporary file, then into a
 company-owned asset with a retrievable reference. Memory use stays bounded by
 the inline prefix and stream buffers, regardless of total response size. Binary
 responses also become assets; text previews are limited to 2,000 bytes.
-Temporary files are removed on success or failure. Storage exhaustion, upstream
+Temporary files are removed on success or failure. Long captures revalidate the
+active run at least every MiB or at the next chunk after one second, and again
+before returning the snapshot. Stopping the run stops its download. Storage exhaustion, upstream
 failures, and storage-provider object limits can still fail a download; this does
 not promise infinite disk space or an endless-stream API.
 To inspect saved text without creating another artifact, call its authorized
@@ -77,7 +79,8 @@ with GET; never repeat a mutation to retrieve another part of its response.
 Read the saved artifact for a stable snapshot instead of paging a changing live
 response. A text-window call against a live response above 24 KiB also returns
 that snapshot's artifact reference; continue on its content operation. A saved
-asset page never creates another asset. Offsets and total sizes use safe integer
+asset page never creates another asset. An unpaged asset read also fetches only
+a bounded preview and returns the existing reference instead of copying the file. Offsets and total sizes use safe integer
 byte counts, including values above 2 GiB. Request/upload limits and all route
 authorization remain.
 Saved asset pages use authenticated HTTP byte ranges. The storage provider reads

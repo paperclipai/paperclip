@@ -256,7 +256,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const [asset] = await server.db.insert(assets).values({ ...stored, companyId: fixture.companyId, createdByAgentId: fixture.agentId }).returning();
     const call = (authority: typeof fixture.authority, assetId: string, responseText?: object) => authority.execute({ tool: "call_api", callId: randomUUID(), arguments: { operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId }, ...(responseText ? { responseText } : {}) } }) as Promise<any>;
     const initial = await call(fixture.authority, asset.id);
-    expect(initial).toMatchObject({ status: 200, artifact: { byteSize: Buffer.byteLength(text) } });
+    expect(initial).toMatchObject({ status: 206, artifact: { artifactId: asset.id, sha256: asset.sha256, byteSize: Buffer.byteLength(text) } });
     const before = (await fixture.snapshot()).assets.length;
     const reads = vi.spyOn(server.storage, "getObject");
     let offsetBytes = 0;
@@ -351,7 +351,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     await expect(upload([{ path: "escape.txt" }])).rejects.toThrow();
     await expect(upload([{ path: "sample.txt" }])).resolves.toMatchObject({ status: 201 });
     const download = await fixture.authority.execute({ tool: "call_api", callId: "download", arguments: { operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: fixture.binaryArtifactId } } }) as any;
-    expect(download).toMatchObject({ status: 200, byteSize: 32000, artifact: { byteSize: 32000 } });
+    expect(download).toMatchObject({ status: 206, byteSize: 32000, artifact: { artifactId: fixture.binaryArtifactId, byteSize: 32000 } });
     expect((await fixture.snapshot()).assets).toEqual(expect.arrayContaining([expect.objectContaining({ id: download.artifact.artifactId, companyId: fixture.companyId, createdByAgentId: fixture.agentId })]));
   });
 
