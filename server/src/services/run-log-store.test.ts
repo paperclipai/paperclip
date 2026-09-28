@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { createDurableRunLogStore } from "./run-log-store.js";
 import type { StorageProvider } from "../storage/types.js";
@@ -98,6 +99,64 @@ describe("createDurableRunLogStore", () => {
     expect(objects.has(key)).toBe(true);
     expect(objects.get(key)!.toString("utf8")).toContain("line-A");
     expect(objects.get(key)!.toString("utf8")).toContain("line-B");
+  });
+
+  it.each(["finishes", "fails"])("waits for an accepted file append that %s before finalizing", async (outcome) => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const appendFile = fs.appendFile.bind(fs);
+    const spy = vi.spyOn(fs, "appendFile").mockImplementationOnce(async (...args) => {
+      await gate;
+      if (outcome === "fails") throw new Error("disk unavailable");
+      await appendFile(...args);
+    });
+    const append = store.append(handle, { stream: "stderr", chunk: "late diagnostic", ts: "t1" });
+    // Observe the deliberate rejection independently of finalization.
+    void append.catch(() => {});
+    let finalized = false;
+    const finalize = store.finalize(handle).then((summary) => {
+      finalized = true;
+      return summary;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(finalized).toBe(false);
+      release();
+      if (outcome === "fails") await expect(append).rejects.toThrow("disk unavailable");
+      else await append;
+      const summary = await finalize;
+      const local = await fs.readFile(path.join(baseDir, handle.logRef));
+      expect(summary.bytes).toBe(local.length);
+      expect(summary.sha256).toBe(createHash("sha256").update(local).digest("hex"));
+      expect(objects.get(handle.logRef)).toEqual(local);
+      expect(local.toString()).toBe(outcome === "fails" ? "" : JSON.stringify({
+        ts: "t1", stream: "stderr", chunk: "late diagnostic",
+      }) + "\n");
+    } finally {
+      release();
+      await append.catch(() => {});
+      await finalize;
+      spy.mockRestore();
+    }
+  });
+
+  it("ignores appends once finalization starts so the durable snapshot stays immutable", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "accepted", ts: "t1" });
+    const finalize = store.finalize(handle);
+    expect(await store.append(handle, { stream: "stderr", chunk: "too late", ts: "t2" })).toBe(0);
+    const summary = await finalize;
+    expect(await store.append(handle, { stream: "stderr", chunk: "also too late", ts: "t3" })).toBe(0);
+    const local = await fs.readFile(path.join(baseDir, handle.logRef));
+    expect(local.toString()).not.toContain("too late");
+    expect(summary.bytes).toBe(local.length);
+    expect(summary.sha256).toBe(createHash("sha256").update(local).digest("hex"));
+    expect(objects.get(handle.logRef)).toEqual(local);
   });
 
   it("falls back to S3 when the local file is gone (the pod-roll case that caused 'Run log not found')", async () => {

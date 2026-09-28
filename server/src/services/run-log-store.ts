@@ -100,6 +100,12 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
   const s3 = options.s3;
   const s3Prefix = normalizeKeyPrefix(s3?.keyPrefix);
   const inflightMirrorMs = s3?.inflightMirrorMs && s3.inflightMirrorMs > 0 ? s3.inflightMirrorMs : 0;
+  // A run owns the write handle returned by begin(). Diagnostics can be
+  // dispatched without awaiting the rest of onLog (DB progress/live events),
+  // but finalize must include every file append already accepted on that handle.
+  // Weak collections let completed handles disappear with their owning runs.
+  const pendingAppends = new WeakMap<RunLogHandle, Set<Promise<void>>>();
+  const closingHandles = new WeakSet<RunLogHandle>();
 
   function s3Key(logRef: string): string {
     return s3Prefix ? `${s3Prefix}/${logRef}` : logRef;
@@ -289,7 +295,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     },
 
     async append(handle, event) {
-      if (handle.store !== "local_file") return 0;
+      if (handle.store !== "local_file" || closingHandles.has(handle)) return 0;
       const absPath = resolveWithin(basePath, handle.logRef);
       const line = JSON.stringify({
         ts: event.ts,
@@ -301,13 +307,30 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
         ...(typeof event.seq === "number" && Number.isFinite(event.seq) ? { seq: event.seq } : {}),
       });
       const persisted = `${line}\n`;
-      await fs.appendFile(absPath, persisted, "utf8");
-      noteInflightAppend(handle.logRef);
+      let pending = pendingAppends.get(handle);
+      if (!pending) {
+        pending = new Set();
+        pendingAppends.set(handle, pending);
+      }
+      const write = fs.appendFile(absPath, persisted, "utf8").then(() => {
+        noteInflightAppend(handle.logRef);
+      });
+      pending.add(write);
+      try {
+        await write;
+      } finally {
+        pending.delete(write);
+      }
       return Buffer.byteLength(persisted, "utf8");
     },
 
     async finalize(handle) {
       if (handle.store !== "local_file") return { bytes: 0, compressed: false };
+      // Close admission before the first await. Drain file writes only, not
+      // heartbeat's later DB/live-event persistence, then freeze one consistent
+      // byte count, hash, and durable copy. Late diagnostics cannot mutate it.
+      closingHandles.add(handle);
+      await Promise.allSettled(pendingAppends.get(handle) ?? []);
       await retireInflightMirror(handle.logRef);
       const absPath = resolveWithin(basePath, handle.logRef);
       const stat = await fs.stat(absPath).catch(() => null);

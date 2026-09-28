@@ -1109,6 +1109,10 @@ This does not restart an agent turn or replay a tool call. Authentication and
 shell errors fail immediately; exhausted input delivery closes the bridge and
 records a fixed diagnostic without logging the input payload. Persisting that
 failure diagnostic does not block bridge teardown.
+Run-log finalization closes its write handle and waits for accepted file
+appends before computing the size, hash, and durable copy. Writes submitted
+after finalization starts are ignored; later progress persistence is not part
+of that file-write barrier.
 
 ### Preinstalled remote runner runtime
 
