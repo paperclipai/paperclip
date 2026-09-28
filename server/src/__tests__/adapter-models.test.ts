@@ -195,14 +195,14 @@ describe("adapter model listing", () => {
     ]));
   });
 
-  it("loads codex models dynamically and merges fallback options", async () => {
+  it("keeps general OpenAI API models out of the Codex catalog", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
       json: async () => ({
         data: [
-          { id: "gpt-5-pro" },
-          { id: "gpt-5" },
+          { id: "gpt-image-1" },
+          { id: "text-embedding-3-large" },
         ],
       }),
     } as Response);
@@ -210,40 +210,26 @@ describe("adapter model listing", () => {
     const first = await listAdapterModels("codex_local");
     const second = await listAdapterModels("codex_local");
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(first).toEqual(second);
-    expect(first.some((model) => model.id === "gpt-5-pro")).toBe(true);
-    expect(first.some((model) => model.id === "codex-mini-latest")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(first).toEqual(codexFallbackModels);
+    expect(second).toEqual(codexFallbackModels);
   });
 
-  it("refreshes cached codex models on demand", async () => {
+  it("keeps the curated Codex list when refreshing with an OpenAI key", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    const fetchSpy = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "gpt-5" }],
-        }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "gpt-5.6-terra" }],
-        }),
-      } as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const initial = await listAdapterModels("codex_local");
     const refreshed = await refreshAdapterModels("codex_local");
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(initial.some((model) => model.id === "gpt-5")).toBe(true);
-    expect(refreshed.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
-    expect(refreshed.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(initial).toEqual(codexFallbackModels);
+    expect(refreshed).toEqual(codexFallbackModels);
   });
 
-  it("falls back to static codex models when OpenAI model discovery fails", async () => {
+  it("uses static Codex models without calling OpenAI model discovery", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: false,
       status: 401,
       json: async () => ({}),
@@ -251,6 +237,7 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("codex_local");
     expect(models).toEqual(codexFallbackModels);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
 
@@ -313,6 +300,16 @@ describe("adapter model listing", () => {
         { id: "tensorix/deepseek/deepseek-chat-v3.1", label: "DeepSeek v3.1" },
         { id: "tensorix/z-ai/glm-4.7", label: "tensorix/z-ai/glm-4.7" },
       ]);
+    });
+
+    it("uses declared Codex models for both listing and refresh", async () => {
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+        codex_local: [{ id: "private-codex", label: "Private Codex" }],
+      });
+      const declared = [{ id: "private-codex", label: "Private Codex" }];
+
+      await expect(listAdapterModels("codex_local")).resolves.toEqual(declared);
+      await expect(refreshAdapterModels("codex_local")).resolves.toEqual(declared);
     });
 
     it("observes env changes between calls (memo keyed by raw env value)", async () => {

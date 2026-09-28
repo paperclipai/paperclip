@@ -1040,6 +1040,10 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
   }
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
+  // The OpenAI API lists image, audio, embedding, and other models that the
+  // Codex CLI cannot run. Its curated adapter list is the safe default;
+  // PAPERCLIP_ADAPTER_MODELS above remains authoritative for custom instances.
+  if (type === "codex_local") return adapter.models ?? [];
   if (adapter.listModels) {
     const discovered = await adapter.listModels();
     if (discovered.length > 0) return discovered;
@@ -1048,6 +1052,7 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
 }
 
 export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+  if (type === "codex_local") return listAdapterModels(type);
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.refreshModels) {

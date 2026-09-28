@@ -106,11 +106,15 @@ next question. Reduced-motion mode advances without animation.
 Multi-select and custom answers wait for Next, and the final page waits for
 Submit answers. The adjacent **Verified** story exercises the full flow.
 
-Use **Tasks → Composer → Interaction above composer** to review the production
+Use **Composer → Interaction above composer** to review the production
 pending-input layout. The stories cover questions, confirmations, checkbox
 choices, item verdicts, suggested tasks, tool reviews, runtime questions, and phone layouts with
 the bottom navigation. The normal message composer remains usable below the
 pending card.
+
+Use **Composer → Model and effort picker** to review harness-specific model
+choices. Codex uses the curated adapter catalog unless the instance declares
+`PAPERCLIP_ADAPTER_MODELS`; general OpenAI API models are not Codex choices.
 
 The Storybook visual regression suite uses external PNG baselines instead of
 committed screenshots:
