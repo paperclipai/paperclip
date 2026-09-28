@@ -467,8 +467,7 @@
       "slug": "zai",
       "provider": "Z.AI",
       "catalogVisible": true,
-      "localAsset": "/brands/apps/zai.svg",
-      "darkAsset": "/brands/apps/zai-dark.svg"
+      "localAsset": "/brands/apps/zai.svg"
     },
     {
       "slug": "imessage-photon",

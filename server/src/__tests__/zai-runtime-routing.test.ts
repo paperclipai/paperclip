@@ -37,6 +37,18 @@ describe("applyZaiRuntimeRouting", () => {
     });
     expect(plainBinding.ANTHROPIC_MODEL).toBeUndefined();
   });
+
+  it("replaces a claude-* model with the GLM default because Z.AI rejects it", () => {
+    const fromConfigModel: Record<string, unknown> = {};
+    applyZaiRuntimeRouting(fromConfigModel, { model: "claude-opus-5" });
+    expect(fromConfigModel.ANTHROPIC_MODEL).toBe(ZAI_DEFAULT_MODEL);
+
+    const fromEnvBinding: Record<string, unknown> = {};
+    applyZaiRuntimeRouting(fromEnvBinding, {
+      env: { ANTHROPIC_MODEL: { type: "plain", value: "claude-sonnet-4-6" } },
+    });
+    expect(fromEnvBinding.ANTHROPIC_MODEL).toBe(ZAI_DEFAULT_MODEL);
+  });
 });
 
 describe("zai AI connection capability", () => {

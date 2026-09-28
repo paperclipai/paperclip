@@ -2,23 +2,20 @@
   "schemaVersion": 1,
   "slug": "zai",
   "name": "Z.AI (GLM)",
-  "description": "Connect Z.AI GLM accounts for your agents.",
+  "description": "Connect Z.AI (GLM) accounts for your agents.",
   "categories": [
     "ai"
   ],
   "branding": {
-    "logoUrl": "/brands/apps/zai.svg",
-    "darkLogoUrl": "/brands/apps/zai-dark.svg"
+    "logoUrl": "/brands/apps/zai.svg"
   },
   "urlPatterns": [
-    "https://api.z.ai/api/*",
-    "https://z.ai/manage-apikey/*"
+    "https://api.z.ai/api/*"
   ],
-  "docsUrl": "https://docs.z.ai/devpack/latest-model",
   "methods": [
     {
       "key": "ai-api_key",
-      "label": "Z.AI API key",
+      "label": "Z.AI (GLM) API key",
       "purpose": "ai",
       "transport": "runtime_auth",
       "auth": "api_key",
@@ -34,7 +31,7 @@
         "customer"
       ],
       "whenToUse": "Authenticate an agent with this account.",
-      "guidanceMd": "Use an API key from your Z.AI coding plan (GLM models run through the Anthropic-compatible endpoint).",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
       "riskTier": "S3",
       "credentialFields": [
         {

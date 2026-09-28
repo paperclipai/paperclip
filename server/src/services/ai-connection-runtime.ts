@@ -214,6 +214,12 @@ export function applyZaiRuntimeRouting(
   const explicitModel =
     explicitBindingValue(config.model) ??
     explicitBindingValue(configuredEnv?.ANTHROPIC_MODEL);
+  // claude-* ids are never served by Z.AI: the provider answers 403 and the run
+  // dies. Treat them as no model choice so the GLM default applies.
+  if (explicitModel && /^claude-/i.test(explicitModel)) {
+    env.ANTHROPIC_MODEL = ZAI_DEFAULT_MODEL;
+    return;
+  }
   if (!explicitModel) env.ANTHROPIC_MODEL = ZAI_DEFAULT_MODEL;
 }
 
