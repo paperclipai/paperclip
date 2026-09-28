@@ -37,6 +37,7 @@ import {
   type FeedbackVoteValue,
 } from "@paperclipai/shared";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveOpenCodePerAgentDataDir } from "@paperclipai/adapter-utils/server-utils";
 import { notFound, unprocessable } from "../errors.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import {
@@ -314,6 +315,66 @@ async function findMatchingFile(
   return search(rootDir, 0);
 }
 
+/** Drop nulls and duplicate paths while preserving the caller's priority order. */
+function dedupePaths(paths: (string | null | undefined)[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const candidate of paths) {
+    if (!candidate) continue;
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    out.push(candidate);
+  }
+  return out;
+}
+
+/**
+ * First hit across an ordered list of roots.
+ *
+ * OpenCode traces can live in more than one place for the same run (a per-agent
+ * dir today, the shared dir for runs that predate the split or run with
+ * isolation off), so the search has to take candidates rather than a single root.
+ */
+async function findFirstMatchingFile(
+  rootDirs: string[],
+  matcher: (absolutePath: string, name: string) => boolean,
+  maxDepth = 5,
+): Promise<string | null> {
+  for (const rootDir of rootDirs) {
+    const found = await findMatchingFile(rootDir, matcher, maxDepth);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function findFirstExistingFile(rootDirs: string[], name: string): Promise<string | null> {
+  for (const rootDir of rootDirs) {
+    const candidate = path.join(rootDir, name);
+    if (await readFile(candidate, "utf8").then(() => true).catch(() => false)) return candidate;
+  }
+  return null;
+}
+
+async function readFirstTextFileIfPresent(
+  filePaths: (string | null)[],
+  state: ReturnType<typeof createFeedbackRedactionState>,
+  fieldPath: string,
+) {
+  for (const filePath of filePaths) {
+    const text = await readTextFileIfPresent(filePath, state, fieldPath);
+    if (text) return text;
+  }
+  return null;
+}
+
+async function listChildFilesFromFirst(rootDirs: string[], leaf: string): Promise<string[]> {
+  for (const rootDir of rootDirs) {
+    const files = await listChildFiles(path.join(rootDir, leaf));
+    if (files.length > 0) return files;
+  }
+  return [];
+}
+
 async function readFullRunLog(run: {
   logStore: string | null;
   logRef: string | null;
@@ -567,6 +628,7 @@ async function buildOpenCodeTraceFiles(input: {
   stdoutText: string;
   state: ReturnType<typeof createFeedbackRedactionState>;
   notes: string[];
+  agentId?: string | null;
 }) {
   const files: FeedbackTraceBundleFile[] = [];
   if (!input.sessionId) {
@@ -586,21 +648,37 @@ async function buildOpenCodeTraceFiles(input: {
     };
   }
 
-  const opencodeRoot = resolveHomeAwarePath(
-    process.env.PAPERCLIP_OPENCODE_STORAGE_DIR ?? "~/.local/share/opencode",
-  );
-  const sessionRoot = path.join(opencodeRoot, "storage", "session");
-  const diffRoot = path.join(opencodeRoot, "storage", "session_diff");
-  const messageRoot = path.join(opencodeRoot, "storage", "message");
-  const partRoot = path.join(opencodeRoot, "storage", "part");
-  const todoRoot = path.join(opencodeRoot, "storage", "todo");
-  const projectRoot = path.join(opencodeRoot, "storage", "project");
-  const sessionFile = await findMatchingFile(
+  // Local opencode_local runs get a per-agent data home (see
+  // packages/adapters/opencode-local/src/server/agent-data-home.ts), so the
+  // session storage lives under that agent's dir rather than the shared
+  // ~/.local/share/opencode.
+  //
+  // The shared dir stays in the candidate list because three cases still write
+  // there, and searching only the per-agent dir silently produced feedback
+  // bundles with no OpenCode trace at all:
+  //   - runs that started before the split landed;
+  //   - runs where an operator turned isolation off (sharedDataHome, or
+  //     PAPERCLIP_OPENCODE_SHARED_DATA_HOME), which resolve to null above;
+  //   - remote targets, which never get a local per-agent home.
+  // First match wins, so a per-split run is never read from the shared dir.
+  const perAgentDataDir = resolveOpenCodePerAgentDataDir({ agentId: input.agentId });
+  const opencodeRoots = dedupePaths([
+    resolveHomeAwarePath(process.env.PAPERCLIP_OPENCODE_STORAGE_DIR),
+    perAgentDataDir ? resolveHomeAwarePath(perAgentDataDir) : null,
+    resolveHomeAwarePath("~/.local/share/opencode"),
+  ]);
+  const sessionRoot = opencodeRoots.map((root) => path.join(root, "storage", "session"));
+  const diffRoot = opencodeRoots.map((root) => path.join(root, "storage", "session_diff"));
+  const messageRoot = opencodeRoots.map((root) => path.join(root, "storage", "message"));
+  const partRoot = opencodeRoots.map((root) => path.join(root, "storage", "part"));
+  const todoRoot = opencodeRoots.map((root) => path.join(root, "storage", "todo"));
+  const projectRoot = opencodeRoots.map((root) => path.join(root, "storage", "project"));
+  const sessionFile = await findFirstMatchingFile(
     sessionRoot,
     (_absolutePath, name) => name === `${input.sessionId}.json`,
     6,
   );
-  const diffFile = path.join(diffRoot, `${input.sessionId}.json`);
+  const diffFile = await findFirstExistingFile(diffRoot, `${input.sessionId}.json`);
 
   const sessionRaw = sessionFile ? await readFile(sessionFile, "utf8").catch(() => null) : null;
   const sessionText =
@@ -618,12 +696,11 @@ async function buildOpenCodeTraceFiles(input: {
     appendNote(input.notes, "opencode_session_file_missing");
   }
 
-  const diffText = await readTextFileIfPresent(
-    diffFile,
+  const diffText = await readFirstTextFileIfPresent(
+    [diffFile],
     input.state,
     "bundle.rawAdapterTrace.opencode.sessionDiff",
-  );
-  if (diffText) {
+  );  if (diffText) {
     files.push(makeBundleFile({
       path: "adapter/opencode/session-diff.json",
       contentType: "application/json",
@@ -632,7 +709,7 @@ async function buildOpenCodeTraceFiles(input: {
     }));
   }
 
-  const messageFiles = await listChildFiles(path.join(messageRoot, input.sessionId));
+  const messageFiles = await listChildFilesFromFirst(messageRoot, input.sessionId);
   const messageIds: string[] = [];
   for (const filePath of messageFiles) {
     const messageText = await readTextFileIfPresent(
@@ -655,7 +732,7 @@ async function buildOpenCodeTraceFiles(input: {
 
   let partFilesCount = 0;
   for (const messageId of messageIds) {
-    const partFiles = await listChildFiles(path.join(partRoot, messageId));
+    const partFiles = await listChildFilesFromFirst(partRoot, messageId);
     for (const filePath of partFiles) {
       const partText = await readTextFileIfPresent(
         filePath,
@@ -685,8 +762,8 @@ async function buildOpenCodeTraceFiles(input: {
     }
   })();
   const projectId = asString(parsedSession?.projectID) ?? asString(parsedSession?.projectId);
-  const projectText = await readTextFileIfPresent(
-    projectId ? path.join(projectRoot, `${projectId}.json`) : null,
+  const projectText = await readFirstTextFileIfPresent(
+    projectId ? projectRoot.map((root) => path.join(root, `${projectId}.json`)) : [],
     input.state,
     "bundle.rawAdapterTrace.opencode.project",
   );
@@ -699,8 +776,8 @@ async function buildOpenCodeTraceFiles(input: {
     }));
   }
 
-  const todoText = await readTextFileIfPresent(
-    path.join(todoRoot, `${input.sessionId}.json`),
+  const todoText = await readFirstTextFileIfPresent(
+    todoRoot.map((root) => path.join(root, `${input.sessionId}.json`)),
     input.state,
     "bundle.rawAdapterTrace.opencode.todo",
   );
@@ -1620,6 +1697,7 @@ async function buildFeedbackTraceBundleFromRow(
           stdoutText,
           state,
           notes,
+          agentId: run.agentId,
         });
         files.push(...adapter.files);
         rawAdapterTrace = adapter.raw;

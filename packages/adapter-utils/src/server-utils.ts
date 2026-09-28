@@ -206,6 +206,96 @@ export function resolvePaperclipInstanceRootForAdapter(
   return path.resolve(homeDir, "instances", instanceId);
 }
 
+/** OpenCode's own directory name inside each XDG root. */
+export const OPENCODE_APP_DIR_NAME = "opencode";
+
+/**
+ * Resolve OpenCode's data dir for the given env.
+ *
+ * OpenCode appends its own app name to `XDG_DATA_HOME`, so the directory that
+ * actually holds `opencode.db`, `auth.json`, and `storage/` is
+ * `$XDG_DATA_HOME/opencode` — NOT `$XDG_DATA_HOME`. Every caller that needs to
+ * read or seed that content must go through here; the off-by-one-level mistake
+ * is silent (the file is simply never found) rather than an error.
+ */
+export function resolveOpenCodeDataDir(input: {
+  env?: NodeJS.ProcessEnv;
+} = {}): string {
+  const env = input.env ?? process.env;
+  const xdgDataHome = env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share");
+  return path.resolve(xdgDataHome, OPENCODE_APP_DIR_NAME);
+}
+
+/**
+ * Resolve the per-agent OpenCode data home for a local run, or `null` when the
+ * run should keep OpenCode's default shared data dir.
+ *
+ * Single source of truth shared by the adapter (which sets `XDG_DATA_HOME`) and
+ * by the feedback trace collector (which must read the same directory), so the
+ * two cannot drift apart.
+ */
+export function resolveOpenCodePerAgentDataDir(input: {
+  agentId: string | null | undefined;
+  instanceId?: string;
+  env?: NodeJS.ProcessEnv;
+  config?: Record<string, unknown>;
+}): string | null {
+  const agentId = input.agentId?.trim() ?? "";
+  if (!agentId || !PATH_SEGMENT_RE.test(agentId)) return null;
+  // An operator can turn isolation off, in which case the run wrote to the shared
+  // home. Resolving a per-agent dir anyway would send the trace collector looking
+  // in a directory the run never wrote to.
+  if (isOpenCodePerAgentIsolationDisabled({ env: input.env, config: input.config })) return null;
+  const base = resolveOpenCodePerAgentBaseDir({
+    instanceId: input.instanceId,
+    env: input.env,
+    config: input.config,
+  });
+  return path.join(base, agentId, OPENCODE_APP_DIR_NAME);
+}
+
+/**
+ * The `<base>` that holds one subdirectory per agent.
+ *
+ * An operator can redirect the whole tree with `openCodeDataRoot` in the adapter
+ * config or `PAPERCLIP_OPENCODE_DATA_ROOT` in the env. This lives here, beside
+ * the resolver above, so the adapter (which writes) and the trace collector
+ * (which reads) cannot pick different bases.
+ */
+export function resolveOpenCodePerAgentBaseDir(input: {
+  instanceId?: string;
+  env?: NodeJS.ProcessEnv;
+  config?: Record<string, unknown>;
+} = {}): string {
+  const env = input.env ?? process.env;
+  const override =
+    (typeof input.config?.openCodeDataRoot === "string" && input.config.openCodeDataRoot.trim()) ||
+    env.PAPERCLIP_OPENCODE_DATA_ROOT?.trim() ||
+    "";
+  if (override) return path.resolve(override);
+  return path.join(
+    resolvePaperclipInstanceRootForAdapter({ instanceId: input.instanceId, env: input.env }),
+    "adapter-data",
+    OPENCODE_APP_DIR_NAME,
+  );
+}
+
+/** Whether an operator has turned per-agent OpenCode isolation off. */
+export function isOpenCodePerAgentIsolationDisabled(input: {
+  env?: NodeJS.ProcessEnv;
+  config?: Record<string, unknown>;
+} = {}): boolean {
+  const env = input.env ?? process.env;
+  if (input.config?.sharedDataHome === true) return true;
+  const flag = env.PAPERCLIP_OPENCODE_SHARED_DATA_HOME?.trim();
+  if (!flag) return false;
+  return TRUTHY_ENV_VALUES.has(flag.toLowerCase());
+}
+
+// Kept in step with isTruthyEnvFlag in the adapter's models.ts, so the reader and
+// the writer cannot disagree about whether isolation is off.
+const TRUTHY_ENV_VALUES = new Set(["1", "true", "yes"]);
+
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   "",

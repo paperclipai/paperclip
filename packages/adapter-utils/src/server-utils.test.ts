@@ -29,6 +29,8 @@ import {
   selectInitialCommunicationGuidance,
   runningProcesses,
   runChildProcess,
+  resolveOpenCodeDataDir,
+  resolveOpenCodePerAgentDataDir,
   sanitizeSshRemoteEnv,
   signalRunningProcess,
   shapePaperclipWorkspaceEnvForExecution,
@@ -3843,5 +3845,63 @@ describe("runtime skill assignment boundaries", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("opencode data dir resolution", () => {
+  // OpenCode appends its own app name to XDG_DATA_HOME, so the directory that
+  // actually holds opencode.db / auth.json / storage/ is $XDG_DATA_HOME/opencode.
+  // Getting this wrong is silent: the file is simply never found.
+  it("resolves the opencode data dir one level below XDG_DATA_HOME", () => {
+    expect(resolveOpenCodeDataDir({ env: { XDG_DATA_HOME: "/data/root" } })).toBe(
+      path.join("/data/root", "opencode"),
+    );
+  });
+
+  it("falls back to the XDG default share dir when XDG_DATA_HOME is unset", () => {
+    expect(resolveOpenCodeDataDir({ env: {} })).toBe(
+      path.join(os.homedir(), ".local", "share", "opencode"),
+    );
+  });
+
+  it("gives each agent a distinct per-agent opencode data dir", () => {
+    const env = { PAPERCLIP_HOME: "/home/paperclip", PAPERCLIP_INSTANCE_ID: "default" };
+    const a = resolveOpenCodePerAgentDataDir({ agentId: "agent-a", env });
+    const b = resolveOpenCodePerAgentDataDir({ agentId: "agent-b", env });
+    expect(a).not.toBe(b);
+    expect(a).toBe(
+      path.join("/home/paperclip", "instances", "default", "adapter-data", "opencode", "agent-a", "opencode"),
+    );
+  });
+
+  it("returns null for a missing or unsafe agent id", () => {
+    const env = { PAPERCLIP_HOME: "/home/paperclip", PAPERCLIP_INSTANCE_ID: "default" };
+    expect(resolveOpenCodePerAgentDataDir({ agentId: null, env })).toBeNull();
+    expect(resolveOpenCodePerAgentDataDir({ agentId: "  ", env })).toBeNull();
+    expect(resolveOpenCodePerAgentDataDir({ agentId: "../../etc", env })).toBeNull();
+  });
+
+  it("returns null when an operator turns isolation off, so the collector does not look in a dir the run never wrote to", () => {
+    const env = { PAPERCLIP_HOME: "/home/paperclip", PAPERCLIP_INSTANCE_ID: "default" };
+    expect(
+      resolveOpenCodePerAgentDataDir({ agentId: "agent-a", env, config: { sharedDataHome: true } }),
+    ).toBeNull();
+    expect(
+      resolveOpenCodePerAgentDataDir({
+        agentId: "agent-a",
+        env: { ...env, PAPERCLIP_OPENCODE_SHARED_DATA_HOME: "true" },
+      }),
+    ).toBeNull();
+  });
+
+  it("honours the data root override the adapter writer uses, so writer and collector cannot drift", () => {
+    const env = { PAPERCLIP_HOME: "/home/paperclip", PAPERCLIP_INSTANCE_ID: "default" };
+    const overridden = { ...env, PAPERCLIP_OPENCODE_DATA_ROOT: "/srv/opencode" };
+    expect(resolveOpenCodePerAgentDataDir({ agentId: "agent-a", env: overridden })).toBe(
+      path.join("/srv/opencode", "agent-a", "opencode"),
+    );
+    expect(
+      resolveOpenCodePerAgentDataDir({ agentId: "agent-a", env, config: { openCodeDataRoot: "/srv/opencode" } }),
+    ).toBe(path.join("/srv/opencode", "agent-a", "opencode"));
   });
 });
