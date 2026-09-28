@@ -6803,21 +6803,6 @@ export function agentRoutes(
     ));
   });
 
-export function decideCancelAuth(actor: any, run: any) {
-  if (!actor.agentId) {
-    return { authorized: true, actorType: "user", actorId: actor.userId };
-  }
-
-  if (actor.agentId !== run.agentId) {
-    return { authorized: false, reason: "Board access required" };
-  }
-
-  if (run.source !== "automation" && run.source !== "on_demand") {
-    return { authorized: false, reason: "Board access required" };
-  }
-
-  return { authorized: true, actorType: "agent", actorId: actor.agentId };
-}
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
     assertAuthenticated(req);
@@ -7481,3 +7466,19 @@ export function decideCancelAuth(actor: any, run: any) {
   return router;
 }
 import { listRunIdentityContexts } from "../services/run-identity.js";
+
+export function decideCancelAuth(actor: any, run: any) {
+  if (!actor.agentId) {
+    return { authorized: true, actorType: "user", actorId: actor.userId };
+  }
+
+  if (actor.agentId !== run.agentId) {
+    return { authorized: false, reason: "Board access required" };
+  }
+
+  if (run.source !== "automation" && run.source !== "on_demand") {
+    return { authorized: false, reason: "Board access required" };
+  }
+
+  return { authorized: true, actorType: "agent", actorId: actor.agentId };
+}
