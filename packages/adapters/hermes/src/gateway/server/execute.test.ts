@@ -487,6 +487,35 @@ describe("execute", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/run-hermes-1"))).toBe(true);
   });
 
+  it("records that no provider work started when the gateway refuses the create call", async () => {
+    // Measured production shape (2026-09-27): the gateway's concurrent-run cap
+    // answers POST /v1/runs with 429 + Retry-After before it creates any run.
+    // The platform's legacy-execution guard only schedules the bounded
+    // transient retry when the adapter testifies that no provider work
+    // started, so this evidence is part of the fix, not test scaffolding.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            error: { code: "rate_limit_exceeded", message: "Too many concurrent runs (max 10)" },
+          }),
+          { status: 429, headers: { "retry-after": "1" } },
+        ),
+      ),
+    );
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+  });
+
   it("maps HTTP auth failures", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "bad key" }), { status: 401 })));
     const result = await execute(makeCtx({

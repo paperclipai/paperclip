@@ -2196,8 +2196,10 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       adapterType: "hermes_gateway",
       agentName: "Leela",
       resultJson: {
-        // The adapter refused the delivery before any provider work started, so
-        // the run carries no legacy execution that would need reconciliation.
+        // The evidence the Hermes gateway adapter records when the create call
+        // is refused (see execute.test.ts in the adapter package). Without it
+        // the legacy-execution guard holds the run for reconciliation instead of
+        // scheduling this retry, which is what the next test pins down.
         executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         stopReason: "adapter_failed",
         errorFamily: "transient_upstream",
@@ -2234,6 +2236,282 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(contextSnapshot.transientRetryNotBefore).toBe(retryNotBefore);
     // hermes_gateway is not codex_local, so it never enters the Codex fallback ladder.
     expect(contextSnapshot.codexTransientFallbackMode ?? null).toBeNull();
+  });
+
+  it("holds a gateway refusal for reconciliation when the adapter recorded no provider-work evidence", async () => {
+    // The exact production resultJson of the 50 dead runs measured on
+    // 2026-09-27: error family and Retry-After persisted, but no
+    // executionRecovery evidence. A legacy run in that shape must not be
+    // replayed automatically, so the scheduler holds it for reconciliation.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-09-27T06:20:55.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "hermes_gateway_rate_limited",
+      errorFamily: "transient_upstream",
+      adapterType: "hermes_gateway",
+      agentName: "Leela",
+      resultJson: {
+        configFreshness: {},
+        effectiveTimeoutSec: 1_800,
+        errorFamily: "transient_upstream",
+        presentationDecision: {},
+        retryNotBefore: "2026-09-27T06:20:56.000Z",
+        stopReason: "adapter_failed",
+        transientRetryNotBefore: "2026-09-27T06:20:56.000Z",
+        timeoutConfigured: false,
+        timeoutFired: false,
+        timeoutSource: null,
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+
+    expect(scheduled).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "legacy_execution_requires_reconciliation",
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it("parks a wake on the gateway delivery window instead of burning a run", async () => {
+    // Measured production shape (2026-09-27, 50 runs in three minutes): the
+    // gateway answered `POST /v1/runs` with 429 + Retry-After, and every wake
+    // created a run that died on the refusal. A wake that arrives while the
+    // gateway's own window is still open must not become another dispatchable
+    // run: it is parked and promoted when the window closes.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const issueId = randomUUID();
+    // The delivery hold is compared against the wall clock the server reads, so
+    // the fixture has to sit in real time, not in the measured 2026-09-27 window.
+    const now = new Date(Date.now() - 5_000);
+    const retryNotBefore = new Date(Date.now() + 60_000);
+
+    await seedRetryFixture({
+      runId: sourceRunId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "hermes_gateway_rate_limited",
+      errorFamily: "transient_upstream",
+      adapterType: "hermes_gateway",
+      agentName: "Leela",
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        stopReason: "adapter_failed",
+        errorFamily: "transient_upstream",
+        retryNotBefore: retryNotBefore.toISOString(),
+        transientRetryNotBefore: retryNotBefore.toISOString(),
+      },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued behind a saturated gateway",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-1`,
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_status_changed",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: { issueId, wakeReason: "issue_status_changed" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+    expect(wake).toBeNull();
+
+    const agentRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+
+    // No dispatchable run exists, so nothing can reach the refusing gateway.
+    expect(agentRuns.filter((run) => run.status === "queued" || run.status === "running")).toHaveLength(0);
+
+    const parked = agentRuns.filter((run) => run.scheduledRetryReason === "gateway_delivery_hold");
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+    expect(parked[0]!.scheduledRetryAt?.getTime()).toBe(retryNotBefore.getTime());
+    expect((parked[0]!.contextSnapshot as Record<string, unknown>).issueId).toBe(issueId);
+
+    const parkedWake = await db
+      .select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, parked[0]!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(parkedWake?.status).toBe("queued");
+    expect(
+      (parkedWake?.payload as Record<string, unknown> | null)?.gatewayDeliveryHold,
+    ).toMatchObject({ until: retryNotBefore.toISOString(), errorCode: "hermes_gateway_rate_limited" });
+  });
+
+  it("coalesces wakes parked on the gateway delivery window and delivers them when it closes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    const now = new Date(Date.now() - 5_000);
+    const retryNotBefore = new Date(Date.now() + 90_000);
+
+    await seedRetryFixture({
+      runId: sourceRunId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "hermes_gateway_upstream_error",
+      errorFamily: "transient_upstream",
+      adapterType: "hermes_gateway",
+      agentName: "Leela",
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "transient_upstream",
+        retryNotBefore: retryNotBefore.toISOString(),
+        transientRetryNotBefore: retryNotBefore.toISOString(),
+      },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Coalesced behind a saturated gateway",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
+    });
+
+    const wakes = [];
+    wakes.push(
+      await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: { issueId, mutation: "update" },
+        contextSnapshot: { issueId, wakeReason: "issue_status_changed" },
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      }),
+    );
+    wakes.push(
+      await heartbeat.wakeup(agentId, {
+        source: "comment",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          commentId,
+          mutation: "comment",
+          _paperclipWakeContext: { wakeCommentIds: [commentId], issueId },
+        },
+        contextSnapshot: { issueId, wakeReason: "issue_commented" },
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      }),
+    );
+    wakes.push(
+      await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: { issueId, mutation: "update" },
+        contextSnapshot: { issueId, wakeReason: "issue_status_changed" },
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      }),
+    );
+
+    const parkedRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.scheduledRetryReason, "gateway_delivery_hold"),
+        ),
+      );
+
+    // Every wake shares one parked run instead of producing one run each, and
+    // no wake returns a freshly created run.
+    expect(parkedRuns).toHaveLength(1);
+    const returnedRunIds = wakes
+      .filter((run): run is NonNullable<typeof run> => run !== null)
+      .map((run) => run.id);
+    expect(returnedRunIds.filter((id) => id !== parkedRuns[0]!.id)).toEqual([]);
+
+    // The parked run has no dispatchable sibling, so nothing can reach the
+    // gateway while its window is open.
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, agentId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        ),
+    ).toHaveLength(0);
+
+    const parkedRunContext = parkedRuns[0]!.contextSnapshot as Record<string, unknown>;
+    expect(parkedRunContext.wakeCommentIds).toEqual([commentId]);
+
+    const coalescedWakes = await db
+      .select({ runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "coalesced"),
+        ),
+      );
+    expect(coalescedWakes.length).toBeGreaterThan(0);
+    expect(coalescedWakes.every((wake) => wake.runId === parkedRuns[0]!.id)).toBe(true);
+
+    const earlyPromotion = await heartbeat.promoteDueScheduledRetries(
+      new Date(retryNotBefore.getTime() - 1),
+    );
+    expect(earlyPromotion).toEqual({ promoted: 0, runIds: [] });
+
+    const duePromotion = await heartbeat.promoteDueScheduledRetries(retryNotBefore);
+    expect(duePromotion).toEqual({ promoted: 1, runIds: [parkedRuns[0]!.id] });
+
+    const delivered = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, parkedRuns[0]!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(delivered?.status).toBe("queued");
   });
 
   describe("run-dispatch module transactions", () => {

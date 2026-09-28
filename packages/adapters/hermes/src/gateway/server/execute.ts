@@ -757,7 +757,11 @@ function redactErrorMessage(err: unknown, redactText: TextRedactor = sanitizeSen
   return redactText(String(err));
 }
 
-function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
+function errorResult(
+  err: unknown,
+  redactText: TextRedactor = sanitizeSensitiveText,
+  evidence?: Pick<AdapterExecutionResult, "executionRecovery">,
+): AdapterExecutionResult {
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
@@ -765,6 +769,7 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
     ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
     : redactErrorMessage(err, redactText);
   return {
+    ...(evidence ?? {}),
     exitCode: 1,
     signal: null,
     timedOut: false,
@@ -893,11 +898,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: false,
         errorCode: "hermes_gateway_protocol_error",
         errorMessage: "Hermes /v1/runs response did not include run_id.",
+        // The gateway answered without a run id, so it never created the run
+        // this invocation would have driven.
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         errorMeta: { response: redactForLog(created, [], 0, redactText) as Record<string, unknown> },
       };
     }
   } catch (err) {
-    return errorResult(err, redactText);
+    // The create request is this adapter's dispatch boundary (`ctx.onDispatch`
+    // above), so a failure here is positive evidence that no provider work
+    // started. The platform's legacy-execution guard requires that evidence
+    // before it schedules a bounded transient retry; without it a refused
+    // delivery is held for reconciliation and the retry never runs.
+    return errorResult(err, redactText, {
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    });
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
