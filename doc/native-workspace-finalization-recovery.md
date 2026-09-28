@@ -129,7 +129,9 @@ alone does not reopen that gate. Admission rejects a missing or replacement
 sandbox and revalidates after probing the exact workspace. A changed binding or unavailable sandbox
 returns `409` without reopening work. A duplicate queued request is idempotent.
 Unsafe archives use automatic salvage or omission during retry. Generic
-recovery's **Retry source task** does not substitute for export-only retry.
+ordinary recovery resolution cannot retry, mark done, or send the task for review
+in place of export-only retry. Explicit board false-positive/cancellation
+dispositions remain deliberate overrides; they do not claim successful copyback.
 
 Before publishing terminal export failure, the finalizer atomically records a stop-only intent with the failed run. This includes ephemeral allocations: ordinary release policy cannot delete their unexported files. A crash before cleanup leaves enough exact lease, result, and plugin authority for restart recovery. The same intent remains while export-only retry is active.
 

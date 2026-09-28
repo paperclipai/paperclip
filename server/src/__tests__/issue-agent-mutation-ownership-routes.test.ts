@@ -2001,7 +2001,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockRetryWorkspaceExport.mockResolvedValue({ runId: ownerRunId, status: "queued" });
     const res = await request(await createApp(boardActor()))
       .post(`/api/issues/${issueId}/recovery-actions/retry-workspace-export`)
-      .send({ actionId: recoveryActionId, runId: ownerRunId, repairNote: "Removed the exact unsafe link and preserved all other files." });
+      .send({ actionId: recoveryActionId, runId: ownerRunId, repairNote: "Restored provider connectivity and preserved all saved files." });
     expect(res.status).toBe(202);
     expect(mockRetryWorkspaceExport).toHaveBeenCalledWith(expect.objectContaining({ companyId, issueId, runId: ownerRunId, actionId: recoveryActionId, actorId: "board-user" }));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
@@ -2011,24 +2011,24 @@ describe("agent issue mutation checkout ownership", () => {
     mockAccessService.decide.mockResolvedValue({ allowed: false, explanation: "No runtime access" });
     const res = await request(await createApp(kind === "agent" ? ownerActor() : boardActor()))
       .post(`/api/issues/${issueId}/recovery-actions/retry-workspace-export`)
-      .send({ actionId: recoveryActionId, runId: ownerRunId, repairNote: "Removed the exact unsafe link and preserved all other files." });
+      .send({ actionId: recoveryActionId, runId: ownerRunId, repairNote: "Restored provider connectivity and preserved all saved files." });
     expect(res.status).toBe(403); expect(mockRetryWorkspaceExport).not.toHaveBeenCalled();
   });
 
-  it("does not turn an accepted unsafe export repair into another provider run", async () => {
+  it.each(["todo", "done", "in_review"].flatMap(sourceIssueStatus => ["native_workspace_sync_out_unsafe_archive", "native_workspace_sync_out_retry_exhausted"].map(cause => ({ sourceIssueStatus, cause }))))("does not resolve accepted export recovery through an ordinary $sourceIssueStatus transition: $cause", async ({ sourceIssueStatus, cause }) => {
     const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId });
     mockIssueService.getById.mockResolvedValue(sourceIssue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...sourceIssue, ...patch }));
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
       id: recoveryActionId, status: "active", kind: "active_run_watchdog", ownerType: "board",
       ownerAgentId: null, returnOwnerAgentId: ownerAgentId,
-      cause: "native_workspace_sync_out_unsafe_archive", evidence: { runId: ownerRunId },
+      cause, evidence: { runId: ownerRunId },
     });
     const res = await request(await createApp(boardActor()))
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
-      .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "todo" });
+      .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus });
     expect.soft(res.status).toBe(409);
-    expect.soft(res.body.details?.code).toBe("workspace_export_automatic_recovery");
+    expect.soft(res.body.details?.code).toBe(cause === "native_workspace_sync_out_unsafe_archive" ? "workspace_export_automatic_recovery" : "workspace_export_retry_required");
     expect.soft(mockIssueService.update).not.toHaveBeenCalled();
     expect.soft(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
