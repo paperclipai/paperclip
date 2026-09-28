@@ -5135,28 +5135,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it("resumes only the exact stopped sandbox lifecycle without acquiring or reseeding", async () => {
-    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
-    await environmentService(db).releaseLease(seeded.reusableLease.id, "released", { cleanupStatus: "success" });
-    const lease = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
-    const call = vi.fn(async (_id: string, method: string) => {
-      if (method !== "environmentResumeLease") throw new Error("Only exact resume is permitted");
-      return { providerLeaseId: lease.providerLeaseId, metadata: { remoteCwd: "/workspace" } };
-    });
-    const workerManager = { isRunning: () => true, call,
-      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
-    } as unknown as PluginWorkerManager;
-    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-    await expect(runtime.resumeRunLease({ environment: seeded.environment, lease })).resolves.toMatchObject({ providerLeaseId: lease.providerLeaseId });
-    expect(call).toHaveBeenCalledOnce();
-    expect(call).toHaveBeenCalledWith(seeded.pluginId, "environmentResumeLease", expect.objectContaining({
-      companyId: seeded.companyId, environmentId: seeded.environment.id, providerLeaseId: lease.providerLeaseId,
-      leaseMetadata: lease.metadata,
-    }), expect.any(Number));
-    expect((await environmentService(db).getLeaseById(lease.id))?.status).toBe("released");
-    expect(await db.select().from(environmentLeases)).toHaveLength(1);
-  });
-
   it.each(["stopped", "unconfirmed", "foreign_marker", "competing_owner", "retained_owner", "no_stop_capability", "live_request", "late_receipt", "duplicate_key", "owner_stopped", "owner_driver_changed", "owner_missing", "legacy_intent", "foreign_plugin_pin", "v2_missing_pin"])("recovers a pending export resume with stop-only cleanup after restart: %s", async outcome => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
     const lease = seeded.reusableLease;
@@ -5208,7 +5186,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }
   });
 
-  it.each(["stopped", "stop_failed", "unconfirmed", "restart", "committed_release", "inflight"])("preserves terminal ephemeral export work through release and restart: %s", async outcome => {
+  it.each(["stopped", "stop_failed", "unconfirmed", "restart", "committed_release", "inflight"])("cleans up legacy terminal export intents through release and restart: %s", async outcome => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
     const lease = seeded.reusableLease, requestId = randomUUID();
     await db.update(heartbeatRuns).set({ status: outcome === "committed_release" ? "succeeded" : "failed" }).where(eq(heartbeatRuns.id, seeded.runId));

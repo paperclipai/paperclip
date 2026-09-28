@@ -3,7 +3,6 @@ import { dismissAutomaticCompletionReviews } from "./automatic-completion-review
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
 import { randomUUID } from "node:crypto";
-import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -295,8 +294,6 @@ async function recordRetryableFailure(input: {
     // Audit-only attention first records an agent-owned invalid-result outcome;
     // its caller still needs to materialize the normal bounded recovery action.
     // Board-owned terminal repairs and late snapshots remain settled.
-    const currentExportRetry = record(record(current.failureDetail).workspaceExportRetry).requestId;
-    if (currentExportRetry && currentExportRetry !== record(record(input.coordinator.failureDetail).workspaceExportRetry).requestId) return current;
     const recoveryOwner = record(record(current.failureDetail).recoveryOwner);
     const pendingAgentRecovery = current.phase === "terminal_failure"
       && input.coordinator.phase === "terminal_failure"
@@ -408,7 +405,6 @@ async function recordRetryableFailure(input: {
         failureDetail: {
           message: input.message.slice(0, 2_000),
           originalFailureCode: input.failureCode,
-          ...(priorFailureDetail.workspaceExportRetry ? { workspaceExportRetry: priorFailureDetail.workspaceExportRetry } : {}),
           ...(workspaceFinalizeAttempt === null
             ? {}
             : { workspaceFinalizeAttempt }),
@@ -425,9 +421,6 @@ async function recordRetryableFailure(input: {
       .where(eq(nativeRunFinalizations.runId, input.run.id));
     const projectsTerminalStatus =
       exhausted && !supersededByNewerRun && input.projectRunStatus;
-    if (projectsTerminalStatus && input.failureScope === "workspace") {
-      await preserveNativeWorkspaceExportLease(tx as unknown as Db, input.run, input.coordinator.resultId);
-    }
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
@@ -482,7 +475,7 @@ async function recordRetryableFailure(input: {
         input.coordinator.issueId,
         {
           status:
-            input.failureScope === "workspace"
+            input.permanent && input.failureScope === "workspace"
               ? "blocked"
               : "in_review",
         },
