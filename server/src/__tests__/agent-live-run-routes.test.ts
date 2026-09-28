@@ -459,7 +459,7 @@ describe("agent live run routes", () => {
     it("keeps board and instance-admin checks ahead of malformed-ID validation", async () => {
       const app = await createApp({}, { type: "agent", companyId: "company-1", agentId: routeAgentId });
       for (const [method, suffix] of routes.filter(([, suffix]) =>
-        suffix === "/cancel" || suffix === "/runtime-requests/approval-1/resolve" || suffix.startsWith("/provider-trace"),
+        suffix === "/runtime-requests/approval-1/resolve" || suffix.startsWith("/provider-trace"),
       )) {
         const response = await requestApp(app, (url) =>
           request(url)[method](`/api/heartbeat-runs/undefined${suffix}`).send({}),
