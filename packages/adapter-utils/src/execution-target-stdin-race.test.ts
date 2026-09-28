@@ -492,9 +492,14 @@ describe("stdin file race (parent PAP-4037)", () => {
     }
   });
 
-  it.each(["prepare", "append", "finalize", "late-finalize"])(
-    "recovers a transient %s failure without repeating or reordering stdin",
-    async (stage) => {
+  it.each([
+    ...["prepare", "append", "finalize", "late-finalize"].map((stage) =>
+      [stage, "Request failed with status code 502"] as const),
+    ...[502, 503, 504].map((status) =>
+      ["finalize", `Cloudflare sandbox bridge request failed with HTTP ${status}.`] as const),
+  ])(
+    "recovers a transient %s failure (%s) without repeating or reordering stdin",
+    async (stage, failure) => {
       const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-retry-"));
       cleanupDirs.push(rootDir);
       const childPath = path.join(rootDir, "echo-child.mjs");
@@ -518,7 +523,7 @@ describe("stdin file race (parent PAP-4037)", () => {
             // The provider can lose the response after the receiver consumed
             // the file. A retry must not repeat those bytes on the ACP stream.
             if (stage === "finalize") await waitFor(() => delivered === first, 8_000);
-            throw new Error("Request failed with status code 502");
+            throw new Error(failure);
           }
           return local.execute(input);
         },
@@ -578,7 +583,13 @@ describe("stdin file race (parent PAP-4037)", () => {
     ["Request failed with status code 502", 3],
     ["Request failed with status code 503", 3],
     ["Request failed with status code 504", 3],
+    ["Cloudflare sandbox bridge request failed with HTTP 502.", 3],
+    ["Cloudflare sandbox bridge request failed with HTTP 503.", 3],
+    ["Cloudflare sandbox bridge request failed with HTTP 504.", 3],
     ["Request failed with status code 403", 1],
+    ["Cloudflare sandbox bridge request failed with HTTP 403.", 1],
+    ["Remote command failed: Request failed with status code 502", 1],
+    ["Cloudflare sandbox bridge request failed with HTTP 502. sensitive-input", 1],
     ["Remote command failed: sensitive-input", 1],
   ] as const)("bounds input failure %s to %i attempts and stops later writes", async (failure, expectedAttempts) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-failed-"));
@@ -624,6 +635,62 @@ describe("stdin file race (parent PAP-4037)", () => {
     } finally {
       peer?.destroy();
       await bridge?.stop();
+    }
+  }, 15_000);
+
+  it("stops after exhausted input retries even when failure logging stalls", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-log-stall-"));
+    cleanupDirs.push(rootDir);
+    let attempts = 0;
+    let loggingStarted = false;
+    let releaseLog!: () => void;
+    const stalledLog = new Promise<void>((resolve) => { releaseLog = resolve; });
+    const runner = createLocalSandboxRunner(async (script) => {
+      if (script.startsWith("mkdir -p") && script.includes("/stdin/000000000001.json")) {
+        attempts += 1;
+        throw new Error("Request failed with status code 502");
+      }
+    });
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-stdin-log-stall",
+      target: { kind: "remote", transport: "sandbox", remoteCwd: rootDir, runner },
+      runtimeRootDir: path.join(rootDir, "runtime"),
+      adapterKey: "acpx", command: "cat", args: [], cwd: rootDir, env: {},
+      onLog: async (stream) => {
+        if (stream === "stderr") {
+          loggingStarted = true;
+          await stalledLog;
+        }
+      },
+    });
+    let peer: net.Socket | undefined;
+    let stop: Promise<void> | undefined;
+    try {
+      const source = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(source)![1]);
+      const token = JSON.parse(/const token = (".*?");/.exec(source)![1]) as string;
+      peer = net.createConnection({ host: "127.0.0.1", port });
+      peer.setEncoding("utf8");
+      peer.on("error", () => {});
+      let output = "";
+      peer.on("data", (chunk) => { output += chunk; });
+      const closed = new Promise<void>((resolve) => peer!.once("close", resolve));
+      await new Promise<void>((resolve) => peer!.once("connect", resolve));
+      peer.write(JSON.stringify({ token, type: "stdin", data: Buffer.from("input").toString("base64") }) + "\n");
+      await closed;
+      expect(attempts).toBe(3);
+      expect(loggingStarted).toBe(true);
+      expect(JSON.parse(output)).toEqual({ type: "error", message: "ACP process session input delivery failed." });
+      let stopped = false;
+      stop = bridge!.stop().then(() => { stopped = true; });
+      // Teardown has a three-second acknowledgement budget. It must finish
+      // while the run-log promise remains unresolved, including local cleanup.
+      await waitFor(() => stopped, 6_000);
+      await expect(lstat(bridge!.agentCommand)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      releaseLog();
+      peer?.destroy();
+      await (stop ?? bridge?.stop());
     }
   }, 15_000);
 

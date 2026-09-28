@@ -1985,6 +1985,11 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   const target = input.target;
   const onLog = input.onLog ?? (async () => {});
+  // Failure diagnostics are best effort: stalled or failed run-log persistence
+  // must not prevent sending shutdown or removing the bridge's session files.
+  const logFailureWithoutWaiting = (message: string) => {
+    void Promise.resolve().then(() => onLog("stderr", message)).catch(() => undefined);
+  };
   const runner = requireSandboxRunner(target);
   // Run one unit of run-time work under its named wrapper span when a span
   // runner is injected. Without a runner, run the work under the current run
@@ -2145,10 +2150,13 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
         await client.writeTextFile(filePath, body);
         return;
       } catch (error) {
-        // Plugin RPC preserves the SDK message but not its HTTP error class.
-        // Shell failures and auth errors must still fail immediately.
-        const gatewayFailure = error instanceof Error &&
-          /^Request failed with status code (502|503|504)$/.test(error.message);
+        // Plugin RPC preserves provider messages but not HTTP error classes.
+        // Match the Daytona SDK and Cloudflare bridge's gateway diagnostics
+        // exactly; shell failures and auth errors must still fail immediately.
+        const gatewayFailure = error instanceof Error && (
+          /^Request failed with status code (502|503|504)$/.test(error.message) ||
+          /^Cloudflare sandbox bridge request failed with HTTP (502|503|504)\.$/.test(error.message)
+        );
         if (!gatewayFailure || attempt >= 3) throw error;
         await new Promise((resolve) => setTimeout(resolve, attempt * 250));
       }
@@ -2299,7 +2307,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
               // and leave only ACP's generic connection_close error. Do not
               // expose provider error text, which may contain a command payload.
               nextSocket.end(jsonLine({ type: "error", message }));
-              await onLog("stderr", `[paperclip] ${message}\n`).catch(() => undefined);
+              // stop() awaits this input chain before sending shutdown. Run-log
+              // persistence must not hold teardown open when it stalls or fails.
+              logFailureWithoutWaiting(`[paperclip] ${message}\n`);
             }
           });
         }
@@ -2571,10 +2581,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       ]);
       stopReadingForShutdownAck = true;
       if (!acknowledgedInTime) {
-        await onLog(
-          "stderr",
+        logFailureWithoutWaiting(
           `[paperclip] ACP process session wrapper did not acknowledge shutdown within ${DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS}ms; removing the session directory anyway.\n`,
-        ).catch(() => undefined);
+        );
       }
       // Unconditional: this removal runs whether or not the wrapper
       // acknowledged, and whether or not any event (real or forged) arrived
