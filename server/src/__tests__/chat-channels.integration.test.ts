@@ -56157,9 +56157,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     "leased",
     "wrong_thread",
     "source_edited",
-  ])(
-    "retries only the original pre-provider Telegram request after exact cleanup: %s",
-    async (mode) => {
+    "different_error",
+  ].flatMap((mode) => [
+    "runner_state_identity_mismatch",
+    "runner_state_identity_mismatch: prior_owner_active",
+  ].map((errorMessage) => ({ mode, errorMessage }))))(
+    "retries only the original pre-provider Telegram request after exact cleanup: $mode ($errorMessage)",
+    async ({ mode, errorMessage }) => {
       const context = await committedChatResponseRecoveryFixture("telegram");
       const providerAccount =
         mode === "null_account"
@@ -56286,7 +56290,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           agentId: context.fixture.assignedAgentId,
           status: "failed",
           errorCode: "adapter_failed",
-          error: "runner_state_identity_mismatch",
+          error: mode === "different_error"
+            ? errorMessage.replace("runner_state_identity_mismatch", "runner_state_identity_mismatch_other")
+            : errorMessage,
           finishedAt: new Date(),
           wakeupRequestId: action.id,
           runtimeMode: "native",

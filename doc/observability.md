@@ -485,7 +485,9 @@ Their terminal messages now include a bounded guard reason, such as
 file, invalid JSON, permission denial, invalid path type, and other I/O errors.
 These reasons contain no session identifiers, provider output, or filesystem
 paths. They help diagnose recurrence; they do not authorize a retry, quarantine,
-replacement, or a weaker identity check.
+replacement, or a weaker identity check. Existing chat recovery recognizes the
+same failure category with or without a reason suffix; it still requires the
+exact cleanup receipt, checkpoint, and absence of provider work.
 
 **Server events the default integrations add**
 
