@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   access,
   cp,
@@ -55,6 +56,11 @@ import { nativeToolContractFingerprintForTarget } from "./native-session-resume.
 import { buildNativeHeartbeatPreparationSpans } from "./native-run-trace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 
 const githubAccess = vi.hoisted(() => ({
   activate: vi.fn((_binding: { runId: string }) => vi.fn()),
@@ -1172,6 +1178,27 @@ describe("remote provider pack manifest", () => {
 });
 
 describe("provider pack read diagnostics", () => {
+  it.each([
+    ["EACCES", "permission_denied"],
+    ["EPERM", "permission_denied"],
+    ["EIO", "io_error"],
+  ])("reports %s without exposing the underlying filesystem message", (code, reason) => {
+    const root = join(tmpdir(), "private-provider-pack");
+    const manifestPath = join(root, "provider-pack.json");
+    const cause = Object.assign(new Error(`${code}: cannot read ${manifestPath}`), {
+      code,
+      path: manifestPath,
+    });
+    vi.mocked(readFileSync).mockImplementationOnce(() => { throw cause; });
+    let failure: Error | undefined;
+    try { readRemoteProviderPackManifest(root); } catch (error) { failure = error as Error; }
+    expect(readFileSync).toHaveBeenLastCalledWith(manifestPath, "utf8");
+    expect(failure?.message).toBe(`runner_remote_provider_artifact_incompatible: provider-pack.json is unreadable (${reason})`);
+    expect(failure?.message).not.toContain(root);
+    expect(failure?.message).not.toContain(code);
+    expect(failure?.cause).toBe(cause);
+  });
+
   it("classifies a JSON null manifest as incompatible instead of a TypeError", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-null-pack-"));
     try {
