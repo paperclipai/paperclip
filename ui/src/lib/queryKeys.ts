@@ -376,6 +376,8 @@ export const queryKeys = {
     ) => ["issues", "document-annotations", issueId, key, status] as const,
     activity: (issueId: string) => ["issues", "activity", issueId] as const,
     runs: (issueId: string) => ["issues", "runs", issueId] as const,
+    recoveryActions: (issueId: string) =>
+      ["issues", "recovery-actions", issueId] as const,
     approvals: (issueId: string) => ["issues", "approvals", issueId] as const,
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,

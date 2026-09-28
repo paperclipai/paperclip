@@ -785,6 +785,7 @@ export type {
   IssueWatchdog,
   IssueWatchdogStatus,
   IssueWatchdogSummary,
+  IssueRecoveryActionsResponse,
 } from "./issue.js";
 export type {
   IssueTreeControlPreview,

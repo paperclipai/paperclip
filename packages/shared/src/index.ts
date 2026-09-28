@@ -1125,6 +1125,7 @@ export type {
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
   IssueRecoveryAction,
+  IssueRecoveryActionsResponse,
   IssueWatchdog,
   IssueWatchdogStatus,
   IssueWatchdogSummary,

@@ -18,6 +18,7 @@ import type {
   IssueDocument,
   IssueLabel,
   IssueRecoveryAction,
+  IssueRecoveryActionsResponse,
   IssueRetryNowResponse,
   StalledReviewDecision,
   StalledReviewDecisionResponse,
@@ -271,6 +272,8 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
+  recoveryActions: (id: string) =>
+    api.get<IssueRecoveryActionsResponse>(`/issues/${id}/recovery-actions`),
   resolveRecoveryAction: (
     id: string,
     data: {
