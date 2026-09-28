@@ -851,7 +851,7 @@ function normalizeCreateInteractionInput(
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? false,
         },
       };
     case "request_confirmation":
@@ -859,7 +859,7 @@ function normalizeCreateInteractionInput(
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? false,
         },
       };
     case "request_checkbox_confirmation":
@@ -867,7 +867,7 @@ function normalizeCreateInteractionInput(
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? false,
         },
       };
     case "request_item_verdicts":
@@ -875,7 +875,7 @@ function normalizeCreateInteractionInput(
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? false,
         },
       };
     default:

@@ -129,8 +129,11 @@ export function ComposerRunSettingsPicker({
   const fastAvailable = composerFastAvailable(agent, model);
   const changed = Boolean(selected.model || selected.effort || selected.fast);
   const assigneeOptions = [{ id: "", label: "No assignee", searchText: "Unassigned" }, ...options.filter((item) => item.id !== "")];
-  const filteredAgents = assigneeOptions.filter((item) =>
-    `${item.label} ${item.searchText ?? ""}`.toLowerCase().includes(assigneeSearch.trim().toLowerCase()));
+  const filteredAgents = assigneeOptions.filter((item) => {
+    const optionAgent = agents.get(item.id.startsWith("agent:") ? item.id.slice(6) : "");
+    return `${item.label} ${item.searchText ?? ""} ${optionAgent?.role ?? ""} ${harnessLabel(optionAgent)}`
+      .toLowerCase().includes(assigneeSearch.trim().toLowerCase());
+  });
   const query = modelSearch.trim();
   const filteredModels = models.filter((item) =>
     `${item.label} ${item.id}`.toLowerCase().includes(query.toLowerCase()));

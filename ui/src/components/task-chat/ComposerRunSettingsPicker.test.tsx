@@ -10,6 +10,7 @@ import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
 
 const agent = {
   id: "a1", companyId: "company-1", name: "Clippy",
+  role: "Engineering Lead",
   adapterType: "codex_local", adapterConfig: { model: "gpt-6-sol" },
 } as unknown as Agent;
 const options = [{ id: "agent:a1", label: "Clippy" }];
@@ -52,6 +53,23 @@ afterEach(() => {
 });
 
 describe("composer assignee picker", () => {
+  it("finds assignees by their displayed role and harness", async () => {
+    render(vi.fn(), vi.fn());
+    await click("Select assignee, model and effort");
+    await click("Choose assignee");
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="Search assignees"]');
+    expect(input).not.toBeNull();
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    for (const query of ["Engineering Lead", "Codex"]) {
+      flushSync(() => {
+        setValue.call(input, query);
+        input!.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect([...document.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
+        .some((option) => option.textContent?.includes("Clippy"))).toBe(true);
+    }
+  });
+
   it("offers the Codex CLI catalog instead of unrelated OpenAI API models", async () => {
     render(vi.fn(), vi.fn(), true);
     await click("Select assignee, model and effort");

@@ -1700,7 +1700,7 @@ export class PaperclipRunnerToolAuthority {
               acceptLabel: normalizedPayload.acceptLabel ?? "Confirm",
               rejectLabel: normalizedPayload.rejectLabel ?? "Request changes",
               rejectRequiresReason: normalizedPayload.rejectRequiresReason ?? false,
-              supersedeOnUserComment: normalizedPayload.supersedeOnUserComment ?? true,
+              supersedeOnUserComment: normalizedPayload.supersedeOnUserComment ?? false,
             } : {}),
           },
         } as never, { agentId: this.binding.agentId, userId: null, identityContextId });

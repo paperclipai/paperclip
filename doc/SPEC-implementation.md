@@ -698,6 +698,11 @@ Issue-thread interactions are coordination records, not grants of authority. Eve
 interaction kind defaults to resolver policy `anyone` when the create request omits
 `resolverPolicy`. Restrictions are opt-in.
 
+Question, confirmation, checkbox confirmation, and item verdict cards stay pending
+when a user sends an ordinary task comment. Their `supersedeOnUserComment` flag
+defaults to `false`. A creator may set it to `true` when a comment should replace
+the pending request, as the opening onboarding question does.
+
 Canonical resolver policies are:
 
 - `anyone`: any authenticated actor in the interaction's company who can read the
