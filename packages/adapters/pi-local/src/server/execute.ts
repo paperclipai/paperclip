@@ -62,6 +62,7 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 const PAPERCLIP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
 const PI_AGENT_SKILLS_DIR = path.join(os.homedir(), ".pi", "agent", "skills");
+const DEFAULT_PI_TOOLS = "read,bash,edit,write,grep,find,ls";
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -239,6 +240,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "pi");
   const model = asString(config.model, "").trim();
   const thinking = asString(config.thinking, "").trim();
+  const configuredTools = asStringArray(config.tools).map((tool) => tool.trim()).filter(Boolean);
+  const tools = configuredTools.length > 0 ? configuredTools.join(",") : DEFAULT_PI_TOOLS;
 
   // Parse model into provider and model id
   const provider = parseModelProvider(model);
@@ -648,7 +651,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (modelId) args.push("--model", modelId);
       if (thinking) args.push("--thinking", thinking);
 
-      args.push("--tools", "read,bash,edit,write,grep,find,ls");
+      args.push("--tools", tools);
       args.push("--session", sessionFile);
       args.push("--skill", remoteSkillsDir ?? PI_AGENT_SKILLS_DIR);
 
@@ -816,9 +819,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
-        provider: provider,
-        biller: resolvePiBiller(runtimeEnv, provider),
-        model: model,
+        // A fallback-capable CLI (omp retry.fallbackChains) can answer with another
+        // provider/model than configured; record the one that actually answered.
+        provider: attempt.parsed.provider ?? provider,
+        biller: resolvePiBiller(runtimeEnv, attempt.parsed.provider ?? provider),
+        model: attempt.parsed.provider && attempt.parsed.model
+          ? `${attempt.parsed.provider}/${attempt.parsed.model}`
+          : model,
         billingType: "unknown",
         costUsd: attempt.parsed.usage.costUsd,
         resultJson: {
