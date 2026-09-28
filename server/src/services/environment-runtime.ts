@@ -2845,6 +2845,31 @@ function createSandboxEnvironmentDriver(
       };
     },
 
+    async resumeRunLease(input) {
+      const pluginId = readString(input.lease.metadata?.pluginId);
+      const providerKey = readString(input.lease.metadata?.provider);
+      if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager || !pluginId || !providerKey
+        || !input.lease.providerLeaseId || input.lease.environmentId !== input.environment.id
+        || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentResumeLease")
+        || (hasNativeWorkspaceExportResume(input.lease) && !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentStopLease"))) {
+        throw new Error("The exact sandbox lease cannot be resumed by its verified provider.");
+      }
+      // This is a lifecycle resume, never acquisition: no replacement, host
+      // seed, lease mutation, or provider turn is allowed at this boundary.
+      const config = stripSandboxProviderEnvelope(await resolvePluginSandboxRuntimeConfig({
+        environment: input.environment, lease: input.lease, provider: providerKey,
+      }) as SandboxEnvironmentConfig);
+      const resumed = await pluginWorkerManager.call(pluginId, "environmentResumeLease", {
+        driverKey: providerKey, companyId: input.lease.companyId, environmentId: input.environment.id,
+        issueId: input.lease.issueId, config, providerLeaseId: input.lease.providerLeaseId,
+        leaseMetadata: input.lease.metadata ?? undefined,
+      }, Math.min(resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000, 60_000));
+      if (resumed?.providerLeaseId !== input.lease.providerLeaseId) {
+        throw new Error("The provider did not confirm the exact retained sandbox. No replacement was acquired.");
+      }
+      return resumed;
+    },
+
     async execute(input) {
       // Plugin-backed sandbox providers: delegate command execution.
       if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager) {

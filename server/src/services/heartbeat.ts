@@ -1,4 +1,3 @@
-import { hasStopOnlyCleanup, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { restoreNativeWorkspaceBestEffort } from "./native-runtime/native-workspace-best-effort.js";
 import {
   withNativeWorkspaceFinalizationOwnership,
@@ -6,6 +5,7 @@ import {
   NativeWorkspaceFinalizationOwnershipLostError,
   type NativeWorkspaceFinalizationOwnership,
 } from "./native-runtime/native-workspace-finalization-ownership.js";
+import { hasStopOnlyCleanup, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
@@ -18810,7 +18810,7 @@ export function heartbeatService(
       agentId: input.agentId,
       status: settledRun?.status,
       failureReason: settledRun?.error ?? undefined,
-      providerResourceDisposition: input.succeeded
+      providerResourceDisposition: input.succeeded && (!parseObject(settledRun?.resultJson).workspaceExportRetry || workspaceSyncReference?.resourceDisposition === "destroy")
         ? (workspaceSyncReference?.resourceDisposition ?? "stop_and_retain")
         : "stop_and_retain",
     });
@@ -25481,7 +25481,9 @@ export function heartbeatService(
             stream: "system",
             level: err.terminalFailure ? "error" : "warn",
             message: err.terminalFailure
-              ? "native result is durable, but the sandbox containing unexported workspace changes is unrecoverable"
+              ? err.reasonCode === "workspace_sync_out_failed"
+                  ? "native result is durable; automatic workspace copy-back retries stopped and saved work is retained for export repair"
+                  : "native result is durable, but the sandbox containing unexported workspace changes is unrecoverable"
               : "native result is durable; workspace copy-back will retry without another provider turn",
             payload: {
               attempt: coordinator?.attempt ?? null,
@@ -25493,13 +25495,13 @@ export function heartbeatService(
           if (err.terminalFailure) {
             // The durable coordinator already failed the run, blocked the
             // issue, and cleared its execution lock. Let ordinary teardown
-            // release the now-useless lease and return the agent to service.
+            // release the lease while retaining the sandbox and its unexported work.
             nativeWorkspaceFinalizeScheduled = false;
             providerResourceDispositionForRun = "stop_and_retain";
             await finalizeAgentStatus(
               run.agentId,
               "failed",
-              "native_workspace_sync_out_unrecoverable",
+              `native_${err.reasonCode}`,
               { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) },
             ).catch(() => undefined);
           }

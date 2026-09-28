@@ -1,3 +1,4 @@
+import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { executionRetryAccounting } from "../execution-recovery-attempt.js";
@@ -3437,7 +3438,10 @@ export function recoveryService(
 
       // A queued comment or healthy child cannot establish what the stopped
       // provider already did. Only execution reconciliation can clear this hold.
-      if (requiresExecutionReconciliation(action.cause)) {
+      if (requiresExecutionReconciliation(action.cause)
+        || isNativeWorkspaceExportRepairCause(action.cause)) {
+        // A queued wake or healthy child does not export this accepted result.
+        // Only its native finalizer or an explicit board disposition can settle it.
         result.skipped += 1;
         continue;
       }
