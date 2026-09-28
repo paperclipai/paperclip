@@ -83,7 +83,8 @@ export function serviceWorkerBuildIdPlugin(
         buildId = deriveBuildIdFromEntryFileName(entry.fileName);
       }
     },
-    closeBundle() {
+    // closeBundle also runs after failures, before public assets exist.
+    writeBundle() {
       const swPath = path.resolve(root, outDir, serviceWorkerFileName);
       const source = fs.readFileSync(swPath, "utf8");
       const css = fs.readFileSync(path.resolve(root, "src/index.css"), "utf8");
