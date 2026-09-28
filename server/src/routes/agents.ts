@@ -6812,7 +6812,7 @@ export function decideCancelAuth(actor: any, run: any) {
     return { authorized: false, reason: "Board access required" };
   }
 
-  if (run.source !== "automation" && run.source !== "on_demand") {
+  if (run.invocationSource !== "automation" && run.invocationSource !== "on_demand") {
     return { authorized: false, reason: "Board access required" };
   }
 
