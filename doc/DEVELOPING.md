@@ -1112,7 +1112,10 @@ failure diagnostic does not block bridge teardown.
 Run-log finalization closes its write handle and waits for accepted file
 appends before computing the size, hash, and durable copy. Writes submitted
 after finalization starts are ignored; later progress persistence is not part
-of that file-write barrier.
+of that file-write barrier. If accepted writes remain stalled after three
+seconds, finalization returns unknown size/hash metadata and skips the final
+durable copy so the run can reach a terminal state. A late write cannot restart
+mirroring or produce a claimed verified snapshot.
 
 ### Preinstalled remote runner runtime
 

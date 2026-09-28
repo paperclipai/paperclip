@@ -24,8 +24,10 @@ export interface RunLogReadResult {
 }
 
 export interface RunLogFinalizeSummary {
-  bytes: number;
-  sha256?: string;
+  // Null means a stalled write prevented a verified final snapshot. Callers
+  // can still settle the run without recording a false byte count or hash.
+  bytes: number | null;
+  sha256?: string | null;
   compressed: boolean;
 }
 
@@ -106,6 +108,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
   // Weak collections let completed handles disappear with their owning runs.
   const pendingAppends = new WeakMap<RunLogHandle, Set<Promise<void>>>();
   const closingHandles = new WeakSet<RunLogHandle>();
+  const abandonedHandles = new WeakSet<RunLogHandle>();
 
   function s3Key(logRef: string): string {
     return s3Prefix ? `${s3Prefix}/${logRef}` : logRef;
@@ -165,6 +168,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
   }
 
   function scheduleInflightMirror(logRef: string, entry: InflightMirrorEntry): void {
+    if (inflightMirrors.get(logRef) !== entry) return;
     if (entry.timer || entry.upload) return;
     const delay = Math.max(0, inflightMirrorMs - (Date.now() - entry.lastMirrorAt));
     entry.timer = setTimeout(() => {
@@ -313,7 +317,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
         pendingAppends.set(handle, pending);
       }
       const write = fs.appendFile(absPath, persisted, "utf8").then(() => {
-        noteInflightAppend(handle.logRef);
+        if (!closingHandles.has(handle)) noteInflightAppend(handle.logRef);
       });
       pending.add(write);
       try {
@@ -326,11 +330,28 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
 
     async finalize(handle) {
       if (handle.store !== "local_file") return { bytes: 0, compressed: false };
+      if (abandonedHandles.has(handle)) return { bytes: null, sha256: null, compressed: false };
       // Close admission before the first await. Drain file writes only, not
       // heartbeat's later DB/live-event persistence, then freeze one consistent
       // byte count, hash, and durable copy. Late diagnostics cannot mutate it.
       closingHandles.add(handle);
-      await Promise.allSettled(pendingAppends.get(handle) ?? []);
+      let drainTimer: NodeJS.Timeout | undefined;
+      const drained = await Promise.race([
+        Promise.allSettled(pendingAppends.get(handle) ?? []).then(() => true),
+        new Promise<boolean>((resolve) => {
+          drainTimer = setTimeout(() => resolve(false), 3_000);
+          drainTimer.unref?.();
+        }),
+      ]).finally(() => clearTimeout(drainTimer));
+      if (!drained) {
+        // An in-flight fs append cannot be cancelled safely. Do not hash or
+        // mirror a file it may still change, and never re-arm mirroring when
+        // that write eventually finishes. Terminal run status can still settle.
+        abandonedHandles.add(handle);
+        void retireInflightMirror(handle.logRef).catch(() => undefined);
+        console.warn("[run-log-store] Pending log writes did not settle within 3000ms; final log size and hash are unknown.");
+        return { bytes: null, sha256: null, compressed: false };
+      }
       await retireInflightMirror(handle.logRef);
       const absPath = resolveWithin(basePath, handle.logRef);
       const stat = await fs.stat(absPath).catch(() => null);

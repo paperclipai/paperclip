@@ -24931,8 +24931,8 @@ export function heartbeatService(
                 : null;
 
         let logSummary: {
-          bytes: number;
-          sha256?: string;
+          bytes: number | null;
+          sha256?: string | null;
           compressed: boolean;
         } | null = null;
         if (handle) {
@@ -25650,8 +25650,8 @@ export function heartbeatService(
         logger.error({ err, runId }, "heartbeat execution failed");
 
         let logSummary: {
-          bytes: number;
-          sha256?: string;
+          bytes: number | null;
+          sha256?: string | null;
           compressed: boolean;
         } | null = null;
         if (handle) {

@@ -159,6 +159,44 @@ describe("createDurableRunLogStore", () => {
     expect(objects.get(handle.logRef)).toEqual(local);
   });
 
+  it("leaves final metadata unknown when an append stalls and never mirrors its late completion", async () => {
+    const { provider, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, inflightMirrorMs: 10_000 } });
+    const handle = await store.begin(begin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const appendFile = fs.appendFile.bind(fs);
+    const spy = vi.spyOn(fs, "appendFile").mockImplementationOnce(async (...args) => {
+      await gate;
+      await appendFile(...args);
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const append = store.append(handle, { stream: "stderr", chunk: "stalled diagnostic", ts: "t1" });
+    let summary: Awaited<ReturnType<typeof store.finalize>> | undefined;
+    const finalize = store.finalize(handle).then((result) => { summary = result; });
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(summary).toEqual({ bytes: null, sha256: null, compressed: false });
+      expect(warn).toHaveBeenCalled();
+      expect(calls.put).toBe(0);
+      release();
+      await append;
+      await vi.advanceTimersByTimeAsync(20_000);
+      await store.flushInflightMirrors!();
+      expect(calls.put).toBe(0);
+      expect(await store.finalize(handle)).toEqual(summary);
+      expect(await store.append(handle, { stream: "stderr", chunk: "too late", ts: "t2" })).toBe(0);
+    } finally {
+      release();
+      await append;
+      await finalize;
+      vi.useRealTimers();
+      spy.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("falls back to S3 when the local file is gone (the pod-roll case that caused 'Run log not found')", async () => {
     const { provider } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, keyPrefix: "run-logs" } });
