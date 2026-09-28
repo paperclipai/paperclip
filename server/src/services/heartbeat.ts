@@ -2526,7 +2526,8 @@ async function materializeManagedProjectWorkspace(
         await disposeGitWorkspaceSnapshot(snapshot);
       }
       await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
-    } else if (input.repoRef) {
+    } else if (input.repoRef && input.repoRef !== "origin/HEAD") {
+      // clone already checks out the remote default branch named by origin/HEAD.
       const remoteBranch = input.repoRef.startsWith("origin/") ? input.repoRef.slice("origin/".length) : null;
       await execFile("git", ["-C", cloneTmpDir, "checkout", ...(remoteBranch
         ? ["-B", remoteBranch, input.repoRef]
