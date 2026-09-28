@@ -31,7 +31,7 @@ export function WorkspaceExportRecovery({ issueId, action, canManage, onQueued }
         : "Automatic workspace export retries stopped. Inspect the export failure, restore provider or destination availability, and preserve the saved files in the retained sandbox. Retry export here when the cause is resolved."}</p>
       {canManage ? <>
         <Label htmlFor={noteId}>Repair performed</Label>
-        <Textarea id={noteId} value={repairNote} onChange={event => setRepairNote(event.target.value)}
+        <Textarea id={noteId} value={repairNote} onChange={event => setRepairNote(event.target.value)} maxLength={12_000}
           placeholder="Describe the repair and how the saved workspace files were preserved." disabled={retry.isPending} />
         <div className="flex justify-end">
           <Button onClick={() => retry.mutate()} disabled={retry.isPending || repairNote.trim().length < 20}>
