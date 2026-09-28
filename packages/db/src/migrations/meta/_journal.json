@@ -1982,6 +1982,13 @@
       "when": 1790439010225,
       "tag": "0284_petite_genesis",
       "breakpoints": true
+    },
+    {
+      "idx": 285,
+      "version": "7",
+      "when": 1790550477879,
+      "tag": "0285_dual_fk_drop",
+      "breakpoints": true
     }
   ]
 }

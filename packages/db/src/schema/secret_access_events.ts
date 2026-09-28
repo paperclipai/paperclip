@@ -1,8 +1,6 @@
 import { index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { companySecrets } from "./company_secrets.js";
-import { heartbeatRuns } from "./heartbeat_runs.js";
-import { issues } from "./issues.js";
 import { plugins } from "./plugins.js";
 import { userSecretDefinitions } from "./user_secret_definitions.js";
 
@@ -25,8 +23,21 @@ export const secretAccessEvents = pgTable(
     consumerType: text("consumer_type").notNull(),
     consumerId: text("consumer_id").notNull(),
     configPath: text("config_path"),
-    issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
-    heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    // Deliberately NOT foreign keys. `issues` and `heartbeat_runs` are the two
+    // hottest operational tables, and a referencing INSERT takes a
+    // `FOR KEY SHARE` row lock on both of them through the referential-integrity
+    // triggers. This table is append-only audit: every granted-secret read
+    // writes a row, so the FKs made every audit append contend for the same
+    // rows that the execution-lock reconciler in `issues.ts` locks — in an
+    // order decided by RI trigger name, not by us. The pair deadlocked, and
+    // Postgres resolved it by aborting an agent execution.
+    //
+    // Keeping the columns as plain uuids costs nothing the audit trail needs:
+    // the old `onDelete: "set null"` only blanked the reference after the fact,
+    // and a dangling id still reads as "this run/issue, now gone". Readers must
+    // therefore treat both as soft references and tolerate ids with no row.
+    issueId: uuid("issue_id"),
+    heartbeatRunId: uuid("heartbeat_run_id"),
     pluginId: uuid("plugin_id").references(() => plugins.id, { onDelete: "set null" }),
     outcome: text("outcome").notNull(),
     errorCode: text("error_code"),
