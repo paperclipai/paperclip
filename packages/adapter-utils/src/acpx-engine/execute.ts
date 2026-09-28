@@ -1019,8 +1019,13 @@ async function prepareManagedCodexHome(input: {
     // Codex reads auth.json ahead of the process environment. Never leave a
     // shared ChatGPT-login symlink in an API-key agent's managed home, and never
     // write through that symlink into the operator's own Codex credentials.
-    await fs.rm(targetAuth, { force: true });
-    await fs.writeFile(targetAuth, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+    // Atomic replacement also keeps concurrent turns from seeing a missing or
+    // partially written credential file.
+    await writeFileAtomically({
+      target: targetAuth,
+      contents: JSON.stringify({ OPENAI_API_KEY: apiKey }),
+      mode: 0o600,
+    });
   } else {
     const sourceAuth = path.join(sourceHome, "auth.json");
     if (await pathExists(sourceAuth)) await ensureSymlink(targetAuth, sourceAuth);
