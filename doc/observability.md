@@ -478,6 +478,15 @@ These fields contain build identifiers; they add no tenant or user identity.
   `errorCode`, and `agentAdapter`. The server redacts the error message and
   the error code before it sends the event.
 
+Native runner identity and harness failures retain their existing error prefixes.
+Their terminal messages now include a bounded guard reason, such as
+`session_scope_mismatch`, `durable_identity_unreadable`, or
+`backup_without_reusable_lease`. Provider-pack read failures distinguish a missing
+file, invalid JSON, permission denial, invalid path type, and other I/O errors.
+These reasons contain no session identifiers, provider output, or filesystem
+paths. They help diagnose recurrence; they do not authorize a retry, quarantine,
+replacement, or a weaker identity check.
+
 **Server events the default integrations add**
 
 - `OnUncaughtException` — each uncaught exception on the main thread, at
