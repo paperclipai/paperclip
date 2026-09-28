@@ -7480,5 +7480,9 @@ export function decideCancelAuth(actor: any, run: any) {
     return { authorized: false, reason: "Board access required" };
   }
 
+  if (run.responsibleUserId) {
+    return { authorized: false, reason: "Board access required" };
+  }
+
   return { authorized: true, actorType: "agent", actorId: actor.agentId };
 }

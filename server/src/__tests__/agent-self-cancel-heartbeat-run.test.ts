@@ -55,4 +55,12 @@ describe("decideCancelAuth", () => {
       authorized: false,
     });
   });
+
+  it("rejects an agent trying to cancel a board-started on_demand run", () => {
+    const actor = { agentId: "agent-1" };
+    const run = { agentId: "agent-1", invocationSource: "on_demand", responsibleUserId: "user-123" };
+    expect(decideCancelAuth(actor, run)).toMatchObject({
+      authorized: false,
+    });
+  });
 });
