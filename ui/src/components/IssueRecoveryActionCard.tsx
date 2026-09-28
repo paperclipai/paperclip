@@ -898,22 +898,21 @@ function formatTimeAbsolute(value: string | Date | null | undefined): string | n
 }
 
 /**
- * Headline for an action carrying a bounded retry lineage. It names who keeps the task in
- * every phase, because a manager owning the repair must never read as a manager owning
- * the deliverable.
+ * Headline for an action carrying a bounded retry lineage. It describes the recovery
+ * state and next step without implying that a repair owner owns the deliverable.
  */
 function lineageHeadline(lineage: RecoveryRetryLineage): string {
   if (lineage.lane === "native_run") {
-    if (lineage.liveRunId) return "Paperclip is recovering the existing run. The task stays with its original owner.";
-    if (lineage.exhausted) return "Paperclip could not recover the existing run within its retry budget. Review the recorded failure before retrying. The task stays with its original owner.";
-    if (lineage.retryExpired) return "The retry for the existing run came due and did not start. Review the recorded failure and retry when ready. The task stays with its original owner.";
-    if (lineage.nextRetryAt) return "Paperclip has scheduled another attempt to resume the existing run. The task stays with its original owner.";
-    return "The existing run still needs recovery. Review the recorded failure before retrying. The task stays with its original owner.";
+    if (lineage.liveRunId) return "Paperclip is recovering the existing run.";
+    if (lineage.exhausted) return "Paperclip could not recover the existing run within its retry budget. Review the recorded failure before retrying.";
+    if (lineage.retryExpired) return "The retry for the existing run came due and did not start. Review the recorded failure and retry when ready.";
+    if (lineage.nextRetryAt) return "Paperclip has scheduled another attempt to resume the existing run.";
+    return "The existing run still needs recovery. Review the recorded failure before retrying.";
   }
   // An attempt that came due and never ran leaves nobody working on this task, even though
   // attempts remain on paper. Say so before any lane wording that ends in "no action needed".
   if (lineage.retryExpired) {
-    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step. The task stays with its original owner.";
+    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step.";
   }
   if (lineage.lane === "source_owner") {
     return lineage.exhausted
