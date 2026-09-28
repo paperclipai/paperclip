@@ -63,6 +63,9 @@ import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   loadDraft,
+  loadDraftIfAvailable,
+  loadDraftRecoveryKey,
+  preserveDraftInTab,
   saveDraft,
   clearDraft,
   loadDraftAttachments,
@@ -4658,7 +4661,7 @@ const IssueChatComposer = forwardRef<
     stopScope = "leaf",
     onImageUpload,
     onAttachImage,
-    draftKey,
+    draftKey: sharedDraftKey,
     enableReassign = false,
     reassignOptions = [],
     currentAssigneeValue = "",
@@ -4680,6 +4683,17 @@ const IssueChatComposer = forwardRef<
   forwardedRef,
 ) {
   const stopControl = useComposerStop(onStop, stopPending);
+  const restoredRecovery = useMemo(() => {
+    const key = sharedDraftKey && loadDraftRecoveryKey(sharedDraftKey);
+    return key ? { sourceKey: sharedDraftKey!, key, persisted: true } : null;
+  }, [sharedDraftKey]);
+  const [newRecovery, setDraftRecovery] = useState<{ sourceKey: string; key: string; persisted: boolean } | null>(null);
+  const draftRecovery = newRecovery?.sourceKey === sharedDraftKey ? newRecovery : restoredRecovery;
+  const draftKey = draftRecovery?.key ?? sharedDraftKey;
+  // Keep the active buffer through send completion. Re-entering a task may
+  // return to its shared draft after an empty recovery has been retired.
+  useEffect(() => setDraftRecovery(restoredRecovery), [sharedDraftKey, restoredRecovery]);
+  const retiredDraftKeyRef = useRef<string | undefined>(undefined);
   // Initialize before StrictMode's mount cleanup can flush an empty value over
   // the stored draft. The effect below handles subsequent task-key changes.
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
@@ -4699,6 +4713,7 @@ const IssueChatComposer = forwardRef<
   }, [draftKey]);
   const bodyRef = useRef(body);
   bodyRef.current = body;
+  const reconciledSubmissionRef = useRef<{ draftKey: string | undefined; attemptId: string } | null>(null);
   const pendingDraftRef = useRef<{
     draftKey: string;
     attemptId: string;
@@ -4815,7 +4830,7 @@ const IssueChatComposer = forwardRef<
   }
 
   useEffect(() => {
-    if (!draftKey) return;
+    if (!draftKey || (draftRecovery?.key === draftKey && !draftRecovery.persisted)) return;
     setBody(loadDraft(draftKey));
     setComposerAttachments(
       loadDraftAttachments(draftKey).map((item) => ({
@@ -4831,21 +4846,54 @@ const IssueChatComposer = forwardRef<
   // Text equality is not delivery proof: users may intentionally repeat text.
   useEffect(() => {
     if (!uncertainSubmission || !confirmedSubmissionIds.has(uncertainSubmission.attemptId)) return;
+    const { attemptId } = uncertainSubmission;
+    const reconciled = reconciledSubmissionRef.current;
+    if (reconciled && reconciled.draftKey === draftKey && reconciled.attemptId === attemptId) return;
     const nextDraft = uncertainSubmission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
-    if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);
+    const submittedIds = uncertainSubmission.submittedAttachmentIds;
+    let nextAttachments = submittedIds
+      ? composerAttachmentsRef.current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
+      : [];
+    if (draftKey) {
+      const retained = loadDraftSubmission(draftKey);
+      // Settle storage from its own snapshot, never from this tab's stale copy.
+      // A different retained attempt is owned by its original tab.
+      if (retained?.attemptId === attemptId) settleDraftSubmission(draftKey, attemptId);
+      const storedDraft = loadDraftIfAvailable(draftKey);
+      const storedAttachments = loadDraftAttachments(draftKey).filter(item => !submittedIds?.includes(item.attachmentId));
+      const foreignAttempt = retained && retained.attemptId !== attemptId;
+      const differentAttachments = JSON.stringify(nextAttachments.map(item => item.attachmentId).sort()) !==
+        JSON.stringify(storedAttachments.map(item => item.attachmentId).sort());
+      if (storedDraft !== null && (foreignAttempt || !retained || storedDraft !== nextDraft || differentAttachments)) {
+        // Text has no cross-tab ordering. Preserve each buffer separately. When
+        // both snapshots describe the same text, retain all attachment receipts.
+        if (!foreignAttempt && (storedDraft === nextDraft || storedDraft === bodyRef.current)) {
+          const ids = new Set(nextAttachments.map(item => item.attachmentId));
+          const combined = [...nextAttachments, ...storedAttachments.filter(item => !ids.has(item.attachmentId)).map(item => ({
+            ...item, size: item.size ?? 0, id: `receipt:${item.attachmentId}`, status: "attached" as const,
+          }))];
+          // Each draft is limited to 20 receipts. If their union exceeds that,
+          // keep the local selection here and the other selection in shared storage.
+          if (combined.length <= 20) nextAttachments = combined;
+        }
+        const recovered = preserveDraftInTab(sharedDraftKey!, nextDraft, nextAttachments);
+        // Fence old effect cleanups before switching keys or updating bodyRef.
+        retiredDraftKeyRef.current = draftKey;
+        setDraftRecovery({ sourceKey: sharedDraftKey!, ...recovered });
+      }
+      // With unavailable storage, the confirmed in-memory attempt still settles.
+    }
+    reconciledSubmissionRef.current = { draftKey, attemptId };
     setUncertainSubmission(null);
     setBody(nextDraft);
     bodyRef.current = nextDraft;
-    const submittedIds = uncertainSubmission.submittedAttachmentIds;
-    setComposerAttachments(current => submittedIds
-      ? current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
-      : []);
-  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
+    setComposerAttachments(nextAttachments);
+  }, [confirmedSubmissionIds, draftKey, sharedDraftKey, uncertainSubmission]);
 
   useEffect(() => {
     if (
-      !draftKey ||
+      !draftKey || retiredDraftKeyRef.current === draftKey ||
       submitting ||
       composerAttachments !== composerAttachmentsRef.current
     )
@@ -4862,14 +4910,14 @@ const IssueChatComposer = forwardRef<
     if (!draftKey || submitting) return;
     if (draftTimer.current) clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
-      saveDraft(draftKey, body);
+      if (retiredDraftKeyRef.current !== draftKey) saveDraft(draftKey, body);
     }, DRAFT_DEBOUNCE_MS);
   }, [body, draftKey, submitting]);
 
   useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
-      if (draftKey && !submittingRef.current)
+      if (draftKey && retiredDraftKeyRef.current !== draftKey && !submittingRef.current)
         saveDraft(draftKey, bodyRef.current);
     };
   }, [draftKey]);
@@ -4877,7 +4925,7 @@ const IssueChatComposer = forwardRef<
   useEffect(() => {
     if (!draftKey) return;
     const flushDraft = () => {
-      if (!submittingRef.current) saveDraft(draftKey, bodyRef.current);
+      if (retiredDraftKeyRef.current !== draftKey && !submittingRef.current) saveDraft(draftKey, bodyRef.current);
     };
     window.addEventListener("beforeunload", flushDraft);
     return () => window.removeEventListener("beforeunload", flushDraft);
@@ -5360,6 +5408,12 @@ const IssueChatComposer = forwardRef<
         </div>
       ) : null}
 
+      {draftRecovery && draftRecovery.sourceKey === sharedDraftKey ? (
+        <p role="status" className="mb-3 text-sm text-muted-foreground">
+          Another tab changed the saved draft. This draft is kept separately in this tab.
+          {!draftRecovery.persisted ? " Browser storage is unavailable; copy your text before leaving." : " It will be restored if you reload this tab."}
+        </p>
+      ) : null}
       {uncertainSubmission ? (
         <div
           role="alert"

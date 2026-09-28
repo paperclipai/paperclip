@@ -708,11 +708,20 @@ When effective run config changes, Paperclip may intentionally skip a saved adap
 
 ## Workspace Git Scan Protection
 
-Paperclip applies one process-wide scheduler to expensive host-side workspace Git enumeration, including changed-file browsing, runtime/finalization cleanliness guards, and adapter sandbox-sync snapshots. The scheduler defaults to two active scans and a bounded queue of 32. Identical scans of the same canonical worktree share one subprocess, while successful changed-file listings are cached for 10 seconds. Correctness-sensitive runtime guards bypass the result cache.
+Paperclip applies one process-wide scheduler to expensive host-side workspace Git enumeration, including changed-file browsing, runtime/finalization cleanliness guards, and adapter sandbox-sync snapshots. The scheduler defaults to two active scans and a bounded queue of 32. Identical buffered scans of the same canonical worktree share one subprocess, while successful changed-file listings are cached for 10 seconds. Streaming snapshot scans have caller-owned sinks, so they use separate jobs in the same queue and are never cached or coalesced. Correctness-sensitive runtime guards bypass the result cache.
 
-Workspace snapshots list ignored paths with `git ls-files --others --ignored --exclude-standard --directory -z` so ignored directory contents do not require a full status walk. The untracked-file snapshot has a 32 MiB output bound so generated trees with thousands of long filenames can be staged. It still records explicit file paths; files created after the scan do not enter that overlay. Other scan bounds stay unchanged. Snapshot failures retain their typed cause instead of becoming a non-Git-folder result. During pre-provider setup, scan timeouts and queue saturation use the existing two automatic failure retries with a 30-second delay. Cancellation, output limits, and other Git errors stop with specific recovery guidance. See `doc/execution-semantics.md` for the ownership and retry-budget contract.
+Workspace snapshots list ignored paths with `git ls-files --others --ignored --exclude-standard --directory -z` so ignored directory contents do not require a full status walk. Changed, untracked, deleted, and ignored filename lists stream into private SQLite manifests. There is no total filename-list byte limit. The parser and each sink chunk are limited to 64 KiB, and each SQLite connection uses a 1 MiB page cache with disk-backed temporary storage. Records must be complete NUL-delimited UTF-8 paths. Invalid, oversized, or incomplete records fail the scan. Explicit file selection excludes files created after the scan. Buffered browser/guard and referenced-source scan bounds stay unchanged. Snapshot failures retain their typed cause instead of becoming a non-Git-folder result. During pre-provider setup, scan timeouts and queue saturation use the existing two automatic failure retries with a 30-second delay. Cancellation, output limits, and other Git errors stop with specific recovery guidance. See `doc/execution-semantics.md` for the ownership and retry-budget contract.
+
+
+Snapshot scans default to a 30-minute execution deadline, including disk backpressure, rather than the short interactive scan deadline. Set `PAPERCLIP_WORKSPACE_GIT_SNAPSHOT_TIMEOUT_MS` to allow slower storage or larger trees (1 second to 24 hours). Disk capacity, filesystem path limits, Git's own resource use, and this execution budget remain practical limits. Each manifest is admitted with a page allowance equal to one quarter of the available bytes above the host reserve at creation. SQLite enforces that allowance before page allocation, so one snapshot cannot consume all available storage. This is a disk-capacity admission policy, not a fixed filename-list byte or record limit. Nested repository and baseline manifests receive separate allowances from the remaining capacity. Manifest writers also check available disk space before creation and at most every 1 MiB of input thereafter. They stop below a 256 MiB free-space reserve. `PAPERCLIP_WORKSPACE_MANIFEST_MIN_FREE_BYTES` can raise or lower the reserve, with a 64 MiB minimum. Concurrent writers can consume space between checks; filesystem quota and write errors still fail the operation. The scheduler keeps the active slot until the child, pipes, and pending sink write finish. Snapshot failures cancel sibling producers and settle all started producers before removing temporary storage.
+
+Workspace baselines, nested-repository subsets, and merge lookups also use disk-backed manifests. Local archive input uses NUL list files. Deletion replay uploads a NUL manifest and runs bounded argument batches with ancestor symlink checks. Git ignored paths are literal indexed exclusions for staging, baseline capture, and the host merge. Restore transport uses the fixed/configured archive exclusions; it can transfer a remotely created ignored file, but the host merge excludes it. The v2 native recovery descriptor contains manifest references, not file arrays. Recovery checks controller-owned paths and content digests before reading records. Existing v1 descriptors remain readable. Transient manifests are removed on preparation failure and restore completion; native manifests remain until the durable recovery lifecycle is cleaned up.
+
+These bounds apply to application filename storage, not total process memory. Repository metadata scales with the number of managed repositories; directory iteration retains bounded buffers per nesting level. Git, tar, and provider SDKs have their own memory use. Some provider transfer APIs still return entire archive buffers. Legacy v1 recovery and the separately bounded referenced-source ignore resolver retain their older arrays. This change does not claim constant memory for those paths.
 
 Workspace preparation resolves an existing root symlink before reading the snapshot and uses that resolved directory for the rest of the operation. Overlay staging checks the captured root identity and each selected path's ancestors before and after copying. A replaced root or a symlink in an ancestor directory stops staging before upload. A missing source file can be skipped; other source inspection errors stop staging. Selected symlink entries remain symlinks.
+
+Execution-workspace close-readiness and branch-reconciliation status checks allow up to 32 MiB of buffered output. This accommodates nested task worktrees while preserving exact untracked-file counts. Larger output fails the scan and blocks destructive cleanup. Other buffered scan bounds stay unchanged.
 
 The cache intentionally trades up to a few seconds of changed-file freshness for stable server latency. The file browser retains an explicit refresh action, does not start its query while the panel or browser tab is hidden, and presents overloads as retryable failures rather than an empty workspace. A full queue returns `503` with code `workspace_git_scan_saturated`; a scan exceeding its wall-clock limit returns `504` with code `workspace_git_scan_timeout`. Both responses include `Retry-After: 1`.
 
@@ -722,7 +731,8 @@ Environment overrides:
 
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_CONCURRENCY` (default `2`, range `1`–`16`)
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_QUEUE_CAPACITY` (default `32`, range `0`–`1024`)
-- `PAPERCLIP_WORKSPACE_GIT_SCAN_TIMEOUT_MS` (default `8000`, range `100`–`120000`)
+- `PAPERCLIP_WORKSPACE_GIT_SCAN_TIMEOUT_MS` (default `8000`, range `100`–`120000`, buffered scans)
+- `PAPERCLIP_WORKSPACE_GIT_SNAPSHOT_TIMEOUT_MS` (default `1800000`, range `1000`–`86400000`, streaming snapshots)
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_CACHE_TTL_MS` (default `10000`, range `0`–`60000`)
 
 Structured `workspace_git_scan` logs expose the operation name, a non-reversible workspace-path hash, queue and execution durations, active/queued counts, cache and single-flight use, and terminal outcome. Saturation and timeout warnings are rate-limited so an overload does not create a second logging storm.
@@ -1284,6 +1294,12 @@ Expected:
 
 - `/api/health` returns `{"status":"ok"}`
 - `/api/companies` returns a JSON array
+
+On `*.staging.paperclip.app`, the account menu shows the running server's
+short commit SHA below the user's email. Hover over it for the full SHA,
+or follow the link to inspect the commit on GitHub.
+Opening the menu refreshes `/api/health` so the label reflects recent deploys.
+The label is hidden on other hosts and when commit metadata is unavailable.
 
 ## Reset Local Dev Database
 

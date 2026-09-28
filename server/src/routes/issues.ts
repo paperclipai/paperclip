@@ -1,3 +1,5 @@
+import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
+import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -78,6 +80,7 @@ import {
   createIssueSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
+  retryWorkspaceExportSchema,
   runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -9109,6 +9112,18 @@ export function issueRoutes(
     });
   });
 
+  router.post("/issues/:id/recovery-actions/retry-workspace-export", validate(retryWorkspaceExportSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const receipt = await retryNativeWorkspaceExport({ db, companyId: issue.companyId, issueId: issue.id,
+      actionId: req.body.actionId, runId: req.body.runId, repairNote: req.body.repairNote,
+      actorId: getActorInfo(req).actorId, environmentRuntime });
+    res.status(202).json(receipt);
+  });
+
   router.post(
     "/issues/:id/recovery-actions/resolve",
     validate(resolveIssueRecoveryActionSchema),
@@ -9256,6 +9271,14 @@ export function issueRoutes(
           activeRecoveryAction,
           { source: "recovery_action_resolution" },
         );
+
+        if (outcome === "restored" && activeRecoveryAction.cause === "native_workspace_sync_out_unsafe_archive") {
+          throw conflict("Unsafe workspace export recovers automatically without another provider turn.", { code: "workspace_export_automatic_recovery" });
+        }
+
+        if (outcome === "restored" && isNativeWorkspaceExportRepairCause(activeRecoveryAction.cause)) {
+          throw conflict("Repair the retained sandbox, then use Retry workspace export to finish the accepted result without another provider turn.", { code: "workspace_export_retry_required" });
+        }
 
         // Retrying an exhausted disposition repair is an explicit retry of the
         // recorded owner, never permission to reopen a stopped/completed task or

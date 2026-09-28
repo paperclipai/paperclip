@@ -38,6 +38,7 @@ import {
 } from "./execute.js";
 import { ACPX_HANDSHAKE_TIMEOUT_MS } from "./constants.js";
 import { runChildProcess } from "../server-utils.js";
+import { createPromptContextFixture } from "../test-fixtures/prompt-context.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
 import { resolveReferencedSourceIgnore } from "../sandbox-managed-runtime.js";
 import {
@@ -586,6 +587,32 @@ describe("shared ACPX engine runtime behavior", () => {
 
     expect((meta[0]?.env as Record<string, string>).CODEX_CONFIG).toBeUndefined();
     expect(configOptions).toEqual([]);
+  });
+
+  it.each(["claude", "codex", "gemini", "kimi", "custom"])("delivers the shared owned sections at the %s ACP turn boundary", async (agent) => {
+    const root = await makeTempRoot();
+    const context = createPromptContextFixture();
+    const config = { agent, agentCommand: "node ./fixture-acp.js", cwd: root, stateDir: path.join(root, "state"), mode: "persistent" };
+    const fresh = await runExecutor(config, { context });
+    expect(fresh.turnInputs).toHaveLength(1);
+    const prompt = String(fresh.turnInputs[0]?.text ?? "");
+    expect(prompt).toContain(context.paperclipTaskMarkdownAssignment);
+    expect(prompt).toContain(context.paperclipTaskCommunicationGuidance);
+    expect(prompt).not.toContain('"objective":');
+    expect(prompt).not.toContain("### Issue description");
+    expect(prompt).toContain('"id":"comment-first"');
+    expect(prompt).toContain('"id":"comment-second"');
+    expect(prompt).toContain('"id":"comment-scope"');
+    expect(prompt.indexOf('"id":"comment-first"')).toBeLessThan(prompt.indexOf('"id":"comment-second"'));
+    expect(prompt).toContain("Untrusted continuation evidence");
+    expect(prompt).toContain("receipt-1");
+    const resumed = await runExecutor(config, { context, runtime: { sessionParams: fresh.result.sessionParams } });
+    expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(fresh.result.sessionId);
+    const resumedPrompt = String(resumed.turnInputs[0]?.text ?? "");
+    expect(resumedPrompt).toContain(context.paperclipTaskMarkdownAssignmentCompact);
+    expect(resumedPrompt).not.toContain(context.paperclipTaskCommunicationGuidance);
+    expect(resumedPrompt).not.toContain('"id":"comment-first"');
+    expect(resumedPrompt).toContain('"id":"comment-second"');
   });
 
   it("includes Paperclip env and API access notes in the ACPX prompt without leaking the token", async () => {
@@ -6355,10 +6382,30 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     };
   }
 
+  it("collects instructions after confirmed close on a thrown provider turn, before workspace restore", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const { paperclipStops, anyStopped } = stubBridges();
+    const order: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      stagingLocks: new Map(), warmHandles: new Map(), stagedRuntimes: new Map(),
+      createRuntime: () => ({ ensureSession: async () => okHandle, startTurn: () => throwingTurn(),
+        close: async () => { order.push("close"); } }) as never,
+    });
+    const result = await execute({ runId: "instruction-stop-failure",
+      ...remoteArgs(stateDir, localCwd, executionTarget, { onProviderStopped: async () => {
+        expect(anyStopped(paperclipStops)).toBe(true);
+        order.push("collect");
+      } }),
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(order).toEqual(["close", "collect"]);
+  });
+
   it("test_teardown_continues_after_one_teardown_step_fails", async () => {
     const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
     const { paperclipStops, processStops, anyStopped } = stubBridges();
     const stagingLocks = new Map<string, Promise<unknown>>();
+    const collectInstructions = vi.fn(async () => {});
     const logs: Array<{ stream: string; text: string }> = [];
     const execute = createAcpxEngineExecutor({
       stagingLocks,
@@ -6378,6 +6425,7 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     const result = await execute({
       runId: "td-continue",
       ...remoteArgs(stateDir, localCwd, executionTarget, {
+        onProviderStopped: collectInstructions,
         onLog: async (stream: "stdout" | "stderr", text: string) => {
           logs.push({ stream, text });
         },
@@ -6385,6 +6433,7 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     } as never);
 
     expect(result.exitCode).toBe(1);
+    expect(collectInstructions).not.toHaveBeenCalled();
     // The close failure did not stop the bridge stops or the lease release.
     expect(anyStopped(paperclipStops)).toBe(true);
     expect(anyStopped(processStops)).toBe(true);
@@ -6393,6 +6442,36 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     expect(
       logs.some((entry) => entry.stream === "stderr" && entry.text.includes('teardown step "runtime-close" failed')),
     ).toBe(true);
+  });
+
+  it("restores managed home and releases the lease when instruction collection rejects", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const { paperclipStops, processStops, anyStopped } = stubBridges();
+    const stagingLocks = new Map<string, Promise<unknown>>();
+    const order: string[] = [];
+    const logs: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      stagingLocks, warmHandles: new Map(), stagedRuntimes: new Map(),
+      prepareRemoteManagedHome: async (input) => ({
+        stagedRuntime: await input.stage([]),
+        teardown: async () => { order.push("restore"); return { ok: true }; },
+      }),
+      createRuntime: () => ({ ensureSession: async () => okHandle, startTurn: () => throwingTurn(),
+        close: async () => { order.push("close"); } }) as never,
+    });
+    const result = await execute({ runId: "instruction-collection-reject",
+      ...remoteArgs(stateDir, localCwd, executionTarget, {
+        onProviderStopped: async () => { order.push("collect"); throw new Error("collector failed reading /private/test-instructions/AGENTS.md"); },
+        onLog: async (_stream: string, text: string) => { logs.push(text); },
+      }),
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(order).toEqual(["close", "collect", "restore"]);
+    expect(anyStopped(paperclipStops)).toBe(true);
+    expect(anyStopped(processStops)).toBe(true);
+    expect(stagingLocks.size).toBe(0);
+    expect(logs.some(text => text.includes('teardown step "instruction-collection" failed: Instruction collection failed'))).toBe(true);
+    expect(logs.some(text => text.includes("/private/test-instructions"))).toBe(false);
   });
 
   it("test_staging_lease_releases_in_finally_on_every_exit_path", async () => {

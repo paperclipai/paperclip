@@ -1,4 +1,5 @@
 import { DispositionRecoveryNotice } from "../components/DispositionRecoveryNotice";
+import { CloudSignIn } from "../components/CloudSignIn";
 import { SetupPrompt } from "./apps/chat/SetupPrompt";
 import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
 import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
@@ -2250,6 +2251,10 @@ export function DesignGuide() {
           recovery. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
         </p>
+      </Section>
+
+      <Section title="Cloud sign-in unavailable">
+        <CloudSignIn cloud={{ managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: null, stackSlug: null }} returnTo="/" />
       </Section>
 
       <Section title="Saved provider API keys">

@@ -223,6 +223,13 @@ describe("eval-session request contract", () => {
 });
 
 describe("eval-session usage", () => {
+  it("preserves Grok's missing usage as unknown instead of manufacturing zero tokens or cost", () => {
+    const parsed = { ...parseEvalSessionRequest(request()), provider: "acpx" as const, acpxAgent: "grok" as const };
+    const turn = { turnId: "turn-1", status: "completed" as const, assistantText: "done", snapshot: { usageLedger: [] } as unknown as CapabilityLiveSessionSnapshot };
+    expect(boundedEvalSessionUsage(parsed, turn)).toBeNull();
+    expect(() => boundedEvalSessionUsage({ ...parsed, provider: "codex", acpxAgent: undefined }, turn)).toThrow();
+  });
+
   it("retains durable failed turns even when their reported usage exceeds completed-turn limits", () => {
     const parsed = parseEvalSessionRequest(request());
     const snapshot = {

@@ -24,6 +24,7 @@ import {
 import { DurableCapabilityLiveSessionStore } from "./durable-live-session-store.js";
 import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
 import { captureTurnRejection } from "../../test/capture-turn-rejection.js";
+import * as workspaceDiff from "./workspace-diff.js";
 
 class AsyncNotifications implements AsyncIterable<CodexRpcNotification> {
   #values: CodexRpcNotification[] = [];
@@ -753,20 +754,30 @@ describe("Capability live runnerd and Codex session", () => {
     const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
     const session = await service.create({ workingDirectory: root });
 
-    const result = await session.sendMessage("edit the workspace");
-    expect(result.snapshot.workspaceDiffs).toHaveLength(1);
-    expect(result.snapshot.workspaceDiffs?.[0]).toMatchObject({
-      turnId: "turn-1",
-      diff: {
-        schema: "paperclip.workspace.diff.v1",
-        source: "runner_verified",
-        complete: true,
-        totals: { files: 2 },
-      },
-    });
-    expect(result.snapshot.workspaceDiffs?.[0]?.diff.files.map((file) => file.path))
-      .toEqual(["created.ts", "existing.txt"]);
-    await service.shutdown(session.id);
+    // Test the file-change evidence, not whether a loaded CI worker scans the
+    // fixture within the production admission deadline. Keep both snapshots
+    // real; make only the already-captured baseline immediately available.
+    const baseline = await workspaceDiff.capturePaperclipWorkspace(root);
+    const capture = vi.spyOn(workspaceDiff, "capturePaperclipWorkspace")
+      .mockResolvedValueOnce(baseline);
+    try {
+      const result = await session.sendMessage("edit the workspace");
+      expect(result.snapshot.workspaceDiffs).toHaveLength(1);
+      expect(result.snapshot.workspaceDiffs?.[0]).toMatchObject({
+        turnId: "turn-1",
+        diff: {
+          schema: "paperclip.workspace.diff.v1",
+          source: "runner_verified",
+          complete: true,
+          totals: { files: 2 },
+        },
+      });
+      expect(result.snapshot.workspaceDiffs?.[0]?.diff.files.map((file) => file.path))
+        .toEqual(["created.ts", "existing.txt"]);
+    } finally {
+      capture.mockRestore();
+      await service.shutdown(session.id);
+    }
   });
 
   it("suspends after every per-turn response and restores the same provider session", async () => {
@@ -895,7 +906,7 @@ describe("Capability live runnerd and Codex session", () => {
         (request) => request.method === "thread/start",
       )?.params.baseInstructions,
     ).toBe(
-      "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
+      'Native instructions\n\nRead-only instruction sibling root: /runtime/instructions\nFor native paperclip_finish/paperclip_block reports, completionContract={"revision":"paperclip-capability-live-v1","criterionIds":["objective"]}. This report does not change mock task state; use the exposed semantic tools for task changes.',
     );
     await service.shutdown(session.id);
   });

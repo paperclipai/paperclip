@@ -1,3 +1,4 @@
+import { WorkspaceExportRecovery } from "../components/WorkspaceExportRecovery";
 import { useUserPreferences } from "../hooks/useUserPreferences";
 import { DispositionRecoveryProvider } from "../components/DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -3611,16 +3612,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     setPanelVisible(true);
     if (isMobile) setMobilePropsOpen(true);
   }, [isMobile, issue?.id, panelBeforePlanOverrideIssueId, setPanelVisible, suppressPanelUntilPlan]);
-  const revealNewArtifact = useCallback(() => {
+  const registerArtifactTab = useCallback(() => {
     if (!issue?.id) return;
-    setDocumentDeepLink(null);
     setArtifactsOpenRequest((previous) => ({
       issueId: issue.id,
       requestId: (previous?.requestId ?? 0) + 1,
     }));
-    if (isMobile) setMobilePropsOpen(true);
-    else openTaskSidePanel();
-  }, [issue?.id, isMobile, openTaskSidePanel]);
+  }, [issue?.id]);
   const handleArtifactsOpened = useCallback((requestId: number) => {
     setArtifactsOpenRequest((request) => request?.requestId === requestId
       ? { ...request, handled: true } : request);
@@ -3630,7 +3628,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     attachments,
     workProducts,
     documents: issue?.documentSummaries,
-    onArrival: revealNewArtifact,
+    onArrival: registerArtifactTab,
   });
   const toggleTaskSidePanel = useCallback(() => {
     if (!panelVisible || suppressPanelUntilPlan) {
@@ -7745,6 +7743,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   : undefined
               }
             >
+              <WorkspaceExportRecovery key={issue.activeRecoveryAction?.id ?? issue.id} issueId={issue.id}
+                action={issue.activeRecoveryAction ?? null} canManage={canManageBoardRuntime} onQueued={invalidateIssueDetail} />
               {issue.executionBlocker && (
                 <ExecutionBlockerNotice companyId={issue.companyId} issueId={issue.id} blocker={issue.executionBlocker} onRetried={invalidateIssueDetail} />
               )}

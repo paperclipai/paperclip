@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
 // Bundles the remote-lane mock state and every mocked execution-target
 // function behind one hoisted object, so the `vi.mock` factory below (which
@@ -847,6 +848,69 @@ describe("grok_local execute", () => {
       expect(await pathExists(stagedDir)).toBe(false);
     });
 
+    it("keeps collection failure separate from a successful workspace restore", async () => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      await seedHostGrokAuth("{}");
+      const collectionError = new Error("instruction collection failed");
+      const order: string[] = [];
+      let stagedDir = "";
+      runProcessMock.mockImplementation(async (_run, _target, _command, _args, options) => {
+        options.onProcessStopped();
+        return makeSuccessfulRunResult();
+      });
+      prepareRuntimeMock.mockImplementationOnce(async (input: { assets?: Array<{ localDir: string }> }) => {
+        stagedDir = input.assets?.[0]?.localDir ?? "";
+        return {
+          workspaceRemoteDir: "/remote/workspace",
+          assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+          restoreWorkspace: async () => { order.push("restore"); },
+        };
+      });
+      const ctx = await makeCtx("run-collection-reject", await makeTempRoot());
+      ctx.onProviderStopped = async () => { order.push("collect"); throw collectionError; };
+      const result = await execute(ctx);
+      expect(result.errorCode).toBe("instruction_collection_failed");
+      expect(result.resultJson?.instructionCollectionFailure).toBe("collection_failed");
+      expect(result.resultJson?.workspaceRestoreFailure).toBeUndefined();
+      expect(order).toEqual(["collect", "restore"]);
+      expect(stagedDir).not.toBe("");
+      expect(await pathExists(stagedDir)).toBe(false);
+    });
+
+    it.each([0, 2])("preserves provider output when collection and restore both fail after exit %s", async (exitCode) => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      await seedHostGrokAuth("{}");
+      runProcessMock.mockImplementation(async (_run, _target, _command, _args, options) => {
+        options.onProcessStopped();
+        return {
+          ...makeSuccessfulRunResult(), exitCode,
+          stderr: exitCode ? "Model request failed." : "",
+          stdout: [JSON.stringify({ type: "text", data: "Saved output." }), JSON.stringify({
+            type: "end", sessionId: "sess-1", requestId: "req-1", stopReason: "EndTurn",
+            usage: { input_tokens: 4, output_tokens: 9 },
+          })].join("\n"),
+        };
+      });
+      prepareRuntimeMock.mockImplementationOnce(async () => ({
+        workspaceRemoteDir: "/remote/workspace",
+        assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+        restoreWorkspace: async () => { throw new Error("restore failed"); },
+      }));
+      const ctx = await makeCtx("run-collection-and-restore-reject", await makeTempRoot());
+      ctx.onProviderStopped = async () => { throw new Error("instruction collection failed"); };
+      const result = await execute(ctx);
+      expect(result).toMatchObject({
+        errorCode: "workspace_restore_failed", exitCode, sessionId: "sess-1", summary: "Saved output.",
+        usage: { inputTokens: 4, outputTokens: 9 },
+        resultJson: { instructionCollectionFailure: "collection_failed", workspaceRestoreFailure: "restore_failed",
+          requestId: "req-1", finalResponseRecorded: true, executionBeforeRestore: { exitCode } },
+      });
+      expect(result.errorMessage).toContain("Instruction collection failed");
+      if (exitCode) expect(result.errorMessage).toContain("Model request failed.");
+    });
+
     it.each(["completed", "failed", "timed_out"])("preserves %s output and removes the staged home when restore fails", async (state) => {
       delete process.env.XAI_API_KEY;
       mocks.state.isRemote = true;
@@ -969,6 +1033,63 @@ describe("grok_local execute", () => {
       expect(await fs.readFile(path.join(hostGrokHome, "auth.json"), "utf8")).toBe(
         grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }),
       );
+    });
+
+    it("delivers the owned assignment and ordered wake comments through --single", async () => {
+      const root = await makeTempRoot();
+      const fixture = createPromptContextFixture();
+      let deliveredPrompt = "";
+      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        deliveredPrompt = String(args.at(-1) ?? "");
+        return makeSuccessfulRunResult();
+      });
+
+      const ctx = await makeCtx("run-context-ownership", root);
+      ctx.context = fixture;
+
+      await execute(ctx);
+
+      expect(deliveredPrompt).toContain(fixture.paperclipTaskMarkdownAssignment);
+      expect(deliveredPrompt.indexOf("Append the same ledger entry.")).toBeLessThan(
+        deliveredPrompt.lastIndexOf("Append the same ledger entry."),
+      );
+      expect(deliveredPrompt.indexOf("comment-first")).toBeLessThan(
+        deliveredPrompt.indexOf("comment-second"),
+      );
+      expect(deliveredPrompt.indexOf("comment-second")).toBeLessThan(
+        deliveredPrompt.indexOf("comment-scope"),
+      );
+      expect(deliveredPrompt).toContain("Change the final scope to the launch checklist.");
+    });
+
+    it("retries a stale session with the full assignment and wake context", async () => {
+      const root = await makeTempRoot();
+      const fixture = createPromptContextFixture();
+      const prompts: string[] = [];
+      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        prompts.push(String(args.at(-1) ?? ""));
+        if (prompts.length === 1) {
+          return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "unknown session sess-stale" };
+        }
+        return makeSuccessfulRunResult();
+      });
+
+      const ctx = await makeCtx("run-grok-recovery-context", root);
+      ctx.runtime = {
+        sessionId: "sess-stale",
+        sessionParams: { sessionId: "sess-stale", cwd: root },
+        sessionDisplayId: "sess-stale",
+        taskKey: null,
+      };
+      ctx.context = fixture;
+      const result = await execute(ctx);
+
+      expect(result.exitCode).toBe(0);
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toContain(fixture.paperclipTaskMarkdownAssignmentCompact);
+      expect(prompts[1]).toContain(fixture.paperclipTaskMarkdownAssignment);
+      expect(prompts[1]).toContain("comment-first");
+      expect(prompts[1]).toContain("comment-scope");
     });
   });
 });

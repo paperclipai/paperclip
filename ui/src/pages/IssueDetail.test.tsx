@@ -2164,8 +2164,32 @@ describe("IssueDetail", () => {
     });
   });
 
-  it.each([false, true])("reveals new artifacts once in the task panel (mobile: %s)", async (isMobile) => {
+  it("opens Artifacts for existing output without discarding a document deep link", async () => {
+    mockLocation.hash = "#document-agents";
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      documentSummaries: [{
+        id: "agents-doc", companyId: "company-1", issueId: "issue-1",
+        key: "agents", title: "AGENTS.md", format: "markdown",
+        latestRevisionId: "revision-1", latestRevisionNumber: 1,
+        createdByAgentId: "agent-1", createdByUserId: null,
+        updatedByAgentId: "agent-1", updatedByUserId: null,
+        lockedAt: null, lockedByAgentId: null, lockedByUserId: null,
+        createdAt: new Date(), updatedAt: new Date(),
+      }],
+    }));
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>);
+    });
+    await waitForAssertion(() => {
+      const props = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props;
+      expect(props?.artifactsOpenRequestId).toBe(1);
+      expect(props?.documentDeepLink?.documentKey).toBe("agents");
+    });
+  });
+
+  it.each([false, true])("registers new artifacts without opening a closed panel (mobile: %s)", async (isMobile) => {
     mockSidebarState.isMobile = isMobile;
+    mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
     mockPanelState.panelVisible = false;
     mockIssuesApi.get.mockResolvedValue(createIssue());
     await act(async () => {
@@ -2183,14 +2207,15 @@ describe("IssueDetail", () => {
       };
     const file = createAttachment({ id: "new-output", createdByAgentId: "agent-1" });
     act(() => { queryClient.setQueryData(queryKeys.issues.attachments("PAP-1"), [file]); });
-    await waitForAssertion(() => expect(panelProps()?.artifactsOpenRequestId).toBe(1));
+    await flushReact();
+    expect(mockSetPanelVisible).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="mobile-task-side-panel"]')).toBeNull();
     if (isMobile) {
-      expect(document.querySelector('[data-testid="mobile-task-side-panel"]')).not.toBeNull();
-      expect(mockSetPanelVisible).not.toHaveBeenCalled();
-      expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props.artifactsOpenRequestId).toBeUndefined();
-    } else {
-      expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+      const toolbar = mockSetMobileToolbar.mock.calls.map(([node]) => node).filter(Boolean).at(-1);
+      // The pending arrival is consumed only when the user opens the sheet.
+      act(() => toolbar.props.onProperties());
     }
+    await waitForAssertion(() => expect(panelProps()?.artifactsOpenRequestId).toBe(1));
 
     act(() => panelProps().onArtifactsOpened(1));
     await waitForAssertion(() => expect(panelProps().artifactsOpenRequestId).toBeUndefined());

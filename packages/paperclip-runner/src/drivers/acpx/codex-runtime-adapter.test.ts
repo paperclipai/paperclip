@@ -70,6 +70,27 @@ describe("Codex ACPX runtime adapter", () => {
     }
   });
 
+  it.each(["PERMISSION_PROMPT_UNAVAILABLE", "AGENT_DISCONNECTED"])("preserves the meaning of ACPX terminal failure %s", async (code) => {
+    const runtime = fakeRuntime();
+    const result = { status: "failed" as const, error: { code, message: "Provider failed" } };
+    vi.mocked(runtime.startTurn).mockReturnValue({
+      requestId: "permission-fallback", promptStarted: Promise.resolve(),
+      events: { async *[Symbol.asyncIterator]() {} }, result: Promise.resolve(result),
+      cancel: vi.fn(), closeStream: vi.fn(),
+    });
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+    });
+    try {
+      const turn = port.startTurn({ text: "Attempt a write", requestId: "permission-fallback" });
+      if (code === "PERMISSION_PROMPT_UNAVAILABLE") {
+        await expect(turn.result).rejects.toMatchObject({ code: "approval_required" });
+      } else {
+        await expect(turn.result).resolves.toEqual(result);
+      }
+    } finally { await port.close({ reason: "terminal permission outcome verified" }); }
+  });
+
   it("rejects a pre-aborted admission before constructing or spawning ACPX", async () => {
     const cancellation = new Error("runtime admission cancelled");
     const controller = new AbortController();

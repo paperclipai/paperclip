@@ -5,6 +5,7 @@ import {
   HeadObjectCommand,
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
+import { putS3Multipart } from "./s3-multipart.js";
 import { Readable } from "node:stream";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
@@ -81,6 +82,10 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
 
     async putObject(input) {
       const key = buildKey(prefix, input.objectKey);
+      if (input.contentLength > 16 * 1024 * 1024) {
+        await putS3Multipart(client, bucket, key, input);
+        return;
+      }
       await client.send(
         new PutObjectCommand({
           Bucket: bucket,

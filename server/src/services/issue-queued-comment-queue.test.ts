@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering } from "./issue-queued-comment-queue.js";
+import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering, withQueuedCommentIdsInRunContext } from "./issue-queued-comment-queue.js";
 
 describe("decideQueuedCommentQueueSteering", () => {
   it("answers unsupported on the legacy protocol", () => {
@@ -113,5 +113,36 @@ describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
 
     expect(queue.entries[0]?.canEdit).toBe(false);
     expect(queue.entries[0]?.canDiscard).toBe(false);
+  });
+});
+
+describe("withQueuedCommentIdsInRunContext", () => {
+  it("invalidates every generated task projection and ownership metadata", () => {
+    const result = withQueuedCommentIdsInRunContext({
+      issueId: "issue-1",
+      preserved: "keep",
+      paperclipWake: { comments: [{ id: "comment-1" }] },
+      paperclipWakeComment: { id: "comment-1" },
+      paperclipTaskMarkdown: "historical",
+      paperclipTaskMarkdownCompact: "historical compact",
+      paperclipTaskMarkdownAssignment: "assignment",
+      paperclipTaskMarkdownAssignmentCompact: "assignment compact",
+      paperclipTurnContext: { version: 1, events: { owner: "wake_prompt" } },
+    }, ["comment-2"]);
+
+    expect(result).toMatchObject({
+      issueId: "issue-1",
+      preserved: "keep",
+      wakeCommentIds: ["comment-2"],
+      wakeCommentId: "comment-2",
+      commentId: "comment-2",
+    });
+    expect(result).not.toHaveProperty("paperclipWake");
+    expect(result).not.toHaveProperty("paperclipWakeComment");
+    expect(result).not.toHaveProperty("paperclipTaskMarkdown");
+    expect(result).not.toHaveProperty("paperclipTaskMarkdownCompact");
+    expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignment");
+    expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignmentCompact");
+    expect(result).not.toHaveProperty("paperclipTurnContext");
   });
 });

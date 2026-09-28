@@ -131,7 +131,7 @@ fn bootstraps_a_codex_session_and_confirms_run_identity() {
 fn validates_qualified_policy_and_tool_catalog_before_spawning() {
     let mut invalid_agent = config("bootstrap");
     invalid_agent.agent = "pi".to_owned();
-    assert!(start_error(&invalid_agent).contains("claude or codex"));
+    assert!(start_error(&invalid_agent).contains("claude, codex, or grok"));
 
     let mut unpinned = config("bootstrap");
     unpinned.permission_mode_pinned = false;
@@ -155,6 +155,8 @@ fn admits_custom_claude_models_and_legacy_codex_profile() {
         ("claude", "claude-sonnet-5"),
         ("claude", "claude-opus-5"),
         ("claude", "custom-provider-model"),
+        ("grok", "grok-4.7"),
+        ("grok", "future-exact-model"),
     ] {
         let mut qualified = config("bootstrap");
         qualified.agent = agent.to_owned();

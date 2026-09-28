@@ -280,7 +280,7 @@ describeEmbeddedPostgres(
       const mismatchedRun = await service.create(
         { id: fixture.issueId, companyId: fixture.companyId },
         { ...question, sourceRunId: foreignRunId },
-        { agentId: fixture.agentId },
+        { agentId: foreignAgentId },
       );
 
       await expect(

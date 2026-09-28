@@ -13,6 +13,7 @@ import { assertChatRememberedAfterRestart, assertChatStartupStopped, isChatStopR
 import { enableChatThroughSettings, runChatInterruption, runChatSettingsLifecycle } from "./chat-stories.js";
 import { runActiveReassignment, runWorkerCrash, runAnswerQuality } from "./chat-qualification.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
+import { runChatCompletionUpdate } from "./completion-update-flow.js";
 
 // Public API observations only: this driver never fabricates provider results or writes DB state.
 export interface ChatIssue {
@@ -389,7 +390,10 @@ export async function runChatFlow(input: ChatFlowInput) {
     expect(await api.get(chatPath)).toBeNull();
     expect(await allRuns()).toHaveLength(0);
 
-    if (execution.suite.id === "agent-chat-qualification") {
+    if (caseId === "handoff-completion-idle") {
+      await runChatCompletionUpdate({ input, marker, allRuns, issue: () => issue!,
+        refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); if (issue) input.observe(issue, await allRuns()); } });
+    } else if (execution.suite.id === "agent-chat-qualification") {
       const context = { input, marker, issue: () => issue!, idle, allRuns, comments, expectedStops,
         refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); input.observe(issue, await allRuns()); } };
       if (caseId === "active-reassignment") await runActiveReassignment(context);

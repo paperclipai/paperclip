@@ -358,6 +358,32 @@ describe("ACPX runtime host", () => {
         await writeFile(join(skillRoot, "references", "answer.txt"), expectedReference);
         await writeFile(join(skillRoot, "SKILL.md"), "---\nname: assigned\ndescription: Updated instructions.\n---\nRead references/answer.txt before responding.");
       }
+      // The prepared native envelope v3 carries the selected skill explicitly;
+      // its task object intentionally has no internal description field. Keep
+      // this boundary covered across a fresh open and a provider reopen.
+      for (let index = 0; index < 2; index += 1) {
+        const host = await AcpxRuntimeHost.open(
+          { ...options, runtimeContext: context },
+          dependencies,
+        );
+        const message = JSON.stringify({
+          schema: "paperclip.native-model-envelope.v3",
+          requestedSkills: ["assigned"],
+          task: {
+            identifier: "PAP-1",
+            title: "Assigned task",
+            prompt: "A prepared direct user request",
+            workMode: "standard",
+          },
+          interactionResponses: index ? [{ response: { status: "accepted" } }] : [],
+        });
+        host.startTurn({ text: message, requestId: `prepared-skill-turn-${index}` });
+        expect(providerStartTurn).toHaveBeenLastCalledWith({
+          text: `/assigned ${message}`,
+          requestId: `prepared-skill-turn-${index}`,
+        });
+        await host.close({ reason: "prepared envelope reopen test" });
+      }
       // The same agent's next ordinary task must not inherit the command.
       const ordinary = await AcpxRuntimeHost.open(
         { ...options, runtimeContext: context }, dependencies,
@@ -371,6 +397,25 @@ describe("ACPX runtime host", () => {
         text: ordinaryMessage, requestId: "ordinary-task",
       });
       await ordinary.close({ reason: "ordinary task verified" });
+      const ordinaryPrepared = await AcpxRuntimeHost.open(
+        { ...options, runtimeContext: context }, dependencies,
+      );
+      const ordinaryPreparedMessage = JSON.stringify({
+        schema: "paperclip.native-model-envelope.v3",
+        requestedSkills: [],
+        task: {
+          identifier: "PAP-2",
+          title: "An ordinary task",
+          prompt: "Mention /assigned in a note",
+          workMode: "standard",
+        },
+      });
+      ordinaryPrepared.startTurn({ text: ordinaryPreparedMessage, requestId: "ordinary-prepared-task" });
+      expect(providerStartTurn).toHaveBeenLastCalledWith({
+        text: ordinaryPreparedMessage,
+        requestId: "ordinary-prepared-task",
+      });
+      await ordinaryPrepared.close({ reason: "ordinary prepared task verified" });
       // No stale assignment survives a later launch without runtime context.
       assigned = false;
       const host = await AcpxRuntimeHost.open(options, dependencies);
@@ -851,6 +896,25 @@ describe("ACPX runtime host", () => {
       ),
     ).rejects.toThrow(/does not match its profile/);
     expect(openRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each(["expired credential", "provider process died"])("cleans Grok credentials after failed initialization: %s", async (failure) => {
+    const fixture = await hostFixture();
+    let home = "";
+    await expect(AcpxRuntimeHost.open({
+      ...fixture.options, agent: "grok", model: "grok-4.7", permissionMode: "approve-reads",
+      environment: { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: JSON.stringify({ "https://accounts.x.ai::11111111-1111-4111-8111-111111111111": { key: "test-expired", refresh_token: "test-refresh" } }) },
+    }, fixture.dependencies({ openRuntime: async (options) => {
+      home = options.launchEnvironment.GROK_HOME!;
+      expect(options.permissionMode).toBe("approve-reads");
+      expect(options.launchEnvironment).not.toHaveProperty("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET");
+      expect(await readFile(join(home, "auth.json"), "utf8")).toContain("test-expired");
+      throw new Error(failure);
+    } }))).rejects.toThrow(failure);
+    for (const filename of ["auth.json", "auth-refresh.json"]) {
+      await expect(readFile(join(home, filename))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("cleans credentials and command leases when provider open fails", async () => {
