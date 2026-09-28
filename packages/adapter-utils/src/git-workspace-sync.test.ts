@@ -288,6 +288,7 @@ describe("git workspace sync", () => {
     expect(snapshot?.repositories).toHaveLength(1);
 
     await withShallowGitWorkspaceClone({ localDir: repo, snapshot: snapshot! }, async (cloneDir) => {
+      expect(await git(cloneDir, ["status", "--porcelain"])).toBe("");
       // The nested clone's callback has already returned and deleted its temp
       // directory. Relative links must keep their repository meaning here.
       const copied = path.join(cloneDir, ".paperclip-repositories", "repo");
