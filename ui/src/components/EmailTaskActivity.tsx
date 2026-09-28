@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { emailApi } from "@/api/email";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { EmailPublicationSummary } from "@paperclipai/shared";
+import { isUuidLike, type EmailPublicationSummary } from "@paperclipai/shared";
 
 // Email actions belong to the agent's task conversation. Only surface mail
 // without a task comment yet and delivery outcomes that need attention here.
@@ -17,7 +17,10 @@ export function EmailTaskActivity({
 }) {
   const cache = useQueryClient();
   const threadKey = ["email-thread", companyId, issueId];
-  const queryEnabled = Boolean(companyId && issueId) && !issueId.startsWith("chat:");
+  const queryEnabled =
+    Boolean(companyId && issueId) &&
+    !issueId.startsWith("chat:") &&
+    isUuidLike(issueId);
   const thread = useQuery({
     queryKey: threadKey,
     queryFn: () => emailApi.thread(companyId, issueId),

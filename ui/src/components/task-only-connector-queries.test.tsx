@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EmailMessageCard, EmailThreadProvider } from "./EmailMessageCard";
 import { EmailTaskActivity } from "./EmailTaskActivity";
 import { useIssueChatBinding } from "./chat/ExternallyConnectedTaskBanner";
 
@@ -20,10 +21,12 @@ const chatId = `chat:${taskId}`;
 
 function ConnectorQueries({ issueId }: { issueId: string }) {
   const { binding, isLoading } = useIssueChatBinding(companyId, issueId);
-  return <>
-    <output>{binding ? "bound" : isLoading ? "loading" : "unbound"}</output>
-    <EmailTaskActivity companyId={companyId} issueId={issueId} />
-  </>;
+  return (
+    <EmailThreadProvider companyId={companyId} issueId={issueId}>
+      <output>{binding ? "bound" : isLoading ? "loading" : "unbound"}</output>
+      <EmailTaskActivity companyId={companyId} issueId={issueId} />
+    </EmailThreadProvider>
+  );
 }
 
 describe("task-only connector queries", () => {
@@ -59,7 +62,7 @@ describe("task-only connector queries", () => {
     container.remove();
   });
 
-  it.each([chatId, ""])("does not request task connectors for %s", async (id) => {
+  it.each([chatId, "", "not-a-uuid", "undefined"])("does not request task connectors for %s", async (id) => {
     await render(id);
     expect(api.getIssueBinding).not.toHaveBeenCalled();
     expect(api.thread).not.toHaveBeenCalled();

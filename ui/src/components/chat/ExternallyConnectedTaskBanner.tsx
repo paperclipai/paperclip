@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Paperclip, Radio } from "lucide-react";
-import type {
-  ChatPublicationState,
-  ChatFileTransferPhase,
-  IssueAttachment,
+import {
+  isUuidLike,
+  type ChatPublicationState,
+  type ChatFileTransferPhase,
+  type IssueAttachment,
 } from "@paperclipai/shared";
 import {
   chatEndpointsApi,
@@ -110,7 +111,11 @@ const filePhaseLabels: Record<ChatFileTransferPhase, string> = {
 
 export function useIssueChatBinding(companyId: string, issueId: string) {
   const { enabled } = useChatConnectorsEnabled();
-  const queryEnabled = enabled && Boolean(companyId && issueId) && !issueId.startsWith("chat:");
+  const queryEnabled =
+    enabled &&
+    Boolean(companyId && issueId) &&
+    !issueId.startsWith("chat:") &&
+    isUuidLike(issueId);
   const query = useQuery({
     queryKey: ["issue-chat-binding", companyId, issueId],
     queryFn: () => chatEndpointsApi.getIssueBinding(issueId),
