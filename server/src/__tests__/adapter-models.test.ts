@@ -5,7 +5,7 @@ import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local"
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
-import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
+import { listAdapterModels, listServerAdapters, refreshAdapterModels, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
@@ -238,6 +238,22 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("codex_local");
     expect(models).toEqual(codexFallbackModels);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("uses a custom Codex adapter's model and refresh hooks", async () => {
+    const builtin = listServerAdapters().find((adapter) => adapter.type === "codex_local")!;
+    const customModels = [{ id: "plugin-codex", label: "Plugin Codex" }];
+    const listModels = vi.fn(async () => customModels);
+    const refreshModels = vi.fn(async () => customModels);
+    registerServerAdapter({ ...builtin, models: [], listModels, refreshModels });
+    try {
+      await expect(listAdapterModels("codex_local")).resolves.toEqual(customModels);
+      await expect(refreshAdapterModels("codex_local")).resolves.toEqual(customModels);
+      expect(listModels).toHaveBeenCalledOnce();
+      expect(refreshModels).toHaveBeenCalledOnce();
+    } finally {
+      unregisterServerAdapter("codex_local");
+    }
   });
 
 
