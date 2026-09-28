@@ -1414,6 +1414,91 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(row?.brief).toEqual(brief);
   });
 
+  it("forwards summary on create_task, persisting null when omitted", async () => {
+    const summaryCompanyId = randomUUID();
+    const summaryAgentId = randomUUID();
+    const summaryIssueId = randomUUID();
+    const summaryRunId = randomUUID();
+    await db.insert(companies).values({
+      id: summaryCompanyId,
+      name: "Summary runner company",
+      issuePrefix: "SUM",
+      issueCounter: 1,
+    });
+    await db.insert(agents).values({
+      id: summaryAgentId,
+      companyId: summaryCompanyId,
+      name: "Summary agent",
+      adapterType: "paperclip_runner",
+      adapterConfig: {},
+      runtimeConfig: {},
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: summaryIssueId,
+      companyId: summaryCompanyId,
+      issueNumber: 1,
+      identifier: "SUM-1",
+      title: "Delegates a task",
+      status: "in_progress",
+      workMode: "standard",
+      assigneeAgentId: summaryAgentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: summaryRunId,
+      companyId: summaryCompanyId,
+      agentId: summaryAgentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: summaryIssueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: { issueId: summaryIssueId },
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: summaryRunId })
+      .where(eq(issues.id, summaryIssueId));
+
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId: summaryCompanyId,
+      agentId: summaryAgentId,
+      issueId: summaryIssueId,
+      runId: summaryRunId,
+    });
+
+    const withSummary = (await authority.execute({
+      tool: "create_task",
+      callId: "create-with-summary",
+      arguments: {
+        idempotencyKey: "create-with-summary",
+        title: "Task with summary",
+        summary: "This task integrates the payment gateway for checkout v2.",
+      },
+    })) as { task: { id: string } };
+    const [rowWithSummary] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, withSummary.task.id));
+    expect(rowWithSummary?.summary).toBe(
+      "This task integrates the payment gateway for checkout v2.",
+    );
+
+    const withoutSummary = (await authority.execute({
+      tool: "create_task",
+      callId: "create-without-summary",
+      arguments: {
+        idempotencyKey: "create-without-summary",
+        title: "Task without summary",
+      },
+    })) as { task: { id: string } };
+    const [rowWithoutSummary] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, withoutSummary.task.id));
+    expect(rowWithoutSummary?.summary).toBeNull();
+  });
+
   it("fails closed once the run is no longer active", async () => {
     await db
       .update(heartbeatRuns)

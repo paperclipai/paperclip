@@ -2123,7 +2123,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
+    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Set summary to what the task is for and its expected outcome; it is shown whenever the task is mentioned.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -2189,6 +2189,14 @@
           "enum": [
             "backlog",
             "todo"
+          ]
+        },
+        "summary": {
+          "description": "What the task is for and its expected outcome, up to 3 short paragraphs (max 600 chars). Shown whenever the task is mentioned.",
+          "maxLength": 600,
+          "type": [
+            "string",
+            "null"
           ]
         },
         "title": {

@@ -9,7 +9,7 @@ import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from 
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
-import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE, decisionBriefSchema } from "@paperclipai/shared";
+import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE, decisionBriefSchema, issueSummarySchema } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { paperclipChatFilePreparationDelivery } from "@paperclipai/adapter-utils/chat-file-delivery";
 import {
@@ -857,6 +857,9 @@ export class PaperclipRunnerToolAuthority {
         description: input.description === null || input.description === undefined
           ? null
           : requiredString(input.description),
+        summary: input.summary === null || input.summary === undefined
+          ? null
+          : issueSummarySchema.parse(input.summary),
         status: input.status === "backlog" ? "backlog" as const
           : blockedByIssueIds.length > 0 ? "blocked" as const : "todo" as const,
         workMode: "standard" as const,
