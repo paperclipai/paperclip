@@ -2527,7 +2527,10 @@ async function materializeManagedProjectWorkspace(
       }
       await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
     } else if (input.repoRef) {
-      await execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS });
+      const remoteBranch = input.repoRef.startsWith("origin/") ? input.repoRef.slice("origin/".length) : null;
+      await execFile("git", ["-C", cloneTmpDir, "checkout", ...(remoteBranch
+        ? ["-B", remoteBranch, input.repoRef]
+        : [input.repoRef])], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS });
     }
   } catch (error) {
     await fs

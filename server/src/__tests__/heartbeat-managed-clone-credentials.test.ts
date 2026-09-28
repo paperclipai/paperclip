@@ -156,7 +156,7 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
     }
   });
 
-  it("checks out the configured ref on the first managed clone", async () => {
+  it.each(["develop", "origin/develop"])("checks out configured ref %s as a local branch on the first managed clone", async (repoRef) => {
     const sourceRepo = await createLocalSourceRepo();
     try {
       const defaultBranch = (await execFile("git", ["branch", "--show-current"], { cwd: sourceRepo })).stdout.trim();
@@ -166,10 +166,10 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
       await execFile("git", ["checkout", defaultBranch], { cwd: sourceRepo });
 
       const result = await ensureManagedProjectWorkspace({
-        companyId: "company-configured-ref",
+        companyId: `company-configured-${repoRef.replace("/", "-")}`,
         projectId: "project-1",
         repoUrl: sourceRepo,
-        repoRef: "develop",
+        repoRef,
       });
       expect((await execFile("git", ["branch", "--show-current"], { cwd: result.cwd })).stdout.trim()).toBe("develop");
       expect(await fs.readFile(path.join(result.cwd, "README.md"), "utf8")).toBe("develop branch\n");
