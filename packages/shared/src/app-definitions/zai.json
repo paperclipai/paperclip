@@ -46,6 +46,10 @@
       "keyPlacement": {
         "location": "env",
         "name": "ANTHROPIC_API_KEY"
+      },
+      "consoleLinks": {
+        "register": "https://z.ai/manage-apikey/apikey-list",
+        "docs": "https://docs.z.ai/devpack/latest-model"
       }
     }
   ]
