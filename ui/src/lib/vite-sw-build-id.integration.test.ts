@@ -48,7 +48,7 @@ describe("service worker build stamping", () => {
     const entry = result.output.find((item) => item.type === "chunk" && item.isEntry);
     expect(entry).toBeDefined();
     const worker = await readFile(path.join(root, "dist/sw.js"), "utf8");
-    expect(worker).toContain(path.basename(entry!.fileName, ".js"));
+    expect(worker).toBe(`const BUILD_ID = "${path.basename(entry!.fileName, ".js")}";`);
     expect(worker).not.toContain(SERVICE_WORKER_BUILD_ID_PLACEHOLDER);
   });
 });
