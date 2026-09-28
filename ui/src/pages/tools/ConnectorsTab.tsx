@@ -93,16 +93,18 @@ class DialogCancelledError extends Error {
 function AddConnectorConnectionDialog({
   companyId,
   connector,
+  initialUpstream,
   onClose,
 }: {
   companyId: string;
   connector: McpConnector;
+  initialUpstream?: string;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const { pushToast } = useToast();
-  const [upstream, setUpstream] = useState(connector.upstreams[0] ?? "");
-  const [name, setName] = useState(connector.upstreams[0] ? `${connector.name} ${connector.upstreams[0]}` : "");
+  const [upstream, setUpstream] = useState(initialUpstream ?? connector.upstreams[0] ?? "");
+  const [name, setName] = useState(upstream ? `${connector.name} ${upstream}` : "");
   // Refs so an in-flight mutation sees a close that happens after it started
   // and the close handler sees a connection ID the moment it exists.
   const cancelledRef = useRef(false);
@@ -313,7 +315,7 @@ export function ConnectorsTab({ companyId }: { companyId: string }) {
   const { pushToast } = useToast();
   const [draftName, setDraftName] = useState("");
   const [enrollment, setEnrollment] = useState<McpConnectorEnrollment | null>(null);
-  const [addFor, setAddFor] = useState<McpConnector | null>(null);
+  const [addFor, setAddFor] = useState<{ connector: McpConnector; upstream?: string } | null>(null);
   const [revoking, setRevoking] = useState<McpConnector | null>(null);
 
   const connectors = useQuery({
@@ -321,6 +323,15 @@ export function ConnectorsTab({ companyId }: { companyId: string }) {
     queryFn: () => mcpConnectorsApi.list(companyId),
     refetchInterval: 15_000,
   });
+  const connections = useQuery({
+    queryKey: queryKeys.tools.connections(companyId),
+    queryFn: () => toolsApi.listConnections(companyId),
+  });
+  const imported = new Set(
+    (connections.data?.connections ?? [])
+      .filter((connection) => connection.transport === "connector" && connection.status !== "archived")
+      .map((connection) => `${connection.config?.connectorId ?? connection.transportConfig?.connectorId}:${connection.config?.upstream ?? connection.transportConfig?.upstream}`),
+  );
   const invalidate = () => qc.invalidateQueries({ queryKey: queryKeys.tools.mcpConnectors(companyId) });
 
   const create = useMutation({
@@ -412,6 +423,25 @@ export function ConnectorsTab({ companyId }: { companyId: string }) {
                     )}
                     {" · "}Last seen <RelativeTime value={connector.lastSeenAt} />
                   </p>
+                  {connector.upstreams.length > 0 ? (
+                    <ul className="space-y-1 pt-2" aria-label={`MCP servers from ${connector.name}`}>
+                      {connector.upstreams.map((upstream) => {
+                        const isImported = imported.has(`${connector.id}:${upstream}`);
+                        return (
+                          <li key={upstream} className="flex items-center gap-2 text-sm">
+                            <span className="font-mono text-foreground">{upstream}</span>
+                            {isImported ? <span className="text-muted-foreground">Already imported</span> : (
+                              <Button type="button" size="sm" variant="outline"
+                                disabled={!connector.online || connections.isLoading || connections.isError}
+                                onClick={() => setAddFor({ connector, upstream })}>
+                                Import {upstream}
+                              </Button>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : null}
                 </div>
                 {connector.status !== "revoked" ? (
                   <div className="flex shrink-0 flex-wrap gap-2">
@@ -419,8 +449,8 @@ export function ConnectorsTab({ companyId }: { companyId: string }) {
                       type="button"
                       size="sm"
                       variant="outline"
-                      disabled={connector.upstreams.length === 0}
-                      onClick={() => setAddFor(connector)}
+                      disabled={!connector.online || connector.upstreams.length === 0 || connections.isLoading || connections.isError}
+                      onClick={() => setAddFor({ connector })}
                     >
                       <Plus className="h-3.5 w-3.5" />
                       Add connection
@@ -447,7 +477,7 @@ export function ConnectorsTab({ companyId }: { companyId: string }) {
         </ul>
       )}
 
-      {addFor ? <AddConnectorConnectionDialog companyId={companyId} connector={addFor} onClose={() => setAddFor(null)} /> : null}
+      {addFor ? <AddConnectorConnectionDialog companyId={companyId} connector={addFor.connector} initialUpstream={addFor.upstream} onClose={() => setAddFor(null)} /> : null}
       {revoking ? (
         <RevokeConnectorDialog
           connector={revoking}

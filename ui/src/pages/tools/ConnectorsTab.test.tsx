@@ -10,6 +10,7 @@ import { ConnectorsTab } from "./ConnectorsTab";
 const listMock = vi.hoisted(() => vi.fn());
 const createMock = vi.hoisted(() => vi.fn());
 const createConnectionMock = vi.hoisted(() => vi.fn());
+const listConnectionsMock = vi.hoisted(() => vi.fn());
 const checkConnectionHealthMock = vi.hoisted(() => vi.fn());
 const updateConnectionMock = vi.hoisted(() => vi.fn());
 const refreshCatalogMock = vi.hoisted(() => vi.fn());
@@ -27,6 +28,7 @@ vi.mock("@/api/mcp-connectors", () => ({
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
+    listConnections: (...args: unknown[]) => listConnectionsMock(...args),
     createConnection: (...args: unknown[]) => createConnectionMock(...args),
     checkConnectionHealth: (...args: unknown[]) => checkConnectionHealthMock(...args),
     refreshCatalog: (...args: unknown[]) => refreshCatalogMock(...args),
@@ -84,6 +86,7 @@ describe("ConnectorsTab", () => {
   let root: Root;
 
   beforeEach(() => {
+    listConnectionsMock.mockResolvedValue({ connections: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -122,6 +125,40 @@ describe("ConnectorsTab", () => {
     expect(container.textContent).toContain("unifi");
     expect(container.textContent).toContain("offline");
     expect(container.textContent).toContain("revoked");
+  });
+
+  it("offers discovered servers for import and marks existing connections", async () => {
+    listMock.mockResolvedValue({ connectors: [connector({ upstreams: ["unifi", "grafana"] })] });
+    listConnectionsMock.mockResolvedValue({ connections: [
+      { transport: "connector", status: "active", config: { connectorId: connector().id, upstream: "unifi" } },
+    ] });
+    await render();
+    expect(container.textContent).toContain("Already imported");
+    const importButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Import grafana"))!;
+    expect(importButton).toBeDefined();
+    expect(container.textContent).not.toContain("Import unifi");
+    await act(() => importButton.click());
+    await flushReact();
+    expect(document.querySelector<HTMLInputElement>("#connector-connection-name")?.value).toBe("Homelab grafana");
+  });
+
+  it("does not offer import from an offline connector", async () => {
+    listMock.mockResolvedValue({ connectors: [connector({ online: false, upstreams: ["unifi"] })] });
+    await render();
+    const importButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Import unifi"))!;
+    expect(importButton.disabled).toBe(true);
+  });
+
+  it("matches imports by connector and upstream, including transport config", async () => {
+    listMock.mockResolvedValue({ connectors: [connector({ upstreams: ["unifi", "grafana"] })] });
+    listConnectionsMock.mockResolvedValue({ connections: [
+      { transport: "connector", status: "active", transportConfig: { connectorId: connector().id, upstream: "unifi" } },
+      { transport: "connector", status: "active", config: { connectorId: "other-connector", upstream: "grafana" } },
+      { transport: "connector", status: "archived", config: { connectorId: connector().id, upstream: "grafana" } },
+    ] });
+    await render();
+    expect(container.textContent).not.toContain("Import unifi");
+    expect(container.textContent).toContain("Import grafana");
   });
 
   it("shows the enrollment token once after creating a connector", async () => {

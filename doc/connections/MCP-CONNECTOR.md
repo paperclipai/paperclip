@@ -129,11 +129,15 @@ credential replaces the first session.
 
 ### 3. Add a connection through the connector
 
-Once the connector shows **online** with its upstream names, use **Add
-connection** on that connector row, pick the upstream, and name the connection.
-Paperclip runs a health check and catalog refresh over the connector, then
-activates the connection. Review its actions and agent access under **Apps**
-like any other connection; it is labelled **Unverified server**.
+Once the connector shows **online**, Paperclip lists each configured MCP
+upstream by name in the connector row. It marks upstreams that already have a
+connection. Select **Import** beside a new upstream to open the connection
+form with that server preselected. Confirm its name and select **Connect and
+discover actions**. Paperclip runs a health check and catalog refresh over the
+connector, then activates the connection. Review its actions and agent access
+under **Apps** like any other connection; it is labelled **Unverified server**.
+The connector still needs explicit upstream configuration. Paperclip does not
+scan the private network or import servers without operator confirmation.
 
 API equivalent:
 
