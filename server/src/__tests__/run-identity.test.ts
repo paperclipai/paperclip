@@ -251,7 +251,11 @@ const support = await getEmbeddedPostgresTestSupport();
       // A real append holds KEY SHARE on both parent rows until it commits.
       // Bound the other connection's wait so a conflicting lock fails this
       // regression instead of leaving both transactions waiting for each other.
-      const identityDb = createDb(`${database.connectionString}?options=-c%20lock_timeout%3D1000`);
+      const identityDb = createDb(`${database.connectionString}?options=-c%20lock_timeout%3D1000`, {
+        maxConnections: 1,
+      });
+      const [settings] = await identityDb.execute(sql`show lock_timeout`);
+      expect(settings?.lock_timeout).toBe("1s");
       await db.transaction(async (audit) => {
         await audit.insert(secretAccessEvents).values({
           companyId: input.companyId,
