@@ -1368,14 +1368,8 @@ export function TaskChatComposer({
             </AttachmentGroup>
           ) : null}
 
-          {mobile && !queuedEdit && pendingMode !== "standard" ? (
-            <div className="mt-2 flex items-center px-1" data-testid="task-chat-composer-mobile-mode">
-              <ComposerModeChip mode={pendingMode} onRemove={onWorkModeChange ? () => setPendingMode("standard") : undefined}
-                disabled={disabled || !!uncertainSubmission} testId="task-chat-composer-mode" />
-            </div>
-          ) : null}
           <div
-            className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-3"
+            className={cn("mt-2 flex items-center gap-x-2 gap-y-3", mobile && !queuedEdit ? "flex-nowrap" : "flex-wrap")}
             data-testid="task-chat-composer-actions"
           >
             <div className="flex min-w-0 max-w-full items-center gap-2">
@@ -1400,13 +1394,13 @@ export function TaskChatComposer({
                   ? "Queued message changed"
                   : "Editing queued message"}
               </span>
-            ) : !mobile ? (
+            ) : (
               <ComposerModeChip mode={pendingMode} onRemove={onWorkModeChange ? () => setPendingMode("standard") : undefined}
-                disabled={disabled || !!uncertainSubmission} testId="task-chat-composer-mode" />
-            ) : null}
+                disabled={disabled || !!uncertainSubmission} testId="task-chat-composer-mode" mobile={mobile} />
+            )}
             </div>
 
-            <div className="ml-auto flex min-w-0 max-w-full items-center gap-2">
+            <div className={cn("ml-auto flex min-w-0 max-w-full items-center gap-2", mobile && !queuedEdit && "flex-1 justify-end")}>
 
             {showAssignee && !queuedEdit && companyId && modelAgents ? (
               <ComposerRunSettingsPicker

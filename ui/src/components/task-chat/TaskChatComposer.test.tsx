@@ -965,10 +965,10 @@ describe("TaskChatComposer", () => {
     expect(dialog?.textContent).toContain("Ask mode");
 
     flushSync(() => document.querySelector<HTMLButtonElement>('[data-testid="composer-add-plan"]')!.click());
-    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.textContent).toContain("Plan mode");
-    expect(container.querySelector('[data-testid="task-chat-composer-mobile-mode"]')?.contains(
-      container.querySelector('[data-testid="task-chat-composer-mode"]'),
-    )).toBe(true);
+    const mode = container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]')!;
+    expect(mode.textContent).toContain("Plan mode");
+    expect(actions.contains(mode)).toBe(true);
+    expect(mode.querySelector(".sr-only")?.textContent).toBe("Plan mode");
     expect(document.querySelector('[role="dialog"][data-state="open"]')).toBeNull();
   });
 

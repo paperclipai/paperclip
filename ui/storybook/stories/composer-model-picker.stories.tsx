@@ -4,7 +4,7 @@ import { ComposerModelPickerPreview } from "../prototypes/composer-model-picker/
 import { ComposerRunSettingsLiveStory } from "../prototypes/composer-model-picker/ComposerRunSettingsLiveStory";
 
 const meta = {
-  title: "Tasks/Composer/Model and effort picker",
+  title: "Composer/Model and effort picker",
   component: ComposerModelPickerPreview,
   parameters: {
     layout: "fullscreen",

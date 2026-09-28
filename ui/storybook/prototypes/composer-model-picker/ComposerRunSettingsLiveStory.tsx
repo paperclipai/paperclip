@@ -96,15 +96,14 @@ export function ComposerRunSettingsLiveStory({
           }}
           className="block min-h-16 w-full resize-y bg-transparent text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground" />
         {attachments.length ? <div className="mt-2 flex flex-wrap gap-2">{attachments.map((name, index) => <button key={`${name}-${index}`} type="button" onClick={() => setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))} className="rounded-md bg-muted px-2 py-1 text-xs">{name} ×</button>)}</div> : null}
-        {mobile && mode !== "standard" ? <div className="mt-3 flex items-center"><ComposerModeChip mode={mode} onRemove={() => setMode("standard")} /></div> : null}
-        <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-3">
+        <div className={cn("mt-3 flex min-w-0 items-center gap-x-1.5 gap-y-3", mobile ? "flex-nowrap" : "flex-wrap")}>
           <div className="flex min-w-0 max-w-full items-center gap-1.5">
             <input ref={fileInputRef} type="file" className="hidden" onChange={(event) => { setAttachments((items) => [...items, ...Array.from(event.target.files ?? []).map((file) => file.name)]); event.target.value = ""; }} />
             <ComposerAddMenu mode={mode} onModeChange={setMode} onAttachFile={() => fileInputRef.current?.click()}
               onGoal={selectedAgent?.adapterType === "codex_local" ? () => setDraft((current) => /^\/goal(?:\s|$)/.test(current) ? current : `/goal ${current}`) : undefined} mobile={mobile} />
-            {!mobile ? <ComposerModeChip mode={mode} onRemove={() => setMode("standard")} /> : null}
+            <ComposerModeChip mode={mode} onRemove={() => setMode("standard")} mobile={mobile} />
           </div>
-          <div className="ml-auto flex min-w-0 max-w-full items-center gap-1.5">
+          <div className={cn("ml-auto flex min-w-0 max-w-full items-center gap-1.5", mobile && "flex-1 justify-end")}>
             <ComposerRunSettingsPicker companyId="storybook" assigneeValue={assignee} currentAssigneeValue={assignee}
               options={options} agents={agents} settings={settings} onSettingsChange={setSettings}
               onAssigneeChange={(value) => { setAssignee(value); setSettings(null); }} mobile={mobile}

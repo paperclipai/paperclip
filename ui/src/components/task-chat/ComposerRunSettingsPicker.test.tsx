@@ -31,7 +31,7 @@ async function click(label: string) {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-function render(onAssigneeChange: (value: string) => void, onSettingsChange: () => void) {
+function render(onAssigneeChange: (value: string) => void, onSettingsChange: () => void, useCatalog = false) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -39,7 +39,8 @@ function render(onAssigneeChange: (value: string) => void, onSettingsChange: () 
   flushSync(() => root!.render(<QueryClientProvider client={queryClient}>
     <ComposerRunSettingsPicker companyId="company-1" assigneeValue="agent:a1" currentAssigneeValue="agent:a1"
       options={options} agents={agents} settings={{ model: "gpt-6-sol", effort: "high", fast: true }}
-      onAssigneeChange={onAssigneeChange} onSettingsChange={onSettingsChange} modelOptionsOverride={[]} />
+      onAssigneeChange={onAssigneeChange} onSettingsChange={onSettingsChange}
+      modelOptionsOverride={useCatalog ? undefined : []} />
   </QueryClientProvider>));
 }
 
@@ -51,6 +52,19 @@ afterEach(() => {
 });
 
 describe("composer assignee picker", () => {
+  it("offers the Codex CLI catalog instead of unrelated OpenAI API models", async () => {
+    render(vi.fn(), vi.fn(), true);
+    await click("Select assignee, model and effort");
+    await click("Choose exact model");
+    const options = [...document.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
+      .map((item) => item.textContent ?? "");
+    expect(options.some((item) => item.includes("gpt-5.5"))).toBe(true);
+    expect(options.some((item) => item.includes("gpt-6-sol"))).toBe(true);
+    expect(options.some((item) => item.includes("gpt-image"))).toBe(false);
+    expect(options.some((item) => item.includes("text-embedding"))).toBe(false);
+    expect(document.body.textContent).not.toContain("Loading models…");
+  });
+
   it("preserves settings when the selected assignee is chosen again", async () => {
     const onAssigneeChange = vi.fn();
     const onSettingsChange = vi.fn();

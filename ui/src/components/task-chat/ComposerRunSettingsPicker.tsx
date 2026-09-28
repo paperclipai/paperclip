@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
 import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
+import { models as codexLocalModels } from "@paperclipai/adapter-codex-local";
 import { agentsApi, type AdapterModel } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -106,9 +107,14 @@ export function ComposerRunSettingsPicker({
     queryFn: () => agentsApi.adapterModels(companyId, agent!.adapterType, {
       environmentId: agent!.defaultEnvironmentId ?? null, provider,
     }),
-    enabled: Boolean(agent && modelSupported && !modelOptionsOverride),
+    enabled: Boolean(agent && modelSupported && !modelOptionsOverride && agent.adapterType !== "codex_local"),
   });
-  const models: readonly (AdapterModel & { detail?: string })[] = modelOptionsOverride ?? fetchedModels;
+  // The OpenAI API catalog also contains image, audio, embedding, and other models
+  // that the Codex CLI cannot run. Use its curated adapter catalog in the composer;
+  // people can still paste an unlisted Codex model ID into the search field.
+  const models: readonly (AdapterModel & { detail?: string })[] = modelOptionsOverride
+    ?? (agent?.adapterType === "codex_local" ? codexLocalModels : fetchedModels);
+  const catalogPending = modelsPending && !modelOptionsOverride && agent?.adapterType !== "codex_local";
   const base = assigneeValue === currentAssigneeValue
     ? readComposerRunSettings(overrides, agent?.adapterType)
     : DEFAULT_COMPOSER_RUN_SETTINGS;
@@ -179,8 +185,8 @@ export function ComposerRunSettingsPicker({
       {closeButton}
     </div>
     {modelSupported ? <>
-      <button type="button" aria-label="Choose exact model" onClick={() => setView("models")} className="mt-3 flex w-full items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2.5 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <span className="min-w-0 flex-1"><span className="block text-xs text-muted-foreground">Model</span><span className="block truncate text-sm font-medium">{modelName || "Harness default"}</span></span><ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <button type="button" aria-label="Choose exact model" onClick={() => setView("models")} className="mt-3 flex w-full items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <span className="min-w-0 flex-1"><span className="block text-xs text-muted-foreground">Model</span><span className="block truncate text-sm font-medium">{modelName || "Harness default"}</span></span><ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       </button>
       {choices.length ? <div className="mt-3">
         <div className="flex items-center gap-2">
@@ -206,8 +212,8 @@ export function ComposerRunSettingsPicker({
     <div className="mt-2 max-h-60 overflow-y-auto" role="listbox" aria-label="Models">
       {!query ? <button type="button" role="option" aria-selected={selected.model === null} onClick={() => chooseModel(null)} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left hover:bg-accent"><span className="min-w-0 flex-1"><span className="block text-sm font-medium">Use agent default</span><span className="block truncate text-xs text-muted-foreground">{models.find((item) => item.id === configuredModel)?.label || configuredModel || "Harness default"}</span></span>{selected.model === null ? <Check className="composer-run-settings-accent size-4" /> : null}</button> : null}
       {filteredModels.map((item) => <button type="button" role="option" aria-selected={selected.model === item.id} key={item.id} onClick={() => chooseModel(item.id)} className="flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"><span className="min-w-0 flex-1"><span className="block truncate font-medium">{item.label}</span><span className="block truncate font-mono text-xs text-muted-foreground">{item.id}</span></span>{item.detail || item.id === configuredModel ? <span className="shrink-0 text-xs text-muted-foreground">{item.detail ?? "Agent default"}</span> : null}{selected.model === item.id ? <Check className="composer-run-settings-accent size-4 shrink-0" /> : null}</button>)}
-      {modelsPending && !modelOptionsOverride ? <p className="px-2.5 py-2 text-xs text-muted-foreground">Loading models…</p> : null}
-      {(!modelsPending || modelOptionsOverride) && !filteredModels.length && query ? <p className="px-2.5 py-2 text-xs text-muted-foreground">No catalog match.</p> : null}
+      {catalogPending ? <p className="px-2.5 py-2 text-xs text-muted-foreground">Loading models…</p> : null}
+      {!catalogPending && !filteredModels.length && query ? <p className="px-2.5 py-2 text-xs text-muted-foreground">No catalog match.</p> : null}
     </div>
     {query && !exactMatch ? <div className="mt-2 border-t border-border pt-2"><button type="button" disabled={!manualValid} onClick={() => chooseModel(query)} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent disabled:opacity-40"><Plus className="size-4 shrink-0" aria-hidden /><span className="min-w-0 flex-1 truncate">Use exact ID <span className="font-mono font-semibold">{query}</span></span></button>{!manualValid ? <p className="px-2.5 text-xs text-destructive">{provider === "openrouter" ? "Use openrouter/provider/model with no spaces." : "Model IDs cannot contain spaces."}</p> : null}</div> : null}
     <p className="px-2.5 pb-1 pt-2 text-xs text-muted-foreground">{provider === "openrouter" ? "Custom IDs: openrouter/provider/model. Provider access is checked when the run starts." : "Custom model IDs can be pasted here. Provider access is checked when the run starts."}</p>

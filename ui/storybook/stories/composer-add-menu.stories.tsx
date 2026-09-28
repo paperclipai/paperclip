@@ -108,7 +108,7 @@ function ComposerAddStory({ initialMode, goalAvailable, mobile, mobileContext, f
 }
 
 const meta = {
-  title: "Tasks/Composer/Add menu (implemented)",
+  title: "Composer/Add menu",
   component: ComposerAddStory,
   parameters: {
     layout: "fullscreen",
@@ -246,7 +246,8 @@ export const MobilePlanWithBottomBar: Story = {
     const chip = page.getByRole("button", { name: "Remove Plan mode" }).getBoundingClientRect();
     await expect(send.width).toBe(send.height);
     await expect(Math.abs(plus.top - send.top)).toBeLessThanOrEqual(1);
-    await expect(chip.bottom).toBeLessThanOrEqual(send.top);
+    await expect(Math.abs(chip.top - send.top)).toBeLessThanOrEqual(1);
+    await expect(page.getByRole("button", { name: "Remove Plan mode" }).querySelector(".sr-only")?.textContent).toBe("Plan mode");
   },
 };
 
@@ -259,7 +260,8 @@ export const MobileAskWithBottomBar: Story = {
     const chip = page.getByRole("button", { name: "Remove Ask mode" }).getBoundingClientRect();
     const send = page.getByRole("button", { name: "Send" }).getBoundingClientRect();
     await expect(send.width).toBe(send.height);
-    await expect(chip.bottom).toBeLessThanOrEqual(send.top);
+    await expect(Math.abs(chip.top - send.top)).toBeLessThanOrEqual(1);
+    await expect(page.getByRole("button", { name: "Remove Ask mode" }).querySelector(".sr-only")?.textContent).toBe("Ask mode");
     await expect(page.getByRole("navigation", { name: "Mobile navigation" })).toBeVisible();
   },
 };

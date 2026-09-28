@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowLeft, ArrowUp, Check, ChevronDown, ChevronRight, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
+import { ArrowLeft, ArrowUp, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -176,9 +176,9 @@ export function ComposerModelPickerPreview({
           {modelAvailable && !choices.length ? <button type="button" onClick={reset} aria-label="Reset to agent default" title="Reset to agent default" disabled={!modelOverride && !effortOverride && !fast} className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"><RotateCcw className="size-4" aria-hidden /></button> : null}
           {mobileCloseButton}
         </div>
-        {modelAvailable ? <button type="button" onClick={() => setView("models")} className="mt-3 flex w-full items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2.5 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Choose exact model">
+        {modelAvailable ? <button type="button" onClick={() => setView("models")} className="mt-3 flex w-full items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Choose exact model">
           <span className="min-w-0 flex-1"><span className="block text-xs text-muted-foreground">Model</span><span className="block truncate text-sm font-medium">{modelLabel(agent, model)}</span></span>
-          <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         </button> : <div className="mt-3 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground" data-testid="model-unavailable">{agent.noModelReason}</div>}
         {modelAvailable && choices.length ? (
           <div className="mt-3">
@@ -259,15 +259,14 @@ export function ComposerModelPickerPreview({
             aria-label="Message" rows={2}
             className="block min-h-16 w-full resize-y bg-transparent text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground" />
           {attachments.length ? <div className="mt-2 flex flex-wrap gap-2">{attachments.map((name, index) => <button key={`${name}-${index}`} type="button" onClick={() => setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))} className="rounded-md bg-muted px-2 py-1 text-xs">{name} ×</button>)}</div> : null}
-          {mobile && mode !== "standard" ? <div className="mt-3 flex items-center"><ComposerModeChip mode={mode} onRemove={() => setMode("standard")} /></div> : null}
-          <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-3">
+          <div className={cn("mt-3 flex min-w-0 items-center gap-x-1.5 gap-y-3", mobile ? "flex-nowrap" : "flex-wrap")}>
             <div className="flex min-w-0 max-w-full items-center gap-1.5">
             <input ref={fileInputRef} type="file" className="hidden" onChange={(event) => { setAttachments((items) => [...items, ...Array.from(event.target.files ?? []).map((file) => file.name)]); event.target.value = ""; }} />
             <ComposerAddMenu mode={mode} onModeChange={setMode} onAttachFile={() => fileInputRef.current?.click()}
               onGoal={agent.adapterType === "codex_local" ? () => setDraft((current) => /^\/goal(?:\s|$)/.test(current) ? current : `/goal ${current}`) : undefined} mobile={mobile} />
-            {!mobile ? <ComposerModeChip mode={mode} onRemove={() => setMode("standard")} /> : null}
+            <ComposerModeChip mode={mode} onRemove={() => setMode("standard")} mobile={mobile} />
             </div>
-            <div className="ml-auto flex min-w-0 max-w-full items-center gap-1.5">
+            <div className={cn("ml-auto flex min-w-0 max-w-full items-center gap-1.5", mobile && "flex-1 justify-end")}>
             {mobile ? (
               <Dialog open={pickerOpen} onOpenChange={handlePickerOpenChange}>
                 <DialogTrigger asChild>{pickerTrigger}</DialogTrigger>

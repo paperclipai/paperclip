@@ -138,7 +138,7 @@ function InteractionAboveComposer({ interaction, mobile = false }: { interaction
 }
 
 const meta = {
-  title: "Tasks/Composer/Interaction above composer",
+  title: "Composer/Interaction above composer",
   component: InteractionAboveComposer,
   parameters: {
     layout: "fullscreen",
