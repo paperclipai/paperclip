@@ -87,23 +87,18 @@ const QUALIFIED_CODEX_LINUX_X64_RUNTIME = Object.freeze({
 const QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES = Object.freeze([
   Object.freeze({
     packageName: "@agentclientprotocol/sdk",
-    packageVersion: "1.4.0",
-    dependencyDeclaration: "1.4.0",
+    packageVersion: "1.5.0",
+    dependencyDeclaration: "1.5.0",
   }),
   Object.freeze({
     packageName: "@anthropic-ai/claude-agent-sdk",
     packageVersion: "0.3.280",
-    // The package's own package.json still declares 0.3.257 — 0.3.280 is
-    // only what pnpm resolves, forced by the
-    // "claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk" override in
-    // the workspace root. This field binds the declared string, not the
-    // resolved one; packageVersion above binds the resolved install.
-    dependencyDeclaration: "0.3.257",
+    dependencyDeclaration: "0.3.280",
   }),
   Object.freeze({
     packageName: "zod",
-    packageVersion: "4.4.3",
-    dependencyDeclaration: "^4.0.0",
+    packageVersion: "4.6.5",
+    dependencyDeclaration: "4.6.5",
   }),
 ]);
 

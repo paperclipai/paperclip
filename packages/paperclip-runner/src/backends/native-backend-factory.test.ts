@@ -93,7 +93,7 @@ function acpxExecution(
               ? "pi-acp"
               : "@agentclientprotocol/claude-agent-acp",
         agentServerVersion:
-          agent === "codex" ? "1.6.2" : agent === "pi" ? "0.0.33" : "0.73.0",
+          agent === "codex" ? "1.6.2" : agent === "pi" ? "0.0.33" : "0.81.2",
         agentRuntimePackage:
           agent === "pi"
             ? "@earendil-works/pi-coding-agent"
@@ -107,7 +107,7 @@ function acpxExecution(
             ? "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3"
             : agent === "pi"
               ? "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f"
-              : "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+              : "sha256:ecfa6ff948a4241090934979179a5ba035bb0a7c3ef543752f4a304d44a267fb",
       },
     },
   };

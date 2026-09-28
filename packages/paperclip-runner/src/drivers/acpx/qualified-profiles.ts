@@ -54,11 +54,11 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agent: "claude",
     agentProfileVersion: 1,
     agentServerPackage: "@agentclientprotocol/claude-agent-acp",
-    agentServerVersion: "0.73.0",
+    agentServerVersion: "0.81.2",
     agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
     agentRuntimeVersion: "0.3.280",
     commandDigest:
-      "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+      "sha256:ecfa6ff948a4241090934979179a5ba035bb0a7c3ef543752f4a304d44a267fb",
     qualificationModel: "claude-sonnet-5",
     reportedModelId: "claude-sonnet-5",
     permissionPolicy: "interactive",

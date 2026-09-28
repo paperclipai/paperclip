@@ -163,7 +163,7 @@
     "test:opencode:qualification": "PAPERCLIP_OPENCODE_QUALIFY=1 node --test scripts/qualify-opencode-runtime.test.mjs"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.73.0",
+    "@agentclientprotocol/claude-agent-acp": "0.81.2",
     "@agentclientprotocol/codex-acp": "1.6.2",
     "@openai/codex": "0.156.0",
     "acpx": "0.13.1",

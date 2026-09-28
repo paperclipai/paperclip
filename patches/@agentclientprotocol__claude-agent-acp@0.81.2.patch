@@ -1,8 +1,8 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
-index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef14627011e02b30 100644
+index beba2ff..0bcff50 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
-@@ -2922,9 +2922,19 @@ export class ClaudeAcpAgent {
+@@ -3787,9 +3787,19 @@ export class ClaudeAcpAgent {
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -22,13 +22,13 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
 +                                                cache_creation_input_tokens: message.usage.cache_creation_input_tokens,
 +                                            },
 +                                        },
-                                     },
+                                     }),
                                  });
                              }
-@@ -5311,6 +5321,10 @@ export class ClaudeAcpAgent {
-             settingSources: ["user", "project", "local"],
-             ...(thinking !== undefined && { thinking }),
-             ...userProvidedOptions,
+@@ -6381,6 +6391,10 @@ export class ClaudeAcpAgent {
+             // for clients that negotiated per-turn file-change reports; this avoids
+             // snapshot I/O for every other session.
+             ...(fileChangeReporter ? { enableFileCheckpointing: true } : {}),
 +            // Paperclip Runner owns the complete session context. Its isolated
 +            // user root contains only assigned skills; project/local settings
 +            // would reintroduce host prompts, plugins, skills, and MCP servers.
@@ -36,7 +36,7 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
              ...(settings && { settings }),
              env,
              // Override certain fields that must be controlled by ACP
-@@ -5318,7 +5332,9 @@ export class ClaudeAcpAgent {
+@@ -6388,12 +6402,24 @@ export class ClaudeAcpAgent {
              includePartialMessages: true,
              forwardSubagentText,
              mcpServers: {
@@ -45,10 +45,8 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
 +                    ? {}
 +                    : (userProvidedOptions?.mcpServers || {})),
                  ...mcpServers,
-                 ...(fileChangeAuditSupport
-                     ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5345,16 @@ export class ClaudeAcpAgent {
-             allowDangerouslySkipPermissions: ALLOW_BYPASS,
+             },
+             allowDangerouslySkipPermissions: allowBypass,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),
 +            // The runner pins this actual MCP endpoint before provider launch.
