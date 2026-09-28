@@ -34,7 +34,8 @@ Optional producer metadata `checks` (`passed`, `pending`, `failed`),
 recorded values, not a new live GitHub check or review integration. Runtime health
 is never inferred from a URL. No remote page is scraped to manufacture a preview. Optional link images and
 video posters must use local authenticated attachment content URLs; remote
-metadata cannot silently trigger requests from the operator’s browser.
+metadata cannot silently trigger requests from the operator’s browser. Markdown
+card previews follow the same rule; remote images appear as explicit links.
 
 CSV previews only fetch local attachment content endpoints. Malformed, oversized,
 or unavailable files retain the download action and explain the preview failure.

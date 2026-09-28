@@ -7,6 +7,8 @@ import {
   IssueWorkProductArtifactCard,
 } from "./IssueArtifactCard";
 
+import { DocumentCard } from "./RichArtifactCards";
+
 function product(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
   return {
     id: "wp-1",
@@ -164,6 +166,22 @@ describe("production artifact cards", () => {
     );
     expect(html).toContain("Actual region");
     expect(html).toContain("View data");
+  });
+  it("does not fetch remote Markdown images just to render a document preview", () => {
+    const html = renderToStaticMarkup(
+      <DocumentCard
+        title="Report"
+        summary=""
+        author=""
+        updatedAt=""
+        filename="report.md"
+        revision={1}
+        body="![External image](https://tracker.example/image.png)\n\n![Uploaded image](/api/attachments/image-1/content)"
+      />,
+    );
+    expect(html).not.toContain('src="https://tracker.example');
+    expect(html).toContain('href="https://tracker.example/image.png"');
+    expect(html).toContain('src="/api/attachments/image-1/content"');
   });
   it("does not automatically load remote thumbnail or poster metadata", () => {
     const link = render(

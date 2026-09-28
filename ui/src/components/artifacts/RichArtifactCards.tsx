@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { artifactPreviewUrl, artifactUrl } from "@/lib/artifact-card-data";
 import {
   Dialog,
   DialogContent,
@@ -321,6 +322,33 @@ function Markdown({ body }: { body: string }) {
           ol: ({ children }) => (
             <ol className="list-decimal space-y-1 pl-5">{children}</ol>
           ),
+          img: ({ src, alt }) => {
+            const localPreview = artifactPreviewUrl(
+              typeof src === "string" ? src : "",
+            );
+            if (localPreview)
+              return (
+                <img
+                  src={localPreview}
+                  alt={alt ?? ""}
+                  loading="lazy"
+                  className="h-auto max-w-full"
+                />
+              );
+            const href = artifactUrl(typeof src === "string" ? src : "");
+            return href ? (
+              <a
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-4"
+              >
+                {alt || "Open image"}
+              </a>
+            ) : (
+              <span>{alt}</span>
+            );
+          },
           a: ({ children, href }) => (
             <a
               href={href}
