@@ -128,9 +128,13 @@ it("fails closed on a typed ACP session failure in persistent mode", async () =>
   expect(result.summary).toContain("terminal request failure");
 });
 
-it.each(["oneshot", "persistent"])(
-  "reports a classified terminal failure with its fixed message in %s mode",
-  async (mode) => {
+it.each([
+  ["oneshot", undefined],
+  ["persistent", undefined],
+  ["oneshot", "Starting on the task now."],
+])(
+  "reports a classified terminal failure with its fixed message in %s mode (prelude: %s)",
+  async (mode, prelude) => {
     // Regression: a refused model (for example Claude's "issue with the selected
     // model (claude-opus-5)") used to surface only as the generic terminal
     // request failure with 0 tokens used.
@@ -160,7 +164,10 @@ it.each(["oneshot", "persistent"])(
         warmHandleIdleMs: 0,
         stateDir: path.join(root, "state"),
         cwd: repoRoot,
-        env: { PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: providerText },
+        env: {
+          PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: providerText,
+          ...(prelude ? { PAPERCLIP_ACPX_TYPED_FAILURE_PRELUDE: prelude } : {}),
+        },
       },
       context: {},
       onLog: async (_stream: string, text: string) => logs.push(text),

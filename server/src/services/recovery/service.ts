@@ -2551,6 +2551,8 @@ export function recoveryService(
                   : recoveryCause === "configuration_incomplete"
                     ? readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
+                      : input.latestRun?.errorCode === "provider_model_unavailable"
+                      ? "Board operator: set the agent's model to one that its AI account can use, then explicitly retry the original owner or reassign."
                       : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
                       ? `Board operator: the sandbox provider plugin named in the run failure is not ready; ${sandboxProviderPluginRemedy(

@@ -5034,9 +5034,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
               : {}),
           },
-          summary: buildAcpxRunSummary({
+          // A classified failure's fixed message is the actionable outcome, so
+          // it wins over any output the agent emitted before the failure.
+          summary: classifiedFailure?.errorMessage || buildAcpxRunSummary({
             outputSegments,
-            fallback: classifiedFailure?.errorMessage || terminalStopReason || terminal.status,
+            fallback: terminalStopReason || terminal.status,
           }),
           clearSession,
         };
