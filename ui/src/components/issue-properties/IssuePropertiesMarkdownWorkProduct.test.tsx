@@ -347,7 +347,7 @@ describe("markdown work product review row", () => {
 
     await waitForAssertion(() => {
       const row = container.querySelector("article");
-      const link = row?.querySelector("a");
+      const link = row?.querySelector("a[download]");
       expect(row?.textContent).toContain("Verification report");
       expect(link?.textContent).toBe("Download file");
       expect(link?.getAttribute("href")).toBe(`${contentPath}?download=1`);

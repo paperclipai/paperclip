@@ -42,6 +42,7 @@ export interface IssueArtifactFileProps extends ArtifactIdentity {
   contentType: string;
   contentPath: string;
   downloadPath: string;
+  openPath?: string;
   byteSize: number | null;
   metadata?: Record<string, unknown> | null;
 }
@@ -122,6 +123,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
         fileSize={artifactFileSize(props.byteSize)}
         entries={[]}
         downloadUrl={downloadPath}
+        openUrl={artifactUrl(props.openPath) || contentPath}
       />
       {csv && (
         <div className="px-2 text-xs text-muted-foreground" role="status">
@@ -205,7 +207,10 @@ export function IssueWorkProductArtifactCard({
         statusBadge={
           wp.reviewState === "changes_requested" ||
           wp.reviewState === "needs_board_review" ||
-          wp.status === "failed"
+          wp.status === "ready_for_review" ||
+          wp.status === "changes_requested" ||
+          wp.status === "failed" ||
+          wp.healthStatus === "unhealthy"
             ? identity.statusBadge
             : undefined
         }
@@ -244,9 +249,12 @@ export function IssueWorkProductArtifactCard({
         filename={text(m, "originalFilename") || wp.title}
         contentType={text(m, "contentType")}
         contentPath={contentPath}
+        openPath={artifactUrl(text(m, "openPath")) || href || contentPath}
         downloadPath={
           artifactUrl(text(m, "downloadPath")) ||
-          (contentPath ? attachmentDownloadPath({ contentPath }) : href)
+          (artifactPreviewUrl(contentPath)
+            ? attachmentDownloadPath({ contentPath })
+            : href || contentPath)
         }
         byteSize={number(m, "byteSize", "size")}
         metadata={m}

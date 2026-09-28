@@ -26,7 +26,10 @@ Chat work-product rows and branch/runtime cards keep their existing rendering.
 | Image | Attachment content path, filename, optional `alt`, `width`, and `height` metadata |
 | Video | Attachment content path, filename, optional `posterUrl` and `durationLabel` metadata; native playback controls |
 | Link preview | Preview work-product URL, title, summary, optional `imageUrl` and `imageAlt` metadata |
-| File | Filename, MIME type, recorded byte size, and original download path |
+| File | Filename, MIME type, recorded byte size, original browser-open and download paths |
+
+External file URLs (including signed query strings) are preserved unchanged.
+File cards retain a separate browser-open action for inline formats such as PDF.
 
 Missing summaries and counts stay absent. Unknown PR state/checks stay unknown.
 Optional producer metadata `checks` (`passed`, `pending`, `failed`),

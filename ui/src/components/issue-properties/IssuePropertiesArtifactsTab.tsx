@@ -28,7 +28,10 @@ import {
   IssueArtifactFile,
   IssueWorkProductArtifactCard,
 } from "@/components/artifacts/IssueArtifactCard";
-import { attachmentDownloadPath } from "@/lib/issue-attachments";
+import {
+  attachmentDownloadPath,
+  attachmentOpenPath,
+} from "@/lib/issue-attachments";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import {
   DocumentAnnotationsCountChip,
@@ -609,6 +612,7 @@ export function IssuePropertiesArtifactsTab({
                       filename={filename}
                       contentType={attachment.contentType}
                       contentPath={attachment.contentPath}
+                      openPath={attachmentOpenPath(attachment)}
                       downloadPath={attachmentDownloadPath(attachment)}
                       byteSize={attachment.byteSize}
                     />

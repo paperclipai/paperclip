@@ -89,6 +89,58 @@ describe("production artifact cards", () => {
       render(product({ type: "preview_url", healthStatus: "unknown" })),
     ).not.toContain("Healthy");
   });
+  it.each([
+    ["ready_for_review", "Review"],
+    ["changes_requested", "Changes requested"],
+  ])(
+    "preserves PR status %s without a separate reviewState",
+    (status, label) => {
+      expect(render(product({ status, reviewState: "none" }))).toContain(label);
+    },
+  );
+
+  it("preserves browser-open actions for attachments and signed external file URLs", () => {
+    const signedUrl =
+      "https://files.example/report.pdf?signature=abc&expires=123";
+    const external = render(
+      product({
+        type: "artifact",
+        url: signedUrl,
+        metadata: { contentType: "application/pdf" },
+      }),
+    );
+    expect(external).toContain(
+      'href="https://files.example/report.pdf?signature=abc&amp;expires=123"',
+    );
+    expect(external).not.toContain("?download=1");
+    expect(external).toContain("Open file");
+    expect(external).toContain("Download file");
+
+    const local = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <IssueArtifactFile
+          id="pdf-1"
+          title="Report"
+          summary=""
+          author=""
+          updatedAt="Today"
+          filename="report.pdf"
+          contentType="application/pdf"
+          contentPath="/api/attachments/pdf-1/content"
+          openPath="/api/attachments/pdf-1/content"
+          downloadPath="/api/attachments/pdf-1/content?download=1"
+          byteSize={100}
+        />
+      </QueryClientProvider>,
+    );
+    expect(local).toContain(
+      'href="/api/attachments/pdf-1/content" target="_blank"',
+    );
+    expect(local).toContain(
+      'href="/api/attachments/pdf-1/content?download=1" download="report.pdf"',
+    );
+  });
+
   it("selects commit, link, image, video and file renderers from real records", () => {
     expect(
       render(

@@ -674,6 +674,7 @@ export interface FileCardProps extends ArtifactIdentity {
   fileSize: string;
   entries: string[];
   downloadUrl: string;
+  openUrl?: string;
 }
 export function FileCard(props: FileCardProps) {
   return (
@@ -707,17 +708,22 @@ export function FileCard(props: FileCardProps) {
       <Footer
         {...props}
         action={
-          props.downloadUrl ? (
-            <Button asChild size="sm" variant="outline">
-              <a href={props.downloadUrl} download={props.filename}>
-                Download file
-              </a>
-            </Button>
-          ) : (
-            <Button size="sm" variant="outline" disabled>
-              Download unavailable
-            </Button>
-          )
+          <div className="flex flex-wrap items-center gap-2">
+            {props.openUrl && (
+              <SourceLink url={props.openUrl}>Open file</SourceLink>
+            )}
+            {props.downloadUrl ? (
+              <Button asChild size="sm" variant="outline">
+                <a href={props.downloadUrl} download={props.filename}>
+                  Download file
+                </a>
+              </Button>
+            ) : (
+              <Button size="sm" variant="outline" disabled>
+                Download unavailable
+              </Button>
+            )}
+          </div>
         }
       />
     </Card>

@@ -21,6 +21,9 @@ const meta = {
     entries: objectData(
       "Optional archive entries as a JSON array of file paths. Empty hides the list.",
     ),
+    openUrl: textData(
+      "Optional URL for opening the original file in a browser tab.",
+    ),
     downloadUrl: textData(
       "Stored file URL. Empty disables download. This example supplies a tiny text file.",
     ),
@@ -41,6 +44,7 @@ export const File: Story = {
     contentType: "text/plain",
     fileSize: "42 B",
     entries: [],
+    openUrl: "",
     downloadUrl:
       "data:text/plain;charset=utf-8,Personal%20keyboard%20shortcuts%20are%20available.%0A",
   },
