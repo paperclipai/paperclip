@@ -414,7 +414,7 @@ Operational policy:
   - `provider` enum/text (`local_disk | s3`)
   - `object_key` text not null
   - `content_type` text not null
-  - `byte_size` int not null
+  - `byte_size` bigint not null (safe integer byte count in the API)
   - `sha256` text not null
   - `original_filename` text null
   - `created_by_agent_id` uuid fk null

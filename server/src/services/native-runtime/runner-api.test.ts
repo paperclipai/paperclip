@@ -32,7 +32,7 @@ const io = (fetcher: typeof fetch): RunnerApiIo => ({
   }),
   saveResponse: async (bytes, contentType) => ({
     artifactId: "artifact-a",
-    byteSize: bytes.length,
+    byteSize: Buffer.isBuffer(bytes) ? bytes.length : bytes.byteSize,
     contentType,
   }),
 });
@@ -591,7 +591,7 @@ describe("runner API request boundary", () => {
       ).toThrow("inline JSON object");
     }
   });
-  it("reads complete large text without recursively saving response artifacts", async () => {
+  it("reads text windows from a live response and supplies stable snapshots", async () => {
     const text = "prefix\n" + "🧭é\n".repeat(6000) + "END-OF-EVIDENCE";
     const saveResponse = vi.fn(io(fetch).saveResponse);
     const request = vi.fn<typeof fetch>(async () => new Response(text, { headers: { "content-type": "application/json" } }));
@@ -605,11 +605,32 @@ describe("runner API request boundary", () => {
       offsetBytes = result.responseText.nextOffsetBytes;
     } while (offsetBytes !== null);
     expect(received).toBe(text);
-    expect(saveResponse).not.toHaveBeenCalled();
+    expect(saveResponse).toHaveBeenCalled();
     expect(request.mock.calls.every(([, options]) => new Headers(options?.headers).get("Authorization") === "Bearer private-agent-token")).toBe(true);
   });
-  it("pages a ten MiB asset with linear transfer and UTF-8 boundaries", async () => {
-    const bytes = Buffer.from("🧭é".repeat(Math.floor(10 * 1024 * 1024 / 6)));
+  it("reads a page beyond ten MiB in a multi-gigabyte asset", async () => {
+    const offsetBytes = 3 * 1024 * 1024 * 1024;
+    const totalBytes = offsetBytes + 100;
+    const request = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(new Headers(init?.headers).get("range")).toBe(`bytes=${offsetBytes - 1}-${offsetBytes + 4}`);
+      return new Response("abcdef", { status: 206, headers: {
+        "content-type": "text/plain", "content-range": `bytes ${offsetBytes - 1}-${offsetBytes + 4}/${totalBytes}`,
+      } });
+    });
+    expect(await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "large" }, responseText: { offsetBytes, limitBytes: 4 } }, context, io(request))).toMatchObject({
+      ok: true, data: "bcde", responseText: { offsetBytes, nextOffsetBytes: offsetBytes + 4, totalBytes },
+    });
+  });
+  it.each([true, false])("saves responses above ten MiB (known length: %s)", async knownLength => {
+    const bytes = Buffer.alloc(12 * 1024 * 1024, 65);
+    const request = vi.fn<typeof fetch>(async () => new Response(bytes, { headers: {
+      "content-type": "text/plain", ...(knownLength ? { "content-length": String(bytes.length) } : {}),
+    } }));
+    const result = await executeRunnerApi({ operationId: projects }, context, io(request));
+    expect(result).toMatchObject({ ok: true, artifact: { byteSize: bytes.length }, byteSize: bytes.length });
+  });
+  it("pages a twelve MiB asset with linear transfer and UTF-8 boundaries", async () => {
+    const bytes = Buffer.from("🧭é".repeat(Math.floor(12 * 1024 * 1024 / 6)));
     let transferred = 0;
     const request = vi.fn<typeof fetch>(async (_url, init) => {
       const range = new Headers(init?.headers).get("range");
@@ -634,7 +655,7 @@ describe("runner API request boundary", () => {
     ["bytes 4-8/20", "12345"], // wrong start
     ["bytes 3-7/20", "12345"], // early end
     ["bytes 3-8/20", "12345"], // truncated body
-    ["bytes 3-8/10485761", "123456"], // total exceeds transfer policy
+    ["bytes 3-8/9007199254740992", "123456"], // imprecise total
     ["bytes 3-8/*", "123456"], // unknown total
     [null, "123456"],
   ])("rejects inconsistent partial asset receipts: %s", async (range, body) => {
@@ -650,7 +671,7 @@ describe("runner API request boundary", () => {
     const result = await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "saved" }, responseText: { limitBytes: 4 } }, context, io(async () => new Response("unbounded", { headers: { "content-type": "text/plain" } })));
     expect(result).toMatchObject({ ok: false, error: "api_transport_failure" });
   });
-  it.each([{ offsetBytes: -1 }, { limitBytes: 0 }, { limitBytes: 3 }, { limitBytes: 24577 }, { offsetBytes: 0.5 }])("rejects invalid text windows before dispatch: %j", async responseText => {
+  it.each([{ offsetBytes: -1 }, { limitBytes: 0 }, { limitBytes: 3 }, { limitBytes: 24577 }, { offsetBytes: 0.5 }, { offsetBytes: Number.MAX_SAFE_INTEGER + 1 }])("rejects invalid text windows before dispatch: %j", async responseText => {
     const request = vi.fn<typeof fetch>();
     await expect(executeRunnerApi({ operationId: projects, responseText }, context, io(request))).rejects.toThrow("Invalid call_api arguments");
     expect(request).not.toHaveBeenCalled();
@@ -674,9 +695,8 @@ describe("runner API request boundary", () => {
       expect(saveResponse).not.toHaveBeenCalled();
     }
   });
-  it("preserves denials and the transfer limit for bounded text reads", async () => {
+  it("preserves denials for bounded text reads", async () => {
     expect(await executeRunnerApi({ operationId: projects, responseText: {} }, context, io(async () => Response.json({ error: "denied" }, { status: 403 })))).toMatchObject({ ok: false, status: 403, data: '{"error":"denied"}' });
-    expect(await executeRunnerApi({ operationId: projects, responseText: {} }, context, io(async () => new Response("small", { headers: { "content-type": "text/plain", "content-length": String(10 * 1024 * 1024 + 1) } })))).toMatchObject({ ok: false, status: null, outcome: "read_failed" });
   });
   it("bounds streamed responses even without content-length", async () => {
     await expect(

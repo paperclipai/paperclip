@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { chmod, writeFile, symlink } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import { eq } from "drizzle-orm";
-import { assets, documents, heartbeatRuns, issues, routineDocuments, routines } from "@paperclipai/db";
+import { assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines } from "@paperclipai/db";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
@@ -278,6 +278,65 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     } finally {
       reads.mockRestore();
     }
+  });
+
+  it("captures a live response above ten MiB and reads its saved snapshot to EOF", async () => {
+    const fixture = await server.fixture();
+    const foreign = await server.fixture();
+    const description = "A".repeat(12 * 1024 * 1024) + "END-OF-LARGE-RESPONSE";
+    await server.db.update(projects).set({ description }).where(eq(projects.id, fixture.projectId));
+    const initial: any = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId }, responseText: { limitBytes: 8192 },
+    } });
+    expect(initial).toMatchObject({ ok: true, status: 200, responseText: { offsetBytes: 0, nextOffsetBytes: 8192 } });
+    expect(initial.artifact.byteSize).toBeGreaterThan(12 * 1024 * 1024);
+    const saved = await server.db.select().from(assets).where(eq(assets.id, initial.artifact.artifactId)).then(rows => rows[0]);
+    const object = await server.storage.getObject(fixture.companyId, saved.objectKey);
+    const chunks: Buffer[] = [];
+    for await (const chunk of object.stream) chunks.push(chunk);
+    const expected = Buffer.concat(chunks);
+    expect(JSON.parse(expected.toString()).description).toBe(description);
+    const before = (await fixture.snapshot()).assets.length;
+    for (const offsetBytes of [0, 10 * 1024 * 1024 + 1, expected.length - 8192, expected.length]) {
+      const page: any = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: saved.id }, responseText: { offsetBytes, limitBytes: 8192 },
+      } });
+      expect(page).toMatchObject({ ok: true, status: 206, data: expected.subarray(offsetBytes, offsetBytes + 8192).toString(),
+        responseText: { offsetBytes, totalBytes: expected.length, nextOffsetBytes: offsetBytes + 8192 < expected.length ? offsetBytes + 8192 : null } });
+      expect(page.artifact).toBeUndefined();
+    }
+    expect((await fixture.snapshot()).assets).toHaveLength(before);
+    expect(await foreign.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: saved.id }, responseText: { offsetBytes: 10 * 1024 * 1024 + 1 },
+    } })).toMatchObject({ ok: false, status: 404 });
+    const mutation = { tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "PATCH /api/projects/{id}", pathParams: { id: fixture.projectId }, body: { name: "Updated once" },
+    } };
+    const receipt: any = await fixture.authority.execute(mutation);
+    expect(receipt).toMatchObject({ ok: true, status: 200, artifact: { contentType: "application/json; charset=utf-8" } });
+    expect(receipt.artifact.byteSize).toBeGreaterThan(12 * 1024 * 1024);
+    expect(await fixture.authority.execute(mutation)).toEqual(receipt);
+    const after = await fixture.snapshot();
+    expect(after.assets).toHaveLength(before + 1);
+    expect(after.activity.filter(row => row.action === "project.updated")).toHaveLength(1);
+  }, 30_000);
+
+  it("persists and range-reads asset sizes above two GiB", async () => {
+    const fixture = await server.fixture();
+    const offsetBytes = 3 * 1024 * 1024 * 1024;
+    const objectKey = `${fixture.companyId}/eval/sparse-large-response.txt`;
+    const path = join(server.root, "storage", objectKey);
+    await mkdir(dirname(path), { recursive: true });
+    const file = await open(path, "wx");
+    try { await file.write(Buffer.from("readable"), 0, 8, offsetBytes); }
+    finally { await file.close(); }
+    const [asset] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk", objectKey,
+      contentType: "text/plain", byteSize: offsetBytes + 8, sha256: "sparse-fixture", createdByAgentId: fixture.agentId }).returning();
+    expect(asset.byteSize).toBe(offsetBytes + 8);
+    const page = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: asset.id }, responseText: { offsetBytes, limitBytes: 8 },
+    } });
+    expect(page).toMatchObject({ ok: true, data: "readable", responseText: { offsetBytes, totalBytes: offsetBytes + 8, nextOffsetBytes: null } });
   });
 
   it("contains workspace files, checks artifact ownership, and persists downloads", async () => {

@@ -51,9 +51,16 @@ exactly one authorized `artifactId` or task-workspace `path`, and an optional
 multipart `field`. No arbitrary URL, headers, authentication, or remote file URL
 can be supplied. Routes still validate payloads and enforce permissions.
 
-Requests have a 30-second HTTP timeout, 16 KiB URL limit and 10 MiB payload/response
-transfer limit. Responses above 24 KiB and binary responses become company-owned
-assets with retrievable references; text previews are limited to 2,000 bytes.
+Requests have a 16 KiB URL limit and 10 MiB request/upload limit. **Responses have
+no configured total byte-size limit.** Connection setup and stalled response reads
+time out after 30 seconds; an actively downloading response may take longer.
+Responses above 24 KiB stream into a private temporary file, then into a
+company-owned asset with a retrievable reference. Memory use stays bounded by
+the inline prefix and stream buffers, regardless of total response size. Binary
+responses also become assets; text previews are limited to 2,000 bytes.
+Temporary files are removed on success or failure. Storage exhaustion, upstream
+failures, and storage-provider object limits can still fail a download; this does
+not promise infinite disk space or an endless-stream API.
 To inspect saved text without creating another artifact, call its authorized
 content operation with `responseText`:
 
@@ -68,19 +75,25 @@ and accepts 4–24,576 bytes. The server rejects binary content, invalid UTF-8,
 and offsets inside a code point or beyond the response. This option only works
 with GET; never repeat a mutation to retrieve another part of its response.
 Read the saved artifact for a stable snapshot instead of paging a changing live
-response. The existing 10 MiB transfer limit and all route authorization remain.
+response. A text-window call against a live response above 24 KiB also returns
+that snapshot's artifact reference; continue on its content operation. A saved
+asset page never creates another asset. Offsets and total sizes use safe integer
+byte counts, including values above 2 GiB. Request/upload limits and all route
+authorization remain.
 Saved asset pages use authenticated HTTP byte ranges. The storage provider reads
 only the requested window, with at most two extra bytes for UTF-8/EOF handling.
 The client validates `Content-Range`, the total size, and the received byte count;
 it rejects unsupported or inconsistent ranges instead of downloading the whole
-asset for every page. Other GET routes retain their existing bounded full-response
-read, so use the saved asset for large responses.
+asset for every page. Other GET routes are fetched once in full to create the
+snapshot, so use the returned asset for subsequent pages. S3 uses streamed
+multipart uploads for large snapshots. Asset sizes are stored as PostgreSQL
+`bigint`, preserving the existing numeric API shape.
 
 Tool responses identify the HTTP route with `apiOperationId`. The native protocol
 reserves `operationId` and `callId` for semantic tool-call identity; API metadata
 must not masquerade as that envelope. Saved mutation receipts are normalized at
 the tool boundary as well, without repeating their HTTP request.
-All redirects are refused. Oversized or interrupted mutation responses have an
+All redirects are refused. Interrupted mutation responses have an
 unknown outcome, requiring inspection before another mutation.
 Mutation responses with HTTP 5xx, HTTP 408, redirects, or malformed JSON also
 retain an unknown outcome. A server may have committed the write before it

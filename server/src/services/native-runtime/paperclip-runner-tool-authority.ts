@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
@@ -539,8 +540,11 @@ export class PaperclipRunnerToolAuthority {
         readFile: (file) => this.#readApiFile(file),
         saveResponse: async (bytes, contentType) => {
           const storage = this.binding.storage ?? getStorageService();
-          const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, body: bytes });
-          const asset = await assetService(this.db).create(this.binding.companyId, { ...saved, createdByAgentId: this.binding.agentId });
+          const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, ...(Buffer.isBuffer(bytes) ? { body: bytes } : { body: createReadStream(bytes.path), byteSize: bytes.byteSize, sha256: bytes.sha256 }) });
+          const asset = await assetService(this.db).create(this.binding.companyId, { ...saved, createdByAgentId: this.binding.agentId }).catch(async error => {
+            await storage.deleteObject(this.binding.companyId, saved.objectKey).catch(() => {});
+            throw error;
+          });
           const activity = await persistActivity(this.db, { companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId, issueId: this.binding.issueId, action: "asset.created", entityType: "asset", entityId: asset.id, details: { source: "runner.call_api", byteSize: saved.byteSize } });
           publishActivity(activity.publication);
           return { artifactId: asset.id, url: `/api/assets/${asset.id}/content`, contentType, byteSize: saved.byteSize, sha256: saved.sha256 };

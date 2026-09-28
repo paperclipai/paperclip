@@ -432,3 +432,11 @@ cleanup authority; it does not prove that remote inference has stopped. Recovery
 revokes the previous boot identity with a conditional update. Its own claim also
 expires so another sweep can finish cleanup after a restart. Historical rows keep
 null ownership fields and follow the previous recovery path.
+
+## Large API response snapshots
+
+`assets.byte_size` uses PostgreSQL `bigint` so saved responses and byte ranges can
+exceed 2 GiB. The API and Drizzle mapping continue to expose a JavaScript number;
+response readers validate safe integer offsets. The type-widening migration
+rewrites the asset metadata table and needs an exclusive table lock. File bytes
+remain in local or object storage.
