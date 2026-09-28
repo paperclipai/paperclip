@@ -1392,6 +1392,11 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         assigneeAgentId: agentId,
         workMode: "standard",
       });
+      const directExecute = legacyAdapterExecute.getMockImplementation()!;
+      legacyAdapterExecute.mockImplementationOnce(async () => {
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, freshIssueId));
+        return directExecute();
+      });
       const fresh = await heartbeat.wakeup(agentId, {
         source: "automation",
         triggerDetail: "system",

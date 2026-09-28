@@ -7,6 +7,28 @@ import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-uti
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
+describe("LCA-05 explicit native work mode", () => {
+  it.each(["standard", "planning", "ask"])("title and description cannot override %s mode", (workMode) => {
+    for (const text of ["Inspect files", "Making a plan", "Create a report", "Research proposal", "Implement now; no plan needed"]) {
+      const input = buildNativeExecutionInput({
+        companyId: "10000000-0000-4000-8000-000000000001",
+        runId: "50000000-0000-4000-8000-000000000005",
+        agentId: "30000000-0000-4000-8000-000000000003",
+        issue: { id: "20000000-0000-4000-8000-000000000002", identifier: "MODE-1", title: text, description: text, workMode },
+        taskPrompt: text,
+        workspace: { id: "50000000-0000-4000-8000-000000000005", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+        normalizedSessionId: null,
+        planningContext: workMode === "planning" ? { documentId: null, baseRevisionId: null, baseRevisionNumber: 0, markdown: "", sha256: "a".repeat(64), reviewContext: {} } : null,
+        completionContract: { id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Deliver the requested work", criteria: [{ id: "output", requirement: "Deliver the requested work" }] } },
+        runtimeContext: nativeRuntimeContextFixture(),
+      });
+      expect(input.task.workMode).toBe(workMode);
+      expect(input.executionMode).toBe(workMode === "planning" ? "plan" : "default");
+      expect(input.task.title).toBe(text);
+    }
+  });
+});
+
 describe("native execution input external-chat framing", () => {
   it.each([false, true])(
     "projects the authoritative selected answer into an attested native chat prompt (resumed: %s)",

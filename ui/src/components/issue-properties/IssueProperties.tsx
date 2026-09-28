@@ -1947,7 +1947,7 @@ export function IssueProperties({
       <ProjectTile
         color={issueProject?.color ?? null}
         icon={issueProject?.icon ?? null}
-        size="xs"
+        size="sm"
       />
       <span className="text-sm truncate min-w-0" title={projectName(issue.projectId)}>{projectName(issue.projectId)}</span>
     </>
@@ -2334,8 +2334,9 @@ export function IssueProperties({
       >
         <PropertyRow label="Status">
           <StatusIcon
-            status={issue.status} externalConversationState={issue.externalConversationState}
-            className="size-3"
+            status={issue.status}
+            externalConversationState={issue.externalConversationState}
+            glyphContainerClassName="inline-flex size-6 shrink-0 items-center justify-center"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
             showLabel

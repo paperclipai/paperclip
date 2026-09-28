@@ -108,8 +108,8 @@ export function buildRunnerE2EProcessEnvironment(
   // Announcements are unrelated to the scenarios and obscure screenshot evidence.
   result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
   delete result.OPENCODE_ALLOW_ALL_MODELS;
-  // Hiring needs the opt-in native API surface. Scope this to the explicit
-  // manual hiring story; production and other suites retain their defaults.
+  // These stories explicitly require the native API surface. Other suites
+  // retain the server default or any supplied operator restriction.
   if (executions.some((e) => isManagedHiringCase(e.suite.id, e.task.id) || chatNeedsApiTools(e.suite.id, e.task.id))) {
     result.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
   }

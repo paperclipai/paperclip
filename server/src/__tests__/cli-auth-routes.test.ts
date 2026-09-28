@@ -104,7 +104,7 @@ describe.sequential("cli auth routes", () => {
   it.sequential("creates a CLI auth challenge with approval metadata", async () => {
     mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
       challenge: {
-        id: "challenge-1",
+        id: "12345678-1234-4123-8123-123456789abc",
         expiresAt: new Date("2026-03-23T13:00:00.000Z"),
       },
       challengeSecret: "pcp_cli_auth_secret",
@@ -122,14 +122,14 @@ describe.sequential("cli auth routes", () => {
 
     expect(res.status, res.text || JSON.stringify(res.body)).toBe(201);
     expect(res.body).toMatchObject({
-      id: "challenge-1",
+      id: "12345678-1234-4123-8123-123456789abc",
       token: "pcp_cli_auth_secret",
-      approvalPath: "/cli-auth/challenge-1?token=pcp_cli_auth_secret",
-      pollPath: "/cli-auth/challenges/challenge-1",
+      approvalPath: "/cli-auth/12345678-1234-4123-8123-123456789abc?token=pcp_cli_auth_secret",
+      pollPath: "/cli-auth/challenges/12345678-1234-4123-8123-123456789abc",
       expiresAt: "2026-03-23T13:00:00.000Z",
     });
     expect(res.body.boardApiToken).toBe("pcp_board_token");
-    expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
+    expect(res.body.approvalUrl).toContain("/cli-auth/12345678-1234-4123-8123-123456789abc?token=pcp_cli_auth_secret");
   });
 
   it.sequential("rejects anonymous access to generic skill documents", async () => {
@@ -176,7 +176,7 @@ describe.sequential("cli auth routes", () => {
 
   it.sequential("marks challenge status as requiring sign-in for anonymous viewers", async () => {
     mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
-      id: "challenge-1",
+      id: "12345678-1234-4123-8123-123456789abc",
       status: "pending",
       command: "paperclipai company import",
       clientName: "paperclipai cli",
@@ -190,18 +190,67 @@ describe.sequential("cli auth routes", () => {
     });
 
     const app = await createApp({ type: "none", source: "none" });
-    const res = await request(app).get("/api/cli-auth/challenges/challenge-1?token=pcp_cli_auth_secret");
+    const res = await request(app).get("/api/cli-auth/challenges/12345678-1234-4123-8123-123456789abc?token=pcp_cli_auth_secret");
 
     expect(res.status).toBe(200);
     expect(res.body.requiresSignIn).toBe(true);
     expect(res.body.canApprove).toBe(false);
   });
 
+  it.each(["PASTE_ID_HERE", "not-a-uuid"])("rejects malformed challenge ID %s before calling the service", async (id) => {
+    const app = await createApp({ type: "board", userId: "user-1", source: "session" });
+    const responses = [
+      await request(app).get(`/api/cli-auth/challenges/${id}?token=pcp_cli_auth_secret`),
+      await request(app).post(`/api/cli-auth/challenges/${id}/approve`).send({ token: "pcp_cli_auth_secret" }),
+      await request(app).post(`/api/cli-auth/challenges/${id}/cancel`).send({ token: "pcp_cli_auth_secret" }),
+    ];
+    for (const response of responses) {
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe("Invalid CLI auth challenge ID");
+    }
+    expect(mockBoardAuthService.describeCliAuthChallenge).not.toHaveBeenCalled();
+    expect(mockBoardAuthService.approveCliAuthChallenge).not.toHaveBeenCalled();
+    expect(mockBoardAuthService.cancelCliAuthChallenge).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("requires authentication before approving even a malformed challenge ID", async () => {
+    const app = await createApp({ type: "none", source: "none" });
+    const res = await request(app)
+      .post("/api/cli-auth/challenges/PASTE_ID_HERE/approve")
+      .send({ token: "pcp_cli_auth_secret" });
+    expect(res.status).toBe(401);
+    expect(mockBoardAuthService.approveCliAuthChallenge).not.toHaveBeenCalled();
+  });
+
+  it("preserves missing-secret and unknown-challenge responses", async () => {
+    const app = await createApp({ type: "none", source: "none" });
+    const path = "/api/cli-auth/challenges/12345678-1234-4123-8123-123456789abc";
+    const missing = await request(app).get(path);
+    expect(missing.status).toBe(404);
+    expect(mockBoardAuthService.describeCliAuthChallenge).not.toHaveBeenCalled();
+    mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue(null);
+    const unknown = await request(app).get(`${path}?token=wrong-secret`);
+    expect(unknown.status).toBe(404);
+  });
+
+  it("cancels a valid challenge and preserves path whitespace normalization", async () => {
+    mockBoardAuthService.cancelCliAuthChallenge.mockResolvedValue({ status: "cancelled" });
+    const app = await createApp({ type: "none", source: "none" });
+    const id = "12345678-1234-4123-8123-123456789ABC";
+    const res = await request(app)
+      .post(`/api/cli-auth/challenges/${encodeURIComponent(` ${id} `)}/cancel`)
+      .send({ token: "pcp_cli_auth_secret" });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "cancelled", cancelled: true });
+    expect(mockBoardAuthService.cancelCliAuthChallenge).toHaveBeenCalledWith(id, "pcp_cli_auth_secret");
+  });
+
   it.sequential("approves a CLI auth challenge for a signed-in board user", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
-        id: "challenge-1",
+        id: "12345678-1234-4123-8123-123456789abc",
         boardApiKeyId: "board-key-1",
         requestedAccess: "board",
         requestedCompanyId: "company-1",
@@ -223,12 +272,12 @@ describe.sequential("cli auth routes", () => {
       companyIds: ["company-1"],
     });
     const res = await request(app)
-      .post("/api/cli-auth/challenges/challenge-1/approve")
+      .post("/api/cli-auth/challenges/12345678-1234-4123-8123-123456789abc/approve")
       .send({ token: "pcp_cli_auth_secret" });
 
     expect(res.status).toBe(200);
     expect(mockBoardAuthService.approveCliAuthChallenge).toHaveBeenCalledWith(
-      "challenge-1",
+      "12345678-1234-4123-8123-123456789abc",
       "pcp_cli_auth_secret",
       "user-1",
     );
@@ -246,7 +295,7 @@ describe.sequential("cli auth routes", () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
-        id: "challenge-2",
+        id: "12345678-1234-4123-8123-123456789def",
         boardApiKeyId: "board-key-2",
         requestedAccess: "instance_admin_required",
         requestedCompanyId: null,
@@ -263,7 +312,7 @@ describe.sequential("cli auth routes", () => {
       companyIds: [],
     });
     const res = await request(app)
-      .post("/api/cli-auth/challenges/challenge-2/approve")
+      .post("/api/cli-auth/challenges/12345678-1234-4123-8123-123456789def/approve")
       .send({ token: "pcp_cli_auth_secret" });
 
     expect(res.status).toBe(200);

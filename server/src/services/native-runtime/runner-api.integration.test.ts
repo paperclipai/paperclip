@@ -4,7 +4,7 @@ import { chmod, writeFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { documents, heartbeatRuns, issues, routineDocuments, routines } from "@paperclipai/db";
-import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
 import { runnerApiCatalog } from "./runner-api-catalog.js";
@@ -13,18 +13,19 @@ import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 describe("runner API against real HTTP routes", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
   const oldSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
-  const oldEnabled = process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+  beforeEach(() => {
+    vi.stubEnv("PAPERCLIP_RUNNER_API_TOOLS_ENABLED", undefined);
+    vi.stubEnv("PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS", undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
   beforeAll(async () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
-    process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
     server = await startRunnerApiTestServer();
   }, 60_000);
   afterAll(async () => {
     await server?.close();
     if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
-    if (oldEnabled === undefined) delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
-    else process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = oldEnabled;
   });
 
   it.skipIf(!process.env.PAPERCLIP_REQUIRE_RUNNER_API_INTEGRATION && !existsSync(defaultCapabilityRunnerdBinary())).each(["current", "legacy_http"])("runs runnerd → PRP → authority → actual authenticated HTTP (%s receipt)", async (receiptFormat) => {
@@ -92,16 +93,16 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     } finally { await bundle.transport.close(); }
   }, 30_000);
 
-  it("cannot opt into API tools through a binding when the operator flag is absent", async () => {
+  it("cannot opt into API tools through a binding when the operator flag is false", async () => {
     const fixture = await server.fixture({ apiToolsEnabled: true });
-    delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
+    process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "false";
     try {
       const names = (await fixture.authority.definitions()).map(tool => tool.name);
       expect(names).toContain("get_task_context");
       expect(names).not.toContain("search_api");
       expect(names).not.toContain("call_api");
       await expect(fixture.authority.execute({ tool: "call_api", callId: "disabled", arguments: { operationId: "GET /api/companies/{companyId}/projects" } })).rejects.toThrow("not_advertised");
-    } finally { process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true"; }
+    } finally { delete process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED; }
   });
 
   it("rejects credential calls before any durable receipt or secret result exists", async () => {

@@ -1,8 +1,9 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check } from "lucide-react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Check, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { cn } from "../lib/utils";
+import { useMobileEntityPickerViewportStyle } from "../hooks/useMobileEntityPickerViewportStyle";
 
 export interface InlineEntityOption {
   id: string;
@@ -33,9 +34,32 @@ interface InlineEntitySelectorProps {
   triggerTestId?: string;
   /** Optional slot name used by consuming surfaces for scoped presentation rules. */
   triggerDataSlot?: string;
+  /** Runtime geometry variables for the portalled mobile picker sheet. */
+  contentStyle?: CSSProperties;
+  /** Heading for the large mobile selector modal. Defaults to the placeholder. */
+  mobileTitle?: string;
 }
 
 const EMPTY_RECENT_OPTION_IDS: string[] = [];
+
+function useMobileSelectorModal() {
+  const [mobile, setMobile] = useState(() =>
+    typeof window !== "undefined"
+      && typeof window.matchMedia === "function"
+      && window.matchMedia("(max-width: 40rem)").matches,
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 40rem)");
+    const update = () => setMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  return mobile;
+}
 
 export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySelectorProps>(
   function InlineEntitySelector(
@@ -57,12 +81,16 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       disabled = false,
       triggerTestId,
       triggerDataSlot,
+      contentStyle,
+      mobileTitle,
     },
     ref,
   ) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [highlightedIndex, setHighlightedIndex] = useState(0);
+    const mobileSelectorModal = useMobileSelectorModal();
+    const mobileViewportStyle = useMobileEntityPickerViewportStyle();
     const highlightedIndexRef = useRef(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const shouldPreventCloseAutoFocusRef = useRef(false);
@@ -143,11 +171,13 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
         </PopoverTrigger>
         <PopoverContent
           data-mobile-entity-picker=""
+          aria-label={mobileTitle ?? placeholder}
           align="start"
           side="bottom"
           collisionPadding={16}
           className="w-(--sz-calc-6) p-1"
-          disablePortal={disablePortal}
+          disablePortal={disablePortal && !mobileSelectorModal}
+          style={{ ...mobileViewportStyle, ...contentStyle }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             inputRef.current?.focus();
@@ -158,6 +188,20 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             shouldPreventCloseAutoFocusRef.current = false;
           }}
         >
+          <div data-mobile-entity-picker-header="" className="hidden items-center justify-between border-b border-border px-4 py-3">
+            <span className="text-base font-semibold text-foreground">{mobileTitle ?? placeholder}</span>
+            <button
+              type="button"
+              className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Close selector"
+              onClick={() => {
+                shouldPreventCloseAutoFocusRef.current = true;
+                setOpen(false);
+              }}
+            >
+              <X className="size-5" />
+            </button>
+          </div>
           <input
             ref={inputRef}
             className="w-full border-b border-border bg-transparent px-2 py-1.5 text-base outline-none placeholder:text-muted-foreground/60 md:text-sm"
@@ -203,7 +247,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
               }
             }}
           />
-          <div className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y">
+          <div data-mobile-entity-picker-list="" className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y">
             {filteredOptions.length === 0 ? (
               <p className="px-2 py-2 text-xs text-muted-foreground">{emptyMessage}</p>
             ) : (

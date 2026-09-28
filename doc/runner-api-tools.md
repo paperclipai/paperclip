@@ -6,25 +6,26 @@ agents do not have to search before using them. Only two tool definitions are
 advertised. The API catalog is returned on demand, never injected into the
 initial prompt.
 
-## Controlled rollout
+## Default availability and operator controls
 
-The escape hatch is disabled by default. Set
-`PAPERCLIP_RUNNER_API_TOOLS_ENABLED=true` on the server to enable it. For an
-initial company rollout, also set `PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS` to a
-comma-separated list of company UUIDs. An unset list allows every company;
-an explicitly empty list allows none. IDs must match exactly.
+The escape hatch is enabled by default. No environment variable is required.
+The native `hire_agent` tool shares this availability policy.
+Set `PAPERCLIP_RUNNER_API_TOOLS_ENABLED=false` on the server to disable these
+tools. An explicit `true` also enables them; other explicit values fail closed.
 
-The server always requires the explicit `true` flag, including for server-owned
-bindings. A binding can disable these tools for a baseline eval but cannot enable
-them without operator opt-in. Setting the flag to `false` disables them. The server checks this switch when advertising tools,
-when accepting a call, and immediately before HTTP dispatch after preparing any
-files. Existing dedicated tools remain available. Operators must update the
-environment of each server process and restart it for deployment-level changes;
-this environment switch is not a live settings API.
+Operators can restrict availability with `PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS`,
+a comma-separated list of company UUIDs. An unset list allows every company;
+an explicitly empty list allows none. IDs must match exactly. This restriction
+also applies when the enabled flag is unset.
 
-Evaluate selected companies first. Compare success, unnecessary fallback calls,
-cost, and latency against the dedicated-tool baseline before widening. Keep the
-switch disabled if authorization, replay, or cost accounting fails.
+A server-owned binding can disable these tools for a baseline eval but cannot
+override an operator restriction. The server checks the policy when advertising
+tools, when accepting a call, and immediately before HTTP dispatch after
+preparing any files. Existing dedicated tools remain available. Operators must
+update the environment of each server process and restart it for deployment-level
+changes; this environment switch is not a live settings API.
+
+All company, run, work-mode, credential, and lifecycle checks below still apply.
 
 ## Discovery and requests
 

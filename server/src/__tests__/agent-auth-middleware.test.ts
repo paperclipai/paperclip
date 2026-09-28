@@ -33,7 +33,8 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
-  run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
+  run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null;
+    status?: string; contextSnapshot?: Record<string, unknown>; resultJson?: Record<string, unknown> };
 }) {
   const activity: Array<Record<string, unknown>> = [];
   const agentRow = {
@@ -58,6 +59,9 @@ function createDbState(input: {
         companyId: input.run.companyId,
         agentId: input.run.agentId,
         responsibleUserId: input.run.responsibleUserId ?? null,
+        status: input.run.status ?? "running",
+        contextSnapshot: input.run.contextSnapshot ?? {},
+        resultJson: input.run.resultJson ?? {},
       }
     : null;
 
@@ -176,6 +180,30 @@ describe("agent auth middleware", () => {
     else process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = originalTtl;
     if (originalInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
     else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
+  });
+
+  it.each([
+    { status: "cancelled", conversationMode: false, requested: false },
+    { status: "running", conversationMode: false, requested: true },
+    { status: "cancelled", conversationMode: true, requested: false },
+    { status: "running", conversationMode: true, requested: true },
+  ])("revokes writes but preserves reads for a stopped run: %j", async ({ status, conversationMode, requested }) => {
+    const agentId = randomUUID();
+    const companyId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({ agent: { id: agentId, companyId }, run: {
+      id: runId, companyId, agentId, status, contextSnapshot: { conversationMode },
+      resultJson: requested ? { executionCancellation: { state: "requested" } } : {},
+    } });
+    const token = createLocalAgentJwt(agentId, companyId, "grok_local", runId, null);
+    const client = createApp(db);
+    const endpoint = `/companies/${companyId}/issues/${randomUUID()}`;
+    const write = await request(client).patch(endpoint).set("Authorization", `Bearer ${token}`).send({ status: "done" });
+    expect(write.status).toBe(403);
+    expect(write.body.code).toBe(conversationMode ? "conversation_turn_cancelled" : "agent_run_cancelled");
+    const read = await request(client).get(endpoint).set("Authorization", `Bearer ${token}`);
+    expect(read.status).toBe(200);
+    expect(read.body.readable).toBe(true);
   });
 
   it("keeps header-less local requests as the implicit board actor with their run id", async () => {

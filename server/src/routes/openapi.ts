@@ -174,6 +174,7 @@ import {
   withdrawIssueThreadInteractionSchema,
   // Auth / profile
   updateCurrentUserProfileSchema,
+  updateCurrentUserPreferencesSchema,
   // Company portability (legacy routes)
   companyPortabilityExportSchema,
   companyPortabilityPreviewSchema,
@@ -635,6 +636,10 @@ const registry = new OpenAPIRegistry();
 const heartbeatRunIdParamSchema = z.string()
   .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/)
   .describe("Heartbeat run UUID; malformed values return 400");
+
+const cliAuthChallengeIdParamSchema = z.string().trim()
+  .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/)
+  .describe("CLI auth challenge UUID; malformed values return 400");
 
 const ErrorSchema = registry.register("Error", z.object({ error: z.string() }));
 
@@ -6468,7 +6473,7 @@ registry.registerPath({
   tags: ["access"],
   summary: "Approve a CLI auth challenge",
   request: {
-    params: z.object({ id: z.string() }),
+    params: z.object({ id: cliAuthChallengeIdParamSchema }),
     body: jsonBody(resolveCliAuthChallengeSchema),
   },
   responses: {
@@ -6485,7 +6490,7 @@ registry.registerPath({
   tags: ["access"],
   summary: "Cancel a CLI auth challenge",
   request: {
-    params: z.object({ id: z.string() }),
+    params: z.object({ id: cliAuthChallengeIdParamSchema }),
     body: jsonBody(resolveCliAuthChallengeSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 404: r.notFound },
@@ -6547,6 +6552,23 @@ registry.registerPath({
   tags: ["admin"],
   summary: "List all users (admin)",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/auth/preferences",
+  tags: ["auth"],
+  summary: "Get the signed-in user's personal preferences",
+  request: { query: z.object({ expectedUserId: z.string().min(1) }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+registry.registerPath({
+  method: "patch",
+  path: "/api/auth/preferences",
+  tags: ["auth"],
+  summary: "Update personal preferences with a company audit context",
+  request: { body: jsonBody(updateCurrentUserPreferencesSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Auth / profile ──────────────────────────────────────────────────────────
@@ -9201,8 +9223,8 @@ registry.registerPath({
   path: "/api/cli-auth/challenges/{id}",
   tags: ["access"],
   summary: "Get a CLI auth challenge",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 404: r.notFound },
+  request: { params: z.object({ id: cliAuthChallengeIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 404: r.notFound },
 });
 
 // ─── Invite onboarding ────────────────────────────────────────────────────────

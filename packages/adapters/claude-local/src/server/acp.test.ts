@@ -1044,14 +1044,16 @@ describe("claude_local ACP lane", () => {
         }),
       );
 
-      // Fail-open: the restore miss never changes the run's exit code or
-      // status, and it surfaces as one allowlisted code — never the raw error.
+      // Preserve the execution's exit code while reporting the restore failure.
+      // Only a fixed diagnostic may contain the errno, never the raw error.
       expect(result.exitCode).toBe(0);
       expect(result.resultJson?.workspaceRestoreFailure).toBe("restore_permission_denied");
       const allLogs = loggedLines.join("");
       expect(allLogs).not.toContain("SENTINEL-HOST-PATH-marker");
       expect(allLogs).not.toContain(localCwd);
-      expect(allLogs).not.toContain("EACCES");
+      const diagnostic = '[paperclip] Workspace restore diagnostic: {"phase":"workspace","errorCode":"EACCES"}\n';
+      expect(loggedLines.filter((line) => line.includes("Workspace restore diagnostic:"))).toEqual([diagnostic]);
+      expect(loggedLines.filter((line) => line !== diagnostic).join("")).not.toContain("EACCES");
       expect(allLogs).toContain("permission denied");
     } finally {
       await fs.chmod(localCwd, 0o700).catch(() => undefined);

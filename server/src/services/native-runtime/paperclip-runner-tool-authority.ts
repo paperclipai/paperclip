@@ -43,7 +43,7 @@ import {
   issues,
   issueThreadInteractions,
 } from "@paperclipai/db";
-import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../vendor/paperclip-runner/index.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
@@ -225,7 +225,11 @@ export class PaperclipRunnerToolAuthority {
     definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
     definitions.push(READ_CHAT_ATTACHMENT_TOOL_DEFINITION);
-    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools), ...(this.binding.assignedMcpTools?.definitions() ?? []), ...definitions];
+    const connectionTools = [...RUNTIME_CONNECTION_TOOL_DEFINITIONS,
+      ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools)];
+    const assignedTools = this.binding.assignedMcpTools?.definitions((tools) =>
+      runnerCodexDynamicToolsFit([...connectionTools, ...tools, ...definitions])) ?? [];
+    return [...connectionTools, ...assignedTools, ...definitions];
   }
 
   async execute(call: {

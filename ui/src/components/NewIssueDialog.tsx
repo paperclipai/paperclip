@@ -96,14 +96,27 @@ type VisualViewportLayout = {
 
 type NewIssueDialogViewportStyle = CSSProperties & {
   "--new-issue-visual-viewport-height"?: string;
-  "--new-issue-visual-viewport-offset-top"?: string;
   "--new-issue-dialog-top"?: string;
   "--new-issue-dialog-height"?: string;
+};
+
+type MobileEntityPickerViewportStyle = CSSProperties & {
+  "--mobile-entity-picker-visual-viewport-height"?: string;
 };
 
 function readVisualViewportLayout(): VisualViewportLayout | null {
   if (typeof window === "undefined" || !window.visualViewport) return null;
   const { height, offsetTop } = window.visualViewport;
+  // Mobile browsers can briefly report unusable geometry while the visual
+  // viewport initializes or animates. Applying it collapses the dialog.
+  if (
+    !Number.isFinite(height)
+    || height <= 0
+    || !Number.isFinite(offsetTop)
+    || offsetTop < 0
+  ) {
+    return null;
+  }
   return {
     height,
     offsetTop,
@@ -125,7 +138,11 @@ function useVisualViewportLayout(enabled: boolean) {
     const viewport = window.visualViewport;
     if (!viewport) return;
 
-    const updateLayout = () => setLayout(readVisualViewportLayout());
+    const updateLayout = () => {
+      const nextLayout = readVisualViewportLayout();
+      // Keep the last valid keyboard geometry during transient invalid readings.
+      if (nextLayout) setLayout(nextLayout);
+    };
     updateLayout();
     viewport.addEventListener("resize", updateLayout);
     viewport.addEventListener("scroll", updateLayout);
@@ -1308,8 +1325,10 @@ export function NewIssueDialog() {
   const CurrentWorkModeIcon = currentWorkMode.icon;
   const dialogViewportStyle = useMemo<NewIssueDialogViewportStyle>(() => {
     const dialogGeometry = {
-      "--new-issue-dialog-top":
-        "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+      // Fixed-position coordinates are relative to Safari's visual viewport.
+      // Adding visualViewport.offsetTop here places the dialog below that
+      // viewport after the software keyboard pans the page.
+      "--new-issue-dialog-top": "var(--new-issue-dialog-top-gap)",
       "--new-issue-dialog-height":
         "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
     };
@@ -1317,7 +1336,6 @@ export function NewIssueDialog() {
     return {
       ...dialogGeometry,
       "--new-issue-visual-viewport-height": `${visualViewportLayout.height}px`,
-      "--new-issue-visual-viewport-offset-top": `${visualViewportLayout.offsetTop}px`,
       ...(visualViewportLayout.constrained
         ? {
             top: "var(--new-issue-dialog-top)",
@@ -1325,6 +1343,12 @@ export function NewIssueDialog() {
             translate: "var(--pct-neg-50)",
           }
         : {}),
+    };
+  }, [visualViewportLayout]);
+  const entityPickerViewportStyle = useMemo<MobileEntityPickerViewportStyle>(() => {
+    if (!visualViewportLayout) return {};
+    return {
+      "--mobile-entity-picker-visual-viewport-height": `${visualViewportLayout.height}px`,
     };
   }, [visualViewportLayout]);
 
@@ -1489,9 +1513,10 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Assignee"
+                mobileTitle="Select assignee"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
-                disablePortal
+                contentStyle={entityPickerViewportStyle}
                 noneLabel="No assignee"
                 searchPlaceholder="Search assignees..."
                 emptyMessage="No assignees found."
@@ -1550,9 +1575,10 @@ export function NewIssueDialog() {
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
                 placeholder="Project"
+                mobileTitle="Select project"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
-                disablePortal
+                contentStyle={entityPickerViewportStyle}
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
@@ -1663,7 +1689,7 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Reviewer"
-                disablePortal
+                contentStyle={entityPickerViewportStyle}
                 noneLabel="No reviewer"
                 searchPlaceholder="Search reviewers..."
                 emptyMessage="No reviewers found."
@@ -1708,7 +1734,7 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Approver"
-                disablePortal
+                contentStyle={entityPickerViewportStyle}
                 noneLabel="No approver"
                 searchPlaceholder="Search approvers..."
                 emptyMessage="No approvers found."
@@ -1952,7 +1978,7 @@ export function NewIssueDialog() {
                       value={assigneeModelOverride}
                       options={modelOverrideOptions}
                       placeholder="Default model"
-                      disablePortal
+                      contentStyle={entityPickerViewportStyle}
                       noneLabel="Default model"
                       searchPlaceholder="Search models..."
                       emptyMessage="No models found."

@@ -7,8 +7,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
-import { runLocalGit, setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
-import { WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
+import { setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { createWorkspaceGitOperationScheduler, WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
@@ -142,12 +142,24 @@ suite("task project repository provisioning", () => {
     await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Recover startup and use existing work", status: "todo", assigneeAgentId: agentId });
     let inject = true;
     const canonicalSource = await realpath(source);
+    const scheduler = createWorkspaceGitOperationScheduler();
     setExpensiveWorkspaceGitExecutor(async (input) => {
       if (inject && (input.localDir === source || input.localDir === canonicalSource) && input.operation === "adapter_sync.ignored_files") {
         inject = scenario === "exhausted";
         throw new WorkspaceGitScanError(code, "Injected temporary scan failure");
       }
-      return runLocalGit(input.localDir, [...input.args]);
+      return scheduler.run({
+        workspacePath: input.localDir,
+        args: input.args,
+        operation: input.operation,
+        cacheTtlMs: 0,
+        timeoutMs: input.timeout,
+        maxStdoutBytes: input.maxBuffer,
+        maxStderrBytes: input.maxBuffer,
+        env: input.env,
+        onStdout: input.onStdout,
+        signal: input.signal,
+      });
     });
     const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
     await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.errorCode).toBe(code), { timeout: 15_000 });

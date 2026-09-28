@@ -853,6 +853,40 @@ describe("instance settings routes", () => {
       expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
     });
 
+    it("enforces a wildcard allowlist at the API and preserves hidden values", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS =
+        "instance.experimental.*,!instance.experimental.enableIsolatedWorkspaces";
+      const app = await createApp(adminActor);
+
+      const rejected = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: true, enableIsolatedWorkspaces: true });
+      expect(rejected.status).toBe(403);
+      expect(rejected.body.details).toMatchObject({ code: "settings_operator_managed" });
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+
+      // Existing full-form clients may echo hidden values without changing them.
+      const allowed = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: false, enableIsolatedWorkspaces: true });
+      expect(allowed.status).toBe(200);
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+        enableEnvironments: false, enableIsolatedWorkspaces: true,
+      });
+    });
+
+    it("does not let an allowlist exception bypass an explicit API restriction", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS =
+        "instance.experimental.*,!instance.experimental.enableEnvironments,instance.experimental.enableEnvironments";
+      const app = await createApp(adminActor);
+      const res = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: true });
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+
     it("allows writes to non-hidden experimental toggles while others are hidden", async () => {
       process.env.PAPERCLIP_HIDDEN_SETTINGS =
         "instance.experimental.enableEnvironments,instance.experimental.enableServerInfoDebugView";

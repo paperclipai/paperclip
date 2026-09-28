@@ -6,7 +6,8 @@ import { INSTANCE_FEATURE_KEYS, type InstanceFeatureKey } from "./feature-catalo
  * A hosting operator (a managed cloud, an internal shared server) can hide
  * settings surfaces that do not apply to their deployment by setting the
  * `PAPERCLIP_HIDDEN_SETTINGS` environment variable to a comma-separated
- * list of keys from this registry. Hiding a surface removes it from the UI
+ * list of keys from this registry. An experimental wildcard with named
+ * exceptions can also hide future controls automatically. Hiding a surface removes it from the UI
  * (nav, routes, page sections). Surfaces backed by instance-level mutation
  * routes are also floored with a 403 carrying
  * `SETTINGS_OPERATOR_MANAGED_ERROR_CODE`: the Access, Plugins, and Adapters
@@ -111,7 +112,7 @@ export type HideableSettingKey =
   | HideableGeneralSection
   | HideableExperimentalSetting;
 
-/** Every key `PAPERCLIP_HIDDEN_SETTINGS` accepts. */
+/** Concrete setting keys; the parser also accepts the experimental wildcard and exceptions. */
 export const HIDEABLE_SETTING_KEYS: readonly HideableSettingKey[] = [
   ...HIDEABLE_WORKSPACE_SECTIONS,
   ...HIDEABLE_INSTANCE_PAGES,
@@ -124,28 +125,48 @@ export const HIDEABLE_SETTING_KEYS: readonly HideableSettingKey[] = [
 /** Stable 403 code for writes to operator-hidden settings. */
 export const SETTINGS_OPERATOR_MANAGED_ERROR_CODE = "settings_operator_managed";
 
+/** Hide current and future experimental controls, with optional !key exceptions. */
+export const EXPERIMENTAL_SETTINGS_WILDCARD = "instance.experimental.*";
+
 export interface ParsedHiddenSettings {
-  /** Recognized keys, deduplicated, in input order. */
+  /** Concrete keys, deduplicated; wildcard-derived keys follow in catalog order. */
   hidden: HideableSettingKey[];
   /** Unrecognized entries, for the caller to warn about. */
   unknown: string[];
 }
 
-/** Parse a `PAPERCLIP_HIDDEN_SETTINGS`-style comma-separated list. */
+/**
+ * Parse operator settings into concrete keys for both the UI and API.
+ * `instance.experimental.*` hides every catalog control except entries such as
+ * `!instance.experimental.enableEnvironments`. Exceptions only affect the
+ * wildcard; an explicit hidden key or hidden parent page always wins.
+ */
 export function parseHiddenSettingsList(raw: string | undefined): ParsedHiddenSettings {
   const hidden: HideableSettingKey[] = [];
   const unknown: string[] = [];
   if (!raw) return { hidden, unknown };
   const known = new Set<string>(HIDEABLE_SETTING_KEYS);
   const seen = new Set<string>();
+  const exceptions = new Set<string>();
+  let hideExperimental = false;
   for (const part of raw.split(",")) {
     const key = part.trim();
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    if (known.has(key)) {
+    if (key === EXPERIMENTAL_SETTINGS_WILDCARD) {
+      hideExperimental = true;
+    } else if (key.startsWith("!instance.experimental.") && known.has(key.slice(1))) {
+      exceptions.add(key.slice(1));
+    } else if (known.has(key)) {
       hidden.push(key as HideableSettingKey);
     } else {
       unknown.push(key);
+    }
+  }
+  if (hideExperimental) {
+    for (const feature of INSTANCE_FEATURE_KEYS) {
+      const key = experimentalSettingKey(feature);
+      if (!exceptions.has(key) && !seen.has(key)) hidden.push(key);
     }
   }
   return { hidden, unknown };

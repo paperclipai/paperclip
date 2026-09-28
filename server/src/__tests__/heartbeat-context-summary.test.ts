@@ -7,6 +7,27 @@ import {
 } from "../services/heartbeat.js";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it.each(["standard", "planning", "ask"])("selects directives only from explicit %s mode, even when a plan is requested", (workMode) => {
+    for (const prose of [
+      { title: "Prepare rollout steps", description: "Describe the steps." },
+      { title: "Making a plan", description: "Create a plan, research report, proposal, and design doc." },
+      { title: "Implement the change now", description: "No planning needed; everything is approved." },
+    ]) {
+      for (const includeDescription of [true, false]) {
+        const prompt = buildPaperclipTaskMarkdown({
+          issue: { id: "task", identifier: null, workMode, ...prose },
+          includeDescription,
+        })!;
+        expect(prompt.includes("Planning mode directive:")).toBe(workMode === "planning");
+        expect(prompt.includes("Ask mode directive:")).toBe(workMode === "ask");
+        expect(prompt).not.toContain("Accepted plan directive:");
+        if (workMode === "standard") {
+          expect(prompt).not.toContain("Do not produce an implementation plan");
+          expect(prompt).not.toContain("Do not write code or perform implementation work");
+        }
+      }
+    }
+  });
   it("keeps a durable task plan in full and resumed context without granting execution approval", () => {
     const taskPlan = {
       documentId: "document", revisionId: "revision", revisionNumber: 1,

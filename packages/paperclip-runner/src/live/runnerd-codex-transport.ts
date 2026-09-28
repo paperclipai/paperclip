@@ -3045,6 +3045,17 @@ export function authorizedToolSetForProvider(
   return authorizedToolSet(tools);
 }
 
+/** Include the completion tools that the Codex driver adds at session startup. */
+export function runnerCodexDynamicToolsFit(
+  tools: readonly Readonly<Record<string, unknown>>[],
+): boolean {
+  const supplied = [...tools, ...codexSemanticToolSpecs()];
+  // Keep these bounds aligned with runner-core/provider_bridge.rs. Project
+  // large optional catalogs before run.prepare; never raise the protocol caps.
+  return supplied.length <= 256 &&
+    Buffer.byteLength(JSON.stringify(authorizedToolSet(supplied)), "utf8") <= 768 * 1024;
+}
+
 /**
  * Raw provider tracing is consumed by runnerd itself. The provider child still
  * receives the narrower allowlist enforced by Rust's `SupervisedProcess`, so

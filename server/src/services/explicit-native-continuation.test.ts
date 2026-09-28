@@ -643,6 +643,25 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
   });
 
+
+  it.each(["issue_commented", "retry_failed_run"])("does not bypass an unsafe restore hold through %s", async reason => {
+    const f = await seed();
+    await db.update(agents).set({ adapterType: "grok_local" }).where(eq(agents.id, f.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", processPid: null,
+      errorCode: "workspace_restore_failed", resultJson: { workspaceRestoreFailure: "restore_unsafe_archive", conversationContinuation: "continue_conversation_v1" },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const blocked = vi.fn();
+    expect(await db.transaction(tx => admitExplicitNativeContinuation({ ...f, reason,
+      commentId: reason === "issue_commented" ? f.commentId : null,
+      failedRunId: reason === "retry_failed_run" ? f.sourceRunId : null,
+      onBlocked: blocked, db: tx as unknown as typeof db,
+    }))).toBeNull();
+    expect(blocked).toHaveBeenCalledWith("workspace_repair_required", expect.any(String));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.sourceRunId });
+  });
+
   it.each(["issue_commented", "retry_failed_run"])("continues a legacy Daytona run lost before adapter.invoke: %s", async reason => {
     const f = await seed();
     await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));

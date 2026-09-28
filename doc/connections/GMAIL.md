@@ -316,6 +316,20 @@ Gmail uses the same credential ownership choice as the rest of the Apps setup:
 - Trash, spam, destructive label changes, newly discovered tools, nested
   execution, and any future send tool remain blocked until separately reviewed.
 
+## Broker rejection diagnostics
+
+A rejected connector request includes its operation, HTTP status, and an
+allowlisted broker reason in the server error. For example,
+`RETURN_ORIGIN_NOT_ENROLLED` means the callback origin is not enrolled for that
+instance. Compare the current page/configured origin with the instance's enrolled
+origins; do not bypass origin checks or copy credentials to a different instance.
+
+Unknown codes, malformed bodies, oversized responses, and stalled diagnostic
+reads produce `UNKNOWN_BROKER_ERROR`. This is not proof of any specific rejection
+cause. Diagnostics read at most 4 KiB within 500 ms and retain no raw response
+messages, URLs, tokens, authorization state, or instance/customer identifiers.
+The existing error code, status, authorization, and retry behavior are unchanged.
+
 ## Verification checklist
 
 ### Development

@@ -10,6 +10,29 @@ Read [Sandbox file-sync lifecycle hooks](./SANDBOX_FILE_SYNC_HOOKS.md) for the
 native file-transfer hooks. Read the driver declaration shape in
 [the plugin specification](./PLUGIN_SPEC.md).
 
+## Fresh lease acquisition timeout
+
+A driver can declare `defaultAcquireTimeoutMs` as a positive integer of at most
+86,400,000 milliseconds. The host uses it for `environmentAcquireLease` when the
+resolved config has no positive finite numeric `timeoutMs`. A positive numeric
+`bridgeRequestTimeoutMs` can extend that budget. The host adds 30 seconds for RPC
+overhead. This applies to both sandbox providers and generic plugin drivers.
+
+Daytona declares 300,000 milliseconds for the entire fresh acquisition. Creation,
+workspace setup, shell detection, expiry setup, and inline failure cleanup share
+that budget. Its host RPC can therefore wait 330 seconds instead of the worker's
+normal 30 seconds. On timeout the provider returns the attempt's scoped cleanup
+record for durable host reconciliation. Late SDK results cannot admit the lease
+or start the next setup phase.
+Drivers that omit the declaration keep the existing fallback. The host does not
+infer this budget from config-schema defaults: a field named `timeoutMs` can
+describe sandbox lifetime instead of the time needed to acquire it.
+
+This declaration does not change provider config, lease expiry, the resume
+deadline, or other lifecycle calls. Providers must still enforce their operation
+timeouts and report uncertain allocations for cleanup. A bundled plugin must bump
+its manifest version when adding the field so existing installations receive it.
+
 ## How the host resolves an effective capability
 
 The host never trusts a declaration alone. For every run it resolves each

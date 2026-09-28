@@ -86,7 +86,10 @@
     "test:canary-onboarding-smoke": "npx playwright test --config tests/canary-onboarding/playwright.config.ts",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
-    "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs"
+    "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs",
+    "test:lifecycle-baseline": "node tests/lifecycle-baseline/run.mjs",
+    "test:lifecycle-baseline:support": "node --test tests/lifecycle-baseline/report.test.mjs",
+    "test:lifecycle-baseline:typecheck": "tsc -p tests/lifecycle-baseline/tsconfig.json"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

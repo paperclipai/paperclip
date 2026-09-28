@@ -1,7 +1,8 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
+import { unprocessable } from "../errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -16,6 +17,30 @@ import {
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
+type WorkProductTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function validateExecutionWorkspace(
+  tx: WorkProductTransaction,
+  companyId: string,
+  executionWorkspaceId: string | null | undefined,
+): Promise<void> {
+  if (!executionWorkspaceId) return;
+  const [workspace] = await tx
+    .select({ id: executionWorkspaces.id })
+    .from(executionWorkspaces)
+    .where(and(
+      eq(executionWorkspaces.id, executionWorkspaceId),
+      eq(executionWorkspaces.companyId, companyId),
+    ))
+    // Keep a concurrent delete from invalidating the reference before the write.
+    .for("key share");
+  if (!workspace) {
+    throw unprocessable(
+      "executionWorkspaceId must identify an execution workspace in this company. " +
+      "Project workspace IDs are not execution workspace IDs. Omit this field when no execution workspace is available.",
+    );
+  }
+}
 
 export interface WorkProductDiffSummary {
   additions: number | null;
@@ -245,6 +270,7 @@ export function workProductService(
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
       const row = await db.transaction(async (tx) => {
+        await validateExecutionWorkspace(tx, companyId, data.executionWorkspaceId);
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
@@ -278,6 +304,8 @@ export function workProductService(
           .where(eq(issueWorkProducts.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+
+        await validateExecutionWorkspace(tx, existing.companyId, patch.executionWorkspaceId);
 
         if (patch.isPrimary === true) {
           await tx

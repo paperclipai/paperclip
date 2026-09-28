@@ -3600,12 +3600,13 @@ async function closeWarmHandle(input: {
     input.handles.delete(input.key);
   }
   clearWarmHandleTimer(input.entry);
-  await input.entry.runtime.close({
+  const stopped = await input.entry.runtime.close({
     handle: input.entry.handle,
     reason: input.reason,
     discardPersistentState: input.discardPersistentState ?? false,
-  }).catch(() => {});
+  }).then(() => true, () => false);
   flushChildStderr(input.entry.childStderrState);
+  return stopped;
 }
 
 function warmHandleMatches(
@@ -5289,7 +5290,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ) {
             // A matching warm entry closes through the warm store, which also
             // clears its idle timer and flushes its child stderr.
-            await closeWarmHandle({
+            runtimeStopConfirmed = await closeWarmHandle({
               handles: warmHandles,
               key: prepared.sessionKey,
               entry: existing,
@@ -5335,12 +5336,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // runs, so the host mints a `traceparent` for the provider spans, and the
         // per-task restore spans parent to `sandbox.syncBack`.
         syncBack: () => timedPhase("sync_back", async () => {
-          await runRuntimeSpan("sandbox.syncBack", async () => {
-            const restoreOutcome = await syncBackManagedHome(prepared);
-            if (!restoreOutcome.ok) {
-              workspaceRestoreFailureField = { workspaceRestoreFailure: restoreOutcome.code };
-            }
-          });
+          // A transport error or terminal narrative cannot authorize collecting
+          // mutable provider files. Require the owned close or local OS handle.
+          const stopped = runtimeStopConfirmed || (!prepared.processSessionBridge && capturedProcessExited(processIdentitySink?.localProcess));
+          try {
+            if (stopped) await ctx.onProviderStopped?.();
+          } catch {
+            // Match ACP's fail-soft teardown policy without describing this as
+            // a workspace restore failure or exposing paths from a raw error.
+            await recordTeardownError("instruction-collection", new Error("Instruction collection failed after provider stop. No instruction save is claimed."));
+          } finally {
+            await runRuntimeSpan("sandbox.syncBack", async () => {
+              const restoreOutcome = await syncBackManagedHome(prepared);
+              if (!restoreOutcome.ok) {
+                workspaceRestoreFailureField = { workspaceRestoreFailure: restoreOutcome.code };
+              }
+            });
+          }
         }),
         // The staging lease releases as the run's final act, AFTER the coordinator
         // reproduces the result, in the run root `finally` below. This step stays a

@@ -19,9 +19,17 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     boundaryId: issues.conversationBoundaryCommentId }).from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
   )).limit(1);
+  // Resetting model context cannot make an unsafe workspace safe. This hold
+  // survives conversation boundaries until the existing repair/reconciliation path clears it.
+  const [restoreHold] = await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId),
+    eq(issueRecoveryActions.sourceIssueId, issueId),
+    executionBlockerPredicate(),
+    sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
+  )).orderBy(desc(issueRecoveryActions.updatedAt)).limit(1);
   // A persisted user /new is an ordered context command, not a retry of uncertain work.
   // The normal issue execution lock still serializes it behind any active turn.
-  if (conversation?.agentId && options?.conversationResetCommentId) {
+  if (!restoreHold && conversation?.agentId && options?.conversationResetCommentId) {
     const [command] = await db.select().from(issueComments).where(and(
       eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
       eq(issueComments.id, options.conversationResetCommentId),
@@ -36,7 +44,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
 
   const ownership = await getConversationOwnershipBlocker(db, companyId, issueId);
   if (ownership) return { ...ownership, recoveryActionId: null };
-  const [action] = await db.select().from(issueRecoveryActions).where(and(
+  const [action] = restoreHold ? [restoreHold] : await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),

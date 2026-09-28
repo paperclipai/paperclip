@@ -9,9 +9,10 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER } from "@paperclipai/plugin-sdk";
+import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import type {
   PluginContext,
+  PluginEnvironmentCreationCleanup,
   PluginTracer,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentCancelInteractiveSetupParams,
@@ -44,6 +45,7 @@ import type {
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
 import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js";
+import { DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS } from "./manifest.js";
 
 // The Claude `setup-token` login pseudo-terminal (PTY) session for this provider.
 // The session runs the login command on a real pseudo-terminal, streams the
@@ -274,7 +276,7 @@ function parseOptionalNumber(value: unknown): number | null {
 }
 
 function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
-  const timeoutMs = Number(raw.timeoutMs ?? 300_000);
+  const timeoutMs = Number(raw.timeoutMs ?? DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS);
   const livenessTimeoutMs = Number(raw.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS);
   return {
     apiKey: parseOptionalString(raw.apiKey),
@@ -283,7 +285,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     snapshot: parseOptionalString(raw.snapshot),
     image: parseOptionalString(raw.image),
     language: parseOptionalString(raw.language),
-    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 300_000,
+    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
     livenessTimeoutMs: Number.isFinite(livenessTimeoutMs) ? Math.trunc(livenessTimeoutMs) : DEFAULT_LIVENESS_TIMEOUT_MS,
     cpu: parseOptionalNumber(raw.cpu),
     memory: parseOptionalNumber(raw.memory),
@@ -482,7 +484,7 @@ async function drainSandboxBeforeTermination(sandbox: Sandbox, scope: SandboxSco
 }
 
 async function terminateAtProvider<T>(scope: SandboxScope, operation: string, action: () => Promise<T>) {
-  const timeoutMs = scope.config.timeoutMs > 0 ? scope.config.timeoutMs : 300_000;
+  const timeoutMs = scope.config.timeoutMs > 0 ? scope.config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
   return withLivenessTimeout(operation, timeoutMs + LIVENESS_START_TIMEOUT_MARGIN_MS, action);
 }
 
@@ -935,25 +937,95 @@ function resolveSyncRemoteDir(lease: { metadata?: Record<string, unknown> | null
 async function createSandbox(
   params: PluginEnvironmentAcquireLeaseParams | PluginEnvironmentProbeParams | PluginEnvironmentStartInteractiveSetupParams,
   config: DaytonaDriverConfig,
-  options: { purpose?: string } = {},
+  options: {
+    purpose?: string;
+    onCreateAttempt?: (cleanup: PluginEnvironmentCreationCleanup) => void;
+  } = {},
 ): Promise<Sandbox> {
   const resourceRequestError = validateRuntimeResourceRequest(config);
   if (resourceRequestError) {
     throw new Error(resourceRequestError);
   }
   const client = createDaytonaClient(config);
-  const createParams = buildCreateParams(config, buildSandboxLabels({
+  // The SDK can create a sandbox and then throw while waiting for it to start.
+  // Keep an attempt-specific provider name so that failure cannot lose ownership.
+  const attemptId = randomUUID();
+  const name = `paperclip-create-${attemptId}`;
+  const labels = { ...buildSandboxLabels({
     companyId: params.companyId,
     environmentId: params.environmentId,
     runId: "runId" in params ? params.runId : undefined,
     setupSessionId: "sessionId" in params ? params.sessionId : undefined,
     purpose: options.purpose,
     reuseLease: config.reuseLease,
-  }));
-  const sandbox = await client.create(createParams, {
-    timeout: toTimeoutSeconds(config.timeoutMs),
-  });
-  return sandbox;
+  }), "paperclip-create-attempt": attemptId };
+  // The SDK mutates params.labels (for example, code-toolbox-language).
+  // Preserve our immutable ownership snapshot for validation and retry.
+  const createParams = { ...buildCreateParams(config, { ...labels }), name };
+  const cleanup: PluginEnvironmentCreationCleanup = {
+    providerLeaseId: name, companyId: params.companyId, environmentId: params.environmentId,
+    ...("runId" in params ? { runId: params.runId } : {}),
+    attemptId, labels, accountFingerprint: sandboxAccountDiscriminator(config),
+  };
+  options.onCreateAttempt?.(cleanup);
+  try {
+    return await client.create(createParams, {
+      timeout: toTimeoutSeconds(config.timeoutMs),
+    });
+  } catch (createError) {
+    try {
+      // A not-found lookup after an uncertain create is not a deletion receipt:
+      // the provider may still materialize the request. Keep the name in the
+      // error so cleanup can be reconciled rather than declaring success.
+      await destroyFailedCreation(config, cleanup);
+    } catch (cleanupError) {
+      throw new PluginEnvironmentCreationCleanupError([createError, cleanupError],
+        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup);
+    }
+    throw createError;
+  }
+}
+
+// Resolve by the immutable creation name, not through the admitted-lease cache:
+// the SDK's returned sandbox ID differs from this provisional name. Persist a
+// verified provider ID before host-driven deletion. Its later absence is then
+// conclusive, even if the deletion receipt or database update was lost.
+async function destroyFailedCreation(
+  config: DaytonaDriverConfig, cleanup: PluginEnvironmentCreationCleanup,
+  requireDurableObservation = false,
+): Promise<void> {
+  if (cleanup.providerLeaseId !== `paperclip-create-${cleanup.attemptId}` ||
+      cleanup.accountFingerprint !== sandboxAccountDiscriminator(config) ||
+      cleanup.labels["paperclip-provider"] !== "daytona" ||
+      cleanup.labels["paperclip-create-attempt"] !== cleanup.attemptId ||
+      cleanup.labels["paperclip-company-id"] !== cleanup.companyId ||
+      cleanup.labels["paperclip-environment-id"] !== cleanup.environmentId ||
+      (cleanup.runId !== undefined && cleanup.labels["paperclip-run-id"] !== cleanup.runId)) {
+    throw new Error("Failed-create sandbox ownership does not match");
+  }
+  const client = createDaytonaClient(config);
+  let orphan: Sandbox;
+  try {
+    orphan = await withLivenessTimeout("sandbox.failedCreateLookup", 10_000,
+      () => client.get(cleanup.observedProviderLeaseId ?? cleanup.providerLeaseId));
+  } catch (error) {
+    // A name that has never been observed may still materialize. An ID already
+    // observed with exact ownership cannot materialize as a new allocation.
+    if (cleanup.observedProviderLeaseId && error instanceof DaytonaNotFoundError) return;
+    throw error;
+  }
+  if ((cleanup.observedProviderLeaseId && orphan.id !== cleanup.observedProviderLeaseId) ||
+      orphan.name !== cleanup.providerLeaseId || Object.entries(cleanup.labels).some(([key, value]) => orphan.labels?.[key] !== value)) {
+    throw new Error("Failed-create sandbox ownership does not match");
+  }
+  if (!cleanup.observedProviderLeaseId) {
+    cleanup.observedProviderLeaseId = orphan.id;
+    if (requireDurableObservation) {
+      // No destructive call yet: the host journals the observation and retries.
+      throw new PluginEnvironmentCreationCleanupError([], "Persist observed sandbox identity before cleanup", cleanup);
+    }
+  }
+  await withLivenessTimeout("sandbox.failedCreateDelete", 15_000, () => orphan.delete(10, true));
 }
 
 // ─── Per-lease started-sandbox handle cache ──────────────────────────────────
@@ -2156,60 +2228,118 @@ const plugin = definePlugin({
     params: PluginEnvironmentAcquireLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
-    const sandbox = await createSandbox(params, config);
-    try {
-      const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
-      const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
-      // Configure a provider-side destroy time at or before a caller deadline, so
-      // an abandoned sandbox self-destroys even if Paperclip is down. The lease
-      // carries the real provider expiry (or none) as evidence of the bound.
-      const expiresAt = await configureSandboxExpiry({
-        sandbox,
-        requestedExpiresAt: params.requestedExpiresAt,
-        nowMs: Date.now(),
+    // One budget covers creation, setup, and inline cleanup. The host leaves
+    // 30 seconds beyond this deadline to receive/journal the cleanup record.
+    const budgetMs = config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
+    const deadline = Date.now() + budgetMs;
+    let expired = false;
+    let phase = "create";
+    let cleanup: PluginEnvironmentCreationCleanup | undefined;
+    const timeoutFailure = () => {
+      expired = true;
+      const cause = new Error(`Daytona lease acquisition exceeded ${budgetMs} ms during ${phase}`);
+      return cleanup
+        ? new PluginEnvironmentCreationCleanupError([cause],
+            "Daytona lease acquisition timed out; allocation cleanup is pending",
+            { ...cleanup, labels: { ...cleanup.labels } })
+        : cause;
+    };
+    const assertActive = () => {
+      if (expired || Date.now() >= deadline) throw timeoutFailure();
+    };
+    const acquire = async (): Promise<PluginEnvironmentLease> => {
+      const sandbox = await createSandbox(params, config, {
+        onCreateAttempt: (attempt) => { cleanup = attempt; },
       });
-      const workspaceSentinel = await writeWorkspaceSentinel({
-        sandbox,
-        remoteCwd,
-        params,
-        config,
-        timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
-      });
-      sandboxHandleLeaseAdmissionStates.open({
-        driverKey: params.driverKey,
-        companyId: params.companyId,
-        environmentId: params.environmentId,
-        providerLeaseId: sandbox.id,
-        config,
-      });
-      // Seed the handle cache with the fresh handle under the exact scope that
-      // `onEnvironmentRealizeWorkspace` reads (providerLeaseId === sandbox.id).
-      // Realize then reuses this handle instead of paying a real `client.get`.
-      sandboxHandleCache.seed(
-        {
+      try {
+        assertActive();
+        if (cleanup) cleanup.observedProviderLeaseId = sandbox.id;
+        phase = "workspace";
+        const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+        assertActive();
+        phase = "shell";
+        const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(Math.max(1, deadline - Date.now())));
+        assertActive();
+        // Configure a provider-side destroy time at or before a caller deadline, so
+        // an abandoned sandbox self-destroys even if Paperclip is down. The lease
+        // carries the real provider expiry (or none) as evidence of the bound.
+        phase = "expiry";
+        const expiresAt = await configureSandboxExpiry({
+          sandbox,
+          requestedExpiresAt: params.requestedExpiresAt,
+          nowMs: Date.now(),
+        });
+        assertActive();
+        phase = "sentinel";
+        const workspaceSentinel = await writeWorkspaceSentinel({
+          sandbox,
+          remoteCwd,
+          params,
+          config,
+          timeoutSeconds: toTimeoutSeconds(Math.max(1, deadline - Date.now())),
+        });
+        assertActive();
+        sandboxHandleLeaseAdmissionStates.open({
           driverKey: params.driverKey,
           companyId: params.companyId,
           environmentId: params.environmentId,
           providerLeaseId: sandbox.id,
           config,
-        },
-        sandbox,
-      );
-      return {
-        providerLeaseId: sandbox.id,
-        expiresAt,
-        metadata: leaseMetadata({
-          config,
+        });
+        // Seed the handle cache with the fresh handle under the exact scope that
+        // `onEnvironmentRealizeWorkspace` reads (providerLeaseId === sandbox.id).
+        // Realize then reuses this handle instead of paying a real `client.get`.
+        sandboxHandleCache.seed(
+          {
+            driverKey: params.driverKey,
+            companyId: params.companyId,
+            environmentId: params.environmentId,
+            providerLeaseId: sandbox.id,
+            config,
+          },
           sandbox,
-          shellCommand,
-          remoteCwd,
-          resumedLease: false,
-          workspaceSentinel,
+        );
+        return {
+          providerLeaseId: sandbox.id,
+          expiresAt,
+          metadata: leaseMetadata({
+            config,
+            sandbox,
+            shellCommand,
+            remoteCwd,
+            resumedLease: false,
+            workspaceSentinel,
+          }),
+        };
+      } catch (error) {
+        // After timeout the host owns the durable cleanup record. A late SDK
+        // completion must not admit this lease or start another setup phase.
+        if (!expired) {
+          phase = "cleanup";
+          try {
+            await sandbox.delete(toTimeoutSeconds(Math.max(1, deadline - Date.now())));
+          } catch (cleanupError) {
+            if (cleanup) {
+              throw new PluginEnvironmentCreationCleanupError([error, cleanupError],
+                "Daytona lease setup failed; allocation cleanup is pending",
+                { ...cleanup, labels: { ...cleanup.labels } });
+            }
+            throw error;
+          }
+        }
+        throw error;
+      }
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        acquire(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(timeoutFailure()), budgetMs);
         }),
-      };
-    } catch (error) {
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
-      throw error;
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   },
 
@@ -2403,6 +2533,17 @@ const plugin = definePlugin({
   ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
     const config = parseDriverConfig(params.config);
+    if (params.leaseMetadata?.failedCreateCleanup !== undefined) {
+      const cleanup = readEnvironmentCreationCleanupError({ data: {
+        schema: "paperclip/environment-creation-cleanup/v1", cleanup: params.leaseMetadata.failedCreateCleanup,
+      } });
+      if (!cleanup || cleanup.companyId !== params.companyId || cleanup.environmentId !== params.environmentId ||
+          cleanup.providerLeaseId !== params.providerLeaseId) {
+        throw new Error("Failed-create sandbox cleanup scope does not match");
+      }
+      await destroyFailedCreation(config, cleanup, true);
+      return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
+    }
     const scope: SandboxScope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
