@@ -165,7 +165,7 @@ import {
 } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { setPluginEventBus } from "./services/activity-log.js";
-import { createPluginDevWatcher, shouldEnablePluginDevWatcher } from "./services/plugin-dev-watcher.js";
+import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
@@ -181,6 +181,18 @@ import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
 type UiMode = "none" | "static" | "vite-dev";
+
+/** Create the startup watcher only for local development or an explicit opt-in. */
+export function createAppPluginDevWatcher(
+  uiMode: UiMode,
+  lifecycle: Parameters<typeof createPluginDevWatcher>[0],
+  resolvePluginPackagePath: NonNullable<Parameters<typeof createPluginDevWatcher>[1]>,
+  createWatcher: typeof createPluginDevWatcher = createPluginDevWatcher,
+): ReturnType<typeof createPluginDevWatcher> | null {
+  const optedIn = process.env.PAPERCLIP_PLUGIN_DEV_WATCH === "1";
+  if (!optedIn && (process.env.NODE_ENV === "production" || uiMode !== "vite-dev")) return null;
+  return createWatcher(lifecycle, resolvePluginPackagePath);
+}
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
 const CHAT_PUBLICATION_FLUSH_INTERVAL_MS = 1_000;
 const VITE_DEV_ASSET_PREFIXES = [
@@ -1241,17 +1253,12 @@ export async function createApp(
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
-  const devWatcher = shouldEnablePluginDevWatcher({
-    nodeEnv: process.env.NODE_ENV,
-    uiMode: opts.uiMode,
-    optIn: process.env.PAPERCLIP_PLUGIN_DEV_WATCH,
-  })
-    ? createPluginDevWatcher(
-        lifecycle,
-        async (pluginId) =>
-          (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
-      )
-    : null;
+  const devWatcher = createAppPluginDevWatcher(
+    opts.uiMode,
+    lifecycle,
+    async (pluginId) =>
+      (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
+  );
   // Auto-provision bundled plugins so their providers are registered for
   // agent runs. Bundles are excluded from the pnpm
   // workspace and built standalone into the image (see Dockerfile), then

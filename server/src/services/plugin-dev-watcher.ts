@@ -33,15 +33,6 @@ export interface PluginDevWatcher {
   close(): void;
 }
 
-/** Keep automatic reload local to development unless the operator opts in. */
-export function shouldEnablePluginDevWatcher(input: {
-  nodeEnv: string | undefined;
-  uiMode: "none" | "static" | "vite-dev";
-  optIn: string | undefined;
-}): boolean {
-  return input.optIn === "1" || (input.nodeEnv !== "production" && input.uiMode === "vite-dev");
-}
-
 export type ResolvePluginPackagePath = (
   pluginId: string,
 ) => Promise<string | null | undefined>;
