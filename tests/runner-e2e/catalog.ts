@@ -1,10 +1,11 @@
+import { apiResponseReadingTask } from "./api-response-reading.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks } from "./continuation-cases.js";
 import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-live-cases.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
-import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks } from "./chat-cases.js";
+import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
@@ -912,6 +913,14 @@ const everydayProfiles = [
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
+    id: "api-response-reading", label: "Bounded API response reading", manualOnly: true,
+    description: "Retrieve evidence beyond a saved API preview through authorized bounded text windows.",
+    groups: [], environments: runnerEnvironments,
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [apiResponseReadingTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
+  },
+  {
     id: "continuation-accounting", label: "Continuation accounting baseline", manualOnly: true,
     description: "Structured productive steps, bounded repair, restart and late gates; comments cannot buy more attempts.",
     groups: ["local"], environments: [localEnvironment], profiles: codexContinuityProfiles.map(productionStoryProfile),
@@ -998,6 +1007,17 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
     environments: [localEnvironment], tasks: chatQualificationTasks, expectedMatrixSize: 6,
     definitionMetadata: { version: 9, permissions: "production-defaults", instructions: "production", crashBoundary: "verified-native-worker-pid-at-file-wait", recovery: "new-user-message-after-verified-cleanup", answerGrading: "exact-grounded-propositions-plus-separate-semantic-review", scheduling: "explicit-only" },
+  },
+  {
+    id: "completion-updates", label: "Delegated Completion Updates", manualOnly: true,
+    description: "Observe completion delivery and result access in onboarding and idle Agent Chat; prose requires separate semantic review.",
+    groups: ["chat", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
+    environments: [localEnvironment],
+    tasks: [...firstTaskTasks.filter(task => task.id === "interview-plan-accept"), ...chatCompletionTasks],
+    expectedMatrixSize: 4,
+    definitionMetadata: { version: 6, instructions: "production", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {

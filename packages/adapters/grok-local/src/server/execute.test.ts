@@ -847,6 +847,69 @@ describe("grok_local execute", () => {
       expect(await pathExists(stagedDir)).toBe(false);
     });
 
+    it("keeps collection failure separate from a successful workspace restore", async () => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      await seedHostGrokAuth("{}");
+      const collectionError = new Error("instruction collection failed");
+      const order: string[] = [];
+      let stagedDir = "";
+      runProcessMock.mockImplementation(async (_run, _target, _command, _args, options) => {
+        options.onProcessStopped();
+        return makeSuccessfulRunResult();
+      });
+      prepareRuntimeMock.mockImplementationOnce(async (input: { assets?: Array<{ localDir: string }> }) => {
+        stagedDir = input.assets?.[0]?.localDir ?? "";
+        return {
+          workspaceRemoteDir: "/remote/workspace",
+          assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+          restoreWorkspace: async () => { order.push("restore"); },
+        };
+      });
+      const ctx = await makeCtx("run-collection-reject", await makeTempRoot());
+      ctx.onProviderStopped = async () => { order.push("collect"); throw collectionError; };
+      const result = await execute(ctx);
+      expect(result.errorCode).toBe("instruction_collection_failed");
+      expect(result.resultJson?.instructionCollectionFailure).toBe("collection_failed");
+      expect(result.resultJson?.workspaceRestoreFailure).toBeUndefined();
+      expect(order).toEqual(["collect", "restore"]);
+      expect(stagedDir).not.toBe("");
+      expect(await pathExists(stagedDir)).toBe(false);
+    });
+
+    it.each([0, 2])("preserves provider output when collection and restore both fail after exit %s", async (exitCode) => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      await seedHostGrokAuth("{}");
+      runProcessMock.mockImplementation(async (_run, _target, _command, _args, options) => {
+        options.onProcessStopped();
+        return {
+          ...makeSuccessfulRunResult(), exitCode,
+          stderr: exitCode ? "Model request failed." : "",
+          stdout: [JSON.stringify({ type: "text", data: "Saved output." }), JSON.stringify({
+            type: "end", sessionId: "sess-1", requestId: "req-1", stopReason: "EndTurn",
+            usage: { input_tokens: 4, output_tokens: 9 },
+          })].join("\n"),
+        };
+      });
+      prepareRuntimeMock.mockImplementationOnce(async () => ({
+        workspaceRemoteDir: "/remote/workspace",
+        assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+        restoreWorkspace: async () => { throw new Error("restore failed"); },
+      }));
+      const ctx = await makeCtx("run-collection-and-restore-reject", await makeTempRoot());
+      ctx.onProviderStopped = async () => { throw new Error("instruction collection failed"); };
+      const result = await execute(ctx);
+      expect(result).toMatchObject({
+        errorCode: "workspace_restore_failed", exitCode, sessionId: "sess-1", summary: "Saved output.",
+        usage: { inputTokens: 4, outputTokens: 9 },
+        resultJson: { instructionCollectionFailure: "collection_failed", workspaceRestoreFailure: "restore_failed",
+          requestId: "req-1", finalResponseRecorded: true, executionBeforeRestore: { exitCode } },
+      });
+      expect(result.errorMessage).toContain("Instruction collection failed");
+      if (exitCode) expect(result.errorMessage).toContain("Model request failed.");
+    });
+
     it.each(["completed", "failed", "timed_out"])("preserves %s output and removes the staged home when restore fails", async (state) => {
       delete process.env.XAI_API_KEY;
       mocks.state.isRemote = true;

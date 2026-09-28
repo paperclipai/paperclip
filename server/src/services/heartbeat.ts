@@ -1,3 +1,11 @@
+import { restoreNativeWorkspaceBestEffort } from "./native-runtime/native-workspace-best-effort.js";
+import {
+  withNativeWorkspaceFinalizationOwnership,
+  NativeWorkspaceFinalizationBusyError,
+  NativeWorkspaceFinalizationOwnershipLostError,
+  type NativeWorkspaceFinalizationOwnership,
+} from "./native-runtime/native-workspace-finalization-ownership.js";
+import { hasStopOnlyCleanup, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
@@ -39,9 +47,9 @@ import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation, StaleExecutionContinuationError } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
-import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
-import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { captureDirectorySnapshot, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { initializeRunIdentity, explicitOperatorRunIdentity } from "./run-identity.js";
 import {
   assertDurableChatWakeupReceipt,
@@ -2516,8 +2524,14 @@ async function materializeManagedProjectWorkspace(
     if (input.localSource) {
       const snapshot = await readGitWorkspaceSnapshot(input.localSource, false);
       if (!snapshot) throw new Error("Configured repository folder is not a Git checkout");
-      const baseline = await captureDirectorySnapshot(cloneTmpDir, { exclude: [".git", ".paperclip-runtime", PROJECT_REPOSITORIES_DIR, ...snapshot.ignoredPaths] });
-      await mergeDirectoryWithBaseline({ baseline, sourceDir: input.localSource, targetDir: cloneTmpDir });
+      let baseline;
+      try {
+        baseline = await captureDirectorySnapshot(cloneTmpDir, { exclude: [".git", ".paperclip-runtime", PROJECT_REPOSITORIES_DIR], ignoredPaths: snapshot.ignoredPaths, diskBacked: true });
+        await mergeDirectoryWithBaseline({ baseline, sourceDir: input.localSource, targetDir: cloneTmpDir });
+      } finally {
+        if (baseline) await disposeDirectorySnapshot(baseline);
+        await disposeGitWorkspaceSnapshot(snapshot);
+      }
       await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
     } else if (input.repoRef) {
       await execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS });
@@ -18567,7 +18581,7 @@ export function heartbeatService(
       // path uses the provider and configuration recorded on the lease first;
       // the environment is lifecycle context and only a legacy fallback.
       const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
-      const useRecordedTeardown = isOrphanEphemeralLease || !environment;
+      const useRecordedTeardown = isOrphanEphemeralLease || !environment || hasStopOnlyCleanup(lease);
 
       // Do not consume a finite cleanup attempt while the provider plugin is
       // briefly unavailable. A plugin worker restart, a plugin reload, or a
@@ -18636,7 +18650,9 @@ export function heartbeatService(
             environment,
             lease,
           });
-          const released = await environmentsSvc.releaseLease(lease.id, "expired", {
+          const released = hasStopOnlyCleanup(lease)
+            ? await settleStopOnlyCleanup(db, lease, { attemptId: claimed, receipt })
+            : await environmentsSvc.releaseLease(lease.id, "expired", {
             expectedPendingCleanupAttemptId: claimed,
             cleanupStatus: "success",
             failureReason: "pending_cleanup_retry",
@@ -18794,7 +18810,7 @@ export function heartbeatService(
       agentId: input.agentId,
       status: settledRun?.status,
       failureReason: settledRun?.error ?? undefined,
-      providerResourceDisposition: input.succeeded
+      providerResourceDisposition: input.succeeded && (!parseObject(settledRun?.resultJson).workspaceExportRetry || workspaceSyncReference?.resourceDisposition === "destroy")
         ? (workspaceSyncReference?.resourceDisposition ?? "stop_and_retain")
         : "stop_and_retain",
     });
@@ -24431,44 +24447,78 @@ export function heartbeatService(
           // If recording the barrier itself fails, propagate as a run failure
           // rather than silently leaving dependents stranded behind a missing
           // finalize row.
-          if (nativeWorkspaceSync) {
-            await nativeWorkspaceSync.restoreWorkspace();
-          }
-          await db
-            .update(heartbeatRuns)
-            .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
-            .where(
-              and(
-                eq(heartbeatRuns.id, run.id),
-                eq(heartbeatRuns.status, "running"),
-              ),
-            );
-          const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
-          await recordWorkspaceFinalize(workspaceFinalizeStatus);
-          if (adapterResult.nativeFinalization) {
-            adapterResult.nativeFinalization.workspaceFinalizeStatus =
-              workspaceFinalizeStatus;
+          const completeWorkspace = async (ownership?: NativeWorkspaceFinalizationOwnership) => {
             try {
-              const finalized = await finalizeNativeRun({
-                db,
-                runId: run.id,
-                workspaceFinalizeStatus,
-                preserveProviderAttempt: Boolean(nativeWorkspaceSync),
-              });
-              await dispatchPendingNativeStatusWakeups({
-                companyId: run.companyId,
-              });
-              if (finalized.phase === "committed") {
-                await nativeWorkspaceSync?.cleanup();
+              if (nativeWorkspaceSync) {
+                const exported = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+                  eq(workspaceOperations.companyId, run.companyId),
+                  eq(workspaceOperations.heartbeatRunId, run.id),
+                  eq(workspaceOperations.phase, "workspace_finalize"),
+                  eq(workspaceOperations.status, "succeeded"),
+                )).limit(1);
+                if (exported.length) adapterFinalizeOutcome = "succeeded";
+                else await restoreNativeWorkspaceBestEffort({
+                  db, runId: run.id, assertOwnership: ownership?.assertHeld,
+                  restore: () => nativeWorkspaceSync!.restoreWorkspace(ownership?.assertHeld),
+                });
               }
-            } catch (finalizeErr) {
-              logger.warn(
-                { err: finalizeErr, runId: run.id },
-                "native result persisted but finalization did not apply; the reconciliation loop will retry",
-              );
+              await ownership?.assertHeld();
+              await db
+                .update(heartbeatRuns)
+                .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
+                .where(
+                  and(
+                    eq(heartbeatRuns.id, run.id),
+                    eq(heartbeatRuns.status, "running"),
+                  ),
+                );
+              const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
+              await recordWorkspaceFinalize(workspaceFinalizeStatus);
+              if (adapterResult.nativeFinalization) {
+                adapterResult.nativeFinalization.workspaceFinalizeStatus =
+                  workspaceFinalizeStatus;
+                try {
+                  const finalized = await finalizeNativeRun({
+                    db,
+                    runId: run.id,
+                    workspaceFinalizeStatus,
+                    preserveProviderAttempt: Boolean(nativeWorkspaceSync),
+                  });
+                  await dispatchPendingNativeStatusWakeups({
+                    companyId: run.companyId,
+                  });
+                  if (finalized.phase === "committed") {
+                    await nativeWorkspaceSync?.cleanup();
+                  }
+                } catch (finalizeErr) {
+                  logger.warn(
+                    { err: finalizeErr, runId: run.id },
+                    "native result persisted but finalization did not apply; the reconciliation loop will retry",
+                  );
+                }
+              }
+            } catch (error) {
+              if (ownership) {
+                await ownership.assertHeld();
+                await recordWorkspaceFinalize("failed");
+              }
+              throw error;
             }
+          };
+          if (nativeWorkspaceSync) {
+            const owned = await withNativeWorkspaceFinalizationOwnership({
+              db, companyId: run.companyId, runId: run.id,
+            }, completeWorkspace);
+            if (!owned.acquired) throw new NativeWorkspaceFinalizationBusyError();
+          } else {
+            await completeWorkspace();
           }
         } catch (adapterErr) {
+          if (adapterErr instanceof NativeWorkspaceFinalizationBusyError
+            || adapterErr instanceof NativeWorkspaceFinalizationOwnershipLostError) {
+            nativeWorkspaceFinalizeScheduled = true;
+            throw adapterErr;
+          }
           if (adapterErr instanceof NativeControllerDetachedForRestartError) {
             // Preserve the provider and its run for the new controller. This
             // also keeps generic teardown from terminalizing/releasing its lease.
@@ -25408,6 +25458,14 @@ export function heartbeatService(
           }
           return;
         }
+        if (err instanceof NativeWorkspaceFinalizationBusyError
+          || err instanceof NativeWorkspaceFinalizationOwnershipLostError) {
+          // Another exact owner is finishing copyback, or this owner lost its
+          // lock connection. Preserve the accepted result and let reconciliation
+          // inspect durable ownership; neither case consumes an export retry.
+          logger.info({ runId: run.id, reason: err.message }, "native workspace finalization deferred to its durable owner");
+          return;
+        }
         if (err instanceof NativeWorkspaceFinalizeScheduledError) {
           const coordinator = await db
             .select({
@@ -25423,7 +25481,9 @@ export function heartbeatService(
             stream: "system",
             level: err.terminalFailure ? "error" : "warn",
             message: err.terminalFailure
-              ? "native result is durable, but the sandbox containing unexported workspace changes is unrecoverable"
+              ? err.reasonCode === "workspace_sync_out_failed"
+                  ? "native result is durable; automatic workspace copy-back retries stopped and saved work is retained for export repair"
+                  : "native result is durable, but the sandbox containing unexported workspace changes is unrecoverable"
               : "native result is durable; workspace copy-back will retry without another provider turn",
             payload: {
               attempt: coordinator?.attempt ?? null,
@@ -25435,13 +25495,13 @@ export function heartbeatService(
           if (err.terminalFailure) {
             // The durable coordinator already failed the run, blocked the
             // issue, and cleared its execution lock. Let ordinary teardown
-            // release the now-useless lease and return the agent to service.
+            // release the lease while retaining the sandbox and its unexported work.
             nativeWorkspaceFinalizeScheduled = false;
             providerResourceDispositionForRun = "stop_and_retain";
             await finalizeAgentStatus(
               run.agentId,
               "failed",
-              "native_workspace_sync_out_unrecoverable",
+              `native_${err.reasonCode}`,
               { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) },
             ).catch(() => undefined);
           }

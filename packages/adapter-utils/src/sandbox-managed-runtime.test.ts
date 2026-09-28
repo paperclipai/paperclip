@@ -1673,7 +1673,7 @@ describe("sandbox managed runtime", () => {
     expect(downloadedTars).toHaveLength(1);
     const members = await listTarMembers(rootDir, "empty-workspace-download.tar", downloadedTars[0]!.bytes);
     expect(members).toEqual([]);
-    const emptyArchiveCommand = runCommands.find((command) => command.includes("dd if=/dev/zero"));
+    const emptyArchiveCommand = runCommands.find((command) => command.includes("--null -T"));
     expect(emptyArchiveCommand).toBeDefined();
     expect(emptyArchiveCommand).not.toContain("/dev/null");
   });

@@ -42,13 +42,12 @@ export interface StorageProvider {
   deleteObject(input: GetObjectInput): Promise<void>;
 }
 
-export interface PutFileInput {
+export type PutFileInput = {
   companyId: string;
   namespace: string;
   originalFilename: string | null;
   contentType: string;
-  body: Buffer;
-}
+} & ({ body: Buffer } | { body: Readable; byteSize: number; sha256: string });
 
 export interface PutFileResult {
   provider: StorageProviderId;

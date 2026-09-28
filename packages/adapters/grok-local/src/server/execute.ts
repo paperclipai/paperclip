@@ -1,3 +1,4 @@
+import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import fs from "node:fs/promises";
@@ -246,6 +247,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 }
 
 async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -616,6 +618,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       }
 
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+        onProcessStopped: providerStop.beginInvocation(),
         cwd,
         env,
         timeoutSec,
@@ -725,7 +728,33 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
   };
 
   try {
-    return await withWorkspaceRestore(executeTurn, async () => { await restoreRemoteWorkspace?.(); });
+    return await withWorkspaceRestore(
+      async () => {
+        let result: AdapterExecutionResult;
+        let collectionFailed = false;
+        const collectionFailureMessage = "Instruction collection failed after provider stop. No instruction save is claimed.";
+        try {
+          result = await executeTurn();
+        } finally {
+          try {
+            await providerStop.collectBeforeRestore();
+          } catch {
+            collectionFailed = true;
+            await onLog("stderr", `[paperclip] ${collectionFailureMessage}\n`).catch(() => undefined);
+          }
+        }
+        if (!collectionFailed) return result;
+        const providerFailed = result.timedOut || result.signal || result.errorCode
+          || (result.exitCode !== null && result.exitCode !== 0);
+        return {
+          ...result,
+          ...(!providerFailed ? { errorCode: "instruction_collection_failed" } : {}),
+          errorMessage: [result.errorMessage, collectionFailureMessage].filter(Boolean).join(" "),
+          resultJson: { ...result.resultJson, instructionCollectionFailure: "collection_failed" },
+        };
+      },
+      async () => { await restoreRemoteWorkspace?.(); },
+    );
   } finally {
     // Cleanup runs after settlement on both success and failure.
     if (stagedGrokHomeDir) {

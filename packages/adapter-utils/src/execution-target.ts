@@ -267,6 +267,7 @@ export interface PreparedAdapterExecutionTargetRuntime {
     baseline: DirectorySnapshot;
     gitSnapshot: GitWorkspaceSnapshot | null;
   } | null;
+  cleanupWorkspaceSnapshot?(): Promise<void>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -279,6 +280,9 @@ export interface AdapterExecutionTargetProcessOptions {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  /** Trusted invocation observation, not a turn completion callback. Called only
+   * after local child close or a remotely observed exit, including nonzero exits. */
+  onProcessStopped?: () => void;
   terminalResultCleanup?: TerminalResultCleanupOptions;
   /**
    * Sandbox-only: factory from the Paperclip bridge handle that streams the
@@ -893,6 +897,7 @@ export async function runAdapterExecutionTargetProcess(
       // after the clean process completion cannot latch a false mid-run loss. A
       // control channel that died before this clean completion still fails the
       // run closed.
+      if (!result.timedOut && typeof result.exitCode === "number" && Number.isInteger(result.exitCode) && result.exitCode >= 0) options.onProcessStopped?.();
       const settled = applyRunDispositionSeam(result, options.settleRunDisposition);
       if (runLogTail) {
         await runLogTail.finish({ stdout: result.stdout, stderr: result.stderr });
@@ -911,7 +916,7 @@ export async function runAdapterExecutionTargetProcess(
       ? sanitizeRemoteExecutionEnv(options.env)
       : options.env;
 
-  return await runChildProcess(runId, command, args, {
+  const result = await runChildProcess(runId, command, args, {
     cwd: options.cwd,
     env,
     stdin: options.stdin,
@@ -923,6 +928,13 @@ export async function runAdapterExecutionTargetProcess(
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
+  // Closing an SSH client on timeout/disconnect does not prove the remote
+  // provider exited. SSH status 255 is transport failure, never a stop receipt.
+  if (!target || target.kind === "local" ||
+      (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255)) {
+    options.onProcessStopped?.();
+  }
+  return result;
 }
 
 export async function runAdapterExecutionTargetShellCommand(
@@ -1522,6 +1534,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     additionalSourceDirs: prepared.additionalSourceDirs,
     additionalSourceFailures: prepared.additionalSourceFailures,
     workspaceSyncSnapshot: prepared.workspaceSyncSnapshot,
+    cleanupWorkspaceSnapshot: prepared.cleanupWorkspaceSnapshot,
     restoreWorkspace: prepared.restoreWorkspace,
   };
 }

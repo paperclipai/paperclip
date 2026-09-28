@@ -18,6 +18,11 @@ Paperclip surfaces and whether the resulting artifact and state are usable.
 The names describe the system under test; “headless” is an execution option,
 not an eval category.
 
+The explicit Product E2E `completion-updates` suite compares onboarding and
+idle Agent Chat handoffs on native Claude/Codex. It separates mechanical
+completion delivery/result access from semantic review of the retained answer;
+see the [probe contract](../tests/runner-e2e/README.md#completion-update-probes-explicit-only).
+
 ## Selecting a family
 
 Use **Runner Evals** for a runner protocol, adapter, transport, native session,
@@ -257,3 +262,7 @@ named existing controls on legacy and native Codex. Discover it with
 results and follow-up coverage are recorded in that suite's guide.
 
 Continuation accounting has an explicit-only eight-cell Product E2E [baseline suite](../tests/runner-e2e/CONTINUATION-ACCOUNTING.md), complementing the deterministic lifecycle inventory.
+
+The explicit-only Product E2E `api-response-reading` suite verifies retrieval of
+large saved API responses on local and Daytona native Codex runs. See the
+[Runner E2E guide](../tests/runner-e2e/README.md#bounded-api-response-reading).

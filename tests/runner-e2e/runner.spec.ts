@@ -1,3 +1,4 @@
+import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
 import { runAccountingFlow } from "./accounting-flow.js";
 import type { Issue } from "../../packages/shared/src/types/issue.js";
@@ -534,6 +535,7 @@ for (const execution of executions) {
     const marker = execution.task.buildVisibleMarker(nonce);
     const title = execution.task.buildTitle(nonce);
     let prompt = execution.task.buildPrompt(nonce);
+    let apiResponseSourceId: string | undefined;
     let lifecycleBlockerId: string | null = null;
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
@@ -549,6 +551,7 @@ for (const execution of executions) {
     let selectedRuns: RunRecord[] = [];
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
+    let downloadedResponseProof: Awaited<ReturnType<typeof readResponseProof>> | undefined;
     let firstTaskEvidence: RunnerE2EResult["firstTask"];
     let turnTimings: NonNullable<RunnerE2EResult["turnTimings"]> | undefined;
     const turnSubmissionTimesMs: number[] = [];
@@ -793,6 +796,15 @@ for (const execution of executions) {
         credentials,
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
       });
+
+      if (execution.suite.id === "api-response-reading") {
+        const source = await api.post<{ id: string }>(`/api/companies/${fixtures.company.id}/issues`, {
+          title: `Synthetic diagnostic evidence ${nonce}`,
+          description: responseEvidenceDescription(nonce), status: "backlog",
+        });
+        apiResponseSourceId = source.id;
+        prompt = prompt.replaceAll("{{API_RESPONSE_SOURCE_ID}}", source.id);
+      }
 
       if (execution.suite.id === "lifecycle-baseline" && lifecycleLiveCase(execution.task.id)?.family === "blocker") {
         const prerequisite = await api.post<{ id: string }>(`/api/companies/${fixtures.company.id}/issues`, {
@@ -1885,6 +1897,12 @@ for (const execution of executions) {
         }
       }
 
+      if (execution.suite.id === "api-response-reading") {
+        const paging = gradeApiResponsePaging(runEventsByRun.flatMap(captured => captured.events), apiResponseSourceId ?? "");
+        await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);
+        if (!paging.passed) invariantFailures.push(`Bounded response paging was not proven: ${paging.failure}`);
+      }
+
       const context = record(run.contextSnapshot);
       const environmentContext = record(context.paperclipEnvironment);
       const workspaceContext = record(context.paperclipWorkspace);
@@ -1938,6 +1956,11 @@ for (const execution of executions) {
             ]),
         ),
       );
+      if (execution.suite.id === "api-response-reading") {
+        downloadedResponseProof = await readResponseProof(api, issue.id, run.id);
+        fileObservations["api-response-proof.txt"] = downloadedResponseProof.content;
+        await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
+      }
       matcherResults = await Promise.all(
         taskMatchers.map((matcher) =>
           evaluateMatcher(matcher, {
@@ -2398,7 +2421,13 @@ for (const execution of executions) {
       const visibleAgentReplies = page
         .getByTestId("task-chat-thread")
         .getByTestId("task-chat-agent-bubble");
-      if (execution.task.flow === "warm_three_turn") {
+      if (execution.suite.id === "api-response-reading") {
+        // File delivery renders a card instead of an exact summary bubble.
+        // Prove the visible link points to the same independently checked bytes.
+        const proofLink = page.getByRole("link", { name: "Open api-response-proof.txt", exact: true }).first();
+        await expect(proofLink).toBeVisible({ timeout: 30_000 });
+        await expect(proofLink).toHaveAttribute("href", `/api/attachments/${downloadedResponseProof!.attachmentId}/content`);
+      } else if (execution.task.flow === "warm_three_turn") {
         // Prove the persisted user-facing response is visible, independently
         // of the byte-for-byte workspace checks and lease continuity checks.
         expect(finalRunMessage.trim()).not.toBe("");

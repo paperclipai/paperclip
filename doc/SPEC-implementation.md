@@ -414,7 +414,7 @@ Operational policy:
   - `provider` enum/text (`local_disk | s3`)
   - `object_key` text not null
   - `content_type` text not null
-  - `byte_size` int not null
+  - `byte_size` bigint not null (safe integer byte count in the API)
   - `sha256` text not null
   - `original_filename` text null
   - `created_by_agent_id` uuid fk null
@@ -1718,3 +1718,15 @@ Agents cannot
 read or change these preferences. The legacy instance general setting is retained
 for API compatibility but no longer controls shortcut behavior in the app;
 users opt in individually after the upgrade.
+
+### Unsafe native workspace exports
+
+An unsafe workspace link does not fail an accepted native task result. Retry
+export automatically with confined entries only and keep archive confinement in
+place. If the export remains unsafe, omit it and finish the saved result under
+normal completion rules. Record diagnostics only in run logs; do not add a task
+warning or manual repair action. This also applies to historical unsafe failures:
+omit the already-rejected export, clear stale repair notices, and finalize the
+accepted result without another provider turn, even when its old sandbox is
+unavailable. Preserve current ownership and newer-work fences. See
+`native-workspace-finalization-recovery.md`.
