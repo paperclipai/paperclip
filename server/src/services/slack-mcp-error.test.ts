@@ -40,6 +40,19 @@ describe("Slack MCP app setup failure", () => {
     expect(await isSlackMcpAccessDisabledResponse(endpoint, response(body))).toBe(false);
   });
 
+  it("recognizes the same response when Slack frames it as an event stream", async () => {
+    const stream = `event: message\ndata: ${JSON.stringify(payload)}\n\n`;
+    expect(await isSlackMcpAccessDisabledResponse(endpoint,
+      new Response(stream, { status: 400, headers: { "content-type": "text/event-stream" } }))).toBe(true);
+  });
+
+  it("keeps unrecognized event-stream errors reportable", async () => {
+    const other = { ...payload, error: { code: -32600, message: "Missing session ID" } };
+    const stream = `event: message\ndata: ${JSON.stringify(other)}\n\n`;
+    expect(await isSlackMcpAccessDisabledResponse(endpoint,
+      new Response(stream, { status: 400, headers: { "content-type": "text/event-stream" } }))).toBe(false);
+  });
+
   it("rejects non-JSON content and malformed JSON", async () => {
     expect(await isSlackMcpAccessDisabledResponse(endpoint, response(payload, 400, "text/html"))).toBe(false);
     expect(await isSlackMcpAccessDisabledResponse(endpoint,
