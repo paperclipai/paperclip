@@ -1315,6 +1315,105 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(interactions.find((row) => row.title === "Approve continuation")?.sourceIdentityContextId).toBe(pending!.id);
   });
 
+  it("forwards a decision brief on request_human_input and enforces the company's requireDecisionBrief flag", async () => {
+    const briefCompanyId = randomUUID();
+    const briefAgentId = randomUUID();
+    const briefIssueId = randomUUID();
+    const briefRunId = randomUUID();
+    await db.insert(companies).values({
+      id: briefCompanyId,
+      name: "Brief runner company",
+      issuePrefix: "BRF",
+      issueCounter: 1,
+      requireDecisionBrief: true,
+      interactionResolverGovernance: {
+        request_checkbox_confirmation: { cap: "human_only" },
+      },
+    });
+    await db.insert(agents).values({
+      id: briefAgentId,
+      companyId: briefCompanyId,
+      name: "Brief agent",
+      adapterType: "paperclip_runner",
+      adapterConfig: {},
+      runtimeConfig: {},
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: briefIssueId,
+      companyId: briefCompanyId,
+      issueNumber: 1,
+      identifier: "BRF-1",
+      title: "Needs a human decision",
+      status: "in_progress",
+      workMode: "standard",
+      assigneeAgentId: briefAgentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: briefRunId,
+      companyId: briefCompanyId,
+      agentId: briefAgentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: briefIssueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: { issueId: briefIssueId },
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: briefRunId })
+      .where(eq(issues.id, briefIssueId));
+
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId: briefCompanyId,
+      agentId: briefAgentId,
+      issueId: briefIssueId,
+      runId: briefRunId,
+    });
+
+    const baseArguments = {
+      idempotencyKey: "brief-missing",
+      interactionKind: "checkbox",
+      title: "Pick an approach",
+      prompt: "Which approach should we take?",
+      continuationPolicy: "wake_assignee",
+      payload: { options: [{ id: "a", label: "Approach A" }] },
+    };
+    await expect(
+      authority.execute({
+        tool: "request_human_input",
+        callId: "brief-missing",
+        arguments: baseArguments,
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    const brief = {
+      version: 1,
+      whatIsHappening: "Implementing the requested feature.",
+      whyStopped: "Two viable approaches with different tradeoffs.",
+      whatWeNeed: "Pick approach A or B.",
+    };
+    const result = (await authority.execute({
+      tool: "request_human_input",
+      callId: "brief-supplied",
+      arguments: {
+        ...baseArguments,
+        idempotencyKey: "brief-supplied",
+        brief,
+      },
+    })) as { disposition: string; interaction: { id: string; status: string } };
+    expect(result).toMatchObject({
+      disposition: "applied",
+      interaction: { status: "pending" },
+    });
+    const [row] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, result.interaction.id));
+    expect(row?.brief).toEqual(brief);
+  });
+
   it("fails closed once the run is no longer active", async () => {
     await db
       .update(heartbeatRuns)

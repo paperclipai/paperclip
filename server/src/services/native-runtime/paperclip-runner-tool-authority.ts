@@ -9,7 +9,7 @@ import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from 
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
-import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
+import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE, decisionBriefSchema } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { paperclipChatFilePreparationDelivery } from "@paperclipai/adapter-utils/chat-file-delivery";
 import {
@@ -1599,6 +1599,9 @@ export class PaperclipRunnerToolAuthority {
           title: requiredString(input.title),
           summary: prompt,
           continuationPolicy: requiredString(input.continuationPolicy),
+          brief: input.brief === null || input.brief === undefined
+            ? null
+            : decisionBriefSchema.parse(input.brief),
           payload: {
             ...normalizedPayload,
             version: 1,

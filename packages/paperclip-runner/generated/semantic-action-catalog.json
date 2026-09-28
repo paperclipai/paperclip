@@ -678,11 +678,85 @@
       "planning",
       "skill_test"
     ],
-    "description": "Create a typed, durable interaction on the active task.",
+    "description": "Create a typed, durable interaction on the active task. Include brief for human-facing requests (default anyone, human_only, or an addressed user); a company may require it, and a missing brief then fails with 422.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "brief": {
+          "additionalProperties": false,
+          "properties": {
+            "recommendation": {
+              "description": "Your pick, if you have one.",
+              "maxLength": 400,
+              "minLength": 1,
+              "type": "string"
+            },
+            "relatedWork": {
+              "description": "Links a human cannot already see. Parent, sibling, and blocker tasks are shown automatically; do not restate them.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "agentId": {
+                    "description": "Agent id in this company.",
+                    "maxLength": 240,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "issueId": {
+                    "description": "Task id in this company.",
+                    "maxLength": 240,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "note": {
+                    "description": "Why this is relevant.",
+                    "maxLength": 300,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "note"
+                ],
+                "type": "object"
+              },
+              "maxItems": 8,
+              "type": "array"
+            },
+            "version": {
+              "enum": [
+                1
+              ],
+              "type": "integer"
+            },
+            "whatIsHappening": {
+              "description": "The work in progress, who requested it, and the parent task.",
+              "maxLength": 1200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "whatWeNeed": {
+              "description": "The question and the consequence of each option. Put your pick in recommendation, not here.",
+              "maxLength": 1200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "whyStopped": {
+              "description": "The concrete fact that blocked you and why the decision is not yours to make.",
+              "maxLength": 1200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "version",
+            "whatIsHappening",
+            "whyStopped",
+            "whatWeNeed"
+          ],
+          "type": "object"
+        },
         "continuationPolicy": {
           "enum": [
             "none",
