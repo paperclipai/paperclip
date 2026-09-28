@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
@@ -442,16 +442,26 @@ async function copySnapshotEntry(sourceDir: string, targetDir: string, relative:
   }
 
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.rm(targetPath, { recursive: true, force: true }).catch(() => undefined);
   if (entry.kind === "symlink") {
+    await fs.rm(targetPath, { recursive: true, force: true });
     await fs.symlink(entry.target, targetPath);
     return;
   }
+  // An interrupted restore must not leave a truncated current file. Keep the
+  // incoming tree until its owner records success; exact retries deduplicate.
+  const temporary = path.join(path.dirname(targetPath), `.paperclip-merge-${randomUUID()}`);
+  try {
+    await fs.copyFile(sourcePath, temporary, fsConstants.COPYFILE_FICLONE).catch(async () => {
+      await fs.copyFile(sourcePath, temporary);
+    });
+    await fs.chmod(temporary, entry.mode);
+    const file = await fs.open(temporary, "r");
+    try { await file.sync(); } finally { await file.close(); }
+    const existing = await fs.lstat(targetPath).catch(() => null);
+    if (existing?.isDirectory()) await fs.rm(targetPath, { recursive: true, force: true });
+    await fs.rename(temporary, targetPath);
+  } finally { await fs.rm(temporary, { force: true }); }
 
-  await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
-    await fs.copyFile(sourcePath, targetPath);
-  });
-  await fs.chmod(targetPath, entry.mode);
 }
 
 export async function captureDirectorySnapshot(
@@ -511,10 +521,45 @@ function orderedEntries(snapshot: DirectorySnapshot, reverse = false): Iterable<
   return [...snapshot.entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0) * (reverse ? -1 : 1));
 }
 
+export class DirectoryMergeConflict extends Error {
+  readonly code = "DIRECTORY_MERGE_CONFLICT";
+  constructor(readonly paths: string[]) {
+    super("Directory contents changed concurrently");
+  }
+}
+
+/** Preflight the entire delta before writing. Identical replays are safe after
+ * an interrupted apply; unrelated edits are left alone. No history is retained. */
+export function directoryMergeConflicts(baseline: DirectorySnapshot, source: DirectorySnapshot, current: DirectorySnapshot): string[] {
+  const same = (a: SnapshotEntry | undefined, b: SnapshotEntry | undefined) =>
+    (!a && !b) || entriesMatch(a, b);
+  const conflicts = new Set<string>();
+  for (const relative of new Set([...[...baseline.entries].map(([name]) => name), ...[...source.entries].map(([name]) => name)])) {
+    const before = baseline.entries.get(relative);
+    const incoming = source.entries.get(relative);
+    const present = current.entries.get(relative);
+    if (same(before, incoming) || same(incoming, present)) continue;
+    if (!same(before, present)) conflicts.add(relative);
+    // A parent removed/replaced by another writer must never be traversed.
+    for (let parent = path.posix.dirname(relative); parent !== "."; parent = path.posix.dirname(parent)) {
+      if (current.entries.get(parent)?.kind !== "dir" &&
+          !same(current.entries.get(parent), baseline.entries.get(parent))) conflicts.add(parent);
+    }
+    if (before?.kind === "dir" && incoming?.kind !== "dir") {
+      for (const [child, entry] of current.entries) {
+        if (child.startsWith(`${relative}/`) && !same(entry, baseline.entries.get(child)) &&
+            !same(entry, source.entries.get(child))) conflicts.add(child);
+      }
+    }
+  }
+  return [...conflicts].sort();
+}
+
 export async function mergeDirectoryWithBaseline(input: {
   baseline: DirectorySnapshot;
   sourceDir: string;
   targetDir: string;
+  conflictPolicy?: "reject";
   beforeApply?: () => Promise<void>;
   afterApply?: () => Promise<void>;
 }): Promise<void> {
@@ -525,6 +570,10 @@ export async function mergeDirectoryWithBaseline(input: {
       await input.beforeApply?.();
       const current = await captureDirectorySnapshot(canonicalTargetDir, options);
       try {
+        if (input.conflictPolicy === "reject") {
+          const conflicts = directoryMergeConflicts(input.baseline, source, current);
+          if (conflicts.length) throw new DirectoryMergeConflict(conflicts);
+        }
         for (const [relative, baselineEntry] of orderedEntries(input.baseline)) {
           if (baselineEntry.kind === "dir" || source.entries.has(relative)) continue;
           if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
@@ -537,7 +586,8 @@ export async function mergeDirectoryWithBaseline(input: {
           });
         }
         for (const [relative, entry] of orderedEntries(source)) {
-          if (!entriesMatch(input.baseline.entries.get(relative), entry)) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
+          if (!entriesMatch(input.baseline.entries.get(relative), entry) &&
+              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
         }
         await input.afterApply?.();
       } finally { await disposeDirectorySnapshot(current); }
