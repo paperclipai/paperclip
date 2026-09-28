@@ -1631,3 +1631,14 @@ disconnected, visible active queries refresh every 15 seconds. This fallback
 stops when the socket opens, the tab is hidden, or the provider unmounts. A
 reconnected socket also refreshes visible queries to recover missed events.
 Run log views retain their existing HTTP polling fallback.
+
+### Company context during hot reload
+
+The company React context retains only its object identity in Vite's per-module
+`hot.data`. Provider values remain in the mounted React tree and keep their normal
+account scope. This lets a refreshed consumer read a provider from the preceding
+module version. Production builds do not use the development cache.
+
+Run `pnpm test:e2e:browser-context` to test this with real Vite modules and
+Chromium. The test starts its own loopback Vite server and mocks API responses;
+it needs no running Paperclip instance or provider credentials.

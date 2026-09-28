@@ -418,13 +418,21 @@ Application and route error-boundary reports also include:
   URLs, arguments, and unrecognized lines are omitted. Parsing examines at
   most 16 KiB of input. Production builds preserve function names so this
   trace remains useful after minification; this adds some bundle size.
+
+All browser error reports, including global promise rejections, include:
+
+- `browser_build_mode`: `development` or `production`, from the loaded bundle.
+- `browser_rejection_kind`: the primitive type of an unhandled rejected value
+  (or `null`). The diagnostic does not read object properties or copy the value.
 - `browser_state`: document readiness, visibility, and a boolean indicating
   the `translated-ltr` or `translated-rtl` root class used by browser translation.
   The marker is evidence of DOM translation, not proof of the error's cause;
   its absence does not exclude other translators or DOM-changing extensions.
 
-These fields are captured at the failure, before asynchronous reporting, and
-attached only to that event. They include no component props, DOM text, HTML,
+Boundary state is captured at the failure, before asynchronous reporting.
+Global reports without that snapshot read document state before sending.
+All fields are attached only to that event. They include no component props,
+DOM text, HTML,
 element identifiers, arbitrary CSS classes, route, or query string. Failed
 diagnostic reads do not prevent the original exception from being reported.
 The monitoring gate and sign-out behavior still apply. This context does not
