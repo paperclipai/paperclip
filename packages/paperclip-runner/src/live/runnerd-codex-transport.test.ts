@@ -7316,6 +7316,7 @@ it("preserves prepared input through runnerd and the real OpenCode proxy boundar
     task: { prompt: "Keep this request unchanged." },
     completionContract: { revision: "prepared-v1", criteria: task.completionContract.criteria },
   });
+  let failure: unknown;
   try {
     session = await driver.openSession({ runId: "prepared-opencode", normalizedSessionId: "prepared-opencode", workingDirectory: root });
     await session.startTurn({ message: { role: "user", text: prepared } });
@@ -7326,9 +7327,19 @@ it("preserves prepared input through runnerd and the real OpenCode proxy boundar
     expect(sessionRoots).toHaveLength(1);
     const requests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     expect(requests.map((request) => request.parts)).toEqual([[{ type: "text", text: prepared }]]);
+  } catch (error) {
+    failure = error;
   } finally {
-    await session?.close();
-    await bundle.transport.close();
+    try {
+      await session?.close();
+      await bundle.transport.close();
+    } catch (error) {
+      // Preserve bootstrap failures when cleanup independently cannot suspend.
+      failure ??= error;
+    }
     await rm(root, { recursive: true, force: true });
+  }
+  if (failure) {
+    throw new Error(`${String(failure)}\n${bundle.evidence().diagnostics.join("\n")}`, { cause: failure });
   }
 }, 30_000);
