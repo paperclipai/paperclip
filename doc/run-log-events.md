@@ -34,6 +34,14 @@ credential material are never written to the run log.
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
+## Omitted Unsafe Workspace Export
+
+`workspace_export_omitted` is an informational system event in the local run log.
+Its payload is `{ "reason": "restore_unsafe_archive" }`. It records that native
+finalization discarded an unsafe export and continued with the accepted result.
+It contains no archive names, link targets, or raw error details. It does not
+create a task warning, recovery action, Telemetry event, or OpenTelemetry export.
+
 ## Native Restart Recovery Run-Log Event
 
 Paperclip writes a `native.recovery.transition` event for every native restart

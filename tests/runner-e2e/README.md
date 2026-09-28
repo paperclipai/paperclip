@@ -1042,29 +1042,3 @@ keys with low request limits. It can only lower the configured campaign limit.
 Keep subscription qualification separate from API-key results.
 
 The explicit-only eight-cell [continuation accounting baseline](CONTINUATION-ACCOUNTING.md) tests productive work, bounded repair, restart and late gates with real providers.
-
-## Permanent workspace export rejection
-
-`daytona-workspace-recovery.runner-codex.daytona.unsafe-link-export` is an
-explicit-only, one-provider-turn cell (ten-minute bound). A browser-created task
-writes a safe nonce file and a dangling absolute symlink in its disposable
-Daytona workspace, then submits a successful semantic result. The independent
-oracle reads public run events, recovery actions and lease records. It requires
-one accepted result and successful provider terminal event, immediate permanent
-export failure on attempt one, a blocked task with board repair ownership and no
-retry, an exact stopped-sandbox receipt, and no escaped link on the host.
-
-The first failure is captured before an unfixed controller's scheduled retry.
-After preserving that rejection evidence, the fixture uses the official Daytona
-SDK to resume only the exact sandbox whose company/environment/run/create-attempt
-labels match the stopped lease. It verifies the safe file hash, removes only the
-known synthetic link, then clicks **Retry workspace export** in the browser. The
-second oracle requires the original accepted result and provider events unchanged,
-Done/committed, exact safe bytes on the host, and the same sandbox stopped again.
-Ordinary fixture teardown then destroys it; no private state injection or
-extraction exception is used. Normal screenshot, secret scanning, billing and cleanup reporting apply.
-Select this cell explicitly after credential-free checks and immutable image
-setup; `--all` excludes it. See `workspace-export.json` in the attempt snapshots
-for each independent assertion; `workspace-export-rejected.json` preserves the
-first failure and `workspace-export-operator-repair.json` records the narrow repair.
-Missing stop receipts or accepted-result evidence fail the cell.

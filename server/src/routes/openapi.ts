@@ -207,7 +207,6 @@ import {
   // Issue recovery and decomposition
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
-  retryWorkspaceExportSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -9977,15 +9976,6 @@ registerCurrentRoute({
   path: "/api/issues/{id}/recovery-actions",
   tags: ["issues"],
   summary: "List issue recovery actions",
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/issues/{id}/recovery-actions/retry-workspace-export",
-  tags: ["issues"],
-  summary: "Retry only workspace export for a repaired accepted native result",
-  body: retryWorkspaceExportSchema,
-  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registerCurrentRoute({

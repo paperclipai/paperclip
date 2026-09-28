@@ -271,8 +271,6 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
-  retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
-    api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
   resolveRecoveryAction: (
     id: string,
     data: {

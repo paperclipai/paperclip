@@ -250,6 +250,8 @@ export function splitLinkEntryOnce(field: string, delimiter: string): { name: st
  * preserved. Parses the `-tvf` verbose listing so both member names and link
  * targets are inspected; any unparseable line fails closed.
  */
+class UnsafeOutboundArchiveError extends Error {}
+
 async function assertTarballEntriesConfined(archivePath: string): Promise<void> {
   const { stdout } = await execFileAsync("tar", ["-tvf", archivePath], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
@@ -259,30 +261,30 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
   for (const line of lines) {
     const parsed = parseTarVerboseListingLine(line);
     if (!parsed) {
-      throw new Error(`Daytona syncOut refusing tarball with an unparseable entry listing: ${line}`);
+      throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing tarball with an unparseable entry listing: ${line}`);
     }
     const typeFlag = parsed.typeFlag;
     let name = parsed.rest;
     let linkTarget: string | null = null;
     if (typeFlag === "l") {
       const split = splitLinkEntryOnce(name, " -> ");
-      if (!split) throw new Error(`Daytona syncOut refusing unparseable or ambiguous symlink entry: ${line}`);
+      if (!split) throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing unparseable or ambiguous symlink entry: ${line}`);
       name = split.name;
       linkTarget = split.target;
     } else if (typeFlag === "h") {
       const split = splitLinkEntryOnce(name, " link to ");
-      if (!split) throw new Error(`Daytona syncOut refusing unparseable or ambiguous hardlink entry: ${line}`);
+      if (!split) throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing unparseable or ambiguous hardlink entry: ${line}`);
       name = split.name;
       linkTarget = split.target;
     }
     const cleanName = name.replace(/\/+$/, "");
     if (cleanName.length > 0 && posixPathEscapes(cleanName)) {
-      throw new Error(`Daytona syncOut refusing tarball member that escapes the extraction dir: ${name}`);
+      throw new UnsafeOutboundArchiveError(`Daytona syncOut refusing tarball member that escapes the extraction dir: ${name}`);
     }
     if (linkTarget !== null) {
       const resolved = path.posix.join(path.posix.dirname(cleanName), linkTarget);
       if (path.posix.isAbsolute(linkTarget) || posixPathEscapes(resolved)) {
-        throw new Error(
+        throw new UnsafeOutboundArchiveError(
           `Daytona syncOut refusing tarball link whose target escapes the extraction dir: ${name} -> ${linkTarget}`,
         );
       }
@@ -1160,6 +1162,7 @@ async function syncOutDirectoryMapping(input: {
   mapping: PluginSyncFileMapping;
   remoteDir: string;
   timeoutSeconds: number;
+  onArchiveRecovery?: () => void;
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
   const { sandbox, mapping, remoteDir, timeoutSeconds } = input;
   assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
@@ -1177,7 +1180,10 @@ async function syncOutDirectoryMapping(input: {
 
   return withHostTempDir(async (tmp) => {
     const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
-    const excludeFlags = ["._*", ...(mapping.exclude ?? [])]
+    const remoteList = path.posix.join(remoteDir, scratchName(".list"));
+    const excludes = ["._*", `${SCRATCH_PREFIX}*`, ...(mapping.exclude ?? [])];
+    const excludeFlags = excludes
+      .flatMap((entry) => [entry, `${entry.replace(/\/$/, "")}/*`])
       .map((entry) => `--exclude ${shellQuote(entry)}`)
       .join(" ");
     // Tar the source in-sandbox (naming top-level entries so no "." self-entry is
@@ -1191,37 +1197,66 @@ async function syncOutDirectoryMapping(input: {
       `if [ "$#" -eq 0 ]; then dd if=/dev/zero of=${shellQuote(remoteTar)} bs=1024 count=1; ` +
         `else tar -c --no-xattrs ${mapping.followSymlinks ? "-h " : ""}${excludeFlags} -f ${shellQuote(remoteTar)} -- "$@"; fi`,
     ].join(" && ");
-    await assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(tarScript)}`, timeoutSeconds, "syncOut tar");
-    guardRoundTrips += 1;
+    // Rebuild the archive with files, directories, and relative links whose
+    // resolved targets remain inside this mapping. Nothing is deleted or
+    // dereferenced. Host validation still checks the rebuilt archive, including
+    // links changed by the sandbox between enumeration and tar creation.
+    const prunePaths = excludes.flatMap((entry) => [
+      `-path ${shellQuote(`./${entry}`)}`, `-path ${shellQuote(`*/${entry}`)}`,
+    ]).join(" -o ");
+    const filterLinks = [
+      ...canonicalizerPreamble(shellQuote(mapping.sourcePath)),
+      'for _pc_link do',
+      '  _pc_target=$(readlink -- "$_pc_link") || continue;',
+      '  case "$_pc_link" in *" -> "*) continue ;; esac;',
+      '  case "$_pc_target" in /*|*" -> "*) continue ;; esac;',
+      '  _pc_real=$(_pc_resolve "$_pc_link" 2>/dev/null) || continue;',
+      `  case "$_pc_real/" in "$_pc_root"/*) printf '%s\\0' "$_pc_link" ;; esac;`,
+      'done',
+    ].join("\n");
+    const confinedEntriesScript = [
+      `cd ${shellQuote(mapping.sourcePath)}`,
+      `find . -mindepth 1 \\( ${prunePaths} \\) -prune -o -type l -exec sh -c ${shellQuote(filterLinks)} sh {} + -o \\( -type f -o -type d \\) -print0 > ${shellQuote(remoteList)}`,
+      `tar -c --no-xattrs --hard-dereference --no-recursion --null ${excludeFlags} -f ${shellQuote(remoteTar)} -T ${shellQuote(remoteList)}`,
+    ].join(" && ");
 
     const localTar = path.join(tmp, "sync-out.tar");
     let bytesTransferred = 0;
     try {
-      // `transfer` span: the real byte download — `sandbox.fs.downloadFiles`.
-      const responses = await withProviderSpan({
-        name: "transfer",
-        wallMsAttr: SPAN_ATTR.transferWallMs,
-        attributes: {
-          [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
-          [SPAN_ATTR.transferDirection]: "outbound",
-        },
-        run: () =>
-          sandbox.fs.downloadFiles([{ source: remoteTar, destination: localTar }], timeoutSeconds),
-      });
-      const response = responses.find((entry) => entry.source === remoteTar) ?? responses[0];
-      if (!response || response.error) {
-        throw new Error(
-          `Daytona syncOut directory download failed for ${mapping.sourcePath}: ${response?.error ?? "no response returned"}`,
-        );
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(attempt === 0 ? tarScript : confinedEntriesScript)}`, timeoutSeconds, "syncOut tar");
+        guardRoundTrips += 1;
+        // `transfer` span: the real byte download — `sandbox.fs.downloadFiles`.
+        const responses = await withProviderSpan({
+          name: "transfer",
+          wallMsAttr: SPAN_ATTR.transferWallMs,
+          attributes: {
+            [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
+            [SPAN_ATTR.transferDirection]: "outbound",
+          },
+          run: () =>
+            sandbox.fs.downloadFiles([{ source: remoteTar, destination: localTar }], timeoutSeconds),
+        });
+        const response = responses.find((entry) => entry.source === remoteTar) ?? responses[0];
+        if (!response || response.error) {
+          throw new Error(
+            `Daytona syncOut directory download failed for ${mapping.sourcePath}: ${response?.error ?? "no response returned"}`,
+          );
+        }
+        bytesTransferred += (await fs.stat(localTar)).size;
+        try {
+          await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath });
+          break;
+        } catch (error) {
+          if (!(error instanceof UnsafeOutboundArchiveError) || attempt > 0) throw error;
+          // Diagnostic only: no warning, task action, or additional agent turn.
+          try { input.onArchiveRecovery?.(); } catch { /* logging is best effort */ }
+        }
       }
-      bytesTransferred = (await fs.stat(localTar)).size;
-      await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath });
     } finally {
       // Best-effort remove the sandbox-side scratch tar; the host temp dir is
       // cleaned by withHostTempDir.
-      await sandbox.fs
-        .deleteFile(remoteTar)
-        .catch(() => undefined);
+      await Promise.all([remoteTar, remoteList].map((file) => sandbox.fs.deleteFile(file).catch(() => undefined)));
     }
     const filesTransferred = await countHostFiles(mapping.targetPath, mapping.exclude);
     return { filesTransferred, bytesTransferred };
@@ -1233,6 +1268,7 @@ export async function performSyncOut(input: {
   operations: PluginSyncOperation[];
   remoteDir: string;
   timeoutSeconds: number;
+  onArchiveRecovery?: () => void;
 }): Promise<PluginEnvironmentSyncResult> {
   const operations: PluginEnvironmentSyncResult["operations"] = [];
   for (const operation of input.operations) {
@@ -1255,6 +1291,7 @@ export async function performSyncOut(input: {
       const dirResult = await syncOutDirectoryMapping({
         sandbox: input.sandbox,
         mapping,
+        onArchiveRecovery: input.onArchiveRecovery,
         remoteDir: input.remoteDir,
         timeoutSeconds: input.timeoutSeconds,
       });

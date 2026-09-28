@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
+// Compatibility for intents persisted by the former manual repair flow.
+// New unsafe exports complete automatically and never create these intents.
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 
@@ -16,7 +17,7 @@ export function hasNativeWorkspaceExportResume(lease: Pick<Lease, "metadata">): 
   return Object.prototype.hasOwnProperty.call(lease.metadata ?? {}, NATIVE_WORKSPACE_EXPORT_RESUME_KEY);
 }
 
-/** This intent is written before resuming a retained sandbox or terminalizing an
+/** Older versions wrote this intent before resuming a retained sandbox or terminalizing an
  * accepted result with unexported work. Recovery may stop
  * this exact allocation, but must never fall through to destructive cleanup. */
 export function readNativeWorkspaceExportResume(lease: Lease) {
@@ -36,35 +37,6 @@ export function readNativeWorkspaceExportResume(lease: Lease) {
     ? lease.metadata?.pluginId : marker.pluginId;
   if (typeof pluginId !== "string" || !pluginId || pluginId !== lease.metadata?.pluginId) return null;
   return { ...marker, requestId: marker.requestId, resultId: marker.resultId, pluginId };
-}
-
-/** Called inside the finalizer's transaction, before its terminal failure is
- * visible to orphan cleanup. A crash cannot expose an untagged failed lease. */
-export async function preserveNativeWorkspaceExportLease(db: Db, run: typeof heartbeatRuns.$inferSelect, resultId: string | null) {
-  const reference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
-  if (!reference || reference.state !== "prepared" || !resultId) return;
-  const [accepted] = await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
-    eq(nativeRunResults.id, resultId), eq(nativeRunResults.companyId, run.companyId),
-    eq(nativeRunResults.runId, run.id), eq(nativeRunResults.completionContractId, run.completionContractId!),
-    eq(nativeRunResults.schemaStatus, "accepted"),
-  )).limit(1);
-  if (!accepted) return;
-  const [lease] = await db.select().from(environmentLeases).where(and(
-    eq(environmentLeases.id, reference.leaseId), eq(environmentLeases.companyId, run.companyId),
-    eq(environmentLeases.heartbeatRunId, run.id), eq(environmentLeases.providerLeaseId, reference.providerLeaseId),
-  )).for("update").limit(1);
-  if (!lease || lease.status !== "active") return;
-  const requestId = randomUUID(), now = new Date();
-  await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
-    failureReason: "workspace_export_stop_pending", releasedAt: now, updatedAt: now,
-    metadata: { ...lease.metadata, remoteExecutionTermination: undefined,
-      [NATIVE_WORKSPACE_EXPORT_RESUME_KEY]: { schema: "paperclip.workspace-export-resume.v2", requestId,
-        purpose: "terminal_export", companyId: run.companyId, runId: run.id, resultId,
-        leaseId: lease.id, provider: lease.provider, providerLeaseId: lease.providerLeaseId,
-        pluginId: lease.metadata?.pluginId },
-      pendingCleanupAttemptId: requestId, pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
-      pendingCleanupRetryAfterMs: 0, pendingCleanupRetryAttempts: 0, pendingCleanupRetryCapWarned: false },
-  }).where(eq(environmentLeases.id, lease.id));
 }
 
 /** Only verified copyback plus commitment permits the original ephemeral

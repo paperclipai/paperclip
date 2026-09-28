@@ -18,7 +18,6 @@ export type RunnerTaskFlow =
   | "agent_chat"
   | "governed_tool_review"
   | "single_turn"
-  | "workspace_export_rejection"
   | "plan_revision_acceptance"
   | "question_resume_completion"
   | "plan_approval_completion"

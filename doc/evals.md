@@ -257,9 +257,3 @@ named existing controls on legacy and native Codex. Discover it with
 results and follow-up coverage are recorded in that suite's guide.
 
 Continuation accounting has an explicit-only eight-cell Product E2E [baseline suite](../tests/runner-e2e/CONTINUATION-ACCOUNTING.md), complementing the deterministic lifecycle inventory.
-
-`daytona-workspace-recovery` is an explicit Product E2E negative case for
-permanent unsafe workspace export. It proves that an accepted native result
-survives, the first rejection stops retries, the sandbox is retained for repair,
-and the escaping link never reaches the host. Its one-turn fixture and evidence
-contract are documented in the [runner E2E README](../tests/runner-e2e/README.md#permanent-workspace-export-rejection).

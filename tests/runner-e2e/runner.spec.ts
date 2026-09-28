@@ -1,4 +1,3 @@
-import { runWorkspaceExportRejection } from "./workspace-export-flow.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
 import { runAccountingFlow } from "./accounting-flow.js";
 import type { Issue } from "../../packages/shared/src/types/issue.js";
@@ -830,18 +829,7 @@ for (const execution of executions) {
         secrets,
       );
 
-      if (execution.task.flow === "workspace_export_rejection") {
-        const recovery = await runWorkspaceExportRejection({
-          page, api, fixtures, execution, nonce, workspacePath, daytonaApiKey: credentials.DAYTONA_API_KEY, deadlineAt: startedAtMs + deadlineMs - 60_000,
-          observe: (currentIssue, runs, checks) => {
-            issue = currentIssue; selectedRuns = runs;
-            matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const, path: `workspaceExport.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
-          },
-          capture: captureScreenshot,
-          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
-        });
-        issue = recovery.issue as IssueRecord; selectedRuns = recovery.runs as RunRecord[];
-      } else if (execution.task.flow === "continuation_accounting") {
+      if (execution.task.flow === "continuation_accounting") {
         const accounting = await runAccountingFlow({
           page, api, fixtures, execution, nonce, deadlineAt: startedAtMs + deadlineMs - 60_000,
           restart: () => restartIsolatedPaperclipServer({ api, requestId: `accounting-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),

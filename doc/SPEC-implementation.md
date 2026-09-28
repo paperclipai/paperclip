@@ -1718,3 +1718,11 @@ Agents cannot
 read or change these preferences. The legacy instance general setting is retained
 for API compatibility but no longer controls shortcut behavior in the app;
 users opt in individually after the upgrade.
+
+### Unsafe native workspace exports
+
+An unsafe workspace link does not fail an accepted native task result. Retry
+export automatically with confined entries only and keep archive confinement in
+place. If the export remains unsafe, omit it and finish the saved result under
+normal completion rules. Record diagnostics only in run logs; do not add a task
+warning or manual repair action. See `native-workspace-finalization-recovery.md`.

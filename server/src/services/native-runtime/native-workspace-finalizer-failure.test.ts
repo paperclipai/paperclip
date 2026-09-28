@@ -18,7 +18,6 @@ vi.mock("../environment-execution-target.js", () => ({ resolveEnvironmentExecuti
 vi.mock("../workspace-operations.js", () => ({ workspaceOperationService: () => ({
   createRecorder: () => ({ recordOperation: async (input: { run: () => Promise<unknown> }) => input.run() }),
 }) }));
-import { classifyNativeWorkspaceFailure } from "./native-workspace-failure.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
 
 function fixtureDb(): Db {
@@ -35,35 +34,31 @@ function fixtureDb(): Db {
   } } as unknown as Db;
 }
 
-describe("native workspace finalization failure classification", () => {
+describe("native workspace finalization without a manual export repair", () => {
   beforeEach(() => sync.resume.mockReset());
   it.each([
-    ["Daytona syncOut refusing tarball link whose target escapes the extraction dir: .worktrees/task/.tools/pnpm -> ../../../../../../usr/share/nodejs/corepack/dist/pnpm.js", "workspace_sync_out_unsafe_archive"],
-    ["Daytona syncOut refusing tarball member that escapes the extraction dir: ../private", "workspace_sync_out_unsafe_archive"],
-    ["daytona_sandbox_not_found", "workspace_sync_out_unrecoverable"],
-    ["Daytona syncOut directory download failed: timeout", "workspace_sync_out_failed"],
-  ])("retains a stable code for %s", async (message, expectedCode) => {
+    "Daytona syncOut refusing tarball link whose target escapes the extraction dir: tools/pnpm -> /usr/bin/pnpm",
+    "Daytona syncOut refusing tarball member that escapes the extraction dir: ../private",
+  ])("settles unsafe exports successfully after restart: %s", async (message) => {
     sync.resume.mockRejectedValueOnce(new Error(message));
     const result = await resumeNativeWorkspaceFinalization({ db: fixtureDb(), runId: "run", environmentRuntime: {} as never });
-    expect(result).toMatchObject({
-      status: "failed", exitCode: 1,
-      stderr: `${expectedCode}\n`, metadata: { workspaceSync: { code: expectedCode } },
-    });
+    expect(result).toMatchObject({ status: "succeeded", exitCode: 0 });
     expect(sync.resume).toHaveBeenCalledOnce();
-    expect(JSON.stringify(result)).not.toContain(".tools/pnpm");
+    expect(JSON.stringify(result)).not.toContain("tools/pnpm");
   });
-});
 
-
-describe("native workspace retry policy", () => {
   it.each([
-    [new Error("workspace_sync_out_unsafe_archive\n"), "workspace_sync_out_unsafe_archive", true],
-    [Object.assign(new Error("redacted"), { code: "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" }), "workspace_sync_out_unsafe_archive", true],
-    [new Error("Daytona outbound symlink-escape guard command failed (exit 44)"), "workspace_sync_out_unsafe_archive", true],
-    [new Error("Daytona outbound symlink-escape guard command failed (exit 1)"), "workspace_sync_out_failed", false],
-    [new Error("archive network download failed"), "workspace_sync_out_failed", false],
-    [new Error("workspace_sync_out_unrecoverable\n"), "workspace_sync_out_unrecoverable", true],
-  ])("classifies %s without leaking details", (error, code, permanent) => {
-    expect(classifyNativeWorkspaceFailure(error)).toEqual({ code, failureCode: `native_${code}`, permanent });
+    ["daytona_sandbox_not_found", "workspace_sync_out_unrecoverable"],
+    ["Daytona syncOut directory download failed: timeout", "workspace_sync_out_failed"],
+  ])("retains unrelated failure handling: %s", async (message, code) => {
+    sync.resume.mockRejectedValueOnce(new Error(message));
+    const result = await resumeNativeWorkspaceFinalization({ db: fixtureDb(), runId: "run", environmentRuntime: {} as never });
+    expect(result).toMatchObject({ status: "failed", exitCode: 1, stderr: `${code}\n` });
+  });
+
+  it("does not treat a missing workspace reference as an omitted unsafe archive", async () => {
+    sync.resume.mockResolvedValueOnce(false);
+    const result = await resumeNativeWorkspaceFinalization({ db: fixtureDb(), runId: "run", environmentRuntime: {} as never });
+    expect(result).toMatchObject({ status: "failed", exitCode: 1, stderr: "workspace_sync_out_unrecoverable\n" });
   });
 });

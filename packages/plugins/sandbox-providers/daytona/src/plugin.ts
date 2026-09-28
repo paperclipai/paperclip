@@ -3111,6 +3111,7 @@ const plugin = definePlugin({
           operations: params.operations,
           remoteDir,
           timeoutSeconds,
+          onArchiveRecovery: () => pluginContext?.logger.info("Workspace export omitted unsafe links; retrying with confined entries."),
         });
         sandboxHandleCache.markFresh(scope);
         return result;

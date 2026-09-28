@@ -555,12 +555,6 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "cancelled",
 ] as const;
 
-export const retryWorkspaceExportSchema = z.object({
-  actionId: z.string().guid(),
-  runId: z.string().guid(),
-  repairNote: z.string().trim().min(20).max(12000),
-}).strict();
-
 export const resolveIssueRecoveryActionSchema = z
   .object({
     executionReconciliation: z

@@ -1,3 +1,4 @@
+import { restoreNativeWorkspaceBestEffort } from "./native-workspace-best-effort.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-workspace-finalization-ownership.js";
 import fs from "node:fs/promises";
 import { and, desc, eq } from "drizzle-orm";
@@ -9,7 +10,6 @@ import {
   nativeRunFinalizations,
   workspaceOperations,
 } from "@paperclipai/db";
-import { classifyNativeWorkspaceFailure, type NativeWorkspaceFailureCode } from "./native-workspace-failure.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { inspectManagedGitWorktreeBranch } from "../workspace-runtime.js";
 import { environmentService } from "../environments.js";
@@ -31,7 +31,7 @@ function readString(value: unknown) {
 }
 
 function workspaceSyncFailure(
-  code: NativeWorkspaceFailureCode,
+  code: "workspace_sync_out_failed" | "workspace_sync_out_unrecoverable",
 ) {
   return {
     status: "failed" as const,
@@ -199,21 +199,25 @@ export async function resumeNativeWorkspaceFinalization(input: {
           };
         }
         try {
-          const restored = await resumeNativeWorkspaceSync({
+          const restored = await restoreNativeWorkspaceBestEffort({
             db: input.db,
             runId: input.runId,
-            target,
             assertOwnership: ownership.assertHeld,
+            restore: () => resumeNativeWorkspaceSync({
+              db: input.db, runId: input.runId, target, assertOwnership: ownership.assertHeld,
+            }),
           });
           await ownership.assertHeld();
-          if (!restored) {
+          if (restored === false) {
             return workspaceSyncFailure("workspace_sync_out_unrecoverable");
           }
           return {
             status: "succeeded",
             exitCode: 0,
             system:
-              "Native workspace finalization restored the remote workspace.\n",
+              restored
+                ? "Native workspace finalization restored the remote workspace.\n"
+                : "Unsafe workspace export omitted; finalization completed.\n",
             metadata: {
               workspaceSync: {
                 schema: nativeWorkspaceSync.schema,
@@ -224,7 +228,12 @@ export async function resumeNativeWorkspaceFinalization(input: {
           };
         } catch (error) {
           await ownership.assertHeld();
-          const { code } = classifyNativeWorkspaceFailure(error);
+          const code =
+            error instanceof Error &&
+            (error.message === "workspace_sync_out_unrecoverable" ||
+              error.message.includes("daytona_sandbox_not_found"))
+              ? "workspace_sync_out_unrecoverable"
+              : "workspace_sync_out_failed";
           return workspaceSyncFailure(code);
         }
       }
