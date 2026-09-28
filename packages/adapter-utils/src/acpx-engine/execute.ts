@@ -808,6 +808,10 @@ function resolveManagedCodexHomeDir(companyId: string): string {
   return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "codex-home");
 }
 
+function resolveManagedCodexApiKeyHomeDir(companyId: string, agentId: string): string {
+  return path.join(defaultStateDir(companyId, agentId), "codex-home");
+}
+
 // Mirrors `resolveManagedGrokHomeDir` in
 // `packages/adapters/grok-local/src/server/grok-home.ts` — this package
 // cannot import that adapter package (it would invert the dependency
@@ -1002,15 +1006,25 @@ async function prepareManagedCodexHome(input: {
   companyId: string;
   sourceHome: string;
   targetHome: string;
+  apiKey?: string;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<string> {
-  const { sourceHome, targetHome, onLog } = input;
+  const { sourceHome, targetHome, apiKey, onLog } = input;
   if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  const authJson = path.join(sourceHome, "auth.json");
-  if (await pathExists(authJson)) await ensureSymlink(path.join(targetHome, "auth.json"), authJson);
+  const targetAuth = path.join(targetHome, "auth.json");
+  if (apiKey) {
+    // Codex reads auth.json ahead of the process environment. Never leave a
+    // shared ChatGPT-login symlink in an API-key agent's managed home, and never
+    // write through that symlink into the operator's own Codex credentials.
+    await fs.rm(targetAuth, { force: true });
+    await fs.writeFile(targetAuth, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+  } else {
+    const sourceAuth = path.join(sourceHome, "auth.json");
+    if (await pathExists(sourceAuth)) await ensureSymlink(targetAuth, sourceAuth);
+  }
 
   for (const name of ["config.json", "config.toml", "instructions.md"]) {
     const source = path.join(sourceHome, name);
@@ -1255,6 +1269,7 @@ async function reconcileManagedCodexSkills(input: {
 
 async function prepareCodexSkillRuntime(input: {
   companyId: string;
+  agentId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
   moduleDir: string;
@@ -1282,12 +1297,19 @@ async function prepareCodexSkillRuntime(input: {
     typeof process.env.CODEX_HOME === "string" && process.env.CODEX_HOME.trim().length > 0
       ? path.resolve(process.env.CODEX_HOME.trim())
       : path.join(os.homedir(), ".codex");
-  const managedCodexHome = resolveManagedCodexHomeDir(input.companyId);
+  const apiKey = input.env.OPENAI_API_KEY?.trim() || input.env.CODEX_API_KEY?.trim()
+    || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim();
+  // Keep API-key auth separate from the company home used by subscription
+  // agents, so one agent cannot switch another agent's login on its next turn.
+  const managedCodexHome = apiKey
+    ? resolveManagedCodexApiKeyHomeDir(input.companyId, input.agentId)
+    : resolveManagedCodexHomeDir(input.companyId);
   const effectiveCodexHome = configuredCodexHome ??
     await prepareManagedCodexHome({
       companyId: input.companyId,
       sourceHome: sourceCodexHome,
       targetHome: managedCodexHome,
+      apiKey,
       onLog: input.onLog,
     });
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
@@ -2046,6 +2068,7 @@ async function buildRuntime(input: {
     const preparedSkills = await measureStartupStep(input.ctx, nowMs, "codex-home.seed", () =>
       prepareCodexSkillRuntime({
         companyId: agent.companyId,
+        agentId: agent.id,
         config,
         env,
         moduleDir: input.engine.moduleDir,
