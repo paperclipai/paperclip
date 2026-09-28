@@ -1731,3 +1731,77 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
+
+
+/**
+ * Default per-agent in-flight (WIP) cap, in issues.
+ *
+ * Deliberately much lower than `AGENT_DEFAULT_MAX_CONCURRENT_RUNS`. That knob
+ * answers "how many *run rows* may this agent have executing", which is a
+ * scheduler question. This one answers "how many *issues* may this agent be
+ * genuinely working on at once", which is the question the runtime can actually
+ * serve — one process, one attention span.
+ *
+ * Keyed on issues with a live execution lock, never on the `in_progress` status
+ * label. K-19938 measured 31 company `in_progress` issues against a real fleet
+ * WIP of ~5: 24 of them were labels with no run bound to them, because a
+ * status is a claim while a lock is a fact. Counting labels is what let phantom
+ * slots accumulate, so the cap must not count them.
+ */
+export const AGENT_DEFAULT_MAX_IN_FLIGHT_ISSUES = 2;
+
+/** Lower bound for the per-agent in-flight cap. One is always servable. */
+export const AGENT_MIN_MAX_IN_FLIGHT_ISSUES = 1;
+
+/**
+ * Upper bound for the per-agent in-flight cap.
+ *
+ * Above this an agent is no longer doing WIP-limited work, it is running a
+ * fleet, and the honest answer is to hire more agents rather than widen this.
+ */
+export const AGENT_MAX_MAX_IN_FLIGHT_ISSUES = 20;
+
+/**
+ * Default per-agent cap on the *number of issues labelled* `in_progress`.
+ *
+ * This is a second, stricter control than `AGENT_DEFAULT_MAX_IN_FLIGHT_ISSUES`
+ * and the two are deliberately not the same counter. Read them together:
+ *
+ *   - `maxInFlightIssues` counts **facts**: issues holding a live execution
+ *     lock. Enforced at dispatch. This is what a scheduler can rely on.
+ *   - `maxInProgressIssues` counts **claims**: issues whose status says
+ *     `in_progress`. Enforced at the status-transition layer, so the label can
+ *     never be taken in the first place.
+ *
+ * The second exists because the first cannot see a claim that has not produced
+ * a run yet. K-19938 measured an agent holding 26 `in_progress` issues against
+ * a real WIP of 2: a run cap is blind to every one of those until a run binds
+ * it, which is exactly the window in which over-claiming happens. A cap on the
+ * run cannot bound the claim; only a cap on the claim can.
+ *
+ * It counts labels on purpose, which is the opposite of the in-flight cap, and
+ * the asymmetry is the point: the label cap is a governance ceiling on how much
+ * an agent may *say* it is doing, so measuring the claim honestly is the whole
+ * job. The phantoms this can accumulate are not left to rot — the
+ * `stale_in_progress_repair` sweep demotes `in_progress` issues with no run and
+ * no lock, so an agent blocked by a phantom label is unblocked on a bounded
+ * cadence rather than permanently.
+ */
+export const AGENT_DEFAULT_MAX_IN_PROGRESS_ISSUES = 2;
+
+/**
+ * Lower bound for the `in_progress` label cap.
+ *
+ * Zero is deliberately not allowed: an agent that can never hold an
+ * `in_progress` issue can never start work at all, and the cap is meant to bound
+ * concurrency, not to make progress impossible.
+ */
+export const AGENT_MIN_MAX_IN_PROGRESS_ISSUES = 1;
+
+/**
+ * Upper bound for the `in_progress` label cap.
+ *
+ * Same reasoning as `AGENT_MAX_MAX_IN_FLIGHT_ISSUES`: past this an agent is
+ * running a fleet, and the honest fix is more agents, not a wider ceiling.
+ */
+export const AGENT_MAX_MAX_IN_PROGRESS_ISSUES = 20;

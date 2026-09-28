@@ -32,6 +32,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
+  "agent_wip_cap_exceeded",
 ] as const;
 
 export type IssueWriteDenialCode = (typeof ISSUE_WRITE_DENIAL_CODES)[number];
@@ -73,6 +74,18 @@ export interface IssueWriteDenialContext {
   cap?: number | null;
   /** Attempt count that tripped the cap. */
   count?: number | null;
+  /**
+   * `agent_wip_cap_exceeded`: the per-agent `in_progress` ceiling, and how many
+   * issues that agent already holds at it.
+   *
+   * Both are required rather than optional for this code because the caller's
+   * only correct next move depends on them: at the cap, the agent must either
+   * land one of the issues it already holds or take one of them back to
+   * `todo`. Copy that omitted the number would tell the agent to "finish
+   * something first" without saying what is already open.
+   */
+  inProgressCap?: number | null;
+  inProgressCount?: number | null;
   /** ISO timestamp at which log-only rollout becomes enforcement. */
   enforceAt?: string | null;
 }
@@ -220,6 +233,33 @@ export function describeIssueWriteDenial(
           `Comment instead of patching — comments stay open and wake ${assignee} — or ` +
           `wait for the run to release the lock and retry.`,
       };
+
+    case "agent_wip_cap_exceeded": {
+      const cap = context.inProgressCap ?? 2;
+      const held = context.inProgressCount ?? cap;
+      return {
+        code,
+        status: 429,
+        tone: "cap",
+        // No parentheses: surfaces render the boundary inside their own parens.
+        boundary: `Per-agent cap of ${cap} in-progress tasks`,
+        title: `${assignee} already has ${held} tasks in progress`,
+        description:
+          `${assignee} holds ${held} of the ${cap} tasks it may have in progress at once, ` +
+          `so ${issue} was left in its previous status instead of being claimed. ` +
+          `This bounds how much an agent can say it is working on, not what it may ` +
+          `work on — nothing is blocked, and ${issue} is still eligible for dispatch ` +
+          `the moment a slot frees.`,
+        whoCanAct:
+          `${assignee}, by landing one of its ${held} in-progress tasks or taking one ` +
+          `back to todo. A board member can raise or remove the cap for this agent.`,
+        sanctionedPath:
+          `Land or release the tasks already in progress, then claim ${issue}. If none ` +
+          `of them is actually being worked on, they must be taken back to todo by hand — ` +
+          `this change ships the cap only, not the sweep that would do it automatically. ` +
+          `Raising the cap is a config change on the agent, not a repeat of this call.`,
+      };
+    }
 
     case "cross_issue_influence_cap_exceeded": {
       const cap = context.cap ?? 20;

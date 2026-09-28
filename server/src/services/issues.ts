@@ -94,13 +94,16 @@ import type {
 } from "@paperclipai/shared";
 import {
   clampIssueRequestDepth,
+  evaluateAgentWipCap,
   extractAgentMentionIds,
   extractProjectMentionIds,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  issueWriteDenialResponse,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  resolveMaxInProgressIssues,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
@@ -2727,6 +2730,106 @@ async function listUnresolvedBlockerIssueIds(
     )
     .then((rows) => rows.map((row) => row.id));
 }
+
+/**
+ * Count the `in_progress` issues an agent currently holds, optionally excluding
+ * one issue.
+ *
+ * This counts *claims*, not runs, and that is the intended reading: it backs the
+ * per-agent claim ceiling, which governs how many issues an agent may say it is
+ * working on. The lock-based in-flight cap is a different counter with a
+ * different job (`countInFlightIssuesForAgent` in the heartbeat service) and the
+ * two must not be merged — see `agent-wip-caps.ts`.
+ *
+ * `excludingIssueId` is load-bearing. Without it the issue being claimed counts
+ * itself, so on a cap of 2 the *second* claim reads as a third and the first
+ * agent to try two concurrent tasks is refused one.
+ *
+ * The company predicate is not decoration. An agent id is a primary key, so the
+ * agent filter alone is already unique, but carrying the company keeps this
+ * query structurally identical to its neighbours and makes the cross-company
+ * question unaskable.
+ */
+async function countAgentInProgressIssues(
+  dbOrTx: Pick<Db, "select">,
+  agentId: string,
+  companyId: string,
+  excludingIssueId?: string,
+) {
+  const predicates = [
+    eq(issues.companyId, companyId),
+    eq(issues.assigneeAgentId, agentId),
+    eq(issues.status, "in_progress"),
+  ];
+  if (excludingIssueId) predicates.push(ne(issues.id, excludingIssueId));
+  const [row] = await dbOrTx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(and(...predicates));
+  return Number(row?.count ?? 0);
+}
+
+/**
+ * Refuse a claim that would put an agent over its per-agent `in_progress` cap.
+ *
+ * Server-side and unskippable by callers that are claiming work, because the
+ * whole point is that this constraint has to hold without the cooperation of
+ * whoever is about to violate it. 15,510 issues in this company are the
+ * evidence that agent-side discipline does not.
+ *
+ * The write is refused rather than degraded: the issue keeps whatever status it
+ * had, which for a queued task means it stays `todo` and therefore stays
+ * dispatch-eligible. So the cap queues work, it does not drop it — the next
+ * heartbeat picks it up as soon as a slot frees, with no re-assignment and no
+ * human in the loop.
+ */
+async function assertAgentInProgressCap(
+  dbOrTx: Pick<Db, "select">,
+  issue: { id: string; companyId: string; identifier?: string | null },
+  agentId: string | null | undefined,
+  options: {
+    /**
+     * Claims made earlier in the same uncommitted batch.
+     *
+     * A bulk import validates rows in a loop and inserts them afterwards, so
+     * rows already accepted in this batch are invisible to the count query.
+     * Without this the whole batch would read the same pre-batch count and a
+     * thousand-issue import would walk straight past the cap.
+     */
+    additionalClaims?: number;
+  } = {},
+) {
+  if (!agentId) return;
+  const agent = await dbOrTx
+    .select({ name: agents.name, runtimeConfig: agents.runtimeConfig })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .then((rows) => rows[0] ?? null);
+  if (!agent) return;
+
+  const cap = resolveMaxInProgressIssues(agent.runtimeConfig);
+  const persistedCount = await countAgentInProgressIssues(
+    dbOrTx,
+    agentId,
+    issue.companyId,
+    issue.id,
+  );
+  const currentCount = persistedCount + (options.additionalClaims ?? 0);
+  const verdict = evaluateAgentWipCap({ cap, currentCount });
+  if (verdict.allowed) return;
+
+  const denial = issueWriteDenialResponse(
+    "agent_wip_cap_exceeded",
+    {
+      assigneeLabel: agent.name,
+      issueIdentifier: issue.identifier ?? null,
+      inProgressCap: verdict.cap,
+      inProgressCount: verdict.currentCount,
+    },
+  );
+  throw new HttpError(denial.status, denial.body.error, denial.body.details);
+}
+
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
   companyId: string,
@@ -10135,6 +10238,32 @@ export function issueService(db: Db) {
           }),
         );
 
+        // Per-agent claim ceiling on the create path. `create` is a claim path
+        // in its own right: a caller can post an issue that is already
+        // `in_progress`, which is a claim made at birth rather than a
+        // transition. Without this check a single POST put an agent over its
+        // cap while the identical claim via PATCH was refused — observed live,
+        // and the over-claim was dispatched to a run within seconds.
+        //
+        // Deliberately immediately before the insert, and inside the
+        // transaction, so the count and the write share one snapshot: a check
+        // taken outside the transaction could be overtaken between the two, and
+        // a create racing an update for the same slot could both win.
+        //
+        // Placed after the early returns so a create that dedupes to an existing
+        // row never consults the cap, and after the status handling above so it
+        // reads the same `values` that get written.
+        //
+        // No `excludingIssueId`: the row does not exist yet, so it cannot count
+        // itself, and the column default mints the id server-side.
+        if (values.status === "in_progress" && values.assigneeAgentId) {
+          await assertAgentInProgressCap(
+            tx as unknown as Db,
+            { id: "", companyId, identifier: values.identifier ?? null },
+            values.assigneeAgentId,
+          );
+        }
+
         const [issue] = await tx.insert(issues).values(values).returning();
         if (idempotencyKey) {
           await tx.insert(issueCreateIdempotencyKeys).values({
@@ -10308,6 +10437,11 @@ export function issueService(db: Db) {
 
         const validatedAgentIds = new Set<string>();
         const validatedWorkspaceKeys = new Set<string>();
+        // Claims accepted earlier in this uncommitted batch, per agent. The
+        // count query cannot see these rows yet, so without the tally a batch
+        // import would validate every row against the same pre-batch count and
+        // walk an agent straight past its cap.
+        const batchClaimTally = new Map<string, number>();
         const issueRows: Array<Record<string, unknown>> = [];
         const labelRows: Array<{
           issueId: string;
@@ -10335,6 +10469,21 @@ export function issueService(db: Db) {
           }
           if (row.status === "in_progress" && !row.assigneeAgentId) {
             throw unprocessable("in_progress issues require an assignee");
+          }
+          // Per-agent claim ceiling, applied per row so a batch import cannot
+          // land an agent over its cap in one transaction. `row` is the incoming
+          // claim, not yet persisted, so it is excluded from the count by the
+          // same rule `update` uses: the issue being claimed never counts
+          // against its own cap.
+          if (row.status === "in_progress" && row.assigneeAgentId) {
+            const claimsSoFar = batchClaimTally.get(row.assigneeAgentId) ?? 0;
+            await assertAgentInProgressCap(
+              tx as unknown as Db,
+              { id: row.id, companyId, identifier: null },
+              row.assigneeAgentId,
+              { additionalClaims: claimsSoFar },
+            );
+            batchClaimTally.set(row.assigneeAgentId, claimsSoFar + 1);
           }
 
           const projectId = row.projectId ?? null;
@@ -10689,6 +10838,22 @@ export function issueService(db: Db) {
         !nextAssigneeUserId
       ) {
         throw unprocessable("in_progress issues require an assignee");
+      }
+      // Per-agent claim ceiling. Deliberately after the assignee check — a claim
+      // with no owner is a different mistake, and reporting "you are at your cap"
+      // for it would send the caller to fix the wrong thing.
+      //
+      // Scoped to transitions *into* `in_progress`. An issue that is already
+      // `in_progress` and is being edited — a field patch, a comment-driven
+      // fix-up, a re-label — must not be refused, or ordinary work on an agent
+      // that is legitimately at its cap becomes impossible rather than merely
+      // capped.
+      if (patch.status === "in_progress" && existing.status !== "in_progress") {
+        await assertAgentInProgressCap(
+          dbOrTx,
+          { id, companyId: existing.companyId, identifier: existing.identifier },
+          nextAssigneeAgentId,
+        );
       }
       if (patch.status === "in_progress") {
         const dependencyReadiness =

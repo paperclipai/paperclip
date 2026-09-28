@@ -387,6 +387,12 @@ export {
   AGENT_ROLES,
   AGENT_ROLE_LABELS,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  AGENT_DEFAULT_MAX_IN_FLIGHT_ISSUES,
+  AGENT_MIN_MAX_IN_FLIGHT_ISSUES,
+  AGENT_MAX_MAX_IN_FLIGHT_ISSUES,
+  AGENT_DEFAULT_MAX_IN_PROGRESS_ISSUES,
+  AGENT_MIN_MAX_IN_PROGRESS_ISSUES,
+  AGENT_MAX_MAX_IN_PROGRESS_ISSUES,
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   ADAPTER_AGNOSTIC_KEYS,
   AGENT_ICON_NAMES,
@@ -2788,3 +2794,8 @@ export { MEMORY_CONNECTOR_IDS, isMemoryConnectorId, type MemoryConnectorId } fro
 export * from "./connection-routing.js";
 
 export { WORKSPACE_RESTORE_FAILURE_CODES, hasWorkspaceRestoreFailure, safeWorkspaceRestorePath } from "./workspace-restore.js";
+export {
+  evaluateAgentWipCap,
+  resolveMaxInFlightIssues,
+  resolveMaxInProgressIssues,
+} from "./agent-wip-caps.js";
