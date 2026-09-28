@@ -96,6 +96,21 @@ describe("restart health validation with a redacted version", () => {
       .rejects.toThrow("Paperclip service did not become healthy at version 2026.925.0-nightly.0");
   });
 
+  it("rejects a report that contradicts a version the health route reports", async () => {
+    // The route names a version and the report names a different one. The live answer wins, so
+    // the wait must not accept the report and must keep polling until its deadline.
+    const instance = await withInstance(() => ({ status: "ok", version: "2026.922.0-canary.5" }));
+    await instance.writeReport({
+      version: 1,
+      requestedAt: "2026-09-27T17:41:56.193Z",
+      newServerPid: 200,
+      newServerVersion: "2026.925.0-nightly.0",
+    });
+
+    await expect(waitForHealth("default", "2026.925.0-nightly.0", "2026-09-27T17:41:56.193Z", 1_200))
+      .rejects.toThrow("Paperclip service did not become healthy at version 2026.925.0-nightly.0");
+  });
+
   it("still accepts a version the health route exposes", async () => {
     await withInstance(() => ({ status: "ok", version: "2026.925.0-nightly.0" }));
 

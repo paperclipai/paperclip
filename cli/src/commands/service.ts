@@ -68,6 +68,9 @@ export async function probeRestartReportVersion(instanceId: string, requestedAt:
  * health route omits the version for anonymous callers, so the probe alone can never confirm the
  * payload and the wait would time out on every restart. The report the restarted server writes
  * for that same intent carries the version the probe is missing.
+ *
+ * The report fills only a version that the health route omits. When the route names a version,
+ * that live answer wins, so a report cannot turn a reported mismatch into a success.
  */
 export async function waitForHealth(instanceId: string, expectedVersion: string | null, requestedAt: string | null = null, timeoutMs = 60_000): Promise<HealthResult> {
   const deadline = Date.now() + timeoutMs;
@@ -75,7 +78,7 @@ export async function waitForHealth(instanceId: string, expectedVersion: string 
   while (Date.now() < deadline) {
     last = await probeHealth(instanceId);
     if (last.ok && (!expectedVersion || last.serverVersion === expectedVersion)) return last;
-    if (last.ok && expectedVersion && requestedAt) {
+    if (last.ok && last.serverVersion === null && expectedVersion && requestedAt) {
       const reportedVersion = await probeRestartReportVersion(instanceId, requestedAt);
       if (reportedVersion === expectedVersion) return { ...last, serverVersion: reportedVersion };
     }
