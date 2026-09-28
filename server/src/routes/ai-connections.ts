@@ -18,6 +18,7 @@ import {
   localAiConnectionSchema,
   localAiLoginStartSchema,
   isAiConnectionCompatible,
+  ZAI_ANTHROPIC_BASE_URL,
   type AiConnectionLoginIntent,
   type AiProvider,
   type AiConnectionBinding,
@@ -143,6 +144,7 @@ export async function validateAiApiKey(
     openai: "https://api.openai.com/v1/models",
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
+    zai: `${ZAI_ANTHROPIC_BASE_URL}/v1/models`,
   };
   let response: Response;
   try {
@@ -150,7 +152,7 @@ export async function validateAiApiKey(
       redirect: "error",
       signal: AbortSignal.timeout(15000),
       headers:
-        provider === "anthropic"
+        provider === "anthropic" || provider === "zai"
           ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
           : { Authorization: `Bearer ${key}` },
     });
