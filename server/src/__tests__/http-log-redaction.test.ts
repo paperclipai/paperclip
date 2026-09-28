@@ -444,11 +444,25 @@ describe("HTTP logger redaction", () => {
     });
     const app = express();
     app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
-    app.get("/api/companies", (_req, res) => {
+    app.get("/api/companies", (_req, res, next) => {
+      if (status === 403) {
+        next(new HttpError(403, "Cloud tenant authentication required"));
+        return;
+      }
+      if (status === 500) {
+        next(new Error("Synthetic cloud request failure"));
+        return;
+      }
       res.status(status).json({ status });
     });
+    app.use(errorHandler);
 
-    await request(app).get("/api/companies").set(headers).expect(status);
+    const response = await request(app).get("/api/companies").set(headers).expect(status);
+    if (status === 403) {
+      expect(response.body).toEqual({ error: "Cloud tenant authentication required" });
+    } else if (status === 500) {
+      expect(response.body).toEqual({ error: "Internal server error" });
+    }
 
     const output = chunks.join("");
     const log = JSON.parse(output.trim());
@@ -459,6 +473,11 @@ describe("HTTP logger redaction", () => {
     expect(log.req.method).toBe("GET");
     expect(log.req.url).toBe("/api/companies");
     expect(log.res.statusCode).toBe(status);
+    expect(log.level).toBe(status === 500 ? 50 : status === 403 ? 40 : 30);
+    if (status === 500) {
+      expect(log.errorContext.message).toBe("Synthetic cloud request failure");
+      expect(log.err.message).toBe("Synthetic cloud request failure");
+    }
   });
 
   it("drops OAuth callback query data from the message and structured request", async () => {
