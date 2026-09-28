@@ -39,6 +39,8 @@ import { Field, adapterLabels } from "../components/agent-config-primitives";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
+import { fusionSelectionError, isFusionModelId } from "@paperclipai/adapter-devin-local/ui";
+import type { DevinModelDraftStatus } from "../adapters/devin-local/model-selection";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import {
   type FileTreeNode,
@@ -569,6 +571,7 @@ interface AdapterPickerItem {
   name: string;
   /** Adapter type from the package manifest (the source's adapter). */
   adapterType: string;
+  filePath: string | null;
   /**
    * Set when the manifest adapter is not installed on the destination: the
    * adapter type the agent falls back to unless the user picks another one.
@@ -587,6 +590,10 @@ function AdapterPickerList({
   onChangeAdapter,
   onToggleExpand,
   onChangeConfig,
+  visitedSlugs,
+  modelScopeKeyFor,
+  seedConfigFor,
+  onModelDraftStatusChange,
 }: {
   agents: AdapterPickerItem[];
   adapterOptions: { value: string; label: string }[];
@@ -596,6 +603,10 @@ function AdapterPickerList({
   onChangeAdapter: (slug: string, adapterType: string) => void;
   onToggleExpand: (slug: string) => void;
   onChangeConfig: (slug: string, patch: Partial<CreateConfigValues>) => void;
+  visitedSlugs: Set<string>;
+  modelScopeKeyFor: (slug: string, adapterType: string) => string;
+  seedConfigFor: (agent: AdapterPickerItem, adapterType: string) => CreateConfigValues;
+  onModelDraftStatusChange: (slug: string, scopeKey: string, status: DevinModelDraftStatus) => void;
 }) {
   if (agents.length === 0) return null;
 
@@ -613,7 +624,9 @@ function AdapterPickerList({
             const selectedType =
               adapterOverrides[agent.slug] ?? agent.fallbackAdapterType ?? agent.adapterType;
             const isExpanded = expandedSlugs.has(agent.slug);
-            const vals = configValues[agent.slug] ?? { ...defaultCreateValues, adapterType: selectedType };
+            const wasVisited = visitedSlugs.has(agent.slug);
+            const vals = configValues[agent.slug] ?? seedConfigFor(agent, selectedType);
+            const scopeKey = modelScopeKeyFor(agent.slug, selectedType);
 
             return (
               <div key={agent.slug}>
@@ -661,8 +674,11 @@ function AdapterPickerList({
                     </p>
                   </div>
                 )}
-                {isExpanded && (
-                  <div className="border-t border-border bg-accent/10 px-4 py-3 space-y-3">
+                {(isExpanded || wasVisited) && (
+                  <div
+                    hidden={!isExpanded}
+                    className="border-t border-border bg-accent/10 px-4 py-3 space-y-3"
+                  >
                     <AgentConfigForm
                       mode="create"
                       values={vals}
@@ -672,6 +688,10 @@ function AdapterPickerList({
                       showCreateRunPolicySection={false}
                       hideInstructionsFile
                       sectionLayout="cards"
+                      modelScopeKey={scopeKey}
+                      onModelDraftStatusChange={(status) =>
+                        onModelDraftStatusChange(agent.slug, scopeKey, status)
+                      }
                     />
                   </div>
                 )}
@@ -892,6 +912,11 @@ export function CompanyImport() {
   const [adapterOverrides, setAdapterOverrides] = useState<Record<string, string>>({});
   const [adapterExpandedSlugs, setAdapterExpandedSlugs] = useState<Set<string>>(new Set());
   const [adapterConfigValues, setAdapterConfigValues] = useState<Record<string, CreateConfigValues>>({});
+  const adapterConfigEditedKeysRef = useRef<Record<string, Set<string>>>({});
+  const [visitedAdapterSlugs, setVisitedAdapterSlugs] = useState<Set<string>>(new Set());
+  const [importSourceRevision, setImportSourceRevision] = useState(0);
+  const [modelScopeResetRevision, setModelScopeResetRevision] = useState(0);
+  const [modelDraftStatuses, setModelDraftStatuses] = useState<Record<string, { scopeKey: string; status: DevinModelDraftStatus }>>({});
 
   // Post-import success / activation state
   const [pauseAutomations, setPauseAutomations] = useState(true);
@@ -1132,6 +1157,10 @@ export function CompanyImport() {
       setAdapterOverrides({});
       setAdapterExpandedSlugs(new Set());
       setAdapterConfigValues({});
+      setVisitedAdapterSlugs(new Set());
+      setModelDraftStatuses({});
+      setModelScopeResetRevision((revision) => revision + 1);
+      adapterConfigEditedKeysRef.current = {};
 
       // Check all files by default, then uncheck COMPANY.md for existing company
       const allFiles = new Set(Object.keys(result.files));
@@ -1364,6 +1393,11 @@ export function CompanyImport() {
     previewGenerationRef.current += 1;
     setImportPreview(null);
     resetMutationState();
+    setImportSourceRevision((revision) => revision + 1);
+    setModelScopeResetRevision((revision) => revision + 1);
+    setModelDraftStatuses({});
+    setVisitedAdapterSlugs(new Set());
+    adapterConfigEditedKeysRef.current = {};
   }
 
   async function handleChooseLocalPackage(e: ChangeEvent<HTMLInputElement>) {
@@ -1432,35 +1466,81 @@ export function CompanyImport() {
   function handleToggleCheck(path: string, kind: "file" | "dir") {
     if (!importPreview) return;
     resetMutationState();
-    setCheckedFiles((prev) => {
-      const next = new Set(prev);
-      if (kind === "file") {
-        if (next.has(path)) next.delete(path);
-        else next.add(path);
-      } else {
-        const findNode = (nodes: FileTreeNode[], target: string): FileTreeNode | null => {
-          for (const n of nodes) {
-            if (n.path === target) return n;
-            const found = findNode(n.children, target);
-            if (found) return found;
-          }
-          return null;
-        };
-        const dirNode = findNode(tree, path);
-        if (dirNode) {
-          const childFiles = collectAllPaths(dirNode.children, "file");
-          for (const child of dirNode.children) {
-            if (child.kind === "file") childFiles.add(child.path);
-          }
-          const allChecked = [...childFiles].every((p) => next.has(p));
-          for (const f of childFiles) {
-            if (allChecked) next.delete(f);
-            else next.add(f);
-          }
+    const next = new Set(checkedFiles);
+    if (kind === "file") {
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+    } else {
+      const findNode = (nodes: FileTreeNode[], target: string): FileTreeNode | null => {
+        for (const n of nodes) {
+          if (n.path === target) return n;
+          const found = findNode(n.children, target);
+          if (found) return found;
+        }
+        return null;
+      };
+      const dirNode = findNode(tree, path);
+      if (dirNode) {
+        const childFiles = collectAllPaths(dirNode.children, "file");
+        for (const child of dirNode.children) {
+          if (child.kind === "file") childFiles.add(child.path);
+        }
+        const allChecked = [...childFiles].every((p) => next.has(p));
+        for (const f of childFiles) {
+          if (allChecked) next.delete(f);
+          else next.add(f);
         }
       }
-      return next;
-    });
+    }
+    const deselected = adapterAgents.filter(
+      (agent) =>
+        agent.filePath && checkedFiles.has(agent.filePath) && !next.has(agent.filePath),
+    );
+    setCheckedFiles(next);
+    if (deselected.length > 0) {
+      const deselectedSlugs = new Set(deselected.map((agent) => agent.slug));
+      setModelDraftStatuses((prev) => {
+        const nextStatuses = { ...prev };
+        let changed = false;
+        for (const slug of deselectedSlugs) {
+          if (slug in nextStatuses) {
+            delete nextStatuses[slug];
+            changed = true;
+          }
+        }
+        return changed ? nextStatuses : prev;
+      });
+      setVisitedAdapterSlugs((prev) => {
+        const nextVisited = new Set(prev);
+        let changed = false;
+        for (const slug of deselectedSlugs) {
+          if (nextVisited.delete(slug)) changed = true;
+        }
+        return changed ? nextVisited : prev;
+      });
+      setAdapterExpandedSlugs((prev) => {
+        const nextExpanded = new Set(prev);
+        let changed = false;
+        for (const slug of deselectedSlugs) {
+          if (nextExpanded.delete(slug)) changed = true;
+        }
+        return changed ? nextExpanded : prev;
+      });
+      const editedKeys = { ...adapterConfigEditedKeysRef.current };
+      for (const slug of deselectedSlugs) delete editedKeys[slug];
+      adapterConfigEditedKeysRef.current = editedKeys;
+      setAdapterConfigValues((prev) => {
+        const nextValues = { ...prev };
+        let changed = false;
+        for (const slug of deselectedSlugs) {
+          if (slug in nextValues) {
+            delete nextValues[slug];
+            changed = true;
+          }
+        }
+        return changed ? nextValues : prev;
+      });
+    }
   }
 
   function handleConflictRename(slug: string, newName: string) {
@@ -1487,30 +1567,54 @@ export function CompanyImport() {
 
   function handleConflictToggleSkip(slug: string, filePath: string | null) {
     resetMutationState();
-    setSkippedSlugs((prev) => {
-      const next = new Set(prev);
-      const wasSkipped = next.has(slug);
-      if (wasSkipped) {
-        next.delete(slug);
-      } else {
-        next.add(slug);
-      }
+    const wasSkipped = skippedSlugs.has(slug);
+    const next = new Set(skippedSlugs);
+    if (wasSkipped) {
+      next.delete(slug);
+    } else {
+      next.add(slug);
+      setModelDraftStatuses((prev) => {
+        if (!(slug in prev)) return prev;
+        const nextStatuses = { ...prev };
+        delete nextStatuses[slug];
+        return nextStatuses;
+      });
+      setVisitedAdapterSlugs((prev) => {
+        if (!prev.has(slug)) return prev;
+        const nextVisited = new Set(prev);
+        nextVisited.delete(slug);
+        return nextVisited;
+      });
+      setAdapterExpandedSlugs((prev) => {
+        if (!prev.has(slug)) return prev;
+        const nextExpanded = new Set(prev);
+        nextExpanded.delete(slug);
+        return nextExpanded;
+      });
+      const editedKeys = { ...adapterConfigEditedKeysRef.current };
+      delete editedKeys[slug];
+      adapterConfigEditedKeysRef.current = editedKeys;
+      setAdapterConfigValues((prev) => {
+        if (!(slug in prev)) return prev;
+        const nextValues = { ...prev };
+        delete nextValues[slug];
+        return nextValues;
+      });
+    }
+    setSkippedSlugs(next);
 
-      // Sync with file tree checkboxes
-      if (filePath) {
-        setCheckedFiles((prevChecked) => {
-          const nextChecked = new Set(prevChecked);
-          if (wasSkipped) {
-            nextChecked.add(filePath);
-          } else {
-            nextChecked.delete(filePath);
-          }
-          return nextChecked;
-        });
-      }
-
-      return next;
-    });
+    // Sync with file tree checkboxes
+    if (filePath) {
+      setCheckedFiles((prevChecked) => {
+        const nextChecked = new Set(prevChecked);
+        if (wasSkipped) {
+          nextChecked.add(filePath);
+        } else {
+          nextChecked.delete(filePath);
+        }
+        return nextChecked;
+      });
+    }
   }
 
   function handleAdapterChange(slug: string, adapterType: string) {
@@ -1522,6 +1626,15 @@ export function CompanyImport() {
       delete next[slug];
       return next;
     });
+    setModelDraftStatuses((prev) => {
+      if (!(slug in prev)) return prev;
+      const next = { ...prev };
+      delete next[slug];
+      return next;
+    });
+    const editedKeys = { ...adapterConfigEditedKeysRef.current };
+    delete editedKeys[slug];
+    adapterConfigEditedKeysRef.current = editedKeys;
   }
 
   function handleAdapterToggleExpand(slug: string) {
@@ -1531,16 +1644,134 @@ export function CompanyImport() {
       else next.add(slug);
       return next;
     });
+    setVisitedAdapterSlugs((prev) => {
+      if (prev.has(slug)) return prev;
+      const next = new Set(prev);
+      next.add(slug);
+      return next;
+    });
+  }
+
+  function importModelScopeKey(slug: string, adapterType: string): string {
+    return JSON.stringify([
+      selectedCompanyId,
+      "import",
+      importSourceRevision,
+      slug,
+      adapterType,
+      modelScopeResetRevision,
+    ]);
+  }
+
+  function handleModelDraftStatusChange(
+    slug: string,
+    scopeKey: string,
+    status: DevinModelDraftStatus,
+  ) {
+    const agent = adapterAgents.find((a) => a.slug === slug);
+    const currentType = agent
+      ? effectiveAdapterType(agent)
+      : adapterOverrides[slug] ?? "claude_local";
+    if (scopeKey !== importModelScopeKey(slug, currentType)) return;
+    setModelDraftStatuses((prev) => {
+      const existing = prev[slug];
+      if (
+        existing &&
+        existing.scopeKey === scopeKey &&
+        existing.status.view === status.view &&
+        existing.status.dirty === status.dirty &&
+        existing.status.pending === status.pending &&
+        existing.status.message === status.message
+      ) {
+        return prev;
+      }
+      return { ...prev, [slug]: { scopeKey, status } };
+    });
+  }
+
+  function seedImportConfigValues(agent: AdapterPickerItem, adapterType: string): CreateConfigValues {
+    const base: CreateConfigValues = { ...defaultCreateValues, adapterType };
+    if (
+      adapterType !== "devin_local" ||
+      adapterType !== agent.adapterType ||
+      !importPreview
+    ) {
+      return base;
+    }
+    const manifestConfig = importPreview.manifest.agents.find((a) => a.slug === agent.slug)?.adapterConfig;
+    if (!manifestConfig || typeof manifestConfig !== "object") return base;
+    const {
+      model,
+      thinkingEffort,
+      cwd,
+      command,
+      timeoutSec,
+      env,
+      ...rest
+    } = manifestConfig as Record<string, unknown>;
+    return {
+      ...base,
+      model: typeof model === "string" ? model : base.model,
+      thinkingEffort:
+        typeof thinkingEffort === "string" ? thinkingEffort : base.thinkingEffort,
+      cwd: typeof cwd === "string" ? cwd : base.cwd,
+      command: typeof command === "string" ? command : base.command,
+      timeoutSec:
+        typeof timeoutSec === "number" && Number.isFinite(timeoutSec)
+          ? timeoutSec
+          : base.timeoutSec,
+      envBindings:
+        env && typeof env === "object" && !Array.isArray(env)
+          ? (env as Record<string, unknown>)
+          : base.envBindings,
+      envVars: "",
+      adapterSchemaValues: { ...base.adapterSchemaValues, ...rest },
+    };
   }
 
   function handleAdapterConfigChange(slug: string, patch: Partial<CreateConfigValues>) {
     resetMutationState();
     const agent = adapterAgents.find((a) => a.slug === slug);
     const currentType = agent ? effectiveAdapterType(agent) : adapterOverrides[slug] ?? "claude_local";
-    setAdapterConfigValues((prev) => ({
-      ...prev,
-      [slug]: { ...(prev[slug] ?? { ...defaultCreateValues, adapterType: currentType }), ...patch },
-    }));
+    setAdapterConfigValues((prev) => {
+      const seeded =
+        prev[slug] ??
+        (agent
+          ? seedImportConfigValues(agent, currentType)
+          : { ...defaultCreateValues, adapterType: currentType });
+      const edited = adapterConfigEditedKeysRef.current[slug] ?? new Set<string>();
+      const seededSchema = (seeded.adapterSchemaValues ?? {}) as Record<
+        string,
+        unknown
+      >;
+      for (const key of Object.keys(patch)) {
+        if (key === "adapterSchemaValues") {
+          const nextSchema = (patch.adapterSchemaValues ?? {}) as Record<
+            string,
+            unknown
+          >;
+          for (const schemaKey of Object.keys(nextSchema)) {
+            if (nextSchema[schemaKey] !== seededSchema[schemaKey]) {
+              edited.add(`schema:${schemaKey}`);
+            }
+          }
+          for (const schemaKey of Object.keys(seededSchema)) {
+            if (!(schemaKey in nextSchema)) edited.add(`schema:${schemaKey}`);
+          }
+        } else if (
+          key === "model" ||
+          (patch as unknown as Record<string, unknown>)[key] !==
+            (seeded as unknown as Record<string, unknown>)[key]
+        ) {
+          edited.add(key);
+        }
+      }
+      adapterConfigEditedKeysRef.current = {
+        ...adapterConfigEditedKeysRef.current,
+        [slug]: edited,
+      };
+      return { ...prev, [slug]: { ...seeded, ...patch } };
+    });
   }
 
   function handleToggleActivationItem(key: string) {
@@ -1612,6 +1843,7 @@ export function CompanyImport() {
         slug: a.slug,
         name: a.name,
         adapterType: a.adapterType,
+        filePath: a.path ? ensureMarkdownPath(a.path) : null,
         fallbackAdapterType,
       };
     });
@@ -1629,13 +1861,70 @@ export function CompanyImport() {
   function buildFinalAdapterOverrides(): Record<string, CompanyPortabilityAdapterOverride> | undefined {
     const overrides: Record<string, CompanyPortabilityAdapterOverride> = {};
     for (const agent of adapterAgents) {
+      if (skippedSlugs.has(agent.slug)) continue;
+      const planAction = importPreview?.plan.agentPlans.find(
+        (plan) => plan.slug === agent.slug,
+      )?.action;
+      if (planAction === "skip") continue;
+      if (agent.filePath && checkedFiles.size > 0 && !checkedFiles.has(agent.filePath)) continue;
       const selectedType = effectiveAdapterType(agent);
       const configVals = adapterConfigValues[agent.slug];
+      if (selectedType === "devin_local") {
+        const manifestModel =
+          selectedType === agent.adapterType
+            ? importPreview?.manifest.agents.find((a) => a.slug === agent.slug)
+                ?.adapterConfig?.model
+            : undefined;
+        const effectiveModel =
+          configVals?.model ??
+          (typeof manifestModel === "string" ? manifestModel : "");
+        const draft = modelDraftStatuses[agent.slug];
+        const scopeCurrent =
+          draft && draft.scopeKey === importModelScopeKey(agent.slug, selectedType);
+        const modelError =
+          fusionSelectionError(effectiveModel) ??
+          (scopeCurrent && draft.status.pending
+            ? draft.status.message ??
+              "Complete the model selection before continuing."
+            : null);
+        if (modelError) {
+          throw new Error(`${agent.slug}: ${modelError}`);
+        }
+      }
       if (selectedType === agent.adapterType && !configVals) continue;
       const override: CompanyPortabilityAdapterOverride = { adapterType: selectedType };
       if (configVals) {
         const uiAdapter = getUIAdapter(selectedType);
-        override.adapterConfig = uiAdapter.buildAdapterConfig(configVals);
+        const built = uiAdapter.buildAdapterConfig(configVals);
+        const devinSameSource =
+          selectedType === "devin_local" && selectedType === agent.adapterType;
+        if (devinSameSource) {
+          const edited = adapterConfigEditedKeysRef.current[agent.slug];
+          if (!edited || edited.size === 0) continue;
+          const merged = {
+            ...((importPreview?.manifest.agents.find((a) => a.slug === agent.slug)
+              ?.adapterConfig ?? {}) as Record<string, unknown>),
+          };
+          for (const key of edited) {
+            const rawKey = key.startsWith("schema:") ? key.slice(7) : key;
+            const builtKey =
+              rawKey === "envBindings" || rawKey === "envVars" ? "env" : rawKey;
+            if (builtKey in built) merged[builtKey] = built[builtKey];
+            else delete merged[builtKey];
+          }
+          if (edited.has("model")) {
+            if ("model" in built) merged.model = built.model;
+            else delete merged.model;
+            if (isFusionModelId(typeof built.model === "string" ? built.model : "")) {
+              for (const axis of ["thinkingEffort", "contextSize", "fastMode", "priority"]) {
+                delete merged[axis];
+              }
+            }
+          }
+          override.adapterConfig = merged;
+        } else {
+          override.adapterConfig = built;
+        }
       }
       overrides[agent.slug] = override;
     }
@@ -2083,6 +2372,10 @@ export function CompanyImport() {
             onChangeAdapter={handleAdapterChange}
             onToggleExpand={handleAdapterToggleExpand}
             onChangeConfig={handleAdapterConfigChange}
+            visitedSlugs={visitedAdapterSlugs}
+            modelScopeKeyFor={importModelScopeKey}
+            seedConfigFor={seedImportConfigValues}
+            onModelDraftStatusChange={handleModelDraftStatusChange}
           />
 
           {/* Import button — below renames */}

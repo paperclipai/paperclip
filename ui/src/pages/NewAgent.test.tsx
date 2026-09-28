@@ -652,4 +652,280 @@ describe("New agent setup", () => {
       applyStoredClaudeLogin: true,
     });
   });
+
+const FUSION_PICKER_MODELS = [
+  {
+    id: "fusion-alpha-high-sidekick-beta-low",
+    label: "Fusion (Alpha High + Beta Low)",
+    fusion: {
+      version: 1 as const,
+      kind: "fusion" as const,
+      components: {
+        orchestrator: {
+          id: "alpha-high", modelKey: "alpha", modelLabel: "Alpha",
+          effortKey: "high", effortLabel: "High", effortSource: "uid" as const,
+          label: "Alpha High", modifiers: [] as string[],
+        },
+        worker: {
+          id: "beta-low", modelKey: "beta", modelLabel: "Beta",
+          effortKey: "low", effortLabel: "Low", effortSource: "uid" as const,
+          label: "Beta Low", modifiers: [] as string[],
+        },
+      },
+      rates: null,
+      costSummary: null,
+    },
+  },
+  {
+    id: "fusion-alpha-high-sidekick-beta-low-priority",
+    label: "Fusion (Alpha High + Beta Low Priority)",
+    fusion: {
+      version: 1 as const,
+      kind: "fusion" as const,
+      components: {
+        orchestrator: {
+          id: "alpha-high", modelKey: "alpha", modelLabel: "Alpha",
+          effortKey: "high", effortLabel: "High", effortSource: "uid" as const,
+          label: "Alpha High", modifiers: [] as string[],
+        },
+        worker: {
+          id: "beta-low-priority", modelKey: "beta", modelLabel: "Beta",
+          effortKey: "low", effortLabel: "Low", effortSource: "uid" as const,
+          label: "Beta Low Fast", modifiers: ["priority"],
+        },
+      },
+      rates: null,
+      costSummary: null,
+    },
+  },
+  { id: "devin-family", label: "Devin family", efforts: ["low", "high"] },
+];
+
+async function choose(selectLabel: string, value: string) {
+  const select = container.querySelector(
+    `select[aria-label="${selectLabel}"]`,
+  ) as HTMLSelectElement;
+  expect(select, `Missing select ${selectLabel}`).toBeTruthy();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLSelectElement.prototype,
+      "value",
+    )!.set!.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await settle();
+}
+
+async function pickCombination(labelPart: string) {
+  const trigger = [...container.querySelectorAll("button")].find(
+    (b) => b.getAttribute("aria-label") === "Combination",
+  );
+  expect(trigger, "Missing Combination trigger").toBeTruthy();
+  await act(async () => trigger!.click());
+  await settle();
+  const option = [...document.querySelectorAll("button")].find((b) =>
+    b.textContent?.includes(labelPart),
+  );
+  expect(option, `Missing option ${labelPart}`).toBeTruthy();
+  await act(async () => option!.click());
+  await settle();
+}
+describe("Devin Fusion model selection", () => {
+  beforeEach(() => {
+    state.adapters.push({ type: "devin_local", loaded: true, disabled: false });
+    api.adapterModels.mockResolvedValue(FUSION_PICKER_MODELS);
+  });
+
+  it("emits the exact UID only after an explicit Combination choice when candidates remain", async () => {
+    await render("devin_local");
+    await choose("Strategy", "fusion");
+    await choose("Orchestrator model", "alpha");
+    await choose("Orchestrator effort", "high");
+    await choose("Worker model", "beta");
+    await choose("Worker effort", "low");
+    expect(container.querySelector('button[aria-label="Combination"]')).toBeTruthy();
+    await click("Finish setup");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+
+    await pickCombination("Beta Low Priority");
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenCalled();
+    const adapterConfig = api.testEnvironment.mock.calls[0][2].adapterConfig as Record<string, unknown>;
+    expect(adapterConfig.model).toBe("fusion-alpha-high-sidekick-beta-low-priority");
+    for (const key of ["thinkingEffort", "contextSize", "fastMode", "priority"]) {
+      expect(adapterConfig).not.toHaveProperty(key);
+    }
+    const form = container.querySelector("form");
+    expect(form).toBeTruthy();
+    const finishBtn = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Finish setup",
+    ) as HTMLButtonElement;
+    expect(finishBtn?.disabled).toBe(false);
+    await act(async () => {
+      form!.requestSubmit(finishBtn);
+    });
+    await settle();
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    const hireConfig = api.hire.mock.calls[0][1].adapterConfig as Record<string, unknown>;
+    expect(hireConfig.model).toBe("fusion-alpha-high-sidekick-beta-low-priority");
+    for (const key of ["thinkingEffort", "contextSize", "fastMode", "priority"]) {
+      expect(hireConfig).not.toHaveProperty(key);
+    }
+  });
+
+  it("rejects a manually typed bare fusion before any environment test or hire", async () => {
+    await render("devin_local");
+    await choose("Strategy", "single");
+    const modelTrigger = [...container.querySelectorAll("button")].find(
+      (b) => b.getAttribute("aria-label") === "Model",
+    );
+    expect(modelTrigger).toBeTruthy();
+    await act(async () => modelTrigger!.click());
+    await settle();
+    const search = document.querySelector<HTMLInputElement>(
+      'input[aria-label="Search models"]',
+    )!;
+    expect(search).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!
+        .set!.call(search, "fusion");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    const manual = [...document.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Use manual model"),
+    );
+    expect(manual).toBeTruthy();
+    await act(async () => manual!.click());
+    await settle();
+    expect(container.textContent).toContain(
+      "Choose an explicit Fusion combination; select an orchestrator and worker.",
+    );
+    await click("Run test");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await click("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+
+  it("does not adopt a test result that resolves after the environment scope changed", async () => {
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Local", driver: "local", status: "active", config: {} },
+      { id: "local-2", name: "Local 2", driver: "local", status: "active", config: {} },
+    ]);
+    let resolveTest: (value: unknown) => void = () => {};
+    api.testEnvironment.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveTest = resolve;
+        }),
+    );
+    await render("devin_local");
+    await choose("Strategy", "single");
+    const modelTrigger = [...container.querySelectorAll("button")].find(
+      (b) => b.getAttribute("aria-label") === "Model",
+    );
+    expect(modelTrigger).toBeTruthy();
+    await act(async () => modelTrigger!.click());
+    await settle();
+    const search = document.querySelector<HTMLInputElement>(
+      'input[aria-label="Search models"]',
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!
+        .set!.call(search, "devin-family");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    const familyOption = [...document.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Devin family"),
+    );
+    expect(familyOption).toBeTruthy();
+    await act(async () => familyOption!.click());
+    await settle();
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenCalled();
+    await choose("Environment", "local-2");
+    await act(async () => {
+      resolveTest({ ...pass, adapterType: "devin_local" });
+    });
+    await settle();
+    expect(container.textContent).not.toContain("Model replied");
+    const finishBtn = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Finish setup",
+    ) as HTMLButtonElement | undefined;
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an explanatory error when the resolved environment changes mid-test without a reset", async () => {
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Local", driver: "local", status: "active", config: {} },
+      { id: "local-2", name: "Local 2", driver: "local", status: "active", config: {} },
+    ]);
+    let resolveTest: (value: unknown) => void = () => {};
+    api.testEnvironment.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveTest = resolve;
+        }),
+    );
+    await render("devin_local");
+    await choose("Strategy", "single");
+    const modelTrigger = [...container.querySelectorAll("button")].find(
+      (b) => b.getAttribute("aria-label") === "Model",
+    );
+    expect(modelTrigger).toBeTruthy();
+    await act(async () => modelTrigger!.click());
+    await settle();
+    const search = document.querySelector<HTMLInputElement>(
+      'input[aria-label="Search models"]',
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!
+        .set!.call(search, "devin-family");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    const familyOption = [...document.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Devin family"),
+    );
+    expect(familyOption).toBeTruthy();
+    await act(async () => familyOption!.click());
+    await settle();
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenCalled();
+
+    await act(async () => {
+      cache.setQueryData(queryKeys.instance.settings, {
+        defaultEnvironmentId: "local-2",
+      });
+    });
+    await settle();
+    await act(async () => {
+      resolveTest({ ...pass, adapterType: "devin_local" });
+    });
+    await settle();
+
+    expect(container.textContent).not.toContain("Model replied");
+    expect(container.textContent).toContain(
+      "The model selection changed during setup",
+    );
+    const retryBtn = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Retry test",
+    ) as HTMLButtonElement;
+    expect(retryBtn).toBeTruthy();
+    expect(retryBtn.disabled).toBe(false);
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+
+  it("keeps a partial Fusion draft pending without emitting a model to the API", async () => {
+    await render("devin_local");
+    await choose("Strategy", "fusion");
+    await choose("Orchestrator model", "alpha");
+    await click("Finish setup");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("model selection");
+  });
+});
 });

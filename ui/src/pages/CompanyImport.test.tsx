@@ -33,6 +33,30 @@ const mockCompaniesApi = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   resume: vi.fn(),
+  adapterModels: vi.fn(async () => [] as unknown[]),
+  detectModel: vi.fn(async () => null),
+  testEnvironment: vi.fn(),
+  getActiveAdapterAuthLoginSession: vi.fn(async () => {
+    throw new Error("no active session");
+  }),
+  getActiveClaudeSetupTokenLoginSession: vi.fn(async () => {
+    throw new Error("no active session");
+  }),
+  getClaudeOAuthTokenStatus: vi.fn(async () => null),
+}));
+const mockEnvironmentsApi = vi.hoisted(() => ({
+  list: vi.fn(async () => [] as unknown[]),
+  capabilities: vi.fn(async () => ({ sandboxProviders: {} })),
+}));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
+  getExperimental: vi.fn(async () => ({})),
+  getGeneral: vi.fn(async () => ({ executionMode: "any" })),
+}));
+const mockSecretsApi = vi.hoisted(() => ({
+  list: vi.fn(async () => [] as unknown[]),
+  listProposals: vi.fn(async () => [] as unknown[]),
+  listUserSecretDefinitions: vi.fn(async () => [] as unknown[]),
 }));
 const mockAdaptersApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -69,6 +93,18 @@ vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
 
+vi.mock("../api/environments", () => ({
+  environmentsApi: mockEnvironmentsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/secrets", () => ({
+  secretsApi: mockSecretsApi,
+}));
+
 vi.mock("../api/adapters", () => ({
   adaptersApi: mockAdaptersApi,
 }));
@@ -100,9 +136,11 @@ vi.mock("../context/CompanyContext", () => ({
 
 vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: mockPushToast }),
+  useOptionalToastActions: () => null,
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
+  TooltipProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
   TooltipContent: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   TooltipTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -1176,5 +1214,543 @@ describe("CompanyImport", () => {
     await settle();
 
     expect(lastImportMeta().adapterOverrides).toBeUndefined();
+  });
+
+  describe("Devin Fusion model gating", () => {
+    beforeEach(() => {
+      mockAdaptersApi.list.mockResolvedValue([
+        { type: "claude_local", disabled: false },
+        { type: "devin_local", disabled: false },
+      ]);
+    });
+
+    const IMPORT_FUSION_MODELS = [
+      {
+        id: "fusion-alpha-high-sidekick-beta-low",
+        label: "Fusion (Alpha High + Beta Low)",
+        fusion: {
+          version: 1 as const,
+          kind: "fusion" as const,
+          components: {
+            orchestrator: {
+              id: "alpha-high", modelKey: "alpha", modelLabel: "Alpha",
+              effortKey: "high", effortLabel: "High", effortSource: "uid" as const,
+              label: "Alpha High", modifiers: [] as string[],
+            },
+            worker: {
+              id: "beta-low", modelKey: "beta", modelLabel: "Beta",
+              effortKey: "low", effortLabel: "Low", effortSource: "uid" as const,
+              label: "Beta Low", modifiers: [] as string[],
+            },
+          },
+          rates: null,
+          costSummary: null,
+        },
+      },
+      {
+        id: "fusion-alpha-low-sidekick-delta",
+        label: "Fusion (Alpha Low + Delta)",
+        fusion: {
+          version: 1 as const,
+          kind: "fusion" as const,
+          components: {
+            orchestrator: {
+              id: "alpha-low", modelKey: "alpha", modelLabel: "Alpha",
+              effortKey: "low", effortLabel: "Low", effortSource: "uid" as const,
+              label: "Alpha Low", modifiers: [] as string[],
+            },
+            worker: {
+              id: "delta", modelKey: "delta", modelLabel: "Delta",
+              effortKey: "unspecified:delta", effortLabel: "Not specified by catalog",
+              effortSource: "unspecified" as const,
+              label: "Delta", modifiers: [] as string[],
+            },
+          },
+          rates: null,
+          costSummary: null,
+        },
+      },
+      { id: "devin-family", label: "Devin family", efforts: ["low", "high"] },
+    ];
+
+    function buildDevinFusionPreview(
+      planAction: "create" | "skip" = "create",
+      model = "fusion",
+      extraAgents: { slug: string; name: string; path: string; model: string }[] = [],
+    ) {
+      const manifestAgents = [
+        {
+          slug: "dev-agent",
+          name: "Dev",
+          path: "agents/dev/AGENTS.md",
+          adapterType: "devin_local",
+          adapterConfig: { model },
+        },
+        ...extraAgents.map((agent) => ({
+          slug: agent.slug,
+          name: agent.name,
+          path: agent.path,
+          adapterType: "devin_local",
+          adapterConfig: { model: agent.model },
+        })),
+      ];
+      const files: Record<string, string> = {
+        ".paperclip.yaml": 'schema: "paperclip/v1"\n',
+        "agents/dev/AGENTS.md": "---\nname: Dev\n---\n\nYou code.\n",
+      };
+      for (const agent of extraAgents) {
+        files[agent.path] = `---\nname: ${agent.name}\n---\n\nAgent.\n`;
+      }
+      return {
+        include: { company: true, agents: true, projects: false, issues: false },
+        targetCompanyId: null,
+        targetCompanyName: null,
+        collisionStrategy: "rename",
+        selectedAgentSlugs: manifestAgents.map((agent) => agent.slug),
+        plan: {
+          companyAction: "create",
+          agentPlans: manifestAgents.map((agent, index) => ({
+            slug: agent.slug,
+            action: index === 0 ? planAction : "create",
+            plannedName: agent.name,
+            existingAgentId: null,
+            reason: null,
+          })),
+          projectPlans: [],
+          issuePlans: [],
+        },
+        manifest: {
+          agents: manifestAgents,
+          projects: [],
+          issues: [],
+          skills: [],
+          company: null,
+        },
+        files,
+        envInputs: [],
+        warnings: [],
+        errors: [],
+      } as unknown as CompanyPortabilityPreviewResult;
+    }
+
+    async function chooseImportSelect(label: string, value: string) {
+      const select = Array.from(container.querySelectorAll("select")).find(
+        (el) => el.getAttribute("aria-label") === label,
+      ) as HTMLSelectElement | undefined;
+      expect(select, `Missing select ${label}`).toBeTruthy();
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLSelectElement.prototype,
+        "value",
+      )!.set!;
+      await act(async () => {
+        setter.call(select!, value);
+        select!.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await flushReact();
+    }
+
+    async function expandImportConfig(index = 0) {
+      const buttons = Array.from(container.querySelectorAll("button")).filter(
+        (button) => button.textContent?.trim() === "configure adapter",
+      );
+      expect(buttons.length).toBeGreaterThan(index);
+      await act(async () => {
+        buttons[index]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+    }
+
+    async function previewDevinImport(
+      preview: CompanyPortabilityPreviewResult,
+    ) {
+      mockCompaniesApi.importPreview.mockResolvedValue(preview);
+      await renderPage();
+      await enterGithubUrl();
+      await clickButton((text) => text === "Preview import");
+      await settle();
+    }
+
+    it("rejects a bare fusion manifest model before submitting and names the slug", async () => {
+      mockCompaniesApi.importPreview.mockResolvedValue(buildDevinFusionPreview());
+      await renderPage();
+      await enterGithubUrl();
+      await clickButton((text) => text === "Preview import");
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+
+      expect(mockCompaniesApi.importBundleAsync).not.toHaveBeenCalled();
+      expect(mockCompaniesApi.importBundle).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("dev-agent");
+      expect(container.textContent).toContain("Fusion combination");
+    });
+
+    it("ignores a bare fusion model on an agent the plan skips", async () => {
+      mockCompaniesApi.importPreview.mockResolvedValue(buildDevinFusionPreview("skip"));
+      mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+      mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
+      await renderPage();
+      await enterGithubUrl();
+      await clickButton((text) => text === "Preview import");
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+
+      expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalled();
+    });
+
+    it("seeds the manifest model and imports the exact Fusion UID from the real picker", async () => {
+      mockAgentsApi.adapterModels.mockResolvedValue(IMPORT_FUSION_MODELS);
+      await previewDevinImport(buildDevinFusionPreview("create", "devin-family"));
+      mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+      mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
+
+      await expandImportConfig();
+      const strategy = container.querySelector<HTMLSelectElement>(
+        'select[aria-label="Strategy"]',
+      )!;
+      expect(strategy.value).toBe("single");
+      await chooseImportSelect("Strategy", "fusion");
+      await chooseImportSelect("Orchestrator model", "alpha");
+      await chooseImportSelect("Orchestrator effort", "low");
+      await chooseImportSelect("Worker model", "delta");
+
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+
+      expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalled();
+      const payload = mockCompaniesApi.importBundleAsync.mock.calls.at(-1)![0] as {
+        adapterOverrides?: Record<string, { adapterConfig?: { model?: string } }>;
+      };
+      expect(
+        payload.adapterOverrides?.["dev-agent"]?.adapterConfig?.model,
+      ).toBe("fusion-alpha-low-sidekick-delta");
+    });
+
+    it("blocks the import while a rendered slot draft is pending and names the slug", async () => {
+      mockAgentsApi.adapterModels.mockResolvedValue(IMPORT_FUSION_MODELS);
+      await previewDevinImport(buildDevinFusionPreview("create", "devin-family"));
+
+      await expandImportConfig();
+      await chooseImportSelect("Strategy", "fusion");
+      await chooseImportSelect("Orchestrator model", "alpha");
+
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+
+      expect(mockCompaniesApi.importBundleAsync).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("dev-agent");
+      expect(container.textContent).toContain("model selection");
+    });
+
+    it("keeps a collapsed visited slot mounted so its pending draft still gates", async () => {
+      mockAgentsApi.adapterModels.mockResolvedValue(IMPORT_FUSION_MODELS);
+      await previewDevinImport(buildDevinFusionPreview("create", "devin-family"));
+
+      await expandImportConfig();
+      await chooseImportSelect("Strategy", "fusion");
+      await chooseImportSelect("Orchestrator model", "alpha");
+      await expandImportConfig();
+      expect(
+        container.querySelector('select[aria-label="Orchestrator model"]'),
+      ).toBeTruthy();
+
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+      expect(mockCompaniesApi.importBundleAsync).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("dev-agent");
+    });
+
+    it("ignores a deselected agent file even when its manifest model is bare", async () => {
+      mockAgentsApi.adapterModels.mockResolvedValue(IMPORT_FUSION_MODELS);
+      await previewDevinImport(buildDevinFusionPreview("create", "fusion"));
+      mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+      mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
+
+      const dirToggle = container.querySelector(
+        '[aria-label="Expand dev"]',
+      );
+      if (dirToggle) {
+        await act(async () => {
+          dirToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      }
+      const fileRow = container.querySelector(
+        '[data-file-tree-path="agents/dev/AGENTS.md"]',
+      );
+      expect(fileRow).toBeTruthy();
+      const checkbox = fileRow!.querySelector<HTMLInputElement>(
+        'input[type="checkbox"]',
+      )!;
+      expect(checkbox.checked).toBe(true);
+      await act(async () => {
+        checkbox.click();
+      });
+      await flushReact();
+
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+      expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalled();
+    });
+
+    it("names only the pending slot when another slot stays valid", async () => {
+      mockAgentsApi.adapterModels.mockResolvedValue(IMPORT_FUSION_MODELS);
+      await previewDevinImport(
+        buildDevinFusionPreview("create", "devin-family", [
+          {
+            slug: "dev-two",
+            name: "Dev Two",
+            path: "agents/dev-two/AGENTS.md",
+            model: "devin-family",
+          },
+        ]),
+      );
+
+      await expandImportConfig(0);
+      await chooseImportSelect("Strategy", "fusion");
+      await chooseImportSelect("Orchestrator model", "alpha");
+
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+      expect(mockCompaniesApi.importBundleAsync).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("dev-agent");
+      expect(container.textContent).not.toContain("dev-two: ");
+    });
+
+    it("preserves manifest adapter config through an exact Fusion model change", async () => {
+      const preview = buildDevinFusionPreview("create", "devin-family");
+      (preview.manifest.agents[0] as { adapterConfig: Record<string, unknown> }).adapterConfig = {
+        model: "devin-family",
+        thinkingEffort: "high",
+        contextSize: "200k",
+        fastMode: true,
+        priority: true,
+        permissionMode: "smart",
+        timeoutSec: 42,
+        cwd: "/work/repo",
+        command: "devin --alpha",
+        env: { MY_KEY: { type: "secret_ref", secretId: "s1", version: "latest" } },
+        passthrough: "keep-me",
+      };
+      mockAgentsApi.adapterModels.mockResolvedValue(IMPORT_FUSION_MODELS);
+      await previewDevinImport(preview);
+      mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+      mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
+
+      await expandImportConfig();
+      await chooseImportSelect("Strategy", "fusion");
+      await chooseImportSelect("Orchestrator model", "alpha");
+      await chooseImportSelect("Orchestrator effort", "low");
+      await chooseImportSelect("Worker model", "delta");
+
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+
+      expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalled();
+      const payload = mockCompaniesApi.importBundleAsync.mock.calls.at(-1)![0] as {
+        adapterOverrides?: Record<string, { adapterConfig?: Record<string, unknown> }>;
+      };
+      const config = payload.adapterOverrides?.["dev-agent"]?.adapterConfig;
+      expect(config).toMatchObject({
+        model: "fusion-alpha-low-sidekick-delta",
+        permissionMode: "smart",
+        timeoutSec: 42,
+        cwd: "/work/repo",
+        command: "devin --alpha",
+        passthrough: "keep-me",
+        env: { MY_KEY: { type: "secret_ref", secretId: "s1", version: "latest" } },
+      });
+      for (const axis of ["thinkingEffort", "contextSize", "fastMode", "priority"]) {
+        expect(config).not.toHaveProperty(axis);
+      }
+    });
+
+    it("imports a metadata-backed opaque Fusion UID and drops the four axes", async () => {
+      const opaqueModels = [
+        ...IMPORT_FUSION_MODELS.slice(0, -1),
+        {
+          id: "acme-pair-1",
+          label: "Acme Pair One",
+          fusion: {
+            version: 1 as const,
+            kind: "fusion" as const,
+            components: null,
+            rates: null,
+            costSummary: null,
+          },
+        },
+        IMPORT_FUSION_MODELS.at(-1)!,
+      ];
+      const preview = buildDevinFusionPreview("create", "devin-family");
+      (preview.manifest.agents[0] as { adapterConfig: Record<string, unknown> }).adapterConfig = {
+        model: "devin-family",
+        thinkingEffort: "high",
+        contextSize: "200k",
+        fastMode: true,
+        priority: true,
+        permissionMode: "smart",
+        timeoutSec: 42,
+        cwd: "/work/repo",
+        env: { MY_KEY: { type: "secret_ref", secretId: "s1", version: "latest" } },
+      };
+      mockAgentsApi.adapterModels.mockResolvedValue(opaqueModels);
+      await previewDevinImport(preview);
+      mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+      mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
+
+      await expandImportConfig();
+      await chooseImportSelect("Strategy", "fusion");
+      const combo = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Combination"]',
+      )!;
+      expect(combo).toBeTruthy();
+      await act(async () => {
+        combo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      const opaqueOption = [...document.querySelectorAll("button")].find(
+        (button) => button.textContent?.includes("Acme Pair One"),
+      )!;
+      expect(opaqueOption).toBeTruthy();
+      await act(async () => opaqueOption.click());
+      await flushReact();
+
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+
+      expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalled();
+      const payload = mockCompaniesApi.importBundleAsync.mock.calls.at(-1)![0] as {
+        adapterOverrides?: Record<string, { adapterConfig?: Record<string, unknown> }>;
+      };
+      const config = payload.adapterOverrides?.["dev-agent"]?.adapterConfig;
+      expect(config).toMatchObject({
+        model: "acme-pair-1",
+        permissionMode: "smart",
+        timeoutSec: 42,
+        cwd: "/work/repo",
+        env: { MY_KEY: { type: "secret_ref", secretId: "s1", version: "latest" } },
+      });
+      for (const axis of ["thinkingEffort", "contextSize", "fastMode", "priority"]) {
+        expect(config).not.toHaveProperty(axis);
+      }
+    });
+
+    it("keeps the manifest model and axes when only an unrelated field changes", async () => {
+      const preview = buildDevinFusionPreview("create", "devin-family");
+      (preview.manifest.agents[0] as { adapterConfig: Record<string, unknown> }).adapterConfig = {
+        model: "devin-family",
+        thinkingEffort: "high",
+        permissionMode: "smart",
+        timeoutSec: 42,
+        env: { MY_KEY: { type: "secret_ref", secretId: "s1", version: "latest" } },
+      };
+      mockAgentsApi.adapterModels.mockResolvedValue(IMPORT_FUSION_MODELS);
+      await previewDevinImport(preview);
+      mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+      mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
+
+      await expandImportConfig();
+      const cwdInput = container.querySelector<HTMLInputElement>(
+        'input[placeholder="/Users/you/project"]',
+      )!;
+      expect(cwdInput).toBeTruthy();
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          "value",
+        )!.set!;
+        setter.call(cwdInput, "/new/dir");
+        cwdInput.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await flushReact();
+
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+
+      expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalled();
+      const payload = mockCompaniesApi.importBundleAsync.mock.calls.at(-1)![0] as {
+        adapterOverrides?: Record<string, { adapterConfig?: Record<string, unknown> }>;
+      };
+      const config = payload.adapterOverrides?.["dev-agent"]?.adapterConfig;
+      expect(config).toMatchObject({
+        model: "devin-family",
+        thinkingEffort: "high",
+        permissionMode: "smart",
+        timeoutSec: 42,
+        cwd: "/new/dir",
+        env: { MY_KEY: { type: "secret_ref", secretId: "s1", version: "latest" } },
+      });
+    });
+
+    it("restores the manifest model when a deselected slot is reselected", async () => {
+      mockAgentsApi.adapterModels.mockResolvedValue(IMPORT_FUSION_MODELS);
+      await previewDevinImport(buildDevinFusionPreview("create", "devin-family"));
+
+      await expandImportConfig();
+      await chooseImportSelect("Strategy", "fusion");
+      await chooseImportSelect("Orchestrator model", "alpha");
+      await chooseImportSelect("Orchestrator effort", "low");
+      await chooseImportSelect("Worker model", "delta");
+      const strategyAfterChoice = container.querySelector<HTMLSelectElement>(
+        'select[aria-label="Strategy"]',
+      )!;
+      expect(strategyAfterChoice.value).toBe("fusion");
+
+      const dirToggle = container.querySelector('[aria-label="Expand dev"]');
+      if (dirToggle) {
+        await act(async () => {
+          dirToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      }
+      const checkbox = container
+        .querySelector('[data-file-tree-path="agents/dev/AGENTS.md"]')!
+        .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+      await act(async () => {
+        checkbox.click();
+      });
+      await flushReact();
+      await act(async () => {
+        checkbox.click();
+      });
+      await flushReact();
+
+      await expandImportConfig();
+      const strategy = container.querySelector<HTMLSelectElement>(
+        'select[aria-label="Strategy"]',
+      )!;
+      expect(strategy.value).toBe("single");
+      expect(container.textContent).not.toContain("Complete the model selection");
+
+      mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+      mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+      expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalled();
+      const payload = mockCompaniesApi.importBundleAsync.mock.calls.at(-1)![0] as {
+        adapterOverrides?: Record<string, { adapterConfig?: { model?: string } }>;
+      };
+      expect(
+        payload.adapterOverrides?.["dev-agent"]?.adapterConfig?.model,
+      ).not.toBe("fusion-alpha-low-sidekick-delta");
+    });
+
+    it("clears a slot draft when a new source replaces the preview", async () => {
+      mockAgentsApi.adapterModels.mockResolvedValue(IMPORT_FUSION_MODELS);
+      await previewDevinImport(buildDevinFusionPreview("create", "devin-family"));
+      mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+      mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
+
+      await expandImportConfig();
+      await chooseImportSelect("Strategy", "fusion");
+      await chooseImportSelect("Orchestrator model", "alpha");
+
+      await enterGithubUrl("https://github.com/acme/other-starter/tree/main/company");
+      await clickButton((text) => text === "Preview import");
+      await settle();
+
+      await clickButton((text) => text.startsWith("Import "));
+      await settle();
+      expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalled();
+    });
   });
 });

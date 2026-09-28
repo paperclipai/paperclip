@@ -86,6 +86,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Cpu,
     experimental: true,
   },
+  devin_local: {
+    label: "Devin",
+    description: "Devin CLI harness",
+    icon: Terminal,
+  },
   gemini_local: {
     label: "Gemini CLI",
     description: "Gemini CLI harness",

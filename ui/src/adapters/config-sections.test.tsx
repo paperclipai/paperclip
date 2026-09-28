@@ -9,6 +9,7 @@ import { GeminiLocalConfigFields } from "./gemini-local/config-fields";
 import { ProcessConfigFields } from "./process/config-fields";
 import { OpenClawGatewayConfigFields } from "./openclaw-gateway/config-fields";
 import { HermesGatewayConfigFields } from "./hermes-gateway/config-fields";
+import { DevinLocalConfigFields } from "./devin-local/config-fields";
 
 function renderSection(
   Component: ComponentType<AdapterConfigFieldsProps>,
@@ -124,4 +125,16 @@ describe("adapter configuration sections", () => {
       );
     },
   );
+
+  it("renders Devin extras only in Configuration instead of repeating them in every section", () => {
+    const config = { permissionMode: "auto", contextSize: "1m", cwd: "/tmp/devin-workspace" };
+    for (const section of ["adapter", "advanced", "runPolicy", "environment"] as const) {
+      expect(renderSection(DevinLocalConfigFields, "devin_local", section, config)).toBe("");
+    }
+    const configuration = renderSection(DevinLocalConfigFields, "devin_local", "configuration", config);
+    expect(configuration).toContain("Permission mode");
+    expect(configuration).toContain("Context size");
+    expect(configuration).toContain('value="/tmp/devin-workspace"');
+    expect(configuration.match(/Permission mode/g)).toHaveLength(1);
+  });
 });

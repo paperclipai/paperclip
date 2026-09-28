@@ -2,6 +2,7 @@ import type { UIAdapterModule } from "./types";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { paperclipRunnerUIAdapter } from "./paperclip-runner";
+import { devinLocalUIAdapter } from "./devin-local";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
 import { geminiLocalUIAdapter } from "./gemini-local";
@@ -57,6 +58,7 @@ function registerBuiltInUIAdapters() {
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
     paperclipRunnerUIAdapter,
+    devinLocalUIAdapter,
     cursorCloudUIAdapter,
     geminiLocalUIAdapter,
     grokLocalUIAdapter,

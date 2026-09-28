@@ -2361,7 +2361,7 @@ describe("TaskChatThread runtime transcript selection", () => {
 
   it.each([
     ...["claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
-      "pi_local", "grok_local", "kimi_local", "hermes_local"].flatMap((adapterType) =>
+      "pi_local", "grok_local", "kimi_local", "hermes_local", "devin_local"].flatMap((adapterType) =>
       ["failed", "timed_out"].map((status) => ({ adapterType, status, runtimeMode: "legacy" as const,
         cause: "legacy_execution_requires_reconciliation", canRetry: true }))),
     { adapterType: "paperclip_runner", status: "failed", runtimeMode: "native" as const,

@@ -41,6 +41,7 @@ export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "codex_local",
   "cursor_cloud",
   "cursor",
+  "devin_local",
   "gemini_local",
   "hermes_local",
   "kimi_local",
@@ -65,6 +66,11 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
     defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
   },
   cursor: {
+    supportsSessionResume: true,
+    nativeContextManagement: "unknown",
+    defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
+  },
+  devin_local: {
     supportsSessionResume: true,
     nativeContextManagement: "unknown",
     defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
