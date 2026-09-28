@@ -11,6 +11,7 @@ import {
   validateRunnerApiCall,
   type RunnerApiIo,
 } from "./runner-api-client.js";
+import { RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
 
 const context = {
   companyId: "company-a",
@@ -35,6 +36,25 @@ const io = (fetcher: typeof fetch): RunnerApiIo => ({
     byteSize: Buffer.isBuffer(bytes) ? bytes.length : bytes.byteSize,
     contentType,
   }),
+});
+
+describe("bounded response capture receipts", () => {
+  it.each([projects, createProject])("reports oversize evidence without retrying %s", async operationId => {
+    const fetcher = vi.fn(async () => new Response("", { headers: { "content-length": String(RUNNER_API_RESPONSE_MAX_BYTES + 1) } }));
+    const result = await executeRunnerApi({ operationId }, context, io(fetcher));
+    expect(result).toMatchObject({ ok: false, error: "api_response_too_large", maxResponseBytes: RUNNER_API_RESPONSE_MAX_BYTES,
+      outcome: operationId === projects ? "read_failed" : "unknown" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it("settles the budget and removes the file even when saving fails", async () => {
+    const bytes = Buffer.alloc(32 * 1024);
+    const settle = vi.fn(async () => {});
+    const input = io(async () => new Response(bytes));
+    input.reserveResponseCapture = async () => settle;
+    input.saveResponse = async () => { throw new Error("storage unavailable"); };
+    await expect(executeRunnerApi({ operationId: projects }, context, input)).rejects.toThrow("storage unavailable");
+    expect(settle).toHaveBeenCalledExactlyOnceWith(bytes.length);
+  });
 });
 
 describe("runner API catalog", () => {

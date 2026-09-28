@@ -9,6 +9,7 @@ import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-ser
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
 import { runnerApiCatalog } from "./runner-api-catalog.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
+import { RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES } from "./runner-api-response-limits.js";
 
 describe("runner API against real HTTP routes", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
@@ -319,7 +320,54 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const after = await fixture.snapshot();
     expect(after.assets).toHaveLength(before + 1);
     expect(after.activity.filter(row => row.action === "project.updated")).toHaveLength(1);
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect((run.resultJson as Record<string, unknown>).apiResponseCaptureBytes).toBe(initial.artifact.byteSize + receipt.artifact.byteSize);
   }, 30_000);
+
+  it("enforces the durable run budget while permitting small reads and saved pages", async () => {
+    const fixture = await server.fixture();
+    await server.db.update(heartbeatRuns).set({ resultJson: { apiResponseCaptureBytes: RUNNER_API_RESPONSE_RUN_MAX_BYTES } }).where(eq(heartbeatRuns.id, fixture.runId));
+    const call = () => fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } });
+    expect(await call()).toMatchObject({ ok: true });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const before = (await fixture.snapshot()).assets.length;
+    expect(await call()).toMatchObject({ ok: false, error: "api_response_capture_limit", outcome: "read_failed" });
+    expect((await fixture.snapshot()).assets).toHaveLength(before);
+    expect(await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: fixture.artifactId }, responseText: { limitBytes: 4 },
+    } })).toMatchObject({ ok: true });
+  });
+
+  it("reserves the run budget atomically across simultaneous captures", async () => {
+    const fixture = await server.fixture();
+    const used = RUNNER_API_RESPONSE_RUN_MAX_BYTES - RUNNER_API_RESPONSE_MAX_BYTES;
+    await server.db.update(heartbeatRuns).set({ resultJson: { apiResponseCaptureBytes: used } }).where(eq(heartbeatRuns.id, fixture.runId));
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    let unblock!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>(resolve => { unblock = resolve; });
+    const saving = new Promise<void>(resolve => { started = resolve; });
+    const putFile = server.storage.putFile.bind(server.storage);
+    const spy = vi.spyOn(server.storage, "putFile").mockImplementation(async input => {
+      if (input.namespace === "runner-api") { started(); await gate; }
+      return putFile(input);
+    });
+    const call = () => fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } });
+    const first = call();
+    try {
+      await saving;
+      expect(await call()).toMatchObject({ ok: false, error: "api_response_capture_limit" });
+    } finally { unblock(); spy.mockRestore(); }
+    const result: any = await first;
+    expect(result).toMatchObject({ ok: true });
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect((run.resultJson as Record<string, unknown>).apiResponseCaptureBytes).toBe(used + result.artifact.byteSize);
+    expect(await call()).toMatchObject({ ok: false, error: "api_response_capture_limit" });
+  });
 
   it("persists and range-reads asset sizes above two GiB", async () => {
     const fixture = await server.fixture();

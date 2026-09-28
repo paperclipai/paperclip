@@ -3,8 +3,9 @@ import { badRequest, forbidden, unprocessable } from "../../errors.js";
 import { runnerApiOperation, type RunnerApiOperation } from "./runner-api-catalog.js";
 import { captureRunnerApiResponse, type RunnerApiResponseBody } from "./runner-api-response.js";
 import { runnerApiRestriction } from "./runner-api-policy.js";
+import { RunnerApiResponseLimitError, RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
 
-/** Request/upload bound only. Responses stream to storage without a total-size cap. */
+/** Request/upload bound only. Response capture has a separate streamed limit. */
 export const RUNNER_API_MAX_BYTES = 10 * 1024 * 1024;
 export const RUNNER_API_INLINE_BYTES = 24 * 1024;
 export const RUNNER_API_TIMEOUT_MS = 30_000;
@@ -40,6 +41,8 @@ export interface RunnerApiIo {
   fetch?: typeof fetch;
   /** Revalidate server-owned authority after asynchronous file preparation. */
   beforeDispatch?(): Promise<void>;
+  /** Reserve before spilling. Settle completed bytes; failed captures retain their reservation. */
+  reserveResponseCapture?(): Promise<(completedBytes?: number) => Promise<void>>;
   readFile(file: RunnerApiFile): Promise<{ bytes: Buffer; filename: string; contentType: string }>;
   saveResponse(bytes: RunnerApiResponseBody, contentType: string): Promise<Record<string, unknown>>;
 }
@@ -194,6 +197,11 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
   let response: Response;
   let bytes: Buffer;
   let captured: Awaited<ReturnType<typeof captureRunnerApiResponse>> | undefined;
+  let settleCapture: ((completedBytes?: number) => Promise<void>) | undefined;
+  const disposeCapture = async () => {
+    try { await captured?.dispose(); }
+    finally { await settleCapture?.(captured?.byteSize); }
+  };
   await io.beforeDispatch?.();
   const controller = new AbortController();
   // Bound connection setup and stalled body reads, not the total download time.
@@ -205,14 +213,19 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
       timeout = setTimeout(() => controller.abort(), RUNNER_API_TIMEOUT_MS);
       bytes = await readBoundedResponse(response, textLimit + 2);
     } else {
-      captured = await captureRunnerApiResponse(response, RUNNER_API_INLINE_BYTES, controller, RUNNER_API_TIMEOUT_MS, io.beforeDispatch);
+      captured = await captureRunnerApiResponse(response, RUNNER_API_INLINE_BYTES, controller, RUNNER_API_TIMEOUT_MS, io.beforeDispatch, {
+        beforeSpill: async () => { settleCapture = await io.reserveResponseCapture?.(); },
+      });
       // Read only the requested window (+ one UTF-8 lookahead byte) into memory.
       bytes = await captured.read(input.responseText && response.ok ? textOffset : 0,
         input.responseText ? textLimit + 1 : RUNNER_API_INLINE_BYTES);
     }
-  } catch {
-    await captured?.dispose();
-    return { ok: false, status: null, operationId: operation.operationId, error: "api_transport_failure", outcome: ["GET", "HEAD", "OPTIONS"].includes(operation.method) ? "read_failed" : "unknown", guidance: "Inspect current state before retrying a mutation; it may already have succeeded." };
+  } catch (error) {
+    await disposeCapture();
+    return { ok: false, status: null, operationId: operation.operationId,
+      error: error instanceof RunnerApiResponseLimitError ? error.code : "api_transport_failure",
+      ...(error instanceof RunnerApiResponseLimitError ? { message: error.message, maxResponseBytes: RUNNER_API_RESPONSE_MAX_BYTES } : {}),
+      outcome: ["GET", "HEAD", "OPTIONS"].includes(operation.method) ? "read_failed" : "unknown", guidance: "Inspect current state before retrying a mutation; it may already have succeeded." };
   } finally { clearTimeout(timeout); }
   try {
     const type = response.headers.get("content-type") ?? "application/octet-stream";
@@ -285,5 +298,5 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
       catch { return { ...base, ok: false, error: "invalid_json_response", data: text, ...(mutation ? uncertainty : {}) }; }
     }
     return { ...base, data: text };
-  } finally { await captured?.dispose(); }
+  } finally { await disposeCapture(); }
 }

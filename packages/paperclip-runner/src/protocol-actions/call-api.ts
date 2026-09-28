@@ -97,7 +97,7 @@ export const callApiAction = {
             "maxLength": 120
           },
           "responseText": {
-            "description": "GET only: return a bounded UTF-8 text window inline, including JSON as text, without saving another artifact. Offsets and limits are bytes. Use the returned nextOffsetBytes to continue; null means complete. Prefer reading a saved artifact for a stable snapshot. No total response-size cap; each page stays bounded. If a live response returns an artifact, continue on its content operation for a stable snapshot.",
+            "description": "GET only: return a bounded UTF-8 text window inline, including JSON as text, without saving another artifact. Offsets and limits are bytes. Use the returned nextOffsetBytes to continue; null means complete. Prefer reading a saved artifact for a stable snapshot. New live responses have a 1 GiB capture limit and a 4 GiB per-run capture budget. Existing larger assets remain readable in bounded pages. If a live response returns an artifact, continue on its content operation for a stable snapshot.",
             "type": "object",
             "properties": {
               "offsetBytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991, "default": 0 },

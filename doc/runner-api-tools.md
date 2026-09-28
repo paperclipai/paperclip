@@ -51,18 +51,35 @@ exactly one authorized `artifactId` or task-workspace `path`, and an optional
 multipart `field`. No arbitrary URL, headers, authentication, or remote file URL
 can be supplied. Routes still validate payloads and enforce permissions.
 
-Requests have a 16 KiB URL limit and 10 MiB request/upload limit. **Responses have
-no configured total byte-size limit.** Connection setup and stalled response reads
-time out after 30 seconds; an actively downloading response may take longer.
-Responses above 24 KiB stream into a private temporary file, then into a
-company-owned asset with a retrievable reference. Memory use stays bounded by
-the inline prefix and stream buffers, regardless of total response size. Binary
-responses also become assets; text previews are limited to 2,000 bytes.
+Requests have a 16 KiB URL limit and 10 MiB request/upload limit. **New response
+captures are limited to 1 GiB of decoded bytes.** This is separate from the 24 KiB
+inline/page limit. The receiver rejects an oversized Content-Length before
+reading and counts actual bytes before writing, including chunked or compressed
+responses. Oversized responses return `api_response_too_large`; narrow the query
+or use the endpoint's own pagination. A mutation may already have committed, so
+inspect its state rather than retrying it to obtain a smaller response.
+
+Connection setup and stalled response reads time out after 30 seconds. An active
+capture has a 10-minute total download deadline. Responses above 24 KiB stream
+into a private temporary file, then into a company-owned asset. Memory stays
+bounded by the inline prefix and stream buffers. Binary responses also become
+assets; text previews are limited to 2,000 bytes.
+
+Large captures reserve 1 GiB against a **durable 4 GiB per-run capture budget**
+before creating a file. A completed capture settles to its actual byte count;
+failed/interrupted captures retain the full reservation to bound retry loops.
+A process restart does not reset that budget. Small inline responses and reads
+of existing assets need no reservation. Concurrent large captures are limited
+to **two per company and four per server process**, including the storage upload
+and temporary-file cleanup. Budget exhaustion returns `api_response_capture_limit`;
+concurrency exhaustion returns `api_response_capture_busy` without queuing more
+large transfers. These are capture safeguards, not a company-wide storage quota:
+normal retention, storage capacity, and backend limits still apply across runs.
+
 Temporary files are removed on success or failure. Long captures revalidate the
 active run at least every MiB or at the next chunk after one second, and again
-before returning the snapshot. Stopping the run stops its download. Storage exhaustion, upstream
-failures, and storage-provider object limits can still fail a download; this does
-not promise infinite disk space or an endless-stream API.
+before returning the snapshot. Stopping the run stops its download.
+
 To inspect saved text without creating another artifact, call its authorized
 content operation with `responseText`:
 
@@ -81,7 +98,9 @@ response. A text-window call against a live response above 24 KiB also returns
 that snapshot's artifact reference; continue on its content operation. A saved
 asset page never creates another asset. An unpaged asset read also fetches only
 a bounded preview and returns the existing reference instead of copying the file. Offsets and total sizes use safe integer
-byte counts, including values above 2 GiB. Request/upload limits and all route
+byte counts, including values above 2 GiB. Existing assets larger than the 1 GiB
+capture limit remain readable because each request transfers only a bounded range.
+Request/upload limits and all route
 authorization remain.
 Saved asset pages use authenticated HTTP byte ranges. The storage provider reads
 only the requested window, with at most two extra bytes for UTF-8/EOF handling.
@@ -91,6 +110,21 @@ asset for every page. Other GET routes are fetched once in full to create the
 snapshot, so use the returned asset for subsequent pages. S3 uses streamed
 multipart uploads for large snapshots. Asset sizes are stored as PostgreSQL
 `bigint`, preserving the existing numeric API shape.
+
+### Media files and upload limits
+
+The 1 GiB limit covers new snapshots returned by `call_api`, such as large JSON
+exports or binary API downloads. It does not raise attachment upload limits or
+limit files an agent creates and edits inside its workspace. Saved asset downloads
+stream from storage and support byte ranges, including video seeking.
+
+`PAPERCLIP_ATTACHMENT_MAX_BYTES` separately defaults to 10 MiB for uploads and
+native file handoffs. `call_api` uploads also have their own 10 MiB limit. Several
+upload and handoff paths buffer complete files in memory; raising those defaults
+to GiB sizes requires streaming ingestion and corresponding admission/budget
+controls first. For a future video attachment workflow, 2 GiB per streamed file
+is a reasonable default, with an operator override and storage quotas. Do not
+claim that this response-paging change enables GiB attachment uploads.
 
 Tool responses identify the HTTP route with `apiOperationId`. The native protocol
 reserves `operationId` and `callId` for semantic tool-call identity; API metadata

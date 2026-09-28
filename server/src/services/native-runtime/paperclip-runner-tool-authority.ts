@@ -28,6 +28,7 @@ import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
+import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -538,6 +539,7 @@ export class PaperclipRunnerToolAuthority {
           validateRunnerApiCall(input, { ...context, workMode: fresh.issue.workMode });
         },
         readFile: (file) => this.#readApiFile(file),
+        reserveResponseCapture: () => this.#reserveApiResponseCapture(),
         saveResponse: async (bytes, contentType) => {
           const storage = this.binding.storage ?? getStorageService();
           const saved = await storage.putFile({ companyId: this.binding.companyId, namespace: "runner-api", originalFilename: contentType.includes("json") ? "response.json" : "response.bin", contentType, ...(Buffer.isBuffer(bytes) ? { body: bytes } : { body: createReadStream(bytes.path), byteSize: bytes.byteSize, sha256: bytes.sha256 }) });
@@ -591,6 +593,41 @@ export class PaperclipRunnerToolAuthority {
       await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, this.binding.runId));
     });
     return result;
+  }
+
+  async #reserveApiResponseCapture(): Promise<(completedBytes?: number) => Promise<void>> {
+    const release = acquireRunnerApiResponseSlot(this.binding.companyId);
+    try {
+      await this.db.transaction(async tx => {
+        const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+        const resultJson = record(locked.run.resultJson);
+        const used = resultJson.apiResponseCaptureBytes ?? 0;
+        if (typeof used !== "number" || !Number.isSafeInteger(used) || used < 0
+          || used + RUNNER_API_RESPONSE_MAX_BYTES > RUNNER_API_RESPONSE_RUN_MAX_BYTES) {
+          throw new RunnerApiResponseLimitError("api_response_capture_limit", "This run has insufficient capture budget (4 GiB per run). Read an existing asset or narrow the query.");
+        }
+        // Reserve worst-case bytes durably before creating a temporary file.
+        // Interrupted/failed captures keep the reservation, preventing retry
+        // loops and process restarts from resetting this run's disk-I/O budget.
+        await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used + RUNNER_API_RESPONSE_MAX_BYTES } }).where(eq(heartbeatRuns.id, this.binding.runId));
+      });
+    } catch (error) { release(); throw error; }
+    let settled = false;
+    return async completedBytes => {
+      if (settled) return;
+      settled = true;
+      try {
+        if (completedBytes === undefined) return;
+        await this.db.transaction(async tx => {
+          const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("update");
+          if (!run) return;
+          const resultJson = record(run.resultJson);
+          const used = resultJson.apiResponseCaptureBytes;
+          if (typeof used !== "number" || !Number.isSafeInteger(used) || used < RUNNER_API_RESPONSE_MAX_BYTES) return;
+          await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiResponseCaptureBytes: used - RUNNER_API_RESPONSE_MAX_BYTES + completedBytes } }).where(eq(heartbeatRuns.id, run.id));
+        });
+      } finally { release(); }
+    };
   }
 
   async #readApiFile(file: RunnerApiFile): Promise<{ bytes: Buffer; filename: string; contentType: string }> {
