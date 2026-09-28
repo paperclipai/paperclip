@@ -394,6 +394,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           continuationPolicy: "wake_assignee",
           payload: {
             version: 1,
+            supersedeOnUserComment: true,
             questions: [{
               id: "scope",
               prompt: "Which scope?",
@@ -1603,6 +1604,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       kind: "ask_user_questions",
       payload: {
         version: 1,
+        supersedeOnUserComment: true,
         questions: [{
           id: "scope",
           prompt: "Choose the scope",
@@ -3525,6 +3527,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
+        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",
