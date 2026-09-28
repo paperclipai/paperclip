@@ -1089,7 +1089,7 @@ describe.skipIf(!gnuTar)("automatic unsafe workspace export recovery", () => {
   afterEach(async () => {
     await Promise.all(cleanupDirs.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
-  it.each(["/usr/bin/pnpm", "../../outside.txt", "ambiguous"])("preserves files and safe links when a link is unsafe: %s", async (target) => {
+  it.each(["/usr/bin/pnpm", "../../outside.txt", "ambiguous", "ambiguous-target"])("preserves files and safe links when a link is unsafe: %s", async (target) => {
     const root = await fs.mkdtemp("/tmp/paperclip-export-recovery-");
     cleanupDirs.push(root);
     const remoteDir = path.join(root, "remote");
@@ -1104,7 +1104,9 @@ describe.skipIf(!gnuTar)("automatic unsafe workspace export recovery", () => {
     await fs.writeFile(path.join(remoteDir, "nested", "--safe [file].txt"), "saved work", { mode: 0o600 });
     await fs.writeFile(path.join(remoteDir, "cache", "ignored.txt"), "excluded");
     const linkName = target === "ambiguous" ? "tool -> decoy" : "tool";
-    await fs.symlink(target === "ambiguous" ? "../../outside.txt" : target, path.join(remoteDir, "nested", linkName));
+    const linkTarget = target === "ambiguous" ? "--safe [file].txt" : target === "ambiguous-target" ? "saved -> work.txt" : target;
+    if (target === "ambiguous-target") await fs.writeFile(path.join(remoteDir, "nested", linkTarget), "more saved work");
+    await fs.symlink(linkTarget, path.join(remoteDir, "nested", linkName));
     await fs.symlink("nested/--safe [file].txt", path.join(remoteDir, "safe-link"));
     await fs.link(path.join(remoteDir, "nested", "--safe [file].txt"), path.join(remoteDir, "hard-link"));
     const downloads = vi.fn(async (requests: Array<{ source: string; destination: string }>) => {
@@ -1116,7 +1118,7 @@ describe.skipIf(!gnuTar)("automatic unsafe workspace export recovery", () => {
     Object.assign(sandbox.fs, { downloadFiles: downloads, deleteFile: (file: string) => fs.rm(file, { force: true }) });
     await expect(performSyncOut({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30, onArchiveRecovery: recovery,
       operations: [{ operationId: "export", files: [{ sourcePath: remoteDir, targetPath: output, kind: "directory", exclude: ["cache"] }] }],
-    })).resolves.toMatchObject({ operations: [{ operationId: "export", filesTransferred: 3 }] });
+    })).resolves.toMatchObject({ operations: [{ operationId: "export", filesTransferred: target === "ambiguous-target" ? 4 : 3 }] });
     expect(downloads).toHaveBeenCalledTimes(2);
     expect(recovery).toHaveBeenCalledOnce();
     expect(await fs.readFile(path.join(output, "nested", "--safe [file].txt"), "utf8")).toBe("saved work");
