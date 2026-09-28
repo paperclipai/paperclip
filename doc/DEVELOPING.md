@@ -1641,4 +1641,6 @@ module version. Production builds do not use the development cache.
 
 Run `pnpm test:e2e:browser-context` to test this with real Vite modules and
 Chromium. The test starts its own loopback Vite server and mocks API responses;
-it needs no running Paperclip instance or provider credentials.
+it needs no running Paperclip instance or provider credentials. The same spec lives
+in the default `test:e2e` discovery tree, so the existing Chrome CI shards run it
+on pull requests.
