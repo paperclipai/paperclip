@@ -1069,6 +1069,13 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       ));
     }
 
+    const status = await execFileAsync(
+      "git",
+      ["-C", seeded.worktreePath, "status", "--porcelain", "--untracked-files=all"],
+      { maxBuffer: 2 * 1024 * 1024 },
+    );
+    expect(Buffer.byteLength(status.stdout, "utf8")).toBeGreaterThan(1024 * 1024);
+
     const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
     expect(readiness?.git).toMatchObject({ hasUntrackedFiles: true, untrackedEntryCount: 5_000 });
     expect(readiness?.warnings).toContain("The workspace has 5000 untracked files.");
