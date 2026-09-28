@@ -86,7 +86,9 @@ unlimited setting is accepted. This quota covers API snapshots, not all company
 attachments. Storage capacity and backend limits still apply.
 
 Handled pre-storage failures release the company reservation after temporary
-file cleanup, but retain the run's charge against retry loops. A crash, failed
+file cleanup, but retain the run's charge against retry loops. After a metadata
+transaction fails, a locking read must prove the asset was not committed before
+the uploaded object is removed. Confirmed cleanup refunds the company quota. A crash, failed
 cleanup, or ambiguous storage write keeps an unattached reservation. Operators
 must reconcile possible orphan files/objects before deleting that reservation
 from `runner_api_response_reservations`; no automatic expiry silently refunds

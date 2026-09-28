@@ -559,7 +559,16 @@ export class PaperclipRunnerToolAuthority {
             await tx.update(runnerApiResponseReservations).set({ assetId: asset.id, reservedBytes: asset.byteSize }).where(and(eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId)));
             return asset;
           }).catch(async error => {
-            await storage.deleteObject(this.binding.companyId, saved.objectKey).catch(() => {});
+            // A failed commit acknowledgement can still leave a committed
+            // asset. A locking read waits out that transaction before proving
+            // the reservation is unlinked and safe to compensate.
+            const reservation = await this.db.select({ assetId: runnerApiResponseReservations.assetId })
+              .from(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.id, reservationId!), eq(runnerApiResponseReservations.companyId, this.binding.companyId))).for("update")
+              .then(rows => rows[0]).catch(() => undefined);
+            if (reservation?.assetId === null) {
+              const removed = await storage.deleteObject(this.binding.companyId, saved.objectKey).then(() => true, () => false);
+              if (removed) storageAttempted = false;
+            }
             throw error;
           });
           const activity = await persistActivity(this.db, { companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId, issueId: this.binding.issueId, action: "asset.created", entityType: "asset", entityId: asset.id, details: { source: "runner.call_api", byteSize: saved.byteSize } });

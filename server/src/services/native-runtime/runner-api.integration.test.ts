@@ -407,6 +407,33 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     ]);
   });
 
+  it.each([false, true])("reconciles metadata failure without losing committed assets (commit=%s)", async committed => {
+    const fixture = await server.fixture();
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const putFile = server.storage.putFile.bind(server.storage);
+    const transaction = server.db.transaction.bind(server.db);
+    let objectKey = "";
+    let transactionSpy: ReturnType<typeof vi.spyOn> | undefined;
+    const spy = vi.spyOn(server.storage, "putFile").mockImplementationOnce(async input => {
+      const saved = await putFile(input);
+      objectKey = saved.objectKey;
+      transactionSpy = vi.spyOn(server.db, "transaction").mockImplementationOnce(async (fn, config) => {
+        if (committed) await transaction(fn, config);
+        throw new Error("metadata transaction failed");
+      });
+      return saved;
+    });
+    try {
+      await expect(fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+      } })).rejects.toThrow("metadata transaction failed");
+    } finally { spy.mockRestore(); transactionSpy?.mockRestore(); }
+    const reservations = await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId));
+    expect(reservations).toHaveLength(committed ? 1 : 0);
+    if (committed) expect(reservations[0].assetId).toBeTruthy();
+    expect((await server.storage.headObject(fixture.companyId, objectKey)).exists).toBe(committed);
+  });
+
   it("shares company admission across simultaneous runs", async () => {
     const fixture = await server.fixture();
     vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(RUNNER_API_RESPONSE_MAX_BYTES));
