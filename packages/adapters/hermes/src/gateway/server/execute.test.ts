@@ -632,7 +632,10 @@ describe("execute", () => {
         if (url.endsWith("/v1/runs") && init?.method === "POST") {
           createCalls += 1;
           if (createCalls === 1) {
-            return new Response(JSON.stringify({ error: "rate limit exceeded" }), { status: 429, headers: { "retry-after": "1" } });
+            return new Response(
+              JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+              { status: 429, headers: { "retry-after": "1" } },
+            );
           }
           return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
         }
@@ -671,7 +674,10 @@ describe("execute", () => {
       const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.endsWith("/v1/runs") && init?.method === "POST") {
-          return new Response(JSON.stringify({ error: "rate limit exceeded" }), { status: 429, headers: { "retry-after": "1" } });
+          return new Response(
+            JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+            { status: 429, headers: { "retry-after": "1" } },
+          );
         }
         return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
       });
@@ -698,7 +704,10 @@ describe("execute", () => {
 
   it("does not retry when the gateway Retry-After exceeds the in-process budget", async () => {
     const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ error: "rate limit exceeded" }), { status: 429, headers: { "retry-after": "45" } }));
+      new Response(
+        JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+        { status: 429, headers: { "retry-after": "45" } },
+      ));
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await execute(makeCtx({
@@ -710,6 +719,22 @@ describe("execute", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_rate_limited");
     expect(result.retryNotBefore).toBe("45");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a 429 that does not come from the gateway's create limiter", async () => {
+    const fetchMock = vi.fn(async () => new Response("Rate limit exceeded", { status: 429 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 60,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    expect(result.errorFamily).toBe("transient_upstream");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

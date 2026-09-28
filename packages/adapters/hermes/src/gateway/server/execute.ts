@@ -485,6 +485,21 @@ function parseRetryAfterMs(raw: string | null | undefined): number | null {
   return Math.max(0, at - Date.now());
 }
 
+// The Hermes gateway rejects create requests with HTTP 429 and this error code
+// BEFORE it creates any run: the concurrency limiter sits in front of run
+// creation. A 429 without this code comes from something else on the path (for
+// example a reverse proxy) and may mean the request was already forwarded, so
+// it must not be retried blindly.
+const GATEWAY_CREATE_RATE_LIMIT_ERROR_CODE = "rate_limit_exceeded";
+
+function isGatewayCreateRateLimit(err: HermesHttpError): boolean {
+  if (err.status !== 429) return false;
+  const body = asRecord(err.body);
+  const error = asRecord(body?.error);
+  const code = error?.code ?? body?.code;
+  return code === GATEWAY_CREATE_RATE_LIMIT_ERROR_CODE;
+}
+
 /**
  * Wait before the next run-create attempt after an HTTP 429, or null when the
  * attempt budget is exhausted or the gateway's Retry-After asks for more wait
@@ -1029,9 +1044,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let rateLimitAttempt = 0;
     // Gateway rate-limit bursts (many seat wakes landing in the same minute)
     // surface as HTTP 429 on the create call and used to fail the run at
-    // invocation. Retry with jittered backoff, honoring a bounded server
-    // Retry-After, before surfacing the 429 for the platform's own transient
-    // retry scheduling.
+    // invocation. The gateway emits that 429 before it creates any run, so
+    // retrying a gateway-attributable 429 cannot start a duplicate run. Retry
+    // with jittered backoff, honoring a bounded server Retry-After, before
+    // surfacing the 429 for the platform's own transient retry scheduling.
     while (true) {
       try {
         created = await fetchJson(createRunUrl, {
@@ -1041,7 +1057,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
         break;
       } catch (err) {
-        const delayMs = (err as HermesHttpError).status === 429
+        const delayMs = isGatewayCreateRateLimit(err as HermesHttpError)
           ? rateLimitRetryDelayForTest(rateLimitAttempt, (err as HermesHttpError).retryNotBefore)
           : null;
         if (delayMs === null) throw err;
