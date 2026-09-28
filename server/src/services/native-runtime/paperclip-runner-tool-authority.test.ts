@@ -1475,6 +1475,14 @@ describe("PaperclipRunnerToolAuthority", () => {
       runId: summaryRunId,
     });
 
+    // The advertised tool schema is what the model actually sees; asserting
+    // only the service-layer behavior below would miss a definitions() gap.
+    const advertised = authority.definitions().find((tool) => tool.name === "create_task") as {
+      inputSchema: { properties: Record<string, unknown>; required: string[] };
+    };
+    expect(advertised.inputSchema.properties).toHaveProperty("summary");
+    expect(advertised.inputSchema.required).not.toContain("summary");
+
     const withSummary = (await authority.execute({
       tool: "create_task",
       callId: "create-with-summary",

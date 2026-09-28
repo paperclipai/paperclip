@@ -196,4 +196,30 @@ describe("semantic action catalog", () => {
     expect(validateCatalog({ ...catalogInput, brief }), JSON.stringify(validateCatalog.errors)).toBe(true);
     expect(validateCatalog({ ...catalogInput, brief: null })).toBe(true);
   });
+
+  it("advertises an optional task summary on create_task on every tool surface", () => {
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    const liveSchema = createTaskAction.live.descriptor.inputSchema;
+    const scenarioSchema = createTaskAction.scenario.descriptor.inputSchema;
+    const catalogSchema = paperclipSemanticAction("create_task")!.inputSchema;
+
+    for (const schema of [liveSchema, scenarioSchema, catalogSchema]) {
+      expect(schema.properties).toHaveProperty("summary");
+      expect(schema.required).not.toContain("summary");
+    }
+
+    const summary = "This task integrates the payment gateway for checkout v2.";
+
+    const validateLive = ajv.compile(liveSchema);
+    expect(validateLive({ idempotencyKey: "task-1", title: "Task", summary }), JSON.stringify(validateLive.errors)).toBe(true);
+    expect(validateLive({ idempotencyKey: "task-1", title: "Task", summary: null })).toBe(true);
+    expect(validateLive({ idempotencyKey: "task-1", title: "Task" })).toBe(true);
+
+    const validateScenario = ajv.compile(scenarioSchema);
+    expect(validateScenario({ title: "Task", summary }), JSON.stringify(validateScenario.errors)).toBe(true);
+
+    const validateCatalog = ajv.compile(catalogSchema);
+    expect(validateCatalog({ idempotencyKey: "task-2", title: "Task", summary }), JSON.stringify(validateCatalog.errors)).toBe(true);
+    expect(validateCatalog({ idempotencyKey: "task-2", title: "Task", summary: null })).toBe(true);
+  });
 });

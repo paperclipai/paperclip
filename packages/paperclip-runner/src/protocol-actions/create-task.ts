@@ -29,7 +29,7 @@ export const createTaskAction = {
   },
   "documentation": {
     "title": "Create task",
-    "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
+    "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Set summary to what the task is for and its expected outcome; it is shown whenever the task is mentioned.",
     "note": null
   },
   "examples": {
@@ -77,7 +77,7 @@ export const createTaskAction = {
       "operationId": "create_task",
       "version": 1,
       "title": "Create task",
-      "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
+      "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Set summary to what the task is for and its expected outcome; it is shown whenever the task is mentioned.",
       "exposure": "optional",
       "requiredClaims": [
         "delegation:tasks:create"
@@ -108,6 +108,14 @@ export const createTaskAction = {
             ],
             "description": "Child task description.",
             "maxLength": 20000
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the task is for and its expected outcome, up to 3 short paragraphs (max 600 chars). Shown whenever the task is mentioned.",
+            "maxLength": 600
           },
           "assigneeActorId": {
             "type": [
@@ -269,6 +277,9 @@ export const createTaskAction = {
             "minLength": 1
           },
           "description": {
+            "type": "string"
+          },
+          "summary": {
             "type": "string"
           },
           "assigneeActorId": {
