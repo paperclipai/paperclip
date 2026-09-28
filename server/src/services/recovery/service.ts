@@ -4905,7 +4905,69 @@ export function recoveryService(
 
       if (issue.status === "in_review") {
         if (!participantAgentId || !pendingExecutionState) {
-          result.skipped += 1;
+          // INUA-8135: an agent may set blockedByIssueIds on an in_review task
+          // without updating the status. When no live execution participant
+          // remains and first-class unresolved blockers exist, auto-evict to
+          // blocked so the dependency chain is visible and the task resumes
+          // automatically when the blocking issues resolve.
+          const unresolvedBlockers = await existingUnresolvedBlockerIssues(
+            issue.companyId,
+            issue.id,
+          );
+          if (unresolvedBlockers.length > 0) {
+            const blockerIds = unresolvedBlockers.map((b) => b.id);
+            const updated = await issuesSvc.update(issue.id, {
+              status: "blocked",
+              blockedByIssueIds: blockerIds,
+            });
+            if (updated) {
+              await issuesSvc.addComment(
+                issue.id,
+                "Paperclip detected an `in_review` task with no live execution participant " +
+                "and first-class unresolved blockers. The status has been corrected to `blocked` " +
+                "so the dependency chain is visible and the task will resume automatically " +
+                "when the blocking issues resolve.",
+                {},
+                {
+                  authorType: "system",
+                  presentation: compactRecoveryPresentation(
+                    "Recovery: in_review with blockers and dead path → blocked",
+                  ),
+                  metadata: {
+                    version: 1,
+                    sections: [
+                      {
+                        title: "Recovery",
+                        rows: [
+                          {
+                            type: "key_value",
+                            label: "Cause",
+                            value: "in_review_with_unresolved_blockers_no_participant",
+                          },
+                          {
+                            type: "key_value",
+                            label: "Previous status",
+                            value: "in_review",
+                          },
+                          {
+                            type: "key_value",
+                            label: "Blocking issues",
+                            value: blockerIds.join(", ").slice(0, 2000),
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              );
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
         const participantLatestRun = participantLatestRunForRecovery;
