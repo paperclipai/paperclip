@@ -1,4 +1,5 @@
 import {
+  chmod,
   cp,
   mkdir,
   lstat,
@@ -7273,6 +7274,8 @@ it("preserves prepared input through runnerd and the real OpenCode proxy boundar
   execFileSync("cc", ["-x", "c", "-o", executable, "-"], {
     input: `#include <unistd.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(process.execPath)}; args[1] = ${JSON.stringify(fixture)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }`,
   });
+  // CI may use umask 0002; qualified executables cannot be group-writable.
+  await chmod(executable, 0o755);
   // Use the production bundler without depending on (or mutating) shared dist
   // artifacts. The Vitest CI lane builds Rust but does not build TypeScript.
   const proxy = join(root, "opencode-app-server-proxy.cjs");
