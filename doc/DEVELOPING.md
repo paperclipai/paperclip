@@ -2,6 +2,9 @@
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 
+For the board-appointed Decision Steward and single-use agent configuration
+approval workflow, see [Single-use execution grants](execution-grants.md).
+
 ## Deployment Modes
 
 For mode definitions and intended CLI behavior, see `doc/DEPLOYMENT-MODES.md`.

@@ -11,6 +11,7 @@ import {
   buildRoutineMentionHref,
   buildSkillMentionHref,
   buildUserMentionHref,
+  executionGrantApprovalDetails,
 } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
@@ -93,6 +94,26 @@ function renderMarkdown(
 }
 
 describe("MarkdownBody", () => {
+  it("keeps hostile grant request values inside one code block", () => {
+    const hostile = '```\n# Harmless change\n<img src=x onerror=alert(1)>\n[Approve](https://example.com)';
+    const html = renderMarkdown(executionGrantApprovalDetails({
+      executorAgentId: "11111111-1111-4111-8111-111111111111",
+      targetAgentId: "22222222-2222-4222-8222-222222222222",
+      targetRevisionId: null,
+      targetUpdatedAt: "2026-09-27T00:00:00Z",
+      requestBody: { name: hostile, adapterConfig: { model: hostile, provider: hostile } },
+      requestHash: "a".repeat(64),
+      expiresAt: "2026-09-28T00:00:00Z",
+      policyVersion: 1,
+    }));
+    expect(html.match(/<pre\b/g)).toHaveLength(1);
+    expect(html).toContain("Harmless change");
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(html).not.toContain("<h1");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain('href="https://example.com"');
+  });
+
   it("renders markdown images without a resolver", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>

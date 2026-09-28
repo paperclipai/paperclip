@@ -20,6 +20,8 @@ import type { ChatChannelService } from "../services/chat-channels.js";
 import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { sha256Digest } from "../services/feedback-redaction.js";
+import { executionGrantRequestHash } from "../services/execution-grant-contract.js";
+import { withConsumedExecutionGrant } from "../services/execution-grants.js";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
@@ -527,6 +529,7 @@ export function agentRoutes(
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
+  const grantScopedAgentPatchRequests = new WeakSet<Request>();
   const svc = agentService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
@@ -2112,6 +2115,9 @@ export function agentRoutes(
       actor: req.actor,
       action: "agent_config:update",
       resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+      ...(grantScopedAgentPatchRequests.has(req)
+        ? { scope: { requiresChangeGrant: true, consentedChange: true } }
+        : {}),
     });
     if (decision.allowed) return;
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -2455,8 +2461,10 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    database?: Db;
   }): Promise<Record<string, unknown>> {
-    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+    const normalizedAdapterConfig = await (input.database ? secretService(input.database) : secretsSvc)
+      .normalizeAdapterConfigForPersistence(
       input.companyId,
       input.adapterConfig,
       {
@@ -2774,6 +2782,16 @@ export function agentRoutes(
       throw notFound("Agent not found");
     }
     assertCompanyAccess(req, targetAgent.companyId);
+    if (grantScopedAgentPatchRequests.has(req)) {
+      const grantDecision = await access.decide({
+        actor: req.actor,
+        action: "agent_config:update",
+        resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+        scope: { requiresChangeGrant: true, consentedChange: true },
+      });
+      if (!grantDecision.allowed) throw forbidden(grantDecision.explanation, authorizationDeniedDetails(grantDecision));
+      return;
+    }
     const changeScope = { requiresChangeGrant: true };
     const decision = await access.decide({
       actor: req.actor,
@@ -5219,6 +5237,15 @@ export function agentRoutes(
 
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
     const id = req.params.id as string;
+    const executionGrantId = req.header("X-Paperclip-Execution-Grant")?.trim() || null;
+    if (executionGrantId) {
+      if (!isUuidLike(executionGrantId) || req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) {
+        throw forbidden("A valid execution grant requires an authenticated agent run", {
+          code: "execution_grant_executor_required",
+        });
+      }
+      grantScopedAgentPatchRequests.add(req);
+    }
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
 
@@ -5276,6 +5303,11 @@ export function agentRoutes(
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
+    let deferredAdapterConfig: {
+      companyId: string;
+      adapterType: string;
+      adapterConfig: Record<string, unknown>;
+    } | null = null;
     if (touchesAdapterConfiguration) {
       assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
@@ -5348,12 +5380,21 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         ),
       );
-      const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
-        companyId: existing.companyId,
-        adapterType: requestedAdapterType,
-        adapterConfig: effectiveAdapterConfig,
-      });
-      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      if (executionGrantId) {
+        deferredAdapterConfig = {
+          companyId: existing.companyId,
+          adapterType: requestedAdapterType,
+          adapterConfig: effectiveAdapterConfig,
+        };
+        patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, effectiveAdapterConfig);
+      } else {
+        const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
+          companyId: existing.companyId,
+          adapterType: requestedAdapterType,
+          adapterConfig: effectiveAdapterConfig,
+        });
+        patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      }
       assertExternalInstructionsAdmin(req, {
         ...existing,
         adapterConfig: patchData.adapterConfig,
@@ -5392,11 +5433,11 @@ export function agentRoutes(
     }
 
     const actor = getActorInfo(req);
-    const agent = await svc.update(id, patchData, {
+    const updateOptions = {
       recordRevision: {
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-        source: "patch",
+        source: executionGrantId ? "execution_grant_patch" : "patch",
       },
       claudeLogin: {
         ownerUserId: req.actor.type === "agent" ? null : (req.actor.userId ?? null),
@@ -5405,7 +5446,36 @@ export function agentRoutes(
         applyExistingWithoutClaim:
           req.actor.type !== "agent" && applyStoredClaudeLogin,
       },
-    });
+    };
+    const agent = executionGrantId && req.actor.type === "agent" && req.actor.agentId && req.actor.runId
+      ? await withConsumedExecutionGrant({
+          db,
+          grantId: executionGrantId,
+          attempt: {
+            companyId: existing.companyId,
+            executorAgentId: req.actor.agentId,
+            targetAgentId: id,
+            operation: "agent_config:update",
+            requestHash: executionGrantRequestHash("PATCH", `/api/agents/${id}`, req.body,
+              existing.updatedAt.toISOString()),
+          },
+          requestBody: req.body,
+          runId: req.actor.runId,
+          apply: async (txDb) => {
+            let txPatchData = patchData;
+            if (deferredAdapterConfig) {
+              const normalized = await normalizeMediatedAdapterConfigForPersistence({
+                ...deferredAdapterConfig,
+                database: txDb,
+              });
+              const adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalized);
+              assertExternalInstructionsAdmin(req, { ...existing, adapterConfig });
+              txPatchData = { ...patchData, adapterConfig };
+            }
+            return agentService(txDb).update(id, txPatchData, updateOptions);
+          },
+        })
+      : await svc.update(id, patchData, updateOptions);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5421,7 +5491,10 @@ export function agentRoutes(
       action: "agent.updated",
       entityType: "agent",
       entityId: agent.id,
-      details: summarizeAgentUpdateDetails(patchData),
+      details: {
+        ...summarizeAgentUpdateDetails(patchData),
+        ...(executionGrantId ? { executionGrantId } : {}),
+      },
     });
 
     res.json(redactAgentRowForResponse(agent));

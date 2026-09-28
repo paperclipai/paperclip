@@ -466,6 +466,7 @@ export {
   requestConfirmationCustomTargetSchema,
   requestConfirmationTargetSchema,
   requestConfirmationPayloadSchema,
+  executionGrantRequestPayloadSchema,
   requestConfirmationResumeFailureSchema,
   requestConfirmationResultSchema,
   requestConfirmationSecretProposalPayloadSchema,

@@ -3397,6 +3397,42 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/execution-grant-policy",
+  tags: ["agents"],
+  summary: "Read the company execution grant policy",
+  request: { params: z.object({ companyId: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/execution-grant-policy",
+  tags: ["agents"],
+  summary: "Appoint the Decision Steward as a board actor",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(z.object({ stewardAgentId: z.string().uuid() })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/execution-grants",
+  tags: ["agents"],
+  summary: "Issue one grant from an accepted decision to its named executor",
+  request: {
+    params: z.object({ id: z.string().uuid() }),
+    body: jsonBody(z.object({
+      decisionKind: z.enum(["agent", "board"]),
+      decisionId: z.string().uuid(),
+    })),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "delete",
   path: "/api/agents/{id}",
   tags: ["agents"],

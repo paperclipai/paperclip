@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { executionGrantApprovalDetails } from "../execution-grant-details.js";
+import { aiConnectionBindingSchema } from "../ai-connections.js";
+import { envBindingSecretRefSchema } from "./secret.js";
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_MONITOR_CLEAR_REASONS,
@@ -1505,6 +1508,50 @@ export const requestConfirmationSecretProposalPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+const executionGrantDisplaySafeFields = new Set([
+  "name", "role", "title", "icon", "reportsTo", "capabilities",
+  "adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId", "budgetMonthlyCents",
+]);
+
+// Decisions are readable on the issue. Keep plaintext credentials and arbitrary
+// adapter/runtime fields out of both the stored request and the displayed diff.
+const executionGrantSafeAdapterConfigSchema = z.strictObject({
+  engine: z.enum(["auto", "cli", "acp"]).optional(),
+  mode: z.enum(["persistent", "oneshot"]).optional(),
+  nonInteractivePermissions: z.enum(["deny", "fail"]).optional(),
+  model: z.string().optional(),
+  provider: z.string().optional(),
+  acpxAgent: z.string().optional(),
+  env: z.record(z.string(), envBindingSecretRefSchema.strict()).optional(),
+});
+const executionGrantSafeRuntimeConfigSchema = z.strictObject({
+  aiConnection: aiConnectionBindingSchema.optional(),
+});
+
+function isDisplaySafeGrantBody(body: Record<string, unknown>): boolean {
+  if (Object.keys(body).length === 0 ||
+      !Object.keys(body).every((key) => executionGrantDisplaySafeFields.has(key))) return false;
+  if (body.adapterConfig !== undefined &&
+      !executionGrantSafeAdapterConfigSchema.safeParse(body.adapterConfig).success) return false;
+  if (body.runtimeConfig !== undefined &&
+      !executionGrantSafeRuntimeConfigSchema.safeParse(body.runtimeConfig).success) return false;
+  return true;
+}
+
+export const executionGrantRequestPayloadSchema = z.strictObject({
+  version: z.literal(1),
+  executorAgentId: z.string().guid(),
+  targetAgentId: z.string().guid(),
+  operation: z.literal("agent_config:update"),
+  targetRevisionId: z.string().guid().nullable(),
+  targetUpdatedAt: z.string().datetime({ offset: true }),
+  requestBody: z.record(z.string(), z.unknown()).refine(isDisplaySafeGrantBody,
+    "Execution grants only support display-safe agent configuration fields and managed secret references"),
+  requestHash: z.string().regex(/^[a-f0-9]{64}$/),
+  expiresAt: z.string().datetime({ offset: true }),
+  policyVersion: z.number().int().positive(),
+});
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -1525,6 +1572,16 @@ export const requestConfirmationPayloadSchema = z.object({
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
   secretProposal: requestConfirmationSecretProposalPayloadSchema.optional(),
+  executionGrant: executionGrantRequestPayloadSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.executionGrant &&
+      value.detailsMarkdown !== executionGrantApprovalDetails(value.executionGrant)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["detailsMarkdown"],
+      message: "Execution grant approval details must show the exact request",
+    });
+  }
 });
 
 export const requestCheckboxConfirmationOptionSchema = z.object({

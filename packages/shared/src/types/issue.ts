@@ -1387,6 +1387,20 @@ export interface RequestConfirmationPayload {
   toolAction?: RequestConfirmationToolActionPayload;
   secretProposal?: RequestConfirmationSecretProposalPayload;
   connectionAuthorization?: RequestConfirmationConnectionAuthorizationPayload;
+  executionGrant?: ExecutionGrantRequestPayload;
+}
+
+export interface ExecutionGrantRequestPayload {
+  version: 1;
+  executorAgentId: string;
+  targetAgentId: string;
+  operation: "agent_config:update";
+  targetRevisionId: string | null;
+  targetUpdatedAt: string;
+  requestBody: Record<string, unknown>;
+  requestHash: string;
+  expiresAt: string;
+  policyVersion: number;
 }
 
 export interface RequestCheckboxConfirmationOption {
