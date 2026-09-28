@@ -613,6 +613,12 @@ describe("managed AI connections", () => {
     await expect(validateAiApiKey("anthropic", "fixture", request)).rejects.toThrow("rejected");
     expect(request.mock.calls[0][1].redirect).toBe("error");
   });
+  it("verifies zai keys against the Anthropic-compatible endpoint with Anthropic-style headers", async () => {
+    const request = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    await validateAiApiKey("zai", "fixture", request);
+    expect(request.mock.calls[0][0]).toBe("https://api.z.ai/api/anthropic/v1/models");
+    expect(request.mock.calls[0][1].headers).toEqual({ "x-api-key": "fixture", "anthropic-version": "2023-06-01" });
+  });
   it("uses the authenticated responsible user for agent-originated configuration and tests", async () => {
     const req = { actor: { type: "agent", agentId, onBehalfOfUserId: "alice" } } as express.Request;
     const selected = await service.select({ ...input, userId: responsibleUserForAiRequest(req) });
