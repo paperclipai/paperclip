@@ -26,6 +26,7 @@ import {
   pendingToolActionWriteInteraction,
   issueThreadInteractionFixtureMeta,
   pendingSecretProposalInteraction,
+  pendingGroupedSecretProposalInteraction,
   pendingConnectionAuthorizationInteraction,
   resolvedConnectionAuthorizationInteraction,
   executedSecretProposalInteraction,
@@ -1250,6 +1251,69 @@ describe("IssueThreadInteractionCard secret-proposal card", () => {
       pendingSecretProposalInteraction,
       undefined,
     );
+  });
+
+  it("names every binding of a grouped ask and refuses the ones the approver clears", async () => {
+    const onAcceptInteraction = vi.fn();
+    const host = renderCard({
+      interaction: pendingGroupedSecretProposalInteraction,
+      onAcceptInteraction,
+    });
+
+    // One card grants all three bindings. Showing the anchor alone would hide
+    // two of the three paths a single click creates, so the approver would be
+    // consenting to something the card never stated.
+    expect(host.textContent).toContain("Bindings (3)");
+    expect(host.textContent).toContain("env.SOAK_A");
+    expect(host.textContent).toContain("env.SOAK_B");
+    expect(host.textContent).toContain("env.SOAK_C");
+    expect(host.textContent).toContain("dev/soak/beta");
+
+    const boxes = Array.from(host.querySelectorAll<HTMLElement>('[role="checkbox"]'));
+    expect(boxes).toHaveLength(3);
+
+    // Clearing the middle binding declines it; the other two still go.
+    await act(async () => {
+      boxes[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const approve = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Create bindings"),
+    );
+    await act(async () => {
+      approve?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onAcceptInteraction).toHaveBeenCalledWith(
+      pendingGroupedSecretProposalInteraction,
+      undefined,
+      undefined,
+      undefined,
+      ["22222222-2222-4222-8222-222222222222"],
+    );
+  });
+
+  it("refuses to accept a grouped ask once every binding is cleared", async () => {
+    const onAcceptInteraction = vi.fn();
+    const host = renderCard({
+      interaction: pendingGroupedSecretProposalInteraction,
+      onAcceptInteraction,
+    });
+    const boxes = Array.from(host.querySelectorAll<HTMLElement>('[role="checkbox"]'));
+
+    // Approving a group whose every binding is declined is a rejection wearing
+    // an approval's label; the card sends it down the reject path instead.
+    await act(async () => {
+      for (const box of boxes) {
+        box.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      }
+    });
+    const approve = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Create bindings"),
+    );
+    expect(approve?.disabled).toBe(true);
+    await act(async () => {
+      approve?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onAcceptInteraction).not.toHaveBeenCalled();
   });
 
   it("renders an accepted proposal as executed rather than merely accepted", () => {

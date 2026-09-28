@@ -781,7 +781,7 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/agents/me/secret-proposals": {
     "section": "Secrets",
-    "description": "Propose a secret or agent binding for board approval"
+    "description": "Propose a secret, one agent binding, or several bindings as a single ask (kind binding_group) for board approval"
   },
   "GET /api/agents/me/secret-proposals": {
     "section": "Secrets",

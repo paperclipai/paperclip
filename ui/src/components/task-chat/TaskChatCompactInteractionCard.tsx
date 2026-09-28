@@ -26,7 +26,10 @@ import type {
   PaperclipQuestionResponse,
   PaperclipQuestionSet,
 } from "@paperclipai/adapter-utils";
-import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import {
+  IssueThreadInteractionCard,
+  SecretProposalDetails,
+} from "@/components/IssueThreadInteractionCard";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { MentionOption } from "@/components/MarkdownEditor";
@@ -550,31 +553,23 @@ function ReceiptDisclosure({
           </div>
         ) : null}
         {interaction.payload.secretProposal ? (
-          <dl className="grid gap-1 rounded-sm bg-muted/45 px-3 py-2.5 text-sm">
-            <div>
-              <dt className="text-xs text-muted-foreground">Secret</dt>
-              <dd>{interaction.payload.secretProposal.sourceSecretLabel}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">Binding</dt>
-              <dd className="font-mono text-xs">
-                {interaction.payload.secretProposal.configPath} →{" "}
-                {interaction.payload.secretProposal.targetAgentName}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">Why</dt>
-              <dd>{interaction.payload.secretProposal.justification}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">Expires</dt>
-              <dd>
-                {new Date(
-                  interaction.payload.secretProposal.expiresAt,
-                ).toLocaleString()}
-              </dd>
-            </div>
-          </dl>
+          <div className="space-y-2">
+            <SecretProposalDetails payload={interaction.payload.secretProposal} />
+            <dl className="grid gap-1 text-sm">
+              <div>
+                <dt className="text-xs text-muted-foreground">Why</dt>
+                <dd>{interaction.payload.secretProposal.justification}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">Expires</dt>
+                <dd>
+                  {new Date(
+                    interaction.payload.secretProposal.expiresAt,
+                  ).toLocaleString()}
+                </dd>
+              </div>
+            </dl>
+          </div>
         ) : null}
       </div>
     );
@@ -820,6 +815,27 @@ function ConfirmationCard({
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [revisionUploading, setRevisionUploading] = useState(false);
+  // A grouped secret proposal grants every binding it lists, so the takeover
+  // card keeps the same per-binding refusal as the issue-thread card: clearing
+  // a binding declines it while the rest still go.
+  const [declinedProposalIds, setDeclinedProposalIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const proposalBindings = interaction.payload.secretProposal?.bindings ?? [];
+  const everyBindingDeclined =
+    proposalBindings.length > 1 &&
+    proposalBindings.every((binding) => declinedProposalIds.has(binding.proposalId));
+  useEffect(() => {
+    setDeclinedProposalIds(new Set());
+  }, [interaction.id]);
+  function toggleBinding(proposalId: string) {
+    setDeclinedProposalIds((current) => {
+      const next = new Set(current);
+      if (next.has(proposalId)) next.delete(proposalId);
+      else next.add(proposalId);
+      return next;
+    });
+  }
   const collectsRejectReason = Boolean(
     interaction.payload.rejectRequiresReason ||
     interaction.payload.allowDeclineReason ||
@@ -841,7 +857,14 @@ function ConfirmationCard({
     setWorking(action);
     setActionError(null);
     try {
-      if (action === "accept") await onAcceptInteraction?.(interaction);
+      if (action === "accept")
+        await onAcceptInteraction?.(
+          interaction,
+          undefined,
+          undefined,
+          undefined,
+          declinedProposalIds.size > 0 ? [...declinedProposalIds] : undefined,
+        );
       else await onRejectInteraction?.(interaction, reason.trim() || undefined);
       if (draftKey) clearDraft(draftKey);
     } catch (error) {
@@ -915,31 +938,36 @@ function ConfirmationCard({
         </div>
       ) : null}
       {interaction.payload.secretProposal ? (
-        <dl className="mt-3 grid gap-2 rounded-sm bg-muted/45 px-3 py-2.5 text-sm">
-          <div>
-            <dt className="text-xs text-muted-foreground">Secret</dt>
-            <dd>{interaction.payload.secretProposal.sourceSecretLabel}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Binding</dt>
-            <dd className="font-mono text-xs">
-              {interaction.payload.secretProposal.configPath} →{" "}
-              {interaction.payload.secretProposal.targetAgentName}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Why</dt>
-            <dd>{interaction.payload.secretProposal.justification}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Expires</dt>
-            <dd>
-              {new Date(
-                interaction.payload.secretProposal.expiresAt,
-              ).toLocaleString()}
-            </dd>
-          </div>
-        </dl>
+        <div className="mt-3 space-y-2">
+          <SecretProposalDetails
+            payload={interaction.payload.secretProposal}
+            declinedProposalIds={
+              interaction.status === "pending" ? declinedProposalIds : undefined
+            }
+            onToggleBinding={
+              interaction.status === "pending" ? toggleBinding : undefined
+            }
+          />
+          {interaction.status === "pending" && proposalBindings.length > 1 ? (
+            <p className="text-xs text-muted-foreground">
+              Clear a binding to refuse it. The others are created now.
+            </p>
+          ) : null}
+          <dl className="grid gap-1 text-sm">
+            <div>
+              <dt className="text-xs text-muted-foreground">Why</dt>
+              <dd>{interaction.payload.secretProposal.justification}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">Expires</dt>
+              <dd>
+                {new Date(
+                  interaction.payload.secretProposal.expiresAt,
+                ).toLocaleString()}
+              </dd>
+            </div>
+          </dl>
+        </div>
       ) : null}
       {rejecting ? (
         <div className={cn("space-y-2", !isPlanConfirmation && "mt-3")}>
@@ -1037,7 +1065,9 @@ function ConfirmationCard({
             <Button
               type="button"
               size="sm"
-              disabled={working !== null || !onAcceptInteraction}
+              disabled={
+                working !== null || !onAcceptInteraction || everyBindingDeclined
+              }
               onClick={() => void resolve("accept")}
             >
               {working === "accept" ? (

@@ -102,6 +102,7 @@ interface IssueThreadInteractionCardProps {
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
     rememberAction?: boolean,
+    rejectProposalIds?: string[],
   ) => Promise<void> | void;
   onRejectInteraction?: (
     interaction:
@@ -1820,30 +1821,84 @@ function SecretProposalIdentityHeader({
   );
 }
 
-function SecretProposalDetails({
+/**
+ * The one rendering of a secret proposal's bindings, shared by every surface
+ * that can decide one (the issue thread card and the task-chat takeover card).
+ * A grouped ask grants every binding it lists at once, so a surface that shows
+ * the anchor alone would hide what one click approves and leave no way to keep
+ * six keys while refusing the seventh.
+ */
+export function SecretProposalDetails({
   payload,
+  declinedProposalIds,
+  onToggleBinding,
 }: {
   payload: NonNullable<RequestConfirmationInteraction["payload"]["secretProposal"]>;
+  declinedProposalIds?: ReadonlySet<string>;
+  onToggleBinding?: (proposalId: string) => void;
 }) {
+  const bindings = payload.bindings ?? [];
+  // A grouped ask grants every binding it lists, so the card must show every
+  // source-to-target mapping. Rendering the anchor alone would show one path and
+  // hide the rest of what one click approves, and would leave no way to keep six
+  // keys while refusing the seventh.
+  const grouped = bindings.length > 1;
+  const selectable = grouped && Boolean(declinedProposalIds && onToggleBinding);
+
   return (
     <dl className="grid gap-3 rounded-sm border border-border/70 bg-muted/30 p-3 sm:grid-cols-2">
-      <div className="min-w-0 space-y-1">
-        <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-          Source secret
-        </dt>
-        <dd className="truncate text-sm font-medium text-foreground">{payload.sourceSecretLabel}</dd>
-      </div>
+      {grouped ? (
+        <div className="min-w-0 space-y-2 sm:col-span-2">
+          <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+            Bindings ({bindings.length})
+          </dt>
+          <dd className="space-y-2">
+            {bindings.map((binding) => {
+              const declined = declinedProposalIds?.has(binding.proposalId) === true;
+              return (
+                <div key={binding.proposalId} className="flex min-w-0 items-start gap-2">
+                  {selectable ? (
+                    <Checkbox
+                      checked={!declined}
+                      onCheckedChange={() => onToggleBinding?.(binding.proposalId)}
+                      aria-label={`Bind ${binding.sourceSecretLabel} as ${binding.configPath}`}
+                      className="mt-0.5"
+                    />
+                  ) : null}
+                  <div className={cn("min-w-0 flex-1", declined && "opacity-60")}>
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {binding.sourceSecretLabel}
+                    </div>
+                    <div className="break-all font-mono text-xs text-muted-foreground">
+                      {binding.configPath}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </dd>
+        </div>
+      ) : (
+        <>
+          <div className="min-w-0 space-y-1">
+            <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+              Source secret
+            </dt>
+            <dd className="truncate text-sm font-medium text-foreground">{payload.sourceSecretLabel}</dd>
+          </div>
+          <div className="min-w-0 space-y-1 sm:col-span-2">
+            <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+              New config path
+            </dt>
+            <dd className="break-all font-mono text-sm text-foreground">{payload.configPath}</dd>
+          </div>
+        </>
+      )}
       <div className="min-w-0 space-y-1">
         <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
           Target agent
         </dt>
         <dd className="truncate text-sm font-medium text-foreground">{payload.targetAgentName}</dd>
-      </div>
-      <div className="min-w-0 space-y-1 sm:col-span-2">
-        <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-          New config path
-        </dt>
-        <dd className="break-all font-mono text-sm text-foreground">{payload.configPath}</dd>
       </div>
     </dl>
   );
@@ -1962,7 +2017,14 @@ function RequestSecretProposalCard({
   interaction: RequestConfirmationInteraction;
   state: SecretProposalCardState;
   resolvedByLabel: string | null;
-  onAcceptInteraction?: (interaction: RequestConfirmationInteraction) => Promise<void> | void;
+  onAcceptInteraction?: (
+    interaction: RequestConfirmationInteraction,
+    selectedClientKeys?: string[],
+    selectedOptionIds?: string[],
+    rememberAction?: boolean,
+    // Bindings of a grouped ask the accepting user cleared on the card.
+    rejectProposalIds?: string[],
+  ) => Promise<void> | void;
   onRejectInteraction?: (
     interaction: RequestConfirmationInteraction,
     reason?: string,
@@ -1971,20 +2033,49 @@ function RequestSecretProposalCard({
   const payload = interaction.payload.secretProposal!;
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [declinedProposalIds, setDeclinedProposalIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const resolutionErrorMessage = useResolutionErrorMessage();
   const isPending = state === "pending";
+  const bindings = payload.bindings ?? [];
+  const everyBindingDeclined =
+    bindings.length > 1 && bindings.every((binding) => declinedProposalIds.has(binding.proposalId));
 
   useEffect(() => {
     setActionError(null);
     if (!isPending) setWorking(null);
   }, [interaction.id, isPending]);
 
+  useEffect(() => {
+    setDeclinedProposalIds(new Set());
+  }, [interaction.id]);
+
+  function toggleBinding(proposalId: string) {
+    setDeclinedProposalIds((current) => {
+      const next = new Set(current);
+      if (next.has(proposalId)) next.delete(proposalId);
+      else next.add(proposalId);
+      return next;
+    });
+  }
+
   async function handleAccept() {
     if (!onAcceptInteraction) return;
     setWorking("accept");
     setActionError(null);
     try {
-      await onAcceptInteraction(interaction);
+      if (declinedProposalIds.size > 0) {
+        await onAcceptInteraction(
+          interaction,
+          undefined,
+          undefined,
+          undefined,
+          [...declinedProposalIds],
+        );
+      } else {
+        await onAcceptInteraction(interaction);
+      }
     } catch (error) {
       setActionError(resolutionErrorMessage(error));
     } finally {
@@ -2008,7 +2099,16 @@ function RequestSecretProposalCard({
   return (
     <div className="space-y-4">
       <SecretProposalIdentityHeader state={state} />
-      <SecretProposalDetails payload={payload} />
+      <SecretProposalDetails
+        payload={payload}
+        declinedProposalIds={isPending ? declinedProposalIds : undefined}
+        onToggleBinding={isPending ? toggleBinding : undefined}
+      />
+      {isPending && bindings.length > 1 ? (
+        <p className="text-(length:--text-micro) text-muted-foreground">
+          Clear a binding to refuse it. The others are created now.
+        </p>
+      ) : null}
       <ProposalJustification justification={payload.justification} />
       <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
         <Clock className="h-3.5 w-3.5" />
@@ -2027,7 +2127,7 @@ function RequestSecretProposalCard({
           reasonPlaceholder={interaction.payload.declineReasonPlaceholder ?? "Optional: explain why this binding should not be created."}
           working={working}
           actionError={actionError}
-          canApprove={Boolean(onAcceptInteraction)}
+          canApprove={Boolean(onAcceptInteraction) && !everyBindingDeclined}
           canReject={Boolean(onRejectInteraction)}
           onApprove={() => void handleAccept()}
           onReject={(reason) => void handleReject(reason)}

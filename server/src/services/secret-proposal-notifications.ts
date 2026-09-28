@@ -12,11 +12,20 @@ type ProposalResolutionNotification = {
   configPath: string | null;
 };
 
+type ProposalGroupMember = {
+  configPath: string | null;
+  status: string;
+};
+
 export async function notifySecretProposalResolution(input: {
   proposal: ProposalResolutionNotification;
   status: "approved" | "rejected";
   userId: string;
   reason?: string | null;
+  // Every binding of a grouped ask, so one decision reports all of its outcomes.
+  // Without them the comment names the anchor alone, and the agent that asked
+  // about seven keys reads that its other six are still undecided.
+  groupMembers?: ProposalGroupMember[];
   issues: Pick<ReturnType<typeof issueService>, "getById" | "addComment">;
   heartbeat: IssueAssignmentWakeupDeps;
 }) {
@@ -24,12 +33,19 @@ export async function notifySecretProposalResolution(input: {
   try {
     const issue = await input.issues.getById(input.proposal.originIssueId);
     if (!issue) return;
+    const grouped = (input.groupMembers?.length ?? 0) > 1;
     const subject = input.proposal.kind === "secret"
       ? `secret proposal \`${input.proposal.proposedName ?? "unnamed"}\``
-      : `binding proposal \`${input.proposal.configPath ?? "unknown"}\``;
-    const configPath = input.proposal.kind === "binding"
-      ? `\n- New config path: \`${input.proposal.configPath ?? "unknown"}\`\n- Verify: \`GET /api/agents/me/secrets\``
-      : "";
+      : grouped
+        ? `binding proposal group of ${input.groupMembers!.length}`
+        : `binding proposal \`${input.proposal.configPath ?? "unknown"}\``;
+    const configPath = grouped
+      ? `\n- Bindings:\n${input.groupMembers!
+        .map((member) => `  - \`${member.configPath ?? "unknown"}\`: ${member.status}`)
+        .join("\n")}\n- Verify: \`GET /api/agents/me/secrets\``
+      : input.proposal.kind === "binding"
+        ? `\n- New config path: \`${input.proposal.configPath ?? "unknown"}\`\n- Verify: \`GET /api/agents/me/secrets\``
+        : "";
     const reason = input.reason ? `\n\nReason: ${input.reason}` : "";
     try {
       await input.issues.addComment(

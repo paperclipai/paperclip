@@ -611,6 +611,7 @@ export {
   type IssueThreadInteractionContinuationPolicy,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
+  SECRET_PROPOSAL_BINDING_GROUP_LIMIT,
   type BuiltInIssueOriginKind,
   type PluginIssueOriginKind,
   type IssueOriginKind,

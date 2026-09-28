@@ -328,6 +328,10 @@ export function legacyIssueThreadInteractionResolverPolicyAlias(
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;
 
+// The most secret bindings one approval ask may cover. A grouped ask is decided
+// by one human on one card, so the bound is what one card can state.
+export const SECRET_PROPOSAL_BINDING_GROUP_LIMIT = 20;
+
 export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "pending",
   "accepted",

@@ -13,6 +13,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   expiredSecretProposalInteraction,
+  pendingGroupedSecretProposalInteraction,
   pendingAskUserQuestionsInteraction,
   pendingRequestCheckboxConfirmationInteraction,
   pendingRequestItemVerdictsInteraction,
@@ -782,6 +783,87 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).not.toContain(
       "View original request and resolution",
     );
+  });
+
+  it("shows every binding of a grouped ask in the takeover card and sends the cleared ones", async () => {
+    const onAcceptInteraction = vi.fn(async () => undefined);
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard
+              item={interactionItem(pendingGroupedSecretProposalInteraction)}
+              presentation="takeover"
+              onAcceptInteraction={onAcceptInteraction}
+            />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+
+    // The takeover card is where the modern task view decides a pending ask, so
+    // it has to name all three paths one click creates — and offer the same
+    // per-binding refusal the issue-thread card does.
+    expect(container.textContent).toContain("Bindings (3)");
+    expect(container.textContent).toContain("env.SOAK_A");
+    expect(container.textContent).toContain("env.SOAK_B");
+    expect(container.textContent).toContain("env.SOAK_C");
+
+    const boxes = Array.from(
+      container.querySelectorAll<HTMLElement>('[role="checkbox"]'),
+    );
+    expect(boxes).toHaveLength(3);
+    await act(async () => {
+      boxes[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const approve = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create bindings"),
+    );
+    await act(async () => {
+      approve?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onAcceptInteraction).toHaveBeenCalledWith(
+      pendingGroupedSecretProposalInteraction,
+      undefined,
+      undefined,
+      undefined,
+      ["22222222-2222-4222-8222-222222222222"],
+    );
+  });
+
+  it("refuses to approve the takeover card once every binding is cleared", async () => {
+    const onAcceptInteraction = vi.fn(async () => undefined);
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard
+              item={interactionItem(pendingGroupedSecretProposalInteraction)}
+              presentation="takeover"
+              onAcceptInteraction={onAcceptInteraction}
+            />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+
+    for (const box of Array.from(
+      container.querySelectorAll<HTMLElement>('[role="checkbox"]'),
+    )) {
+      await act(async () => {
+        box.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+    }
+    const approve = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create bindings"),
+    );
+    expect(approve?.disabled).toBe(true);
+    await act(async () => {
+      approve?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onAcceptInteraction).not.toHaveBeenCalled();
   });
 
   it("keeps security details inside an expandable expired receipt", () => {

@@ -1547,4 +1547,246 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(await db.select({ reportsTo: agents.reportsTo }).from(agents).where(eq(agents.id, targetAgentId)))
       .toEqual([{ reportsTo: null }]);
   });
+
+  async function seedGroupFixture(fixture: Awaited<ReturnType<typeof seedRun>>, configPaths: string[]) {
+    const secret = await secretService(db).create(fixture.companyId, {
+      name: "dev/group/source",
+      key: "GROUP_SOURCE",
+      provider: "local_encrypted",
+      value: "group-secret",
+    });
+    const created = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding_group",
+        bindings: configPaths.map((configPath) => ({ secretId: secret.id, configPath })),
+        justification: "Bind the soak environment in one ask",
+      });
+    expect(created.status).toBe(201);
+    return { secret, created };
+  }
+
+  it("raises one human-only ask for many bindings", async () => {
+    const fixture = await seedRun();
+    const configPaths = Array.from({ length: 7 }, (_, index) => `env.SOAK_${index}`);
+    const { created } = await seedGroupFixture(fixture, configPaths);
+
+    // One ask for seven bindings: the unit the human decides is the group, and
+    // the seven rows exist only so each binding keeps its own config path,
+    // secret reference and audit entry.
+    const proposals = await db.select().from(companySecretProposals);
+    expect(proposals).toHaveLength(7);
+    expect(new Set(proposals.map((proposal) => proposal.groupId)).size).toBe(1);
+    expect(proposals.every((proposal) => proposal.groupId !== null)).toBe(true);
+    expect(proposals.every((proposal) => proposal.kind === "binding")).toBe(true);
+    expect(new Set(proposals.map((proposal) => proposal.expiresAt.getTime())).size).toBe(1);
+
+    const cards = await db.select().from(issueThreadInteractions);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      id: created.body.interactionId,
+      kind: "request_confirmation",
+      status: "pending",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      effectiveResolverPolicySource: "governed_action",
+      resolverPolicyProvenance: "explicit",
+      continuationPolicy: "wake_assignee",
+    });
+    const payload = cards[0]!.payload as {
+      secretProposal?: { proposalIds?: string[]; bindings?: Array<{ configPath: string }> };
+    };
+    expect(payload.secretProposal?.proposalIds).toHaveLength(7);
+    expect(payload.secretProposal?.bindings?.map((binding) => binding.configPath).sort())
+      .toEqual([...configPaths].sort());
+  });
+
+  it("counts every binding of a group against the pending cap", async () => {
+    const fixture = await seedRun();
+    const full = await seedGroupFixture(
+      fixture,
+      Array.from({ length: 19 }, (_, index) => `env.CAP_${index}`),
+    );
+    const secret = full.secret;
+
+    // The cap bounds undecided rows, not cards: a group that fits only by being
+    // one card would otherwise raise what one agent can leave waiting.
+    const overflow = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding_group",
+        bindings: [
+          { secretId: secret.id, configPath: "env.CAP_19" },
+          { secretId: secret.id, configPath: "env.CAP_20" },
+        ],
+        justification: "One binding too many",
+      });
+    expect(overflow.status).toBe(422);
+    expect(overflow.body.error).toMatch(/at most 20 pending secret proposals/);
+    expect(await db.select().from(companySecretProposals)).toHaveLength(19);
+  });
+
+  it("approves some bindings of a group and declines the rest in one decision", async () => {
+    const fixture = await seedRun();
+    const { created } = await seedGroupFixture(fixture, [
+      "env.SOAK_A",
+      "env.SOAK_B",
+      "env.SOAK_C",
+    ]);
+    const members = await db.select().from(companySecretProposals);
+    const declined = members.find((member) => member.configPath === "env.SOAK_B")!;
+    const persistedIssues = issueService(db);
+    const addComment = vi.fn().mockResolvedValue(undefined);
+
+    const approved = await request(createBoardApp(fixture, {
+      issues: { getById: persistedIssues.getById, addComment },
+    }))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${created.body.id}/approve`)
+      .send({ rejectProposalIds: [declined.id], rejectReason: "Soak B is out of scope" });
+
+    expect(approved.status).toBe(200);
+    expect((await db.select().from(companySecretBindings)).map((binding) => binding.configPath).sort())
+      .toEqual(["env.SOAK_A", "env.SOAK_C"]);
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ configPath: "env.SOAK_A", status: "approved" }),
+      expect.objectContaining({
+        configPath: "env.SOAK_B",
+        status: "rejected",
+        resolutionReason: "Soak B is out of scope",
+      }),
+      expect.objectContaining({ configPath: "env.SOAK_C", status: "approved" }),
+    ]));
+
+    const [card] = await db.select().from(issueThreadInteractions);
+    expect(card).toMatchObject({ status: "accepted" });
+    const result = card!.result as {
+      outcome?: string;
+      secretProposal?: { bindings?: Array<{ configPath: string | null; status: string }> };
+    };
+    expect(result.outcome).toBe("accepted");
+    expect(result.secretProposal?.bindings?.map((binding) => [binding.configPath, binding.status]).sort())
+      .toEqual([["env.SOAK_A", "approved"], ["env.SOAK_B", "rejected"], ["env.SOAK_C", "approved"]]);
+
+    // The proposer reads the outcome from this comment. Naming only the anchor
+    // would tell an agent that asked about three keys that one of them landed.
+    expect(addComment).toHaveBeenCalledTimes(1);
+    const body = addComment.mock.calls[0]![1] as string;
+    expect(body).toContain("- `env.SOAK_A`: approved");
+    expect(body).toContain("- `env.SOAK_B`: rejected");
+    expect(body).toContain("- `env.SOAK_C`: approved");
+  });
+
+  it("refuses a group approval that declines every binding or names a stranger", async () => {
+    const fixture = await seedRun();
+    const { created } = await seedGroupFixture(fixture, ["env.SOAK_A", "env.SOAK_B"]);
+    const members = await db.select().from(companySecretProposals);
+    const boardApp = createBoardApp(fixture);
+    const approve = (body: Record<string, unknown>) => request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${created.body.id}/approve`)
+      .send(body);
+
+    expect(await approve({ rejectProposalIds: members.map((member) => member.id) }))
+      .toMatchObject({ status: 400 });
+    expect((await approve({ rejectProposalIds: [randomUUID()] })).body.error)
+      .toMatch(/not a pending binding of this group/);
+
+    // Neither refusal resolved anything: the ask is still the human's to answer.
+    expect(await db.select().from(companySecretProposals))
+      .toEqual(expect.arrayContaining(members.map(() => expect.objectContaining({ status: "pending" }))));
+    expect(await db.select().from(issueThreadInteractions)).toEqual([expect.objectContaining({ status: "pending" })]);
+  });
+
+  it("expires a group as one ask instead of one expiry per binding", async () => {
+    const fixture = await seedRun();
+    const { created } = await seedGroupFixture(fixture, [
+      "env.SOAK_A",
+      "env.SOAK_B",
+      "env.SOAK_C",
+      "env.SOAK_D",
+    ]);
+    await db.update(companySecretProposals)
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(companySecretProposals.groupId, created.body.groupId));
+
+    const proposals = createSecretProposalsService(db);
+    await expect(proposals.sweepExpired()).resolves.toBe(1);
+
+    const rows = await db.select().from(companySecretProposals);
+    expect(rows.map((row) => row.status)).toEqual(["expired", "expired", "expired", "expired"]);
+    // The group lapsed whole and left one closed card behind, not four pending
+    // asks the agent would have to re-raise one at a time.
+    const cards = await db.select().from(issueThreadInteractions);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ status: "expired" });
+  });
+
+  it("settles every binding of a group when the card itself is rejected", async () => {
+    const fixture = await seedRun();
+    const { created } = await seedGroupFixture(fixture, ["env.SOAK_A", "env.SOAK_B", "env.SOAK_C"]);
+
+    await issueThreadInteractionService(db).rejectInteraction(
+      { id: fixture.issueId, companyId: fixture.companyId, status: "in_progress" },
+      created.body.interactionId,
+      { reason: "Not this environment" },
+      { userId: "board-user" },
+    );
+
+    // Rejecting the card must not leave bindings pending behind a closed card:
+    // that orphan is exactly what the agent cannot see and cannot answer.
+    const rows = await db.select().from(companySecretProposals);
+    expect(rows.map((row) => row.status)).toEqual(["rejected", "rejected", "rejected"]);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+  });
+
+  it("resolves the card when the decision names a binding that does not carry it", async () => {
+    const fixture = await seedRun();
+    const { created } = await seedGroupFixture(fixture, ["env.SIB_A", "env.SIB_B"]);
+    const members = await db.select().from(companySecretProposals);
+    const sibling = members.find((member) => member.id !== created.body.id)!;
+
+    // The card belongs to one member of the group. Naming a different member is
+    // a valid way to decide the same ask, and it must close the card the human
+    // is looking at: a 200 that leaves the card pending tells the approver the
+    // decision did not land, and leaves the proposal's own card unresolvable.
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${sibling.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(200);
+    const [card] = await db.select().from(issueThreadInteractions);
+    expect(card).toMatchObject({ status: "accepted" });
+    expect((await db.select().from(companySecretProposals)).map((member) => member.status))
+      .toEqual(["approved", "approved"]);
+  });
+
+  it("approves a group from concurrent decisions that name different members", async () => {
+    const fixture = await seedRun();
+    const { created } = await seedGroupFixture(fixture, [
+      "env.RACE_A",
+      "env.RACE_B",
+      "env.RACE_C",
+      "env.RACE_D",
+    ]);
+    const members = await db.select().from(companySecretProposals);
+    const app = createBoardApp(fixture);
+
+    // Each decision names a different member, so every transaction reaches for a
+    // different row first. Taking the addressed row before the group would let
+    // two of them hold one row each and wait for the other, which PostgreSQL
+    // aborts with 40P01. The group must be locked in one order, first.
+    const responses = await Promise.all(
+      members.map((member) =>
+        request(app)
+          .post(`/api/companies/${fixture.companyId}/secret-proposals/${member.id}/approve`)
+          .send({})
+      ),
+    );
+
+    expect(responses.every((response) => response.status < 500)).toBe(true);
+    const rows = await db.select().from(companySecretProposals);
+    expect(rows.every((row) => row.status === "approved")).toBe(true);
+    const [card] = await db.select().from(issueThreadInteractions);
+    expect(card).toMatchObject({ status: "accepted" });
+    expect(created.body.interactionId).toBe(card!.id);
+  });
 });

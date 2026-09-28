@@ -34,6 +34,7 @@ import {
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
+  SECRET_PROPOSAL_BINDING_GROUP_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 import {
@@ -1509,6 +1510,19 @@ export const requestConfirmationSecretProposalPayloadSchema = z.object({
   targetAgentName: z.string().trim().min(1).max(500),
   justification: z.string().trim().min(1).max(20000),
   expiresAt: z.string().datetime({ offset: true }),
+  // Optional so a card written before grouped asks still parses, and so a
+  // single-binding card keeps the payload it has always had.
+  proposalIds: z.array(z.string().guid()).max(SECRET_PROPOSAL_BINDING_GROUP_LIMIT).optional(),
+  bindings: z
+    .array(
+      z.object({
+        proposalId: z.string().guid(),
+        sourceSecretLabel: z.string().trim().min(1).max(500),
+        configPath: z.string().trim().min(1).max(500),
+      }),
+    )
+    .max(SECRET_PROPOSAL_BINDING_GROUP_LIMIT)
+    .optional(),
 });
 
 export const requestConfirmationPayloadSchema = z.object({
@@ -1674,6 +1688,17 @@ export const requestConfirmationSecretProposalResultSchema = z.object({
   status: z.enum(["executed", "failed", "rejected", "withdrawn", "expired"]),
   errorCode: z.string().trim().min(1).max(120).nullable().optional(),
   updatedAt: z.string().datetime({ offset: true }),
+  // Per-binding outcome of a grouped ask. Only a group writes it.
+  bindings: z
+    .array(
+      z.object({
+        proposalId: z.string().guid(),
+        configPath: z.string().trim().min(1).max(500).nullable(),
+        status: z.string().trim().min(1).max(40),
+      }),
+    )
+    .max(SECRET_PROPOSAL_BINDING_GROUP_LIMIT)
+    .optional(),
 });
 
 export const requestConfirmationResultSchema = z.object({
@@ -2004,6 +2029,13 @@ export const acceptIssueThreadInteractionSchema = z
     selectedOptionIds: z
       .array(z.string().trim().min(1).max(120))
       .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
+      .optional(),
+    // Bindings of a grouped secret proposal the accepting user declines. The
+    // card accepts the ask and drops these in the same decision, so a human can
+    // keep six keys and refuse the seventh without a second card.
+    rejectProposalIds: z
+      .array(z.string().trim().min(1).max(120))
+      .max(SECRET_PROPOSAL_BINDING_GROUP_LIMIT)
       .optional(),
   })
   .superRefine((value, ctx) => {

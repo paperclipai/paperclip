@@ -212,7 +212,12 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
             secretProposalId: body.secretProposalId, targetAgentId: body.targetAgentId,
             configPath: body.configPath, justification: body.justification, bindingTargetPolicy: "self_and_reports",
           })
-        : (() => { throw unprocessable("kind must be secret or binding"); })();
+        : body.kind === "binding_group"
+          ? await proposals.createBindingGroup({ companyId: context.companyId, heartbeatRunId: context.heartbeatRunId }, {
+              bindings: body.bindings, targetAgentId: body.targetAgentId,
+              justification: body.justification, bindingTargetPolicy: "self_and_reports",
+            })
+          : (() => { throw unprocessable("kind must be secret, binding or binding_group"); })();
     res.status(201).json(agentProposalView(await proposals.view(proposal)));
   });
 
@@ -269,6 +274,8 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       resolvedByUserId,
       cascade: req.body?.cascade === true,
       overrides: req.body?.overrides,
+      rejectProposalIds: req.body?.rejectProposalIds,
+      rejectReason: req.body?.rejectReason,
       assertCanResolve: (lockedProposal, txDb) => assertCanResolveProposal({
         db: txDb,
         actor: req.actor,
@@ -277,7 +284,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
       }),
     });
-    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, issues, heartbeat });
+    // One decision can cover a whole group, so the resolution comment reports
+    // every binding it settled rather than the anchor binding alone.
+    const groupMembers = await proposals.resolutionSet(companyId, approved);
+    await notifySecretProposalResolution({
+      proposal,
+      status: "approved",
+      userId: resolvedByUserId,
+      groupMembers,
+      issues,
+      heartbeat,
+    });
     res.json(await boardProposalView(req, await proposals.view(approved)));
   });
 
