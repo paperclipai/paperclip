@@ -430,6 +430,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       });
     }
     const nativeChatProviders = [
+      { provider: "x", name: "X", description: "Mention agents on X and receive concise public replies." },
       { provider: "imessage-photon", name: "iMessage Photon", description: "Message agents and share photos from Apple Messages with a dedicated Photon number." },
       {
         provider: "slack",
@@ -554,6 +555,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           discord: "Discord",
           "microsoft-teams": "Microsoft Teams",
           telegram: "Telegram",
+          x: "X",
           "imessage-photon": "iMessage Photon",
   agentmail: "AgentMail",
         } as const;

@@ -1,3 +1,9 @@
+import { xRunOrigin } from "./x/authority.js";
+import { xChannelService, type XBinding } from "./x/service.js";
+import { xOAuthService } from "./x/oauth.js";
+import { xIdentity, xExchange } from "./x/client.js";
+import { X_SIGNATURE_HEADER, xSignature, type XEvent } from "./x/protocol.js";
+import { registerXController } from "./connectors/x.js";
 import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
@@ -423,6 +429,7 @@ function publicationSummary(
 }
 
 const PROVIDER_LABELS: Record<ChatProvider, string> = {
+  x: "X",
   "imessage-photon": "iMessage Photon",
   agentmail: "AgentMail",
   slack: "Slack",
@@ -660,6 +667,7 @@ async function inspectSlackCallback(
 }
 
 const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
+  x: { threads: true, directMessages: false, nativeStreaming: false, messageEdits: false, messageDeletes: false, reactions: false, files: false, cards: false, actions: false, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: false },
   "imessage-photon": { threads: false, directMessages: true, nativeStreaming: false, messageEdits: true, messageDeletes: false, reactions: false, files: true, cards: false, actions: true, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: false },
   agentmail: { threads: true, directMessages: true, nativeStreaming: false, messageEdits: false, messageDeletes: false, reactions: false, files: true, cards: false, actions: false, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: true },
   slack: {
@@ -755,6 +763,7 @@ const REQUIRED_CREDENTIALS: Record<
   readonly string[]
 > = {
   "imessage-photon": ["projectSecret"],
+  x: ["clientId", "clientSecret", "accessToken", "refreshToken", "expiresAt"],
   agentmail: [],
   slack: ["botToken", "signingSecret"],
   discord: ["botToken", "applicationId", "guildId"],
@@ -815,6 +824,7 @@ const SUPPORTED_GITHUB_WEBHOOK_EVENTS = new Set<string>([
 
 const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
   "imessage-photon": ["projectSecret"],
+  x: ["clientId", "clientSecret", "accessToken", "refreshToken", "expiresAt"],
   agentmail: [],
   slack: ["botToken", "signingSecret"],
   github: ["appId", "privateKey"],
@@ -1626,6 +1636,7 @@ function canonicalProviderResourceId(
   provider: ChatProvider,
   thread: Pick<Thread, "channelId" | "id">,
 ): string {
+  if (provider === "x") return "public_mentions";
   if (provider === "slack") return thread.channelId.replace(/^slack:/, "");
   if (provider === "github")
     return thread.channelId.replace(/^github:/, "").toLowerCase();
@@ -2670,6 +2681,7 @@ function providerSetupState(
   switch (endpoint.provider) {
     case "imessage-photon": return { step, providerUrl: "https://photon.codes/", testStartedAt: endpoint.setup.testStartedAt } as const;
     case "agentmail": return endpoint.setup;
+    case "x": return { step, x: endpoint.setup.x, webhookUrl, webhookVerifiedAt: endpoint.setup.webhookVerifiedAt, testSkipped: endpoint.setup.testSkipped, testStartedAt: endpoint.setup.testStartedAt } as const;
     case "slack": {
       const observations = (endpoint.setup as InternalSetupState)
         .slackCallbackSurfaces;
@@ -4588,6 +4600,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       runtimeContext: LifecycleRuntimeFence;
     },
   ) {
+    if (input.endpoint.provider === "x") return null;
     const [inserted] = await database
       .insert(chatActions)
       .values({
@@ -6046,7 +6059,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // enables that surface, even when this process is running against a
         // database created before the column default was hardened.
         allowGroupChats: input.provider !== "microsoft-teams",
-        allowUnlinkedPeople: !["slack", "imessage-photon"].includes(input.provider),
+        publicationMode: input.provider === "x" ? "explicit" : "automatic",
+        allowDirectMessages: input.provider !== "x",
+        allowUnlinkedPeople: !["slack", "imessage-photon", "x"].includes(input.provider),
         capabilities: CAPABILITIES[input.provider],
         setup: {
           step: "provider_setup",
@@ -6080,6 +6095,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const initial = await endpointRecord(endpointId);
     if (!initial) throw notFound("Chat endpoint not found");
     if (initial.endpoint.provider === "agentmail") throw badRequest("Use the email inbox API for AgentMail");
+    if (initial.endpoint.provider === "x" && input.allowDirectMessages) throw badRequest("X supports public mentions and replies only");
     await withCredentialMutationLease(
       initial.endpoint,
       async (credentialLease) => {
@@ -6183,6 +6199,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const line = inspection.lines.find((candidate) => candidate.lineId === credentials.lineId && candidate.eligible);
       if (!line || !inspection.eligible) throw unprocessable("Select an eligible dedicated Photon line");
       return { providerAccountId: inspection.projectId, providerAccountLabel: inspection.projectName, botExternalId: line.phoneNumber, botUsername: line.phoneNumber, botLabel: line.phoneNumber };
+    }
+    if (provider === "x") {
+      const identity = await xIdentity(credentials.accessToken, fetchImpl);
+      return { providerAccountId: identity.id, providerAccountLabel: identity.name, botExternalId: identity.id, botUsername: identity.username, botLabel: identity.name };
     }
     if (provider === "slack") {
       const response = await fetchImpl("https://slack.com/api/auth.test", {
@@ -7602,6 +7622,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       provider: "imessage-photon", userName,
       intakeAfter: Date.parse(String((endpoint.setup as InternalSetupState).photonIntakeAfter ?? endpoint.setup.testStartedAt ?? endpoint.createdAt.toISOString())),
       credentials: { allocation: credentials.allocation === "shared" ? "shared" : "dedicated", projectId: credentials.projectId, lineId: credentials.lineId, projectSecret: credentials.projectSecret, phoneNumber: endpoint.botExternalId! },
+    };
+    if (endpoint.provider === "x") return {
+      provider: "x", userName: endpoint.botUsername!,
+      credentials: { apiBaseUrl: "https://api.x.com", clientId: "", clientSecret: "", refreshToken: "", consumerSecret: credentials.clientSecret, userId: endpoint.botExternalId!, userAccessToken: () => xAccessToken(endpoint),
+        paperclipPostThreadId: async (post) => {
+          const id = (post as unknown as Record<string, unknown>).paperclipThreadId;
+          return typeof id === "string" && /^x:post:[0-9]+$/.test(id) ? id : null;
+        },
+      },
     };
     if (endpoint.provider === "slack")
       return {
@@ -9117,6 +9146,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (!record) throw notFound("Chat endpoint not found");
     if (record.endpoint.provider === "agentmail") throw badRequest("Use the email inbox API for AgentMail");
     if (input.photon && record.endpoint.provider !== "imessage-photon") throw badRequest("Photon configuration is only valid for iMessage Photon");
+    if (record.endpoint.provider === "microsoft-teams" && input.credentials) input = { ...input, credentials: normalizeMicrosoftTeamsCredentialIds(input.credentials) };
     const suppliedCredentialKeys = Object.keys(input.credentials ?? {});
     if (suppliedCredentialKeys.length > 0) {
       const credentialAction =
@@ -10043,7 +10073,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           : null;
         const optionalSlackTest = Boolean(finishOptions?.optionalSlackTestForUser);
         if (optionalSlackTest) {
-          if (!["slack", "github"].includes(endpoint.provider) || !endpoint.setup.webhookVerifiedAt || !endpoint.providerAccountId) {
+          if (!["slack", "github", "x"].includes(endpoint.provider) || !endpoint.setup.webhookVerifiedAt || !endpoint.providerAccountId) {
             throw conflict("Verify the connection before finishing setup");
           }
           const linked = await findAuthorizedIdentityLink(endpoint, finishOptions!.optionalSlackTestForUser);
@@ -10560,6 +10590,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         enabled:
           thread.isDM ||
           enabledBySetupActivation ||
+          endpoint.provider === "x" ||
           (endpoint.provider === "slack" && type === "channel"),
       })
       .onConflictDoUpdate({
@@ -13526,6 +13557,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .where(
         and(
+          sql`not exists (select 1 from chat_endpoints e where e.id = ${chatActions.endpointId} and e.publication_mode = 'explicit')`,
           eq(chatActions.kind, "failed_run_retry"),
           isNull(agentWakeupRequests.runId),
           cursor
@@ -13919,6 +13951,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .where(
         and(
+          sql`not exists (select 1 from chat_endpoints e where e.id = ${chatActions.endpointId} and e.publication_mode = 'explicit')`,
           eq(chatActions.kind, "inbound_wakeup"),
           inArray(chatActions.status, ["processed", "failed"]),
           eq(owner.companyId, chatActions.companyId),
@@ -15426,7 +15459,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 thread,
               })
             : Promise.resolve(),
-          endpoint.provider === "slack"
+          ["slack", "x"].includes(endpoint.provider)
             ? Promise.resolve()
             : thread.startTyping("Working…"),
         ]);
@@ -17582,13 +17615,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         event.thread,
         message,
         message === event.message ? event.trigger : "subscribed_message",
-        event.provider === "imessage-photon" ||
+        event.provider === "x" || event.provider === "imessage-photon" ||
           options.deferWebhookProcessing === true,
         null,
         runtimeContext,
         event.providerUpdateId,
         null,
-        messageOptions.receiptReactionSupported !== false,
+        event.provider !== "x" && messageOptions.receiptReactionSupported !== false,
         undefined,
         false,
         false,
@@ -26871,6 +26904,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (replayingDurableGitHubIngress) return ignoreSupersededIngress();
       throw notFound("Chat endpoint not found");
     }
+    if (provider === "x") return xController.intake(endpoint, request);
     recordChatWebhookStage("endpoint_resolved", endpoint.id);
     // A pause is a durable ingress fence. Providers generally retry non-2xx
     // webhooks, so acknowledge late callbacks without recreating a runtime or
@@ -27780,6 +27814,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       ? null
       : Promise.allSettled([
           processPendingSlackBoardMessages(limit),
+          xController.processIngress(limit),
           processPendingGitHubWebhookIngress(limit),
           processPendingProviderEffects(limit),
           processPendingReceiptReactions(limit),
@@ -27814,7 +27849,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .from(chatDeliveries)
         .where(
           and(
-            sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and e.provider = 'agentmail')`,
+            // Paused conversations cannot drain. Keep their receipts durable,
+            // while allowing lifecycle recovery and active connections through.
+            sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and (e.provider = 'agentmail' or (e.status in ('paused', 'attention') and ${chatDeliveries.eventKind} not in ('installation', 'uninstallation'))))`,
             onlyDeliveryId ? eq(chatDeliveries.id, onlyDeliveryId) : undefined,
             notInArray(chatDeliveries.eventKind, [
               "reaction_added",
@@ -28128,6 +28165,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ) {
     const record = await endpointRecord(endpointId);
     if (!record) throw notFound("Chat endpoint not found");
+    if (record.endpoint.provider === "x") throw badRequest("Link X accounts through the read-only OAuth flow");
     const principal = await db
       .select()
       .from(chatExternalPrincipals)
@@ -28805,7 +28843,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           summary,
           detail: projected.redactedError ?? null,
           createdAt: row.createdAt.toISOString(),
-          replayable: !transfer && row.state === "failed",
+          replayable: !row.payload.xReply && !transfer && row.state === "failed",
           ...(projected.fileTransfer
             ? { fileTransfer: projected.fileTransfer }
             : {}),
@@ -28820,7 +28858,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   : undefined,
               )
             : row.state === "delivery_unknown"
-              ? (["mark_delivered", "retry_anyway", "cancel"] as const)
+              ? (row.payload.xReply ? ["mark_delivered", "cancel"] as const : ["mark_delivered", "retry_anyway", "cancel"] as const)
               : [],
         };
       }),
@@ -29123,6 +29161,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .then((rows) => rows[0] ?? null);
     if (!publication) throw notFound("Publication not found");
+    if (publication.payload.xReply) throw conflict("X reply intents cannot be replayed; inspect the original delivery status");
     if (publication.state !== "failed") {
       throw conflict("Only a failed publication can be replayed", {
         code:
@@ -29253,6 +29292,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             .for("update")
             .then((rows) => rows[0] ?? null);
           if (!publication) throw notFound("Publication not found");
+          if (publication.payload.xReply && action === "retry_anyway") throw conflict("An uncertain X reply cannot be reposted. Check X, then mark delivered or cancel.");
           const transfer = await tx
             .select({
               id: chatTeamsFileTransfers.id,
@@ -33165,6 +33205,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       receipt: SlackFileUploadAcceptedReceipt,
     ) => Promise<void>;
   }) {
+    if (input.endpoint.provider === "x") throw forbidden("X replies require the explicit x_reply tool");
     const endpointRuntime = await runtimeFor(input.endpoint);
     const thread = endpointRuntime.thread(input.conversation.externalThreadId);
     const card = safeCardForPublication(input.payload, input.endpoint.provider);
@@ -37830,6 +37871,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     { waitForCompletion = true }: { waitForCompletion?: boolean } = {},
   ) {
     if (shuttingDown) return 0;
+    await xController.processPublications(limit);
     await enqueueInboundWakeupPublications();
     await reconcileTerminalConfirmationActions(limit);
     const now = new Date();
@@ -38264,6 +38306,91 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return listResources(endpointId);
   }
 
+  async function xAccessToken(endpoint: EndpointRow): Promise<string> {
+    const stored = await resolveCredentials(endpoint);
+    if (stored.accessToken && Number(stored.expiresAt) > Date.now() + 60_000) return stored.accessToken;
+    return withCredentialMutationLease(endpoint, async (lease) => {
+      const current = await endpointRecord(endpoint.id);
+      if (!current || !["verifying", "active"].includes(current.endpoint.status)) throw forbidden("X connection is not active");
+      const credentials = await resolveCredentials(current.endpoint);
+      if (credentials.accessToken && Number(credentials.expiresAt) > Date.now() + 60_000) return credentials.accessToken;
+      const tokens = await xExchange(credentials.clientId, credentials.clientSecret, { grant_type: "refresh_token", refresh_token: credentials.refreshToken }, fetchImpl);
+      if (!tokens.refresh_token) throw conflict("X refresh did not return a rotated token; reconnect");
+      // Rotate vault versions atomically while retaining binding IDs. A normal
+      // token refresh must not revoke already admitted interaction authority.
+      await db.transaction(async (tx) => {
+        await lease.assertOwned(tx);
+        const [connection] = await tx.select().from(toolConnections).where(eq(toolConnections.id, current.endpoint.connectionId)).for("update");
+        const vault = secretService(tx as unknown as Db);
+        for (const [key, value] of Object.entries({ accessToken: tokens.access_token!, refreshToken: tokens.refresh_token!, expiresAt: String(Date.now() + tokens.expires_in! * 1000) })) {
+          const ref = connection.credentialSecretRefs.find((item) => item.configPath === `credentials.${key}`);
+          if (!ref) throw forbidden("X token vault binding is missing; reconnect");
+          await vault.rotate(ref.secretId, { value });
+        }
+        await lease.assertOwned(tx);
+      });
+      return tokens.access_token!;
+    });
+  }
+  const xController = xChannelService(db, {
+    credentials: resolveCredentials,
+    token: xAccessToken,
+    withSendLease: (endpoint, operation) => withCredentialMutationLease(endpoint, async (lease) => { await lease.assertOwned(); const result = await operation(); await lease.assertOwned(); return result; }),
+    authorize: async (binding: XBinding, actionId?: string) => {
+      if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors) throw forbidden("Chat connectors are disabled");
+      // A queued explicit intent can finish after its originating run succeeds.
+      // Only the worker supplies actionId, taken from that immutable intent.
+      const identity = actionId ? null : await xRunOrigin(db, binding);
+      return db.transaction(async (tx) => {
+        const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.agentId, binding.agentId)));
+        if (!run || !["running", "succeeded"].includes(run.status) || (run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId) !== binding.issueId) throw forbidden("X reply run authority changed");
+        const [action] = await tx.select().from(chatActions).where(and(
+          eq(chatActions.companyId, binding.companyId), eq(chatActions.kind, "inbound_wakeup"),
+          sql`${chatActions.payload}->>'issueId' = ${binding.issueId}`,
+          sql`${chatActions.payload}->>'agentId' = ${binding.agentId}`,
+          actionId ? eq(chatActions.id, actionId) : identity?.sourceMessageId ? sql`${chatActions.payload}->>'commentId' = ${identity.sourceMessageId}` : eq(chatActions.id, identity?.run.wakeupRequestId ?? "00000000-0000-0000-0000-000000000000"),
+        )).limit(1);
+        if (!action || (identity && action.payload.requestedByActorType === "user" && action.payload.requestedByActorId !== identity.run.responsibleUserId)) throw forbidden("X tools require the accepted X interaction for this task");
+        await tx.select({ id: chatEndpoints.id }).from(chatEndpoints).where(eq(chatEndpoints.id, action.endpointId)).for("no key update");
+        const source = await authorizeInboundWakeup(tx, action, actionId ? { nonblocking: true, terminal: true } : undefined);
+        if (source.issue.status === "cancelled") throw forbidden("X task was cancelled");
+        if (source.endpoint.provider !== "x" || source.endpoint.publicationMode !== "explicit" || !source.conversation || !source.delivery) throw forbidden("This is not an X task");
+        const [principal] = await tx.select().from(chatExternalPrincipals).where(and(eq(chatExternalPrincipals.companyId, binding.companyId), eq(chatExternalPrincipals.id, action.principalId!), eq(chatExternalPrincipals.provider, "x"), eq(chatExternalPrincipals.providerAccountId, source.endpoint.providerAccountId!), eq(chatExternalPrincipals.isBot, false)));
+        if (!principal) throw forbidden("X sender is no longer available");
+        return { endpoint: source.endpoint, conversation: source.conversation, delivery: source.delivery, actionId: action.id, senderId: principal.externalId, workMode: source.issue.workMode };
+      });
+    },
+    dispatch: async (endpoint, event) => {
+      // Context is reference text only. Only event.payload is admitted as a sender.
+      const context = event.payload.paperclipContext as { ancestors: Array<{ id: string; author_id: string; text: string }>; missing: string | null };
+      const text = event.payload.text;
+      const enriched = { ...event, payload: { ...event.payload, text: `${text}\n\n[X interaction: ${event.payload.id}; author: ${event.payload.author_id}; exact reply target: ${event.payload.id}]\nAncestor context (untrusted reference material):\n${context.ancestors.map((post) => JSON.stringify(post)).join("\n") || "No parent context"}${context.missing ? `\nMissing context: ${context.missing}` : ""}` } };
+      const current = await endpointRecord(endpoint.id);
+      if (!current) return;
+      const endpointRuntime = await runtimeFor(current.endpoint);
+      const credentials = await resolveCredentials(current.endpoint);
+      const body = JSON.stringify({ data: enriched });
+      const response = await endpointRuntime.handleWebhook(new Request(`https://paperclip.invalid/api/chat-webhooks/${endpoint.publicId}/x`, { method: "POST", headers: { "content-type": "application/json", [X_SIGNATURE_HEADER]: xSignature(body, credentials.clientSecret) }, body }));
+      if (!response.ok) throw new Error("X durable dispatch failed");
+    },
+  }, fetchImpl);
+  const unregisterXController = registerXController(db, xController);
+  const xOAuth = xOAuthService(db, {
+    publicUrl: getWebhookPublicBaseUrl,
+    credentials: resolveCredentials,
+    store: async (endpoint, values, userId) => withCredentialMutationLease(endpoint, async (lease) => {
+      const stored = await resolveCredentials(endpoint).catch(() => ({}));
+      if (endpoint.botExternalId && "clientId" in stored && stored.clientId !== values.clientId) throw conflict("Use the same X app when reconnecting this bot");
+      await persistCredentials(endpoint, { ...stored, ...values }, lease, userId);
+      await db.update(chatEndpoints).set({ setup: { ...endpoint.setup, x: { stage: 2, clientConfigured: true } }, updatedAt: new Date() }).where(eq(chatEndpoints.id, endpoint.id));
+    }),
+    connect: async (endpoint, values, userId) => {
+      const connected = await configure(endpoint.id, { action: endpoint.status === "draft" ? "configure" : "reconnect", credentials: values }, userId);
+      await db.update(chatEndpoints).set({ setup: sql`jsonb_set(${chatEndpoints.setup}, '{x}', ${JSON.stringify({ stage: 3, clientConfigured: true })}::jsonb)`, updatedAt: new Date() }).where(eq(chatEndpoints.id, endpoint.id));
+      return connected;
+    },
+  }, fetchImpl);
+
   const unregisterSlackTaskAuthority = registerSlackTaskAuthority(db, async (binding) => {
     if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors)
       throw forbidden("Chat connectors are disabled");
@@ -38373,6 +38500,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       await db.update(chatEndpoints).set({ setup: sql`jsonb_set(${chatEndpoints.setup}, '{github}', coalesce(${chatEndpoints.setup}->'github', '{}'::jsonb) || ${JSON.stringify({ stage })}::jsonb)`, updatedAt: new Date() }).where(eq(chatEndpoints.id, endpointId));
       return get(endpointId);
     },
+    saveXSetupProgress: async (endpointId: string, stage: number) => {
+      const record = await endpointRecord(endpointId);
+      if (!record || record.endpoint.provider !== "x") throw notFound("X bot not found");
+      await db.update(chatEndpoints).set({ setup: sql`jsonb_set(${chatEndpoints.setup}, '{x}', coalesce(${chatEndpoints.setup}->'x', '{}'::jsonb) || ${JSON.stringify({ stage })}::jsonb)`, updatedAt: new Date() }).where(eq(chatEndpoints.id, endpointId));
+      return get(endpointId);
+    },
+    xOAuth,
+    xIdentityStatus: async (endpointId: string, userId: string) => {
+      const record = await endpointRecord(endpointId);
+      if (!record || record.endpoint.provider !== "x") throw notFound("X bot not found");
+      return { linked: Boolean(await findAuthorizedIdentityLink(record.endpoint, userId)) };
+    },
+    finishXSetup: (endpointId: string, userId: string) => test(endpointId, { optionalSlackTestForUser: userId }),
     startGitHubRegistration: githubRegistration.start,
     completeGitHubRegistration: githubRegistration.complete,
     storeGitHubApp,
@@ -38427,6 +38567,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     shutdown: async () => {
       shuttingDown = true;
       await Promise.allSettled([...failedRetryTasks.values()]);
+      unregisterXController();
       unregisterFailedRetryAuthority();
       unregisterSlackTaskAuthority();
       unregisterCommittedResponseAuthority();

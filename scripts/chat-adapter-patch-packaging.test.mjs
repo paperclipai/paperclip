@@ -29,6 +29,7 @@ const workspace = readFileSync(
   "utf8",
 );
 const required = [
+  ["@chat-adapter/x", "4.39.0"],
   ["@chat-adapter/discord", "4.39.0"],
   ["@chat-adapter/github", "4.39.0"],
   ["@chat-adapter/slack", "4.39.0"],

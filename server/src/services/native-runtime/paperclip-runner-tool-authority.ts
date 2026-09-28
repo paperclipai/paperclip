@@ -251,6 +251,8 @@ export class PaperclipRunnerToolAuthority {
       if (!(this.binding.connectorAssignments ?? []).some((assignment) => assignment.tools.some((tool) => tool.name === call.tool))) throw forbidden("Connector tool is not available to this run");
       const { run } = await this.#boundContext();
       const snapshot = record(run.contextSnapshot);
+      const xChat = normalizePaperclipWakePayload(snapshot.paperclipWake)?.externalChatProvider === "x" || snapshot.source === "chat:x";
+      if (xChat && !["x_read_thread", "x_reply", "x_delivery"].includes(call.tool)) throw forbidden("X chat runs may only use their conversation-bound X connector tools");
       if (call.tool.startsWith("agentmail_") && (isPaperclipExternalChatContractTurn(snapshot.paperclipWake) || String(snapshot.source ?? "").startsWith("chat:") || snapshot.paperclipExternalChatQuestionResponse)) throw forbidden("Restricted chat runs cannot use email actions");
       return executeConnectorTool(this.db, this.binding, call.tool, call.arguments);
     }
@@ -1445,6 +1447,7 @@ export class PaperclipRunnerToolAuthority {
           }
           provider = endpoint.provider;
         }
+        if (isFilePreparation && provider === "x") throw forbidden("X supports one explicit text reply; file publication is unavailable");
         // Describe file preparation from the locked, server-built wake, never
         // from file/tool arguments. Replays of older receipts gain the same
         // honest delivery guidance without repeating their committed effect.

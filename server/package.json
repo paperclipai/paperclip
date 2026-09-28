@@ -50,6 +50,7 @@
     "@chat-adapter/slack": "4.39.0",
     "@chat-adapter/teams": "4.39.0",
     "@chat-adapter/telegram": "4.39.0",
+    "@chat-adapter/x": "4.39.0",
     "@discordjs/ws": "1.2.3",
     "@grpc/grpc-js": "1.14.4",
     "@opentelemetry/api": "^1.9.0",
@@ -97,6 +98,7 @@
     "smol-toml": "^1.4.2",
     "ssh2": "^1.17.0",
     "svix": "1.76.1",
+    "twitter-text": "3.1.0",
     "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
@@ -107,7 +109,8 @@
     "@chat-adapter/teams",
     "@chat-adapter/telegram",
     "@discordjs/ws",
-    "acpx"
+    "acpx",
+    "@chat-adapter/x"
   ],
   "devDependencies": {
     "@paperclipai/paperclip-runner": "workspace:*",
@@ -118,6 +121,7 @@
     "@types/node": "^24.0.0",
     "@types/sharp": "^0.32.0",
     "@types/supertest": "^7.2.1",
+    "@types/twitter-text": "3.1.10",
     "@types/ws": "^8.18.1",
     "cross-env": "^10.1.0",
     "supertest": "^7.0.0",

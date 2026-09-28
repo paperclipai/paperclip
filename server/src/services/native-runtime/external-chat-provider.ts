@@ -1,6 +1,7 @@
 // Providers supported by the run-bound external-chat authorization path.
 // AgentMail uses the email inbox path and is not admitted by this boundary.
 const BOUND_EXTERNAL_CHAT_PROVIDERS = [
+  "x",
   "slack",
   "github",
   "discord",

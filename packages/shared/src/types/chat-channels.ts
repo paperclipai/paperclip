@@ -1,5 +1,6 @@
 /** Provider-neutral contracts for Paperclip's native external chat subsystem. */
 export const CHAT_PROVIDERS = [
+  "x",
   "slack",
   "github",
   "discord",
@@ -188,6 +189,7 @@ export interface SlackAppConfiguration {
 }
 
 export interface ChatEndpointSetupState {
+  x?: { stage: number; clientConfigured?: boolean };
   github?: {
     stage: "connect" | "install" | "repositories" | "verify" | "identity" | "behavior" | "test";
     appSlug?: string;
@@ -373,6 +375,8 @@ export interface SafeExternalChatCard {
 }
 
 export interface SafeChatPublicationPayload {
+  /** Immutable, server-authorized X reply intent. */
+  xReply?: { replyToPostId: string; actionId: string; runId: string; agentId: string; senderId: string };
   text: string;
   attachmentIds?: string[];
   interactionId?: string;

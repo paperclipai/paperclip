@@ -1,0 +1,122 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index dd375d56616f0ee48e6a02265aea0c7eb3f14359..790ac870b2911dc1a3ede03e2c3dcae4364c0ede 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -26,6 +26,9 @@ declare class XFormatConverter extends BaseFormatConverter {
+  */
+ type XAccessToken = string | (() => Promise<string> | string);
+ interface XAdapterConfig {
++    /** Paperclip owns durable branch identity and explicit publication. */
++    paperclipPostThreadId?: (post: XPost, event: XActivityEvent) => Promise<string | null>;
++    paperclipExplicitReplies?: boolean;
+     /** Override the X API base URL. Defaults to X_API_BASE_URL or https://api.x.com. */
+     apiBaseUrl?: string;
+     /**
+@@ -239,8 +242,8 @@ declare class XAdapter implements Adapter<XThreadId, XRawMessage> {
+      */
+     protected handleCrcChallenge(request: Request): Response;
+     protected verifySignature(request: Request, body: string): boolean;
+-    protected routeActivityEvent(event: XActivityEvent, options?: WebhookOptions): void;
+-    protected handleIncomingPost(post: XPost, author: XUser | undefined, options?: WebhookOptions): void;
++    protected routeActivityEvent(event: XActivityEvent, options?: WebhookOptions): Promise<void>;
++    protected handleIncomingPost(post: XPost, author: XUser | undefined, options?: WebhookOptions, event?: XActivityEvent): Promise<void>;
+     protected handleIncomingDm(dmEvent: XDmEvent, sender: XUser | undefined, options?: WebhookOptions): void;
+     /**
+      * The user id of the other party in a DM: the sender for inbound events,
+diff --git a/dist/index.js b/dist/index.js
+index fa4b8d4e95edcb3a510f36f5adf38fc7e17dafb1..94fef366008dae2e3aa8e3f0d4469f6410f568b3 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -194,6 +194,8 @@ var XAdapter = class {
+   constructor(config) {
+     this.apiBaseUrl = config.apiBaseUrl ?? DEFAULT_API_BASE_URL;
+     this.consumerSecret = config.consumerSecret;
++    this.paperclipPostThreadId = config.paperclipPostThreadId;
++    this.paperclipExplicitReplies = config.paperclipExplicitReplies;
+     this.userAccessToken = config.userAccessToken;
+     if (config.clientId && config.refreshToken) {
+       this.oauth = {
+@@ -275,7 +277,7 @@ var XAdapter = class {
+       events = [envelope.data];
+     }
+     for (const event of events) {
+-      this.routeActivityEvent(event, options);
++      await this.routeActivityEvent(event, options);
+     }
+     return new Response("OK", { status: 200 });
+   }
+@@ -292,7 +294,7 @@ var XAdapter = class {
+     return Response.json({ response_token: `${SIGNATURE_PREFIX}${hash}` });
+   }
+   verifySignature(request, body) {
+-    const signature = request.headers.get(SIGNATURE_HEADER);
++    const signature = request.headers.get("x-twitter-webhooks-signature-oauth2") ?? request.headers.get(SIGNATURE_HEADER);
+     if (!signature?.startsWith(SIGNATURE_PREFIX)) {
+       return false;
+     }
+@@ -309,16 +311,17 @@ var XAdapter = class {
+       return false;
+     }
+   }
+-  routeActivityEvent(event, options) {
++  async routeActivityEvent(event, options) {
+     const users = event.includes?.users;
+     switch (event.event_type) {
++      case "post.reply.create":
+       case "post.mention.create": {
+         const extracted = extractPost(event.payload, users);
+         if (!extracted) {
+           this.logger.warn("Unrecognized X mention payload shape");
+           return;
+         }
+-        this.handleIncomingPost(extracted.post, extracted.author, options);
++        await this.handleIncomingPost(extracted.post, extracted.author, options, event);
+         return;
+       }
+       case "dm.received":
+@@ -339,22 +342,24 @@ var XAdapter = class {
+         });
+     }
+   }
+-  handleIncomingPost(post, author, options) {
++  async handleIncomingPost(post, author, options, event) {
+     if (!this.chat) {
+       return;
+     }
+-    const threadId = this.encodeThreadId({
++    const override = this.paperclipPostThreadId ? await this.paperclipPostThreadId(post, event) : undefined;
++    if (override === null) return;
++    const threadId = override ?? this.encodeThreadId({
+       conversationId: post.conversation_id ?? post.id,
+       kind: "post"
+     });
+-    this.replyTargets.set(threadId, post.id);
++    if (!this.paperclipExplicitReplies) this.replyTargets.set(threadId, post.id);
+     const message = this.buildPostMessage(
+       { author, kind: "post", post },
+       threadId,
+       { isMention: true }
+     );
+     this.cacheMessage(message);
+-    this.chat.processMessage(this, threadId, message, options);
++    await this.chat.processMessage(this, threadId, message, options);
+   }
+   handleIncomingDm(dmEvent, sender, options) {
+     const participant = this.otherParticipant(dmEvent);
+@@ -392,6 +397,7 @@ var XAdapter = class {
+    * uploaded via the chunked media endpoint and attached to the post.
+    */
+   async postMessage(threadId, message) {
++    if (this.paperclipExplicitReplies) throw new ValidationError("x", "Use the durable conversation-bound x_reply tool");
+     const decoded = this.decodeThreadId(threadId);
+     const text2 = this.renderOutbound(message);
+     const mediaIds = await this.uploadAttachments(message, decoded.kind);
+@@ -1398,6 +1404,8 @@ function createXAdapter(config) {
+     );
+   }
+   return new XAdapter({
++    paperclipPostThreadId: config?.paperclipPostThreadId,
++    paperclipExplicitReplies: config?.paperclipExplicitReplies,
+     apiBaseUrl: config?.apiBaseUrl ?? process.env.X_API_BASE_URL,
+     clientId,
+     clientSecret: config?.clientSecret ?? process.env.X_CLIENT_SECRET,

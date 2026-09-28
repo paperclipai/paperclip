@@ -9,20 +9,8 @@ import {
 
 describe("Microsoft Teams chat credential validation", () => {
   it("normalizes canonical Entra application and tenant UUIDs", () => {
-    const parsed = configureChatEndpointSchema.parse({
-      action: "configure",
-      credentials: {
-        clientId: " 76D0CB17-5EC4-4B3D-983B-DA8A01DC02C4 ",
-        tenantId: "F8CDEF31-A31E-4B4A-93E4-5F571E91255A",
-        clientSecret: "keep-case-sensitive-secret",
-      },
-    });
-
-    expect(parsed.credentials).toEqual({
-      clientId: "76d0cb17-5ec4-4b3d-983b-da8a01dc02c4",
-      tenantId: "f8cdef31-a31e-4b4a-93e4-5f571e91255a",
-      clientSecret: "keep-case-sensitive-secret",
-    });
+    expect(microsoftTeamsCredentialIdSchema.parse(" 76D0CB17-5EC4-4B3D-983B-DA8A01DC02C4 ")).toBe("76d0cb17-5ec4-4b3d-983b-da8a01dc02c4");
+    expect(microsoftTeamsCredentialIdSchema.parse("F8CDEF31-A31E-4B4A-93E4-5F571E91255A")).toBe("f8cdef31-a31e-4b4a-93e4-5f571e91255a");
   });
 
   it.each([
@@ -35,19 +23,10 @@ describe("Microsoft Teams chat credential validation", () => {
     expect(microsoftTeamsCredentialIdSchema.safeParse(value).success).toBe(
       false,
     );
-    expect(
-      configureChatEndpointSchema.safeParse({
-        action: "configure",
-        credentials: {
-          clientId: "76d0cb17-5ec4-4b3d-983b-da8a01dc02c4",
-          tenantId: value,
-          clientSecret: "secret",
-        },
-      }).success,
-    ).toBe(false);
   });
 
   it("does not impose Teams UUID rules on unrelated provider credentials", () => {
+    expect(configureChatEndpointSchema.parse({ action: "configure", credentials: { clientId: "opaque-X-client-ID", clientSecret: "case-sensitive-secret" } }).credentials).toEqual({ clientId: "opaque-X-client-ID", clientSecret: "case-sensitive-secret" });
     expect(
       configureChatEndpointSchema.parse({
         action: "configure",

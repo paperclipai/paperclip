@@ -114,10 +114,11 @@ export const chatEndpoints = pgTable(
   (table) => [
     check("chat_endpoints_publication_mode_check", sql`${table.publicationMode} in ('automatic', 'explicit')`),
     check("chat_endpoints_execution_policy_check", sql`${table.externalExecutionPolicy} in ('restricted', 'agent')`),
+    check("chat_endpoints_x_policy_check", sql`${table.provider} <> 'x' or (${table.publicationMode} = 'explicit' and ${table.externalExecutionPolicy} = 'restricted' and ${table.allowDirectMessages} = false)`),
     check("chat_endpoints_email_policy_check", sql`${table.provider} <> 'agentmail' or (${table.publicationMode} = 'explicit' and ${table.externalExecutionPolicy} = 'agent')`),
     check(
       "chat_endpoints_provider_check",
-      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon')`,
+      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon', 'x')`,
     ),
     check(
       "chat_endpoints_status_check",
@@ -282,7 +283,7 @@ export const chatExternalPrincipals = pgTable(
   (table) => [
     check(
       "chat_external_principals_provider_check",
-      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon')`,
+      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon', 'x')`,
     ),
     check(
       "chat_external_principals_kind_check",
@@ -559,6 +560,9 @@ export const chatPublications = pgTable(
       foreignColumns: [issueComments.companyId, issueComments.id],
       name: "chat_publications_company_comment_fk",
     }),
+    uniqueIndex("chat_publications_x_interaction_uq")
+      .on(table.endpointId, sql`(${table.payload}->'xReply'->>'replyToPostId')`)
+      .where(sql`${table.payload}->'xReply' is not null`),
     index("chat_publications_work_idx").on(table.state, table.nextAttemptAt),
     uniqueIndex("chat_publications_idempotency_uq").on(
       table.companyId,

@@ -47,7 +47,14 @@ jobs:
           version: 9.15.4
 
       - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
+        # Dependency-changing PRs leave lockfile updates to CI, as the main PR
+        # lanes do. Resolve the merge tree locally before the frozen install.
+        run: |
+          if ! pnpm install --ignore-scripts --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --ignore-scripts --frozen-lockfile
+          fi
 
       - name: Install the audited optional SDK outside the workspace
         shell: bash

@@ -1,3 +1,4 @@
+import { XChatSetup } from "./XChatSetup";
 import { SLACK_BOT_TOOL_SCOPES } from "@paperclipai/shared";
 import { defaultSlackAppName, slackBotNameForAgent } from "./slack-app-name";
 import { GitHubChatSetup } from "./GitHubChatSetup";
@@ -52,6 +53,7 @@ import {
 } from "./github-private-key-file";
 
 const providerNames: Record<ChatProvider, string> = {
+  x: "X",
   agentmail: "AgentMail",
   slack: "Slack",
   github: "GitHub",
@@ -159,6 +161,7 @@ function ChatConnectionPurpose({ provider, onChat, onTools }: {
 export function ChatEndpointSetup() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
+  if (params.get("provider") === "x") return <XChatSetup />;
   if (params.get("provider") === "github") {
     if (params.get("purpose") === "chat" || params.get("resume")) return <GitHubChatSetup />;
     return <ChatConnectionPurpose provider="github" onChat={() => {

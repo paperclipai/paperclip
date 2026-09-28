@@ -28,6 +28,7 @@ const MAX_COMMENT_CHUNK_CHARS = 4_000;
 const MAX_PAGE_COMMENT_CHUNKS = 8;
 const MAX_CURSOR_CHARS = 1_024;
 const EXTERNAL_CHAT_PROVIDERS = new Set([
+  "x",
   "slack",
   "github",
   "discord",

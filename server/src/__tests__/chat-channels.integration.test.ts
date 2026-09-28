@@ -14337,7 +14337,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).rejects.toBeDefined();
   });
 
-  it("retries a durable lifecycle row without treating it as a message delivery", async () => {
+  it.each(["active", "paused", "attention"] as const)("retries a durable lifecycle row without treating it as a message delivery (%s)", async (status) => {
     const fixture = await seedCompany();
     const { endpoint, service } = await configuredSlackEndpoint(fixture);
     const configuredEndpoint = await service.get(endpoint.id);
@@ -14375,6 +14375,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       );
     expect(retry).toMatchObject({ state: "retry", attempts: 1 });
 
+    await db.update(chatEndpoints).set({ status }).where(eq(chatEndpoints.id, endpoint.id));
     await service.processPendingDeliveries(25, retry!.id);
     await expect(
       db
@@ -72240,4 +72241,294 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     );
   });
+  async function configuredXEndpoint() {
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    const fixture = await seedCompany();
+    const botId = String(Date.now());
+    const sends: Array<Record<string, unknown>> = [];
+    let sendFailure = false;
+    let beforeSendResponse: (() => Promise<void>) | null = null;
+    const providerFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/2/oauth2/token")) {
+        const params = new URLSearchParams(String(init?.body));
+        const human = params.get("code") === "human-code";
+        return Response.json({ access_token: human ? "human-read-only" : "rotated-bot-token", refresh_token: human ? undefined : "rotated-refresh", expires_in: 7200, scope: human ? "tweet.read users.read" : "tweet.read tweet.write users.read offline.access" });
+      }
+      if (String(url).includes("/2/users/me")) return Response.json({ data: (init?.headers as Record<string, string>)?.Authorization === "Bearer human-read-only" ? { id: "301", username: "personal", name: "Personal" } : { id: botId, username: "testbot", name: "Test bot" } });
+      if (String(url).endsWith("/2/tweets")) {
+        sends.push(JSON.parse(String(init?.body)));
+        if (sendFailure) throw new Error("connection closed after acceptance");
+        await beforeSendResponse?.();
+        return Response.json({ data: { id: String(900000 + sends.length) } });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const wakeup = vi.fn().mockResolvedValue({ id: "wake" });
+    const options = { scheduleDeferredWork: () => undefined, publicBaseUrl: "https://paperclip.example", webhookPublicBaseUrl: "https://paperclip.example", deferWebhookProcessing: true, fetch: providerFetch as typeof fetch, heartbeat: { wakeup: receiptBackedWakeup(wakeup) } };
+    let service = chatChannelService(db, options);
+    fixtureServices.add(service);
+    const endpoint = await service.create(fixture.companyId, { provider: "x", assignedAgentId: fixture.assignedAgentId }, "owner-user");
+    await service.configure(endpoint.id, { action: "configure", credentials: { clientId: "not-a-microsoft-uuid", clientSecret: "x-client-secret", accessToken: "x-token", refreshToken: "x-refresh", expiresAt: String(Date.now() + 7200000) } }, "owner-user");
+    const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "x", providerAccountId: botId, externalId: "300", kind: "user", handle: "human" }).returning();
+    await db.insert(chatIdentityLinks).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, paperclipUserId: "owner-user", status: "linked", confirmedAt: new Date() });
+    const { xSignature } = await import("../services/x/protocol.js");
+    const event = (id: string, extra: Record<string, unknown> = {}, kind = "post.mention.create", author = "300") => ({ event_uuid: randomUUID(), event_type: kind, filter: { user_id: botId }, payload: { id, author_id: author, text: "@testbot answer this", conversation_id: "10", ...extra }, includes: { users: [{ id: author, username: "human", name: "Human" }] } });
+    async function deliver(data: unknown, valid = true) {
+      const body = JSON.stringify({ data });
+      return service.handleWebhook(endpoint.publicId, "x", new Request(`https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/x`, { method: "POST", body, headers: { "content-type": "application/json", "x-twitter-webhooks-signature-oauth2": xSignature(body, valid ? "x-client-secret" : "wrong") } }));
+    }
+    async function drain() {
+      for (let i = 0; i < 3; i++) await service.processPendingDeliveries();
+    }
+    async function binding(id: string, responsibleUserId: string | null = "owner-user") {
+      const [link] = await db.select().from(chatMessageLinks).where(and(eq(chatMessageLinks.endpointId, endpoint.id), eq(chatMessageLinks.providerMessageId, id)));
+      expect(link, `X post ${id} must have a durable task binding`).toBeDefined();
+      const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, link.conversationId));
+      const [action] = await db.select().from(chatActions).where(and(eq(chatActions.deliveryId, link.deliveryId!), eq(chatActions.kind, "inbound_wakeup")));
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.assignedAgentId, status: "running", invocationSource: "assignment", responsibleUserId, wakeupRequestId: action.id, contextSnapshot: { issueId: conversation.issueId } });
+      await initializeRunIdentity(db, { companyId: fixture.companyId, runId, issueId: conversation.issueId!, responsibleUserId, messageIds: [String(action.payload.commentId)], cause: "instruction" });
+      return { companyId: fixture.companyId, agentId: fixture.assignedAgentId, runId, issueId: conversation.issueId! };
+    }
+    return { ...fixture, endpoint, botId, sends, event, deliver, drain, binding, wakeup, principal, providerFetch, service: () => service,
+      failSend: () => { sendFailure = true; },
+      beforeSendResponse: (hook: () => Promise<void>) => { beforeSendResponse = hook; },
+      restart: async () => { await service.shutdown(); service = chatChannelService(db, options); fixtureServices.add(service); },
+    };
+  }
+
+  it("X durably ingests signed public interactions and only explicit tools publish exact replies", async () => {
+    const f = await configuredXEndpoint();
+    const { executeConnectorTool, resolveConnectorAssignments } = await import("../services/connector-runtime.js");
+    expect((await f.service().get(f.endpoint.id)).allowUnlinkedPeople).toBe(false);
+    expect((await f.deliver(f.event("200"), false)).status).toBe(401);
+    expect((await f.deliver([{ ...f.event("200"), filter: { user_id: "999" } }, f.event("201", {}, "post.mention.create", f.botId)])).status).toBe(200);
+    await f.drain();
+    expect(f.wakeup).not.toHaveBeenCalled();
+    await f.deliver(f.event("200", { in_reply_to_tweet_id: "10" }));
+    await f.deliver(f.event("200", { in_reply_to_tweet_id: "10" }, "post.reply.create"));
+    await f.drain();
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+    expect(f.sends).toEqual([]);
+    const binding = await f.binding("200");
+    const assignments = await resolveConnectorAssignments(db, binding);
+    expect(assignments.map(a => a.key)).toEqual(["x"]);
+    const { PaperclipRunnerToolAuthority } = await import("../services/native-runtime/paperclip-runner-tool-authority.js");
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: binding.issueId, contextSnapshot: { issueId: binding.issueId, source: "chat:x" } }).where(eq(heartbeatRuns.id, binding.runId));
+    await db.update(issues).set({ executionRunId: binding.runId }).where(eq(issues.id, binding.issueId));
+    const native = new PaperclipRunnerToolAuthority(db, { ...binding, connectorAssignments: assignments });
+    expect(await native.execute({ tool: "x_read_thread", callId: randomUUID(), arguments: {} })).toMatchObject({ invokingPostId: "200" });
+    const unrelated = new PaperclipRunnerToolAuthority(db, { ...binding, connectorAssignments: [{ ...assignments[0], tools: [{ name: "agentmail_send", description: "Unrelated email action", inputSchema: {} }] }] });
+    await expect(unrelated.execute({ tool: "agentmail_send", callId: randomUUID(), arguments: {} })).rejects.toThrow("conversation-bound X");
+    const thread = await executeConnectorTool(db, binding, "x_read_thread", {}) as { replyablePostIds: string[]; messages: unknown[] };
+    expect(thread.replyablePostIds).toEqual(["200"]);
+    expect(JSON.stringify(thread.messages)).toContain("Missing context");
+    await expect(executeConnectorTool(db, binding, "x_reply", { replyToPostId: "10", text: "wrong target", idempotencyKey: randomUUID() })).rejects.toThrow("invoking post");
+    await expect(executeConnectorTool(db, { ...binding, companyId: randomUUID() }, "x_read_thread", {})).rejects.toThrow();
+    const request = { replyToPostId: "200", text: "Here is the answer.", idempotencyKey: randomUUID() };
+    const result = await native.execute({ tool: "x_reply", callId: randomUUID(), arguments: request }) as { publicationId: string; status: string };
+    expect(result.status).toBe("pending");
+    expect(await executeConnectorTool(db, binding, "x_reply", request)).toEqual(result);
+    await expect(executeConnectorTool(db, binding, "x_reply", { ...request, text: "Different intent" })).rejects.toThrow("different X reply");
+    await expect(executeConnectorTool(db, binding, "x_reply", { ...request, idempotencyKey: randomUUID() })).rejects.toThrow("already has a reply");
+    await issueService(db).addComment(binding.issueId, "Internal final response", { agentId: binding.agentId }, { authorType: "agent" });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, binding.runId));
+    await f.restart();
+    await f.service().processPendingPublications();
+    expect(f.sends).toEqual([{ text: "Here is the answer.", reply: { in_reply_to_tweet_id: "200" } }]);
+    const [publication] = await db.select().from(chatPublications).where(eq(chatPublications.id, result.publicationId));
+    expect(publication.state).toBe("published");
+    await f.deliver(f.event("202", { in_reply_to_tweet_id: "900001" }, "post.reply.create"));
+    await f.deliver(f.event("203", { in_reply_to_tweet_id: "10" }));
+    await f.drain();
+    const links = await db.select().from(chatMessageLinks).where(eq(chatMessageLinks.endpointId, f.endpoint.id));
+    expect(links.find(l => l.providerMessageId === "202")?.conversationId).toBe(links.find(l => l.providerMessageId === "200")?.conversationId);
+    expect(links.find(l => l.providerMessageId === "203")?.conversationId).not.toBe(links.find(l => l.providerMessageId === "200")?.conversationId);
+    const followup = await f.binding("202");
+    await expect(executeConnectorTool(db, followup, "x_reply", { ...request, replyToPostId: "202" })).rejects.toThrow("different X reply");
+    expect(f.sends).toHaveLength(1);
+  }, 60_000);
+
+  it("X retains early follow-ups until their outbound parent link commits", async () => {
+    const f = await configuredXEndpoint();
+    const { executeConnectorTool } = await import("../services/connector-runtime.js");
+    await f.deliver(f.event("600")); await f.drain();
+    const binding = await f.binding("600");
+    await executeConnectorTool(db, binding, "x_reply", { replyToPostId: "600", text: "Reply accepted by X", idempotencyKey: randomUUID() });
+    f.beforeSendResponse(async () => {
+      // X knows the bot's post ID, but the send response has not reached us.
+      await f.deliver(f.event("601", { in_reply_to_tweet_id: "900001" }, "post.reply.create"));
+      await f.deliver(f.event("602", { in_reply_to_tweet_id: "900001" }));
+      await f.deliver(f.event("603", { in_reply_to_tweet_id: "123456" }, "post.reply.create"));
+      await f.drain();
+      expect(f.wakeup).toHaveBeenCalledOnce();
+      const waiting = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "x_webhook_ingress"), eq(chatActions.status, "awaiting_parent")));
+      expect(waiting).toHaveLength(3);
+    });
+    await f.service().processPendingPublications();
+    await f.restart(); await f.drain();
+    const links = await db.select().from(chatMessageLinks).where(eq(chatMessageLinks.endpointId, f.endpoint.id));
+    const root = links.find(link => link.providerMessageId === "600")!;
+    expect(links.find(link => link.providerMessageId === "601")?.conversationId).toBe(root.conversationId);
+    expect(links.find(link => link.providerMessageId === "602")?.conversationId).toBe(root.conversationId);
+    expect(links.some(link => link.providerMessageId === "603")).toBe(false);
+    expect(f.wakeup).toHaveBeenCalledTimes(3);
+    await f.drain();
+    expect(f.wakeup).toHaveBeenCalledTimes(3);
+    await db.update(chatActions).set({ createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) }).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.providerActionId, "x-post:603")));
+    await f.drain();
+    const [expired] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.providerActionId, "x-post:603")));
+    expect(expired).toMatchObject({ status: "processed", result: { disposition: "ignored", reason: "X reply parent was not recorded within 24 hours" } });
+    expect(f.wakeup).toHaveBeenCalledTimes(3);
+  }, 60_000);
+
+  it("X concurrent reply intents and workers preserve each branch's exact target after restart", async () => {
+    const f = await configuredXEndpoint();
+    const { executeConnectorTool } = await import("../services/connector-runtime.js");
+    await f.deliver([f.event("210"), f.event("211")]);
+    await f.drain();
+    const first = await f.binding("210");
+    const second = await f.binding("211");
+    expect(first.issueId).not.toBe(second.issueId);
+    const request = { replyToPostId: "210", text: "First branch", idempotencyKey: randomUUID() };
+    const [one, duplicate] = await Promise.all([
+      executeConnectorTool(db, first, "x_reply", request),
+      executeConnectorTool(db, first, "x_reply", request),
+      executeConnectorTool(db, second, "x_reply", { replyToPostId: "211", text: "Second branch", idempotencyKey: randomUUID() }),
+    ]);
+    expect(one).toEqual(duplicate);
+    await f.restart();
+    await Promise.all([f.service().processPendingPublications(), f.service().processPendingPublications()]);
+    expect(f.sends).toHaveLength(2);
+    expect(f.sends).toEqual(expect.arrayContaining([
+      { text: "First branch", reply: { in_reply_to_tweet_id: "210" } },
+      { text: "Second branch", reply: { in_reply_to_tweet_id: "211" } },
+    ]));
+  }, 60_000);
+
+  it("X restart recovery passes retained receipts from paused and attention endpoints", async () => {
+    const f = await configuredXEndpoint();
+    for (const status of ["paused", "attention"] as const) {
+      const other = await f.service().create(f.companyId, { provider: "x", assignedAgentId: f.assignedAgentId }, "owner-user");
+      await db.update(chatEndpoints).set({ status }).where(eq(chatEndpoints.id, other.id));
+      await db.insert(chatDeliveries).values(Array.from({ length: 25 }, (_, index) => ({
+        companyId: f.companyId, endpointId: other.id,
+        providerEventId: `${status}-${index}`, deduplicationKey: `${status}-${index}`,
+        eventKind: "message" as const, normalizedEvent: { conversation: { externalThreadId: `retained-${index}` } },
+        state: "received" as const, receivedAt: new Date("2026-01-01T00:00:00Z"),
+      })));
+    }
+    await f.deliver(f.event("700"));
+    await f.restart(); await f.drain();
+    expect(f.wakeup).toHaveBeenCalledOnce();
+    await f.binding("700");
+    const retained = await db.select().from(chatDeliveries).where(and(eq(chatDeliveries.companyId, f.companyId), eq(chatDeliveries.state, "received")));
+    expect(retained).toHaveLength(50);
+  }, 60_000);
+
+  it("X opt-out and current authority stop work and sends; uncertain sends never retry", async () => {
+    const f = await configuredXEndpoint();
+    const { executeConnectorTool } = await import("../services/connector-runtime.js");
+    await f.deliver(f.event("400")); await f.drain();
+    const binding = await f.binding("400");
+    f.failSend();
+    const result = await executeConnectorTool(db, binding, "x_reply", { replyToPostId: "400", text: "One response", idempotencyKey: randomUUID() }) as { publicationId: string };
+    await f.service().processPendingPublications();
+    await f.restart(); await f.service().processPendingPublications();
+    expect(f.sends).toHaveLength(1);
+    expect(await executeConnectorTool(db, binding, "x_delivery", { publicationId: result.publicationId })).toMatchObject({ status: "delivery_unknown" });
+    await f.deliver(f.event("401", { text: "@testbot stop" }));
+    await f.deliver(f.event("402")); await f.drain();
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+    await expect(executeConnectorTool(db, binding, "x_read_thread", {})).rejects.toThrow();
+    await f.deliver(f.event("403", { text: "@testbot start" }));
+    await f.deliver(f.event("404")); await f.drain();
+    expect(f.wakeup).toHaveBeenCalledTimes(2);
+    const second = await f.binding("404");
+    await db.update(chatIdentityLinks).set({ status: "revoked" }).where(eq(chatIdentityLinks.principalId, f.principal.id));
+    await expect(executeConnectorTool(db, second, "x_reply", { replyToPostId: "404", text: "Blocked", idempotencyKey: randomUUID() })).rejects.toThrow();
+    await f.service().update(f.endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
+    await f.deliver(f.event("405", {}, "post.mention.create", "777")); await f.drain();
+    expect(f.wakeup).toHaveBeenCalledTimes(3);
+    const guest = await f.binding("405", null);
+    expect(await executeConnectorTool(db, guest, "x_read_thread", {})).toMatchObject({ invokingPostId: "405" });
+    const guestReply = await executeConnectorTool(db, guest, "x_reply", { replyToPostId: "405", text: "Guest response", idempotencyKey: randomUUID() }) as { publicationId: string };
+    await f.service().update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+    await f.service().processPendingPublications();
+    expect((await db.select().from(chatPublications).where(eq(chatPublications.id, guestReply.publicationId)))[0].state).toBe("failed");
+    expect(f.sends).toHaveLength(1);
+    await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, f.endpoint.id));
+    await f.deliver(f.event("406")); await f.drain();
+    expect(f.wakeup).toHaveBeenCalledTimes(3);
+  }, 60_000);
+
+  it("X human linking uses read-only PKCE, single-use user-bound state and confirmation", async () => {
+    const f = await configuredXEndpoint();
+    const start = await f.service().xOAuth.start(f.endpoint.id, "owner-user", "identity");
+    const url = new URL(start.url);
+    expect(url.searchParams.get("scope")).toBe("tweet.read users.read");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    const state = url.searchParams.get("state")!;
+    await expect(f.service().xOAuth.complete(state, "human-code", "other-user")).rejects.toThrow();
+    const result = await f.service().xOAuth.complete(state, "human-code", "owner-user");
+    expect(result.confirmationId).toBeTruthy();
+    await expect(f.service().xOAuth.complete(state, "human-code", "owner-user")).rejects.toThrow();
+    await expect(f.service().xOAuth.confirm(result.confirmationId!, "other-user")).rejects.toThrow();
+    expect((await f.service().listPrincipals(f.endpoint.id)).some(link => link.externalLabel === "personal")).toBe(false);
+    await f.service().xOAuth.confirm(result.confirmationId!, "owner-user");
+    const principals = await db.select().from(chatExternalPrincipals).where(and(eq(chatExternalPrincipals.companyId, f.companyId), eq(chatExternalPrincipals.externalId, "301")));
+    expect(principals).toHaveLength(1);
+    expect((await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.principalId, principals[0].id)))[0]).toMatchObject({ status: "linked", paperclipUserId: "owner-user" });
+    expect((await f.service().get(f.endpoint.id)).botExternalId).toBe(f.botId);
+    expect(f.sends).toEqual([]);
+    const secrets = await db.select().from(companySecrets).where(eq(companySecrets.companyId, f.companyId));
+    expect(secrets.some(secret => secret.name.includes("human"))).toBe(false);
+    await expect(f.service().createLinkIntent(f.endpoint.id, f.principal.id, 600)).rejects.toThrow("read-only OAuth");
+  }, 60_000);
+
+  it("X promotes a late mention after its duplicate reply and rotates credentials without losing queued authority", async () => {
+    const f = await configuredXEndpoint();
+    const { executeConnectorTool } = await import("../services/connector-runtime.js");
+    const { secretService } = await import("../services/secrets.js");
+    await f.deliver(f.event("500", { in_reply_to_tweet_id: "10" }, "post.reply.create"));
+    await f.drain();
+    expect(f.wakeup).not.toHaveBeenCalled();
+    await f.deliver(f.event("500", { in_reply_to_tweet_id: "10" }));
+    await f.drain();
+    expect(f.wakeup).toHaveBeenCalledOnce();
+    const binding = await f.binding("500");
+    const result = await executeConnectorTool(db, binding, "x_reply", { replyToPostId: "500", text: "An exact, durable answer", idempotencyKey: randomUUID() }) as { publicationId: string };
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.endpoint.connectionId));
+    const expiration = connection.credentialSecretRefs.find(ref => ref.configPath === "credentials.expiresAt")!;
+    await secretService(db).rotate(expiration.secretId, { value: "1" });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, binding.runId));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, binding.issueId));
+    await f.restart();
+    await f.service().processPendingPublications();
+    expect(f.sends).toEqual([{ text: "An exact, durable answer", reply: { in_reply_to_tweet_id: "500" } }]);
+    expect((await db.select().from(chatPublications).where(eq(chatPublications.id, result.publicationId)))[0].state).toBe("published");
+    const refresh = f.providerFetch.mock.calls.filter(call => String(call[0]).endsWith("/2/oauth2/token"));
+    expect(refresh).toHaveLength(1);
+    expect(new URLSearchParams(String(refresh[0][1]?.body)).get("refresh_token")).toBe("x-refresh");
+    const [rotated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(rotated.credentialSecretRefs).toEqual(connection.credentialSecretRefs);
+  }, 60_000);
+
+  it("X bot authorization uses its own PKCE scopes and setup permits an optional conversation test", async () => {
+    const f = await configuredXEndpoint();
+    const start = await f.service().xOAuth.start(f.endpoint.id, "owner-user", "bot");
+    const url = new URL(start.url);
+    expect(url.searchParams.get("scope")).toBe("tweet.read tweet.write users.read offline.access");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    const result = await f.service().xOAuth.complete(url.searchParams.get("state")!, "bot-code", "owner-user");
+    expect(result.purpose).toBe("bot");
+    expect((await f.service().get(f.endpoint.id)).botExternalId).toBe(f.botId);
+    await expect(f.service().finishXSetup(f.endpoint.id, "owner-user")).rejects.toThrow("Verify");
+    const crc = await f.service().handleWebhook(f.endpoint.publicId, "x", new Request(`https://paperclip.example/api/chat-webhooks/${f.endpoint.publicId}/x?crc_token=abcdefghijklmnop`));
+    expect(crc.status).toBe(200);
+    expect((await f.service().finishXSetup(f.endpoint.id, "owner-user")).status).toBe("active");
+    expect(f.sends).toEqual([]);
+    expect(f.wakeup).not.toHaveBeenCalled();
+  }, 60_000);
+
 });

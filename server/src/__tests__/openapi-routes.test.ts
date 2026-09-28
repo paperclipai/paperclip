@@ -95,6 +95,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Paperclip board/agent credential. It intentionally stays out of the public
   // board API document, while this exact exclusion keeps route coverage honest.
   "POST /api/chat-webhooks/agentmail/{publicId}",
+  "GET /api/chat-webhooks/{publicId}/{provider}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
 ]);
 
@@ -485,7 +486,7 @@ describe("openapi routes", () => {
         properties: {
           provider: {
             type: "string",
-            enum: ["slack", "github", "discord", "microsoft-teams", "telegram", "imessage-photon"],
+            enum: ["x", "slack", "github", "discord", "microsoft-teams", "telegram", "imessage-photon"],
           },
           assignedAgentId: { type: "string", format: "uuid" },
         },
@@ -708,6 +709,25 @@ describe("openapi routes", () => {
     expect(
       spec.paths["/api/chat-webhooks/{publicId}/{provider}"],
     ).toBeUndefined();
+  });
+
+  it("documents X setup as board-only and tools as task/run-bound", () => {
+    const { spec } = loadSpecRoutes();
+    for (const [method, routePath] of [
+      ["post", "/api/chat-endpoints/{endpointId}/x/authorize"],
+      ["get", "/api/chat-endpoints/{endpointId}/x/identity"],
+      ["put", "/api/chat-endpoints/{endpointId}/x/progress"],
+      ["post", "/api/chat-endpoints/{endpointId}/x/finish"],
+      ["get", "/api/x/oauth/callback"],
+      ["get", "/api/x/identity/{confirmationId}"],
+      ["post", "/api/x/identity/{confirmationId}/confirm"],
+    ]) {
+      expect(spec.paths[routePath][method]["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    }
+    const tool = spec.paths["/api/companies/{companyId}/x/tasks/{issueId}/tools"].post;
+    expect(tool["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true, taskBound: true });
+    expect(tool.requestBody.content["application/json"].schema.properties.tool.enum).toEqual(["x_read_thread", "x_reply", "x_delivery"]);
+    expect(spec.paths["/api/chat-webhooks/{publicId}/{provider}"]).toBeUndefined();
   });
 
   it("covers the mounted server routes exactly", () => {

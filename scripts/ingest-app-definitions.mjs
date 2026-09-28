@@ -1617,6 +1617,47 @@ for (const [slug, name, subscription, envKey] of [["anthropic", "Claude", true, 
  // AI account flow; saved REST connections remain removable through Connections.
  app.methods = [...methods, ...app.methods.filter(method => method.transport !== "rest_api")];
 }
+apps.push({
+  "schemaVersion": 1,
+  "slug": "x",
+  "name": "X",
+  "description": "Mention your agent on X and receive an explicit public reply.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/x.svg",
+    "darkLogoUrl": "/brands/apps/x-dark.svg"
+  },
+  "urlPatterns": [
+    "https://x.com/*"
+  ],
+  "methods": [
+    {
+      "key": "chat-agent",
+      "label": "Chat with an agent",
+      "purpose": "channel",
+      "provider": "x",
+      "transport": "chat_sdk",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Handle public mentions and replies with one assigned agent.",
+      "credentialFields": [],
+      "guidanceMd": "Use your own X app with OAuth 2.0. X requires prior written approval for AI reply bots. X API usage is billed separately; configure spending controls in the X developer console.",
+      "consoleLinks": {
+        "register": "https://console.x.com",
+        "docs": "https://docs.x.com/x-api/activity/introduction"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "public_mentions"
+      ]
+    }
+  ]
+});
 const validateApp = (app) => {
   if (
     app.schemaVersion !== 1 ||

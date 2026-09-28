@@ -1,6 +1,6 @@
 export interface PaperclipChatFilePreparationDelivery {
   readonly provider:
-    "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon" | null;
+    "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon" | "x" | null;
   readonly mode: "provider_attachment" | "paperclip_task_only" | "unknown";
   readonly preparationState: "prepared";
   readonly providerDeliveryConfirmed: false;

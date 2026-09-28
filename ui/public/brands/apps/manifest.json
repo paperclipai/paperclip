@@ -515,6 +515,14 @@
       "provider": "Zep",
       "catalogVisible": true,
       "localAsset": "/brands/apps/zep.png"
+    },
+    {
+      "slug": "x",
+      "provider": "X",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/x.svg",
+      "darkAsset": "/brands/apps/x-dark.svg",
+      "sourceUrl": "https://about.x.com/en/who-we-are/brand-toolkit"
     }
   ]
 }

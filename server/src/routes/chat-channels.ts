@@ -1,3 +1,4 @@
+import { executeXTool } from "../services/connectors/x.js";
 import {
   Router,
   type Request as ExpressRequest,
@@ -40,11 +41,13 @@ import {
   assertCompanyAccess,
   getAccessibleResource,
   getActorInfo,
+  hasCompanyAccess,
 } from "./authz.js";
 import {
   badRequest,
   forbidden,
   HttpError,
+  notFound,
   tooManyRequests,
 } from "../errors.js";
 
@@ -135,6 +138,59 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     await assertConnectionManager(req, endpoint.companyId);
     return true;
   }
+
+  router.post("/chat-endpoints/:endpointId/x/authorize", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    const purpose = z.enum(["bot", "identity"]).parse(req.body.purpose);
+    const userId = await assertIdentityLinkAccess(req);
+    if (purpose === "bot" && !(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store").json(await service.xOAuth.start(endpointId(req), userId, purpose, req.body.client));
+  });
+  router.get("/x/oauth/callback", async (req, res) => {
+    const userId = await assertIdentityLinkAccess(req);
+    const state = z.string().parse(req.query.state);
+    const code = z.string().parse(req.query.code);
+    const pending = await service.xOAuth.pending(state, userId);
+    if (!hasCompanyAccess(req, pending.row.companyId)) throw notFound("X authorization not found");
+    assertCompanyAccess(req, pending.row.companyId);
+    if (pending.binding.purpose === "bot") await assertConnectionManager(req, pending.row.companyId);
+    const result = await service.xOAuth.complete(state, code, userId);
+    res.redirect(`/apps/chat/connect?provider=x&resume=${result.endpointId}${result.confirmationId ? `&confirmation=${result.confirmationId}` : ""}`);
+  });
+  router.get("/chat-endpoints/:endpointId/x/identity", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    res.set("Cache-Control", "no-store").json(await service.xIdentityStatus(endpointId(req), await assertIdentityLinkAccess(req)));
+  });
+  router.get("/x/identity/:confirmationId", async (req, res) => {
+    const result = await service.xOAuth.confirmation(z.string().uuid().parse(req.params.confirmationId), await assertIdentityLinkAccess(req));
+    if (!hasCompanyAccess(req, result.companyId)) throw notFound("X identity confirmation not found");
+    assertCompanyAccess(req, result.companyId);
+    res.set("Cache-Control", "no-store").json({ identity: result.payload.identity, endpointId: result.endpointId });
+  });
+  router.post("/x/identity/:confirmationId/confirm", async (req, res) => {
+    const userId = await assertIdentityLinkAccess(req);
+    const id = z.string().uuid().parse(req.params.confirmationId);
+    const pending = await service.xOAuth.confirmation(id, userId);
+    if (!hasCompanyAccess(req, pending.companyId)) throw notFound("X identity confirmation not found");
+    assertCompanyAccess(req, pending.companyId);
+    res.json(await service.xOAuth.confirm(id, userId));
+  });
+  router.put("/chat-endpoints/:endpointId/x/progress", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await service.saveXSetupProgress(endpointId(req), z.number().int().min(1).max(5).parse(req.body.stage)));
+  });
+  router.post("/chat-endpoints/:endpointId/x/finish", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await service.finishXSetup(endpointId(req), await assertIdentityLinkAccess(req)));
+  });
+  router.post("/companies/:companyId/x/tasks/:issueId/tools", async (req, res) => {
+    const companyId = z.string().uuid().parse(req.params.companyId);
+    const issueId = z.string().uuid().parse(req.params.issueId);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) throw forbidden("X tools require an authenticated agent run");
+    const call = z.object({ tool: z.enum(["x_read_thread", "x_reply", "x_delivery"]), arguments: z.record(z.string(), z.unknown()) }).strict().parse(req.body);
+    res.set("Cache-Control", "no-store").json(await executeXTool(db, { companyId, issueId, agentId: req.actor.agentId, runId: req.actor.runId }, call.tool, call.arguments));
+  });
 
   router.get("/companies/:companyId/chat-endpoints", async (req, res) => {
     assertBoard(req);
@@ -565,7 +621,10 @@ export function chatWebhookRoutes(
       windowMs: CHAT_WEBHOOK_RATE_LIMIT_WINDOW_MS,
       maxRequests: CHAT_WEBHOOK_RATE_LIMIT_MAX_REQUESTS,
     });
-  router.post("/api/chat-webhooks/:publicId/:provider", async (req, res) => {
+  router.get("/api/chat-webhooks/:publicId/:provider", webhook);
+  router.post("/api/chat-webhooks/:publicId/:provider", webhook);
+  async function webhook(req: ExpressRequest, res: ExpressResponse) {
+    if (req.method === "GET" && req.params.provider !== "x") throw badRequest("GET challenges are only supported for X");
     recordChatWebhookStage("handler_started");
     // Provider signatures are intentionally verified inside Chat SDK, but an
     // attacker should not receive an unbounded cryptographic/JSON-processing
@@ -592,6 +651,6 @@ export function chatWebhookRoutes(
     );
     recordChatWebhookStage("response_ready");
     await writeStandardResponse(response, res);
-  });
+  }
   return router;
 }

@@ -16,7 +16,7 @@ export type {
 } from "@paperclipai/shared";
 
 export type ChatProvider =
-  "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "agentmail" | "imessage-photon";
+  "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "agentmail" | "imessage-photon" | "x";
 export type ChatEndpointStatus =
   | "draft"
   | "verifying"
@@ -123,6 +123,7 @@ export interface ChatEndpoint {
   conversations?: ChatConversation[];
   activity?: ChatActivityItem[];
   setup?: {
+    x?: { stage: number; clientConfigured?: boolean };
     github?: import("@paperclipai/shared").ChatEndpointSetupState["github"];
     step: string;
     testStartedAt?: string | null;

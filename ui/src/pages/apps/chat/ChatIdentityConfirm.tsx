@@ -9,6 +9,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Navigate, useSearchParams } from "@/lib/router";
 
 const providerNames: Record<ChatProvider, string> = {
+  x: "X",
   slack: "Slack",
   github: "GitHub",
   discord: "Discord",

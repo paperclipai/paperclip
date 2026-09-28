@@ -8629,7 +8629,7 @@ export function buildPaperclipTaskMarkdown(input: {
     (count, comment) => count + (comment.attachments?.length ?? 0),
     0,
   );
-  if (input.externalChatProvider && issue) {
+  if (input.externalChatProvider && input.externalChatProvider !== "x" && issue) {
     const taskUrl = publicChatTaskUrl(issue.id);
     lines.push(
       "",
@@ -8644,7 +8644,9 @@ export function buildPaperclipTaskMarkdown(input: {
           ]),
     );
   }
-  if (input.externalChatProvider && input.nativeRunner) {
+  if (input.externalChatProvider === "x") {
+    lines.push("X uses explicit x_reply delivery. Read x_read_thread, write one concise reply with no Paperclip links, then check x_delivery. Internal finals never publish. No file publication is supported.");
+  } else if (input.externalChatProvider && input.nativeRunner) {
     lines.push(
       "",
       "External chat file delivery:",

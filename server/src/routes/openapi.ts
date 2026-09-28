@@ -795,6 +795,8 @@ const chatEndpointSetupResponseSchema = z
       .strict()
       .optional(),
     callbacksNeedUpdate: z.boolean().optional(),
+    x: z.object({ stage: z.number().int().min(1).max(5), clientConfigured: z.boolean().optional() }).optional(),
+    testSkipped: z.boolean().optional(),
   })
   .strict();
 
@@ -1491,6 +1493,13 @@ const BOARD_ONLY_OPERATIONS = new Set([
   // policy, and replay controls. Every mounted handler asserts a board actor;
   // keep the generated security contract equally restrictive.
   "GET /api/slack/search/callback",
+  "POST /api/chat-endpoints/{endpointId}/x/authorize",
+  "GET /api/chat-endpoints/{endpointId}/x/identity",
+  "PUT /api/chat-endpoints/{endpointId}/x/progress",
+  "POST /api/chat-endpoints/{endpointId}/x/finish",
+  "GET /api/x/oauth/callback",
+  "GET /api/x/identity/{confirmationId}",
+  "POST /api/x/identity/{confirmationId}/confirm",
   "GET /api/companies/{companyId}/slack/endpoints/{endpointId}/capabilities",
   "GET /api/companies/{companyId}/slack/endpoints/{endpointId}/search",
   "PUT /api/companies/{companyId}/slack/endpoints/{endpointId}/search",
@@ -1635,7 +1644,7 @@ function resolveOperationAuthLevel(
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
-  if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
+  if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools" || key === "POST /api/companies/{companyId}/x/tasks/{issueId}/tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (
@@ -2137,6 +2146,27 @@ registry.registerPath({ method: "get", path: "/api/slack/search/callback", tags:
 });
 
 // ─── Chat Channels ─────────────────────────────────────────────────────────
+
+for (const [method, path, summary, body] of [
+  ["post", "/api/chat-endpoints/{endpointId}/x/authorize", "Authorize the X bot or link a personal X identity", z.object({ purpose: z.enum(["bot", "identity"]), client: z.object({ clientId: z.string().min(1), clientSecret: z.string().min(1) }).strict().optional() }).strict()],
+  ["get", "/api/chat-endpoints/{endpointId}/x/identity", "Read the signed-in user's X identity link", undefined],
+  ["put", "/api/chat-endpoints/{endpointId}/x/progress", "Save X setup progress", z.object({ stage: z.number().int().min(1).max(5) }).strict()],
+  ["post", "/api/chat-endpoints/{endpointId}/x/finish", "Finish X setup after verified delivery and identity linking", undefined],
+  ["get", "/api/x/identity/{confirmationId}", "Preview a private X identity confirmation", undefined],
+  ["post", "/api/x/identity/{confirmationId}/confirm", "Confirm a personal X identity against the signed-in account", undefined],
+  ["post", "/api/companies/{companyId}/x/tasks/{issueId}/tools", "Execute a conversation-bound X tool", z.object({ tool: z.enum(["x_read_thread", "x_reply", "x_delivery"]), arguments: z.record(z.string(), z.unknown()) }).strict()],
+] as const) {
+  registry.registerPath({ method, path, tags: ["chat-channels"], summary,
+    description: "Experimental X connector. Current company, account, participant and task/run authority are rechecked. Only x_reply queues a public post; its exact text and invoking target are immutable. Reuse the UUID idempotencyKey and check x_delivery after uncertainty. Internal task activity never posts. Human OAuth tokens cannot replace bot credentials.",
+    request: { params: z.object(Object.fromEntries([...path.matchAll(/\{([^}]+)\}/g)].map(match => [match[1], z.string().uuid()]))), ...(body ? { body: jsonBody(body) } : {}) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+  });
+}
+registry.registerPath({ method: "get", path: "/api/x/oauth/callback", tags: ["chat-channels"], summary: "Complete user-bound X PKCE authorization",
+  description: "Consumes single-use state for the same signed-in Paperclip account. Bot authorization also requires current connection management permission. Redirects to setup or private identity confirmation.",
+  request: { query: z.object({ state: z.string(), code: z.string() }) },
+  responses: { 302: { description: "Redirect to X setup or identity confirmation" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
 
 registry.registerPath({
   method: "get",

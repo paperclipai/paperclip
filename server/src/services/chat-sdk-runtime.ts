@@ -1,3 +1,4 @@
+import { createXAdapter, type XAdapterConfig } from "@chat-adapter/x";
 import { PhotonChatAdapter, parsePhotonThreadId } from "./photon/adapter.js";
 import { PhotonLineAuthentication } from "./photon/cloud.js";
 import { PhotonState } from "./photon/state.js";
@@ -136,8 +137,8 @@ const DISCORD_GATEWAY_HEALTHY_SESSION_MS = 60_000;
 
 /** Public Paperclip provider ids. The Teams SDK name remains an internal detail. */
 export type ChatSdkProvider =
-  "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon";
-type ChatSdkAdapterKey = "slack" | "github" | "discord" | "teams" | "telegram" | "imessage-photon";
+  "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon" | "x";
+type ChatSdkAdapterKey = "slack" | "github" | "discord" | "teams" | "telegram" | "imessage-photon" | "x";
 
 interface ProviderConfigBase {
   /** Agent-derived native bot display/mention name. */
@@ -211,7 +212,11 @@ export interface ResolvedPhotonChatConfig extends ProviderConfigBase {
   intakeAfter: number;
   credentials: { allocation?: "dedicated" | "shared"; projectId: string; projectSecret: string; lineId: string; phoneNumber: string };
 }
+export interface ResolvedXChatConfig extends ProviderConfigBase {
+  provider: "x"; credentials: XAdapterConfig;
+}
 export type ResolvedChatSdkProviderConfig =
+  | ResolvedXChatConfig
   | ResolvedPhotonChatConfig
   | ResolvedSlackChatConfig
   | ResolvedGitHubChatConfig
@@ -1356,6 +1361,7 @@ function createProviderAdapter(
 ): Adapter {
   const resolvedLogger = adapterLogger(logger);
   switch (config.provider) {
+    case "x": return createXAdapter({ ...config.credentials, logger: resolvedLogger, userName: config.userName, paperclipExplicitReplies: true });
     case "imessage-photon": throw new Error("Photon adapter requires scoped persistence");
     case "slack": {
       const adapterConfig: SlackAdapterConfig = {

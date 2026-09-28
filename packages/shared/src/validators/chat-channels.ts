@@ -41,31 +41,8 @@ export const microsoftTeamsCredentialIdSchema = z
   })
   .transform((value) => value.toLowerCase());
 
-const chatEndpointCredentialsSchema = z
-  .record(z.string(), z.string().min(1))
-  .superRefine((credentials, ctx) => {
-    for (const key of ["clientId", "tenantId"] as const) {
-      const value = credentials[key];
-      if (value === undefined) continue;
-      const parsed = microsoftTeamsCredentialIdSchema.safeParse(value);
-      if (parsed.success) continue;
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [key],
-        message: `${key} must be a canonical Microsoft Entra UUID`,
-      });
-    }
-  })
-  .transform((credentials) => {
-    const normalized = { ...credentials };
-    for (const key of ["clientId", "tenantId"] as const) {
-      const value = normalized[key];
-      if (value !== undefined) {
-        normalized[key] = microsoftTeamsCredentialIdSchema.parse(value);
-      }
-    }
-    return normalized;
-  });
+// Provider IDs are validated after resolving the endpoint; X client IDs are not UUIDs.
+const chatEndpointCredentialsSchema = z.record(z.string(), z.string().min(1));
 
 export const createChatEndpointSchema = z
   .object({

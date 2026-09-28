@@ -60,6 +60,7 @@ const tabItems = tabs.map((value) => ({
   label: value[0].toUpperCase() + value.slice(1),
 }));
 const providerNames: Record<ChatProvider, string> = {
+  x: "X",
   agentmail: "AgentMail",
   slack: "Slack",
   github: "GitHub",
@@ -73,6 +74,7 @@ const providerLifecycleGuidance: Record<
   ChatProvider,
   { reconnect: string; remove: string }
 > = {
+  x: { reconnect: "Authorize the same X bot account again.", remove: "Stop admission and replies and retire bot credentials. Remove the webhook and subscription in X’s console." },
   agentmail: { reconnect: "Reconnect the same email inbox.", remove: "Disconnect email and retain task history." },
   slack: {
     reconnect:
@@ -495,7 +497,7 @@ function Settings({
           </div>
         )}
       </div>
-      {endpoint.provider !== "github" && (
+      {!["github", "x"].includes(endpoint.provider) && (
         <div className="space-y-3">
           <h3 className="text-sm font-semibold">Private conversations</h3>
           <SettingToggle
@@ -619,6 +621,7 @@ function Access({
       <div>
         <h2 className="text-lg font-semibold">External identity access</h2>
       </div>
+      {endpoint.provider === "x" && <Button onClick={() => window.location.assign(`/apps/chat/connect?provider=x&resume=${endpoint.id}&stage=identity`)}>Link your X account</Button>}
       {endpoint.provider === "slack" && <SlackSearchAccess companyId={endpoint.companyId} endpointId={endpointId} />}
       {endpoint.provider === "slack" && (
         <div className="space-y-3">
@@ -707,6 +710,8 @@ function Access({
                     <Unlink />
                     Revoke
                   </Button>
+                ) : endpoint.provider === "x" ? (
+                  <span className="text-sm text-muted-foreground">Link this account through X authorization</span>
                 ) : (
                   <Button
                     size="sm"

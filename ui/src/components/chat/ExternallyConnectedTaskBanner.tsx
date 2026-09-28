@@ -32,6 +32,7 @@ import {
 } from "./board-send-draft";
 
 const providerNames: Record<ChatProvider, string> = {
+  x: "X",
   slack: "Slack",
   github: "GitHub",
   discord: "Discord",
@@ -497,6 +498,7 @@ function ConnectedTaskComposer({
             <p className="truncate text-xs text-muted-foreground">
               {binding.externalLabel} · {binding.provider === "slack"
                 ? "Messages you send here and agent replies are also posted to Slack."
+                : binding.provider === "x" ? "Task activity stays internal. Only the agent’s X reply tool posts a public response."
                 : "Agent assignment is fixed for this external task."}
             </p>
           </div>
@@ -509,13 +511,13 @@ function ConnectedTaskComposer({
               </a>
             </Button>
           )}
-          <Button
+          {binding.provider !== "x" && <Button
             size="sm"
             variant="outline"
             onClick={() => setComposing((value) => !value)}
           >
             Send to channel
-          </Button>
+          </Button>}
           <Button asChild size="sm" variant="ghost">
             <Link to={`/apps/chat/${binding.endpointId}/conversations`}>
               Connection
@@ -523,7 +525,7 @@ function ConnectedTaskComposer({
           </Button>
         </div>
       </div>
-      {composing && (
+      {composing && binding.provider !== "x" && (
         <div className="space-y-2 border-t border-border pt-3">
           <label
             className="text-xs font-medium"

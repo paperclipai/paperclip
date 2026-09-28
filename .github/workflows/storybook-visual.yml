@@ -46,6 +46,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -59,7 +61,13 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # CI owns committed lockfile updates. Resolve dependency-changing PRs
+        # locally, without running dependency lifecycle scripts.
+        run: |
+          if ! pnpm install --ignore-scripts --frozen-lockfile; then
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --ignore-scripts --frozen-lockfile
+          fi
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium

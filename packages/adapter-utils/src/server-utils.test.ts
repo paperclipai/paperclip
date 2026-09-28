@@ -1097,6 +1097,20 @@ describe("renderPaperclipWakePrompt", () => {
     ).toBe(false);
   });
 
+  it("gives X an explicit reply contract for fresh and resumed turns", () => {
+    for (const resumedSession of [false, true]) {
+      const prompt = renderPaperclipWakePrompt({ ...ordinaryExternalChatWake, externalChatProvider: "x" }, { resumedSession });
+      expect(prompt).toContain("## X response contract");
+      expect(prompt).toContain("x_read_thread");
+      expect(prompt).toContain("x_reply for one concise public response without Paperclip links");
+      expect(prompt).toContain("x_delivery");
+      expect(prompt).toContain("final responses never post to X");
+      expect(prompt).toContain("Do not split replies");
+      expect(prompt).not.toContain("Make zero Paperclip API calls");
+      expect(prompt).not.toContain("summary is the user-visible final answer");
+    }
+  });
+
   it("renders one authoritative direct-response contract for fresh and resumed external-chat turns", () => {
     for (const prompt of [
       renderPaperclipWakePrompt(ordinaryExternalChatWake),

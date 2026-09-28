@@ -1,3 +1,4 @@
+import { X_TOOLS, xAssignedResource, executeXTool } from "./connectors/x.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import { slackAssignedResource, executeGovernedSlackTool } from "./connectors/slack.js";
 import { promises as fs } from "node:fs";
@@ -55,6 +56,7 @@ interface ConnectorDefinition {
 // Trusted connector packages declare their contributions here. Assignments and
 // current access, not credential availability or agent-authored config, select them.
 const connectors: ConnectorDefinition[] = [
+  { key: "x", label: "X", skillName: "x", tools: X_TOOLS, resolve: xAssignedResource, execute: executeXTool },
   { key: "slack", label: "Slack", skillName: "slack",
     tools: SLACK_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
     resolve: slackAssignedResource,
@@ -116,6 +118,8 @@ export async function resolveConnectorAssignments(
         resources,
         tools: connector.tools,
       });
+    // X interaction runs receive only their conversation-bound contribution.
+    if (connector.key === "x" && resources.length) return assignments;
   }
   return assignments;
 }
@@ -184,7 +188,7 @@ export async function applyConnectorSkills(
         content: Buffer.from(markdown + context),
         mode: 0o444,
       },
-      ...(assignment.key === "slack" ? [{ path: "TOOLS.json", content: Buffer.from(JSON.stringify(assignment.tools, null, 2)), mode: 0o444 }] : []),
+      ...(["slack", "x"].includes(assignment.key) ? [{ path: "TOOLS.json", content: Buffer.from(JSON.stringify(assignment.tools, null, 2)), mode: 0o444 }] : []),
     ]);
     skills.push({
       key: assignment.skillKey,
@@ -219,12 +223,12 @@ export async function prepareConnectorSkillDelivery(
       ["codex_local", "claude_local", "kimi_local"].includes(adapterType));
   if (scopedFiles) {
     // Runner models with semantic tools cannot necessarily read staged skill
-    // files. Supply the Slack contract and verified source IDs in their input;
+    // files. Supply the assigned connector contract and verified source IDs in their input;
     // keep the staged bundle for CLI-capable engines and compatibility hashing.
-    const slack = adapterType === "paperclip_runner"
-      ? config.paperclipRuntimeSkills.filter(entry => entry.key === "paperclipai/paperclip/slack")
+    const inlineSkills = adapterType === "paperclip_runner"
+      ? config.paperclipRuntimeSkills.filter(entry => ["paperclipai/paperclip/slack", "paperclipai/paperclip/x"].includes(entry.key))
       : [];
-    const instructions = (await Promise.all(slack.map(entry =>
+    const instructions = (await Promise.all(inlineSkills.map(entry =>
       fs.readFile(path.join(entry.source, "SKILL.md"), "utf8")))).join("\n\n");
     return { config, instructions };
   }
