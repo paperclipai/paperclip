@@ -44,9 +44,8 @@ describe("remote managed runtime", () => {
       runId: "plain", adapterKey: "test", workspaceLocalDir: root,
       workspaceFileMode: "all", workspaceExclude: ["explicitly-excluded"],
     });
-    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
-    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      localDir: root, remoteDir: prepared.workspaceRemoteDir, exclude: ["explicitly-excluded"],
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      localDir: root, remoteDir: prepared.workspaceRemoteDir, workspaceFileMode: "all", workspaceExclude: ["explicitly-excluded"],
     }));
     await prepared.restoreWorkspace();
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({

@@ -136,16 +136,13 @@ export async function prepareRemoteManagedRuntime(input: {
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
   const preparedWorkspace = syncWorkspace
-    ? input.workspaceFileMode === "all"
-      ? await syncDirectoryToSsh({
-          spec: input.spec, localDir: input.workspaceLocalDir, remoteDir: workspaceRemoteDir,
-          exclude: input.workspaceExclude, onProgress: input.onProgress, progressLabel: "workspace",
-        }).then(() => ({ gitBacked: false }))
-      : await prepareWorkspaceForSshExecution({
+    ? await prepareWorkspaceForSshExecution({
         spec: input.spec,
         localDir: input.workspaceLocalDir,
         remoteDir: workspaceRemoteDir,
         onProgress: input.onProgress,
+        workspaceFileMode: input.workspaceFileMode,
+        workspaceExclude: input.workspaceExclude,
       })
     : null;
   const baselineSnapshot = preparedWorkspace
