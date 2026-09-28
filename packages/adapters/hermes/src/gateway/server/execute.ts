@@ -369,6 +369,26 @@ function fetchFailureMessage(err: unknown): string {
   return causeCode ? `${message} (${causeCode}: ${causeMessage})` : `${message} (${causeMessage})`;
 }
 
+// `Retry-After` arrives in two shapes: delta-seconds (`Retry-After: 1`, which is
+// what the Hermes API server sends for its concurrent-run cap) or an HTTP date.
+// Consumers of the recorded hint parse it as a timestamp, and `new Date("1")` is
+// 2001, so a raw delta-seconds header reads as an already-expired window and the
+// retry planner discards it. Normalize here, where the header enters the run.
+export function normalizeRetryAfterHeader(
+  value: string | null | undefined,
+  nowMs: number = Date.now(),
+): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) {
+    const seconds = Number(raw);
+    if (!Number.isFinite(seconds)) return null;
+    return new Date(nowMs + seconds * 1000).toISOString();
+  }
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
 async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
@@ -384,7 +404,7 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
     const err = new Error(`Hermes gateway HTTP ${response.status}`) as HermesHttpError;
     err.status = response.status;
     err.code = classified.code;
-    err.retryNotBefore = response.headers.get("retry-after");
+    err.retryNotBefore = normalizeRetryAfterHeader(response.headers.get("retry-after"));
     err.body = body;
     throw err;
   }
@@ -898,21 +918,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: false,
         errorCode: "hermes_gateway_protocol_error",
         errorMessage: "Hermes /v1/runs response did not include run_id.",
-        // The gateway answered without a run id, so it never created the run
-        // this invocation would have driven.
-        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        // The gateway answered the create call without a run id. That does not
+        // prove it created nothing, so this stays ambiguous: no no-provider-work
+        // evidence is claimed here and the platform reconciles the run instead
+        // of replaying it with a fresh run id.
         errorMeta: { response: redactForLog(created, [], 0, redactText) as Record<string, unknown> },
       };
     }
   } catch (err) {
     // The create request is this adapter's dispatch boundary (`ctx.onDispatch`
-    // above), so a failure here is positive evidence that no provider work
-    // started. The platform's legacy-execution guard requires that evidence
-    // before it schedules a bounded transient retry; without it a refused
-    // delivery is held for reconciliation and the retry never runs.
-    return errorResult(err, redactText, {
-      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-    });
+    // above), but only an *explicit refusal of the request itself* proves that
+    // no provider work started. Measured production refusal: the Hermes API
+    // server's concurrent-run cap answers `POST /v1/runs` with 429 before it
+    // creates anything. A transport failure (timeout, connection reset) or a
+    // 5xx answer cannot prove that - the gateway may have created the run and
+    // then failed - and replaying it with a new run id would duplicate provider
+    // work, so those failures claim no evidence and the platform's
+    // legacy-execution guard reconciles them instead of retrying.
+    const refusedBeforeStart = (err as HermesHttpError).status === 429;
+    return errorResult(
+      err,
+      redactText,
+      refusedBeforeStart
+        ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+        : undefined,
+    );
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);

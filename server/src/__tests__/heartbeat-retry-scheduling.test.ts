@@ -190,6 +190,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     errorFamily?: "transient_upstream" | "provider_quota" | null;
     retryNotBefore?: string | null;
     scheduledRetryAttempt?: number;
+    scheduledRetryReason?: string | null;
     resultJson?: Record<string, unknown> | null;
     adapterType?: string;
     agentName?: string;
@@ -231,7 +232,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       errorCode: input.errorCode,
       finishedAt: input.now,
       scheduledRetryAttempt: input.scheduledRetryAttempt ?? 0,
-      scheduledRetryReason: input.scheduledRetryAttempt ? "transient_failure" : null,
+      scheduledRetryReason: input.scheduledRetryReason ?? (input.scheduledRetryAttempt ? "transient_failure" : null),
       resultJson: input.resultJson ?? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         ...(input.errorFamily ? { errorFamily: input.errorFamily } : {}),
         ...(input.retryNotBefore
@@ -2512,6 +2513,235 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(heartbeatRuns.id, parkedRuns[0]!.id))
       .then((rows) => rows[0] ?? null);
     expect(delivered?.status).toBe("queued");
+  });
+
+  it("parks a wake when the recorded Retry-After is delta-seconds, not a timestamp", async () => {
+    // The Hermes API server answers its concurrent-run cap with `Retry-After: 1`,
+    // and an adapter that records the header verbatim used to be read with
+    // `new Date("1")` - i.e. 2001-01-01, an expired window - so the hold never
+    // opened. A bare integer is the number of seconds after the run started.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date(Date.now() - 5_000);
+    const deltaSeconds = 600;
+    const expectedUntil = new Date(now.getTime() + deltaSeconds * 1_000);
+
+    await seedRetryFixture({
+      runId: sourceRunId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "hermes_gateway_rate_limited",
+      errorFamily: "transient_upstream",
+      adapterType: "hermes_gateway",
+      agentName: "Leela",
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "transient_upstream",
+        retryNotBefore: String(deltaSeconds),
+        transientRetryNotBefore: String(deltaSeconds),
+      },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued behind a saturated gateway",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 3,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-3`,
+    });
+
+    expect(
+      await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: { issueId, mutation: "update" },
+        contextSnapshot: { issueId, wakeReason: "issue_status_changed" },
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      }),
+    ).toBeNull();
+
+    const parked = await db
+      .select({
+        status: heartbeatRuns.status,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.scheduledRetryReason, "gateway_delivery_hold"),
+        ),
+      );
+
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({ status: "scheduled_retry" });
+    expect(parked[0]!.scheduledRetryAt?.getTime()).toBe(expectedUntil.getTime());
+  });
+
+  it("does not charge a parked gateway delivery hold a failure attempt", async () => {
+    // A parked run has not attempted delivery, so its scheduledRetryAttempt
+    // counts the park, not a failure. If the accounting charged it, the run
+    // promoted at the end of the window would have one retry left instead of the
+    // full bounded ladder.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date(Date.now() - 5_000);
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "hermes_gateway_rate_limited",
+      errorFamily: "transient_upstream",
+      adapterType: "hermes_gateway",
+      agentName: "Leela",
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "gateway_delivery_hold",
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "transient_upstream",
+        retryNotBefore: new Date(Date.now() + 60_000).toISOString(),
+        transientRetryNotBefore: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+
+    expect(scheduled).toMatchObject({ outcome: "scheduled", attempt: 1, maxAttempts: 2 });
+  });
+
+  it("never merges a wake that carries its own execution contract into the parked run", async () => {
+    // Coalescing merges only comment ids into the parked run, which keeps its own
+    // contextSnapshot. A wake that carries its own execution contract - an
+    // interaction resolution or a durable chat turn - must therefore never be
+    // marked coalesced into that run: it would be delivered as the earlier
+    // wake's turn. Measured on this fixture: the interaction wake is preserved
+    // as its own `deferred_issue_execution` receipt (wake-queue admission defers
+    // it before the hold branch) and the parked run's context keeps only the
+    // first wake. The guard in the hold branch covers the same wake shapes when
+    // they do reach it, by parking them on their own run.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const now = new Date(Date.now() - 5_000);
+    const retryNotBefore = new Date(Date.now() + 90_000);
+
+    await seedRetryFixture({
+      runId: sourceRunId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "hermes_gateway_rate_limited",
+      errorFamily: "transient_upstream",
+      adapterType: "hermes_gateway",
+      agentName: "Leela",
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "transient_upstream",
+        retryNotBefore: retryNotBefore.toISOString(),
+        transientRetryNotBefore: retryNotBefore.toISOString(),
+      },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Interaction queued behind a saturated gateway",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 4,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-4`,
+    });
+
+    expect(
+      await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: { issueId, mutation: "update" },
+        contextSnapshot: { issueId, wakeReason: "issue_status_changed" },
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      }),
+    ).toBeNull();
+    expect(
+      await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: { issueId, mutation: "interaction", interactionId },
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_status_changed",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+          continuationPolicy: "wake_assignee",
+        },
+        idempotencyKey: "interaction-continuation:test",
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      }),
+    ).toBeNull();
+
+    const parked = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.scheduledRetryReason, "gateway_delivery_hold"),
+        ),
+      );
+
+    const contexts = parked.map((run) => (run.contextSnapshot as Record<string, unknown>) ?? {});
+    // The parked run keeps only the wake that opened the window.
+    expect(contexts.filter((context) => typeof context.interactionId === "string")).toHaveLength(0);
+
+    const receipts = await db
+      .select({
+        status: agentWakeupRequests.status,
+        runId: agentWakeupRequests.runId,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(receipts).toHaveLength(2);
+
+    const interactionReceipt = receipts.find(
+      (receipt) => receipt.idempotencyKey === "interaction-continuation:test",
+    );
+    expect(interactionReceipt).toBeDefined();
+    // Never coalesced into another wake's run, and never delivered as its turn.
+    expect(interactionReceipt!.status).not.toBe("coalesced");
+    expect(parked.map((run) => run.id).includes(interactionReceipt!.runId ?? "")).toBe(false);
+    // No dispatchable run may reach the refusing gateway while the window is open.
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, agentId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        ),
+    ).toHaveLength(0);
   });
 
   describe("run-dispatch module transactions", () => {

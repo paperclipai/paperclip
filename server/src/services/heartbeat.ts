@@ -1110,7 +1110,7 @@ function isMaxTurnExhaustionRun(
 }
 
 function readTransientRetryNotBeforeFromRun(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson" | "createdAt">,
 ) {
   const resultJson = parseObject(run.resultJson);
   const value = resultJson.retryNotBefore ?? resultJson.transientRetryNotBefore;
@@ -1121,12 +1121,34 @@ function readTransientRetryNotBeforeFromRun(
   )) {
     return null;
   }
+  // Some adapters record the `Retry-After` header verbatim, and the Hermes API
+  // server sends it as delta-seconds (`Retry-After: 1`). Read as a date,
+  // `new Date("1")` is 2001-01-01 - an expired window - so a recorded hint in
+  // that shape would never open a hold. A small bare integer is therefore
+  // seconds after the run started, not a timestamp. Bounded to an hour so an
+  // epoch value can never be mistaken for a delta.
+  const deltaSeconds = readRetryAfterDeltaSeconds(value);
+  if (deltaSeconds !== null) {
+    const startedAt = run.createdAt ? new Date(run.createdAt).getTime() : Date.now();
+    const base = Number.isNaN(startedAt) ? Date.now() : startedAt;
+    return new Date(base + deltaSeconds * 1000);
+  }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function readRetryAfterDeltaSeconds(value: string | number | Date): number | null {
+  if (value instanceof Date) return null;
+  const raw = typeof value === "number" ? value : value.trim();
+  if (typeof raw === "number" && !Number.isSafeInteger(raw)) return null;
+  if (typeof raw === "string" && !/^\d+$/.test(raw)) return null;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 3_600) return null;
+  return seconds;
+}
+
 function readTransientRecoveryContractFromRun(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson" | "createdAt">,
 ) {
   const errorFamily = readHeartbeatRunErrorFamily(run);
   return errorFamily === "transient_upstream" ||
@@ -28112,7 +28134,18 @@ export function heartbeatService(
               issueId: issue.id,
               now: deliveryHoldNow,
             });
-            if (parkedRun) {
+            // Only a plain wake coalesces into the parked run. A wake that
+            // carries its own execution contract - an interaction resolution, a
+            // durable chat turn, an interaction continuation - must not be
+            // merged into another wake's run: the parked run keeps the first
+            // wake's contextSnapshot, so merging this one would deliver the
+            // later request as the earlier turn and drop its own contract.
+            // Those wakes park on their own run instead, in the same window.
+            const carriesOwnExecutionContext =
+              Boolean(opts.idempotencyKey?.startsWith("chat-inbound:")) ||
+              isInteractionResolutionWakePayload(payload) ||
+              hasInteractionContinuationWakeContext(enrichedContextSnapshot);
+            if (parkedRun && !carriesOwnExecutionContext) {
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields,
                 companyId: agent.companyId,
@@ -28231,7 +28264,10 @@ export function heartbeatService(
               triggerDetail,
               // A delivery-hold wake is parked, not dispatched: the run exists
               // so the wake keeps its issue, actor and comment context, but it
-              // starts only when the gateway's window closes.
+              // starts only when the gateway's window closes. The attempt below
+              // counts the park itself (like the workspace/connection waits),
+              // and `gateway_delivery_hold` is a non-failure wait lane, so the
+              // promoted run still gets the full bounded retry ladder.
               status: gatewayDeliveryHold ? "scheduled_retry" : "queued",
               ...(gatewayDeliveryHold
                 ? {

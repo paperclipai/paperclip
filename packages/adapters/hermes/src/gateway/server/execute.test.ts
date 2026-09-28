@@ -516,6 +516,100 @@ describe("execute", () => {
     expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
   });
 
+  it("records the refusal Retry-After as an absolute time when the gateway sends delta-seconds", async () => {
+    // The Hermes API server's concurrency gate sends `Retry-After: 1`. Recorded
+    // verbatim, `new Date("1")` is 2001-01-01, so every consumer of the hint
+    // reads an expired window and the delivery hold never opens. The adapter
+    // normalizes the header where it enters the run.
+    const startedAt = Date.now();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            error: { code: "rate_limit_exceeded", message: "Too many concurrent runs (max 10)" },
+          }),
+          { status: 429, headers: { "retry-after": "1" } },
+        ),
+      ),
+    );
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "gateway-test-key",
+    }));
+
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    const hint = Date.parse(String(result.retryNotBefore));
+    expect(Number.isNaN(hint)).toBe(false);
+    // One second after the refusal, not 2001, and not the HTTP-date form.
+    expect(hint).toBeGreaterThanOrEqual(startedAt + 1_000);
+    expect(hint).toBeLessThanOrEqual(Date.now() + 2_000);
+  });
+
+  it("keeps an HTTP-date Retry-After as that absolute time", async () => {
+    // HTTP dates carry second precision, so the expectation is built the same way.
+    const expiresAt = new Date(Math.floor((Date.now() + 120_000) / 1_000) * 1_000);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: "overloaded" }), {
+          status: 503,
+          headers: { "retry-after": expiresAt.toUTCString() },
+        }),
+      ),
+    );
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "gateway-test-key",
+    }));
+
+    expect(result.errorCode).toBe("hermes_gateway_upstream_error");
+    expect(result.retryNotBefore).toBe(expiresAt.toISOString());
+  });
+
+  it("claims no provider-work evidence when the create outcome is ambiguous", async () => {
+    // A 5xx answer, a transport failure and a 2xx answer without a run id all
+    // leave "did the gateway create the run?" open. Claiming
+    // `providerWorkStarted: false` there would let the platform replay the
+    // dispatch with a fresh run id and duplicate provider work, so the adapter
+    // claims nothing and the platform reconciles instead.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "upstream exploded" }), { status: 503 })),
+    );
+    const upstreamError = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "gateway-test-key",
+    }));
+    expect(upstreamError.errorCode).toBe("hermes_gateway_upstream_error");
+    expect(upstreamError.executionRecovery ?? null).toBeNull();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+      }),
+    );
+    const transportError = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "gateway-test-key",
+    }));
+    expect(transportError.executionRecovery ?? null).toBeNull();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ status: "accepted" }), { status: 200 })),
+    );
+    const protocolError = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "gateway-test-key",
+    }));
+    expect(protocolError.errorCode).toBe("hermes_gateway_protocol_error");
+    expect(protocolError.executionRecovery ?? null).toBeNull();
+  });
+
   it("maps HTTP auth failures", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "bad key" }), { status: 401 })));
     const result = await execute(makeCtx({
