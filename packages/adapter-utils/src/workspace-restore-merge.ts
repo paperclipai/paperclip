@@ -534,7 +534,11 @@ export function directoryMergeConflicts(baseline: DirectorySnapshot, source: Dir
   const same = (a: SnapshotEntry | undefined, b: SnapshotEntry | undefined) =>
     (!a && !b) || entriesMatch(a, b);
   const conflicts = new Set<string>();
-  for (const relative of new Set([...[...baseline.entries].map(([name]) => name), ...[...source.entries].map(([name]) => name)])) {
+  function* changedPaths() {
+    for (const [name] of baseline.entries) yield name;
+    for (const [name] of source.entries) if (!baseline.entries.has(name)) yield name;
+  }
+  for (const relative of changedPaths()) {
     const before = baseline.entries.get(relative);
     const incoming = source.entries.get(relative);
     const present = current.entries.get(relative);
@@ -545,10 +549,15 @@ export function directoryMergeConflicts(baseline: DirectorySnapshot, source: Dir
       if (current.entries.get(parent)?.kind !== "dir" &&
           !same(current.entries.get(parent), baseline.entries.get(parent))) conflicts.add(parent);
     }
-    if (before?.kind === "dir" && incoming?.kind !== "dir") {
-      for (const [child, entry] of current.entries) {
-        if (child.startsWith(`${relative}/`) && !same(entry, baseline.entries.get(child)) &&
-            !same(entry, source.entries.get(child))) conflicts.add(child);
+  }
+  // Stream each current entry once. A replacement must not remove children
+  // omitted from the baseline, including excluded or newly created files.
+  for (const [child, entry] of current.entries) {
+    if (same(entry, baseline.entries.get(child)) || same(entry, source.entries.get(child))) continue;
+    for (let parent = path.posix.dirname(child); parent !== "."; parent = path.posix.dirname(parent)) {
+      if (baseline.entries.get(parent)?.kind === "dir" && source.entries.get(parent)?.kind !== "dir") {
+        conflicts.add(child);
+        break;
       }
     }
   }
@@ -568,7 +577,10 @@ export async function mergeDirectoryWithBaseline(input: {
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
       await input.beforeApply?.();
-      const current = await captureDirectorySnapshot(canonicalTargetDir, options);
+      // Strict preflight must see excluded children before a directory is
+      // replaced. The merge still applies only the filtered source/baseline.
+      const current = await captureDirectorySnapshot(canonicalTargetDir,
+        input.conflictPolicy === "reject" ? { exclude: [], diskBacked: true } : options);
       try {
         if (input.conflictPolicy === "reject") {
           const conflicts = directoryMergeConflicts(input.baseline, source, current);

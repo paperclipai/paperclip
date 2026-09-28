@@ -113,6 +113,8 @@ export async function prepareRemoteManagedRuntime(input: {
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceFileMode?: "all";
+  workspaceExclude?: string[];
   assets?: RemoteManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage as plain, read-only trees. */
   additionalSources?: SandboxAdditionalSource[];
@@ -134,7 +136,12 @@ export async function prepareRemoteManagedRuntime(input: {
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
   const preparedWorkspace = syncWorkspace
-    ? await prepareWorkspaceForSshExecution({
+    ? input.workspaceFileMode === "all"
+      ? await syncDirectoryToSsh({
+          spec: input.spec, localDir: input.workspaceLocalDir, remoteDir: workspaceRemoteDir,
+          exclude: input.workspaceExclude, onProgress: input.onProgress, progressLabel: "workspace",
+        }).then(() => ({ gitBacked: false }))
+      : await prepareWorkspaceForSshExecution({
         spec: input.spec,
         localDir: input.workspaceLocalDir,
         remoteDir: workspaceRemoteDir,
@@ -145,7 +152,7 @@ export async function prepareRemoteManagedRuntime(input: {
     ? await captureDirectorySnapshot(input.workspaceLocalDir, {
         exclude: preparedWorkspace.gitBacked
           ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
-          : [".paperclip-runtime"],
+          : [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
       })
     : null;
 

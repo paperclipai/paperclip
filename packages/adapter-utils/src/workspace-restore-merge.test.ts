@@ -640,3 +640,21 @@ describe("conflict-preserving directory restore", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
+
+
+it("strict preflight preserves excluded descendants when a directory becomes a file", async () => {
+  const root = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "directory-excluded-cas-")));
+  const target = path.join(root, "target"), source = path.join(root, "source");
+  await mkdir(path.join(target, "folder", "node_modules"), { recursive: true });
+  await writeFile(path.join(target, "folder", "node_modules", "keep"), "excluded contents");
+  const baseline = await captureDirectorySnapshot(target, { exclude: ["*/node_modules"], diskBacked: true });
+  try {
+    await mkdir(source);
+    await writeFile(path.join(source, "folder"), "replacement");
+    await writeFile(path.join(source, "independent"), "must not partially apply");
+    await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject" }))
+      .rejects.toMatchObject({ code: "DIRECTORY_MERGE_CONFLICT", paths: expect.arrayContaining(["folder/node_modules/keep"]) });
+    expect(await readFile(path.join(target, "folder", "node_modules", "keep"), "utf8")).toBe("excluded contents");
+    await expect(stat(path.join(target, "independent"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await disposeDirectorySnapshot(baseline); await rm(root, { recursive: true, force: true }); }
+});
