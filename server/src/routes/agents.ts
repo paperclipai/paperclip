@@ -6815,7 +6815,7 @@ export function agentRoutes(
       throw forbidden(auth.reason);
     }
 
-    const isTerminal = ["completed", "failed", "cancelled", "timed_out", "succeeded"].includes(existing.status);
+    const isTerminal = ["completed", "failed", "cancelled", "timed_out", "succeeded", "interrupted"].includes(existing.status);
     if (isTerminal && auth.actorType === "agent") {
       throw conflict("Run is already terminal");
     }
@@ -7476,7 +7476,7 @@ export function decideCancelAuth(actor: any, run: any) {
     return { authorized: false, reason: "Board access required" };
   }
 
-  if (run.source !== "automation" && run.source !== "on_demand") {
+  if (run.invocationSource !== "automation" && run.invocationSource !== "on_demand") {
     return { authorized: false, reason: "Board access required" };
   }
 
