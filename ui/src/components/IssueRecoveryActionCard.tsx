@@ -1,3 +1,5 @@
+import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
+import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { useMemo, useState } from "react";
 import type {
@@ -897,15 +899,21 @@ function formatTimeAbsolute(value: string | Date | null | undefined): string | n
 }
 
 /**
- * Headline for an action carrying a bounded retry lineage. It names who keeps the task in
- * every phase, because a manager owning the repair must never read as a manager owning
- * the deliverable.
+ * Headline for an action carrying a bounded retry lineage. It describes the recovery
+ * state and next step without implying that a repair owner owns the deliverable.
  */
 function lineageHeadline(lineage: RecoveryRetryLineage): string {
+  if (lineage.lane === "native_run") {
+    if (lineage.liveRunId) return "Paperclip is recovering the existing run.";
+    if (lineage.exhausted) return "Paperclip could not recover the existing run within its retry budget. Review the recorded failure before retrying.";
+    if (lineage.retryExpired) return "The retry for the existing run came due and did not start. Review the recorded failure and retry when ready.";
+    if (lineage.nextRetryAt) return "Paperclip has scheduled another attempt to resume the existing run.";
+    return "The existing run still needs recovery. Review the recorded failure before retrying.";
+  }
   // An attempt that came due and never ran leaves nobody working on this task, even though
   // attempts remain on paper. Say so before any lane wording that ends in "no action needed".
   if (lineage.retryExpired) {
-    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step. The task stays with its original owner.";
+    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step.";
   }
   if (lineage.lane === "source_owner") {
     return lineage.exhausted
@@ -993,6 +1001,7 @@ export function IssueRecoveryActionCard({
   variant = "full",
   className,
 }: IssueRecoveryActionCardProps) {
+  const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const liveness = useMemo(() => ({ scheduledRetry }), [scheduledRetry]);
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action, liveness);
   const tone = STATE_TONE[cardState];
@@ -1019,7 +1028,7 @@ export function IssueRecoveryActionCard({
   // the budget ran out or the scheduled attempt simply never fired.
   const wakeSummary = lineage?.retryExpired
     ? "The scheduled retry did not run — a retry or a decision is needed"
-    : lineage?.exhausted && lineage.lane !== "board"
+    : lineage?.exhausted && !lineage.liveRunId && lineage.lane !== "board"
     ? "Automatic retries are finished — a decision is needed"
     : readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
@@ -1057,14 +1066,16 @@ export function IssueRecoveryActionCard({
     resolved: "resolved",
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
 
-  const showResolveActions = onResolve !== undefined && cardState !== "resolved";
   const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
+    if (isNativeWorkspaceExportRepairCause(action.cause) && ["todo", "done", "in_review"].includes(option.outcome)) return false;
     if (option.outcome === "todo" && requiresExecutionReconciliation(action.cause)) return false;
     if (option.boardOnly && !canFalsePositive) return false;
     return true;
   });
+  const showResolveActions = onResolve !== undefined && cardState !== "resolved" && visibleResolveOptions.length > 0;
   const reissueBaseRef = divergence?.reissueBaseRef ?? null;
   const showReissueAction =
+    workspaceIsolationControlsVisible &&
     onReissueIsolated !== undefined &&
     cardState !== "resolved" &&
     divergence !== null &&
@@ -1096,7 +1107,7 @@ export function IssueRecoveryActionCard({
     divergence !== null &&
     divergence.cleanliness === "dirty";
   const repairDisabledReason = repairContention
-    ? `Held by ${contentionLabel(repairContention)} — re-issue on an isolated workspace instead.`
+    ? `Held by ${contentionLabel(repairContention)}${showReissueAction ? " — re-issue on an isolated workspace instead." : "."}`
     : null;
   // When contended, the re-issue is the recommended path, so it takes the primary emphasis and a
   // "Recommended" hint while the repair button is disabled.
@@ -1108,7 +1119,7 @@ export function IssueRecoveryActionCard({
     showBreakGlass ||
     showRepairAction;
 
-  if (requiresExecutionReconciliation(action.cause)) return null;
+  if (requiresExecutionReconciliation(action.cause) || action.cause === "native_workspace_sync_out_unsafe_archive") return null;
 
   return (
     <section
@@ -1174,7 +1185,12 @@ export function IssueRecoveryActionCard({
                 className="inline-flex flex-wrap items-center gap-1.5"
                 data-testid="recovery-recovery-owner"
               >
-                {recoveryOwnerIsSourceOwner ? (
+                {lineage.lane === "native_run" && (action.ownerType !== "board" || Boolean(lineage.liveRunId)) ? (
+                  <>
+                    <span className="font-medium">Paperclip</span>
+                    <span className="text-muted-foreground">recovers the existing run</span>
+                  </>
+                ) : recoveryOwnerIsSourceOwner ? (
                   <span className="font-medium">Original owner — retrying itself</span>
                 ) : action.ownerType === "agent" && action.ownerAgentId ? (
                   <>

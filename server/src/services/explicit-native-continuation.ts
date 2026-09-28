@@ -194,6 +194,9 @@ export async function admitExplicitNativeContinuation(input: {
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
         lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
     run = lockedRun;
+    if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive") {
+      return blocked("workspace_repair_required", "Verify safe workspace staging or repair before continuing. Your message is saved.");
+    }
     const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
     if (cancelledStartup) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;

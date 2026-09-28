@@ -1991,9 +1991,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         stopPolling();
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
-          // Reconcile all visible data after a gap: missed events cannot be replayed.
-          void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
         }
+        // The initial page queries can finish before the first subscription,
+        // too. Reconcile that gap as well as reconnects: events are not replayed.
+        void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
         reconnectAttempt = 0;
       };
 

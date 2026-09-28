@@ -20,7 +20,13 @@ describe("runtime connection MCP contract", () => {
         description: CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
         inputSchema: {
           type: "object",
-          properties: { query: { type: "string" } },
+          properties: {
+            query: { type: "string" },
+            retryProviderChoice: {
+              type: "boolean",
+              description: "Only when the user explicitly asks to reconsider a previous provider choice or decline",
+            },
+          },
           additionalProperties: false,
         },
       },
@@ -29,7 +35,14 @@ describe("runtime connection MCP contract", () => {
         description: CONNECTION_REQUEST_TOOL_DESCRIPTION,
         inputSchema: {
           type: "object",
-          properties: { service: { type: "string" } },
+          properties: {
+            service: { type: "string" },
+            targetService: { type: "string", description: "App slug returned by search only when the user explicitly named this external provider" },
+            selectionInteractionId: {
+              type: "string",
+              description: "Saved answered provider-choice interaction ID for aggregator routes",
+            },
+          },
           required: ["service"],
           additionalProperties: false,
         },

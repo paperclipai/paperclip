@@ -7,11 +7,13 @@ import type {
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 import { isBlockedUnstartedWake } from "./non-execution-wake.js";
+import { collectRunEvents } from "./run-observations.js";
 import { chatMarker } from "./chat-cases.js";
 import { assertChatRememberedAfterRestart, assertChatStartupStopped, isChatStopReady, runChatHardeningFlow } from "./chat-hardening.js";
 import { enableChatThroughSettings, runChatInterruption, runChatSettingsLifecycle } from "./chat-stories.js";
 import { runActiveReassignment, runWorkerCrash, runAnswerQuality } from "./chat-qualification.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
+import { runChatCompletionUpdate } from "./completion-update-flow.js";
 
 // Public API observations only: this driver never fabricates provider results or writes DB state.
 export interface ChatIssue {
@@ -239,7 +241,9 @@ export async function collectChatRunEvidence(
     log: isResetRun(run) || isBlockedUnstartedWake({ ...run })
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
-    events: await api.get(`/api/heartbeat-runs/${run.id}/events?limit=1000`),
+    events: await collectRunEvents((afterSeq, limit) =>
+      api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
+    ),
   };
 }
 
@@ -386,7 +390,10 @@ export async function runChatFlow(input: ChatFlowInput) {
     expect(await api.get(chatPath)).toBeNull();
     expect(await allRuns()).toHaveLength(0);
 
-    if (execution.suite.id === "agent-chat-qualification") {
+    if (caseId === "handoff-completion-idle") {
+      await runChatCompletionUpdate({ input, marker, allRuns, issue: () => issue!,
+        refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); if (issue) input.observe(issue, await allRuns()); } });
+    } else if (execution.suite.id === "agent-chat-qualification") {
       const context = { input, marker, issue: () => issue!, idle, allRuns, comments, expectedStops,
         refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); input.observe(issue, await allRuns()); } };
       if (caseId === "active-reassignment") await runActiveReassignment(context);

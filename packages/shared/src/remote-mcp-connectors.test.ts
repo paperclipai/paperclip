@@ -6,11 +6,11 @@ import { instanceExperimentalSettingsSchema, patchInstanceExperimentalSettingsSc
 import { INSTANCE_FEATURE_CATALOG } from "./feature-catalog.js";
 
 describe("independent remote MCP connectors", () => {
-  it("requires an explicit MCP aggregators opt-in for self-hosted and managed instances", () => {
-    expect(instanceExperimentalSettingsSchema.parse({}).enableMcpAggregators).toBe(false);
-    expect(patchInstanceExperimentalSettingsSchema.parse({ enableMcpAggregators: true })).toEqual({ enableMcpAggregators: true });
+  it("defaults the retired compatibility setting on and accepts older configs", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableMcpAggregators).toBe(true);
+    expect(patchInstanceExperimentalSettingsSchema.parse({ enableMcpAggregators: false })).toEqual({ enableMcpAggregators: false });
     expect(patchInstanceExperimentalSettingsSchema.parse({})).not.toHaveProperty("enableMcpAggregators");
-    expect(INSTANCE_FEATURE_CATALOG.enableMcpAggregators).toMatchObject({ tier: "managed", cloudDefault: false, selfHostedDefault: false });
+    expect(INSTANCE_FEATURE_CATALOG.enableMcpAggregators).toMatchObject({ tier: "managed", cloudDefault: true, selfHostedDefault: true });
   });
   for (const [provider, methodKey] of Object.entries(REMOTE_MCP_CONNECTOR_METHODS)) {
     it(`${provider} has its own catalog and accepts URL plus explicit credentials`, () => {

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Navigate, Outlet, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
@@ -8,6 +9,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
 import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
 import { Card } from "@/components/ui/card";
+import { CloudSignIn } from "@/components/CloudSignIn";
+import { clearCloudSignInAttempt } from "@/lib/cloud-sign-in";
 
 function NoBoardAccessPage() {
   return (
@@ -53,6 +56,10 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     retry: false,
   });
 
+  useEffect(() => {
+    if (sessionQuery.data) clearCloudSignInAttempt();
+  }, [sessionQuery.data]);
+
   const boardAccessQuery = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
@@ -78,16 +85,22 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     return <PaperclipLoading />;
   }
 
-  if (healthQuery.error || boardAccessQuery.error) {
+  if (healthQuery.error || (isAuthenticatedMode && sessionQuery.error) || boardAccessQuery.error) {
     return (
       <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
         {healthQuery.error instanceof Error
           ? healthQuery.error.message
-          : boardAccessQuery.error instanceof Error
-            ? boardAccessQuery.error.message
-            : "Failed to load app state"}
+          : sessionQuery.error instanceof Error
+            ? sessionQuery.error.message
+            : boardAccessQuery.error instanceof Error
+              ? boardAccessQuery.error.message
+              : "Failed to load app state"}
       </div>
     );
+  }
+
+  if (isAuthenticatedMode && healthQuery.data?.cloud && !sessionQuery.data) {
+    return <CloudSignIn cloud={healthQuery.data.cloud} returnTo={`${location.pathname}${location.search}${location.hash}`} />;
   }
 
   if (isBootstrapPending) {

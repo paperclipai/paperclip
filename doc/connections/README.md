@@ -10,6 +10,8 @@ proof, and PR submission.
 
 Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
 
+Long-term memory: [Experimental memory connectors](./MEMORY.md).
+
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
 [Gmail](./GMAIL.md), [PostHog](./POSTHOG.md),
 [AgentMail](./AGENTMAIL.md), and [iMessage Photon](./IMESSAGE-PHOTON.md). Optional credential custody:

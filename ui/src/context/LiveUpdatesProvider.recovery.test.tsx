@@ -39,7 +39,8 @@ describe("LiveUpdatesProvider connection recovery", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    read.mockClear();
+    read.mockReset();
+    read.mockResolvedValue("current task data");
     Socket.instances = [];
     client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: Infinity } } });
     client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { id: "session", userId: "viewer" } });
@@ -66,6 +67,23 @@ describe("LiveUpdatesProvider connection recovery", () => {
     ));
     await act(async () => vi.advanceTimersByTimeAsync(1));
   }
+
+  it("reconciles updates between the initial query and the first socket connection", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    await render();
+    expect(container.textContent).toBe("current task data");
+    expect(Socket.instances).toHaveLength(1);
+
+    // The server saves a reply after the page read but before it subscribes.
+    // There is no event replay and this is not a reconnect.
+    read.mockResolvedValue("reply saved during connection setup");
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(container.textContent).toBe("reply saved during connection setup");
+    const readsAfterConnect = read.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(read).toHaveBeenCalledTimes(readsAfterConnect);
+  });
 
   it.each(["missing", "throws"])("polls visible data and resumes realtime when the constructor %s", async (failure) => {
     vi.stubGlobal("WebSocket", failure === "missing" ? undefined : class {

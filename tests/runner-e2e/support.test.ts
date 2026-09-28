@@ -38,16 +38,78 @@ import {
 } from "./ports.js";
 import {
   acceptedPlanSessionResetFailures,
+  collectRunEvents,
   hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
   isOpenRouterDeepSeekHelloTerminalVariance,
   numberedPlanStepCount,
   providerSessionContinuityFailures,
+  reasoningProjectionFailures,
 } from "./run-observations.js";
 import { runnerE2EWebServerCommand } from "./web-server-command.js";
 
 const cleanupDirectories: string[] = [];
+
+it("rejects reasoning mislabeled as assistant text without echoing private content", () => {
+  const reasoning = {
+    eventType: "item.delta",
+    payload: { prpEvent: {
+      eventType: "item.delta",
+      payload: { kind: "agentMessage", text: "PRIVATE_THOUGHT", update: { kind: "reasoning" } },
+    } },
+  };
+  expect(reasoningProjectionFailures([reasoning])).toEqual([
+    "provider reasoning was projected as assistant text in 1 durable events",
+  ]);
+  const correctlyTyped = structuredClone(reasoning);
+  correctlyTyped.payload.prpEvent.payload.kind = "reasoning";
+  expect(reasoningProjectionFailures([correctlyTyped])).toEqual([]);
+  const assistant = structuredClone(reasoning);
+  assistant.payload.prpEvent.payload.update.kind = "agentMessage";
+  expect(reasoningProjectionFailures([assistant])).toEqual([]);
+});
+
+describe("complete run event evidence", () => {
+  const page = Array.from({ length: 1000 }, (_, i) => ({ seq: i + 1, eventType: "item.delta" }));
+  it("reads completion events beyond the first 1000 rows", async () => {
+    const terminal = ["run.result.proposed", "run.result.accepted", "run.terminal"]
+      .map((eventType, i) => ({ seq: 1001 + i, eventType }));
+    const load = vi.fn().mockResolvedValueOnce(page).mockResolvedValueOnce(terminal);
+    const events = await collectRunEvents(load);
+    expect(events).toEqual([...page, ...terminal]);
+    expect(load.mock.calls).toEqual([[0, 1000], [1000, 1000]]);
+  });
+  it("checks for another page even at an exact page boundary", async () => {
+    const load = vi.fn().mockResolvedValueOnce(page).mockResolvedValueOnce([]);
+    expect(await collectRunEvents(load)).toEqual(page);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    null, {}, [{ eventType: "run.terminal" }], [{ seq: 0 }], [{ seq: -1 }],
+    [{ seq: 1.5 }], [{ seq: "1" }], [{ seq: NaN }], [{ seq: Infinity }],
+    [{ seq: 2 }, { seq: 1 }], [{ seq: 1 }, { seq: 1 }], [...page, { seq: 1001 }],
+  ])("rejects malformed evidence page %#", async (malformed) => {
+    await expect(collectRunEvents(async () => malformed)).rejects.toThrow("Run event evidence");
+  });
+  it("rejects a repeated cursor instead of accepting duplicate events", async () => {
+    const load = vi.fn().mockResolvedValue(page);
+    await expect(collectRunEvents(load)).rejects.toThrow("non-increasing sequence");
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it("propagates a missing later page without returning partial evidence", async () => {
+    const load = vi.fn().mockResolvedValueOnce(page).mockRejectedValueOnce(new Error("Unavailable"));
+    await expect(collectRunEvents(load)).rejects.toThrow("Unavailable");
+  });
+  it("fails closed when a stream never ends within the bounded capture", async () => {
+    const load = vi.fn(async (afterSeq: number) => page.map((event) => ({ ...event, seq: event.seq + afterSeq })));
+    await expect(collectRunEvents(load)).rejects.toThrow("refusing incomplete evidence");
+    expect(load).toHaveBeenCalledTimes(100);
+  });
+});
+
+
+
 afterEach(async () => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -272,6 +334,22 @@ describe("runner E2E structured evidence scanning", () => {
     expect(
       findSecretLeakInJsonValues({ nested: "sk-proj-abcdefghijklmnop" }, []),
     ).toBe("secret-shaped value");
+  });
+
+  it("keeps fake Kimi and Grok credentials out of persisted payloads while retaining references", () => {
+    const fakeCredentials = ["kimi-fixture-secret", "xai-fixture-secret"];
+    const payload = {
+      env: {
+        KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "kimi-ref", version: "latest" },
+        XAI_API_KEY: { type: "secret_ref", secretId: "xai-ref", version: "latest" },
+      },
+      log: "provider response redacted",
+    };
+    expect(findSecretLeakInJsonValues(payload, fakeCredentials)).toBeNull();
+    expect(findSecretLeak(JSON.stringify(payload), fakeCredentials)).toBeNull();
+    expect(() => assertSecretFree(JSON.stringify(payload), fakeCredentials, "pending-profile.json")).not.toThrow();
+    expect(JSON.stringify(payload)).not.toContain(fakeCredentials[0]!);
+    expect(JSON.stringify(payload)).not.toContain(fakeCredentials[1]!);
   });
 });
 
@@ -744,6 +822,13 @@ describe("runner E2E failure policy", () => {
     expect(shouldRetryFailure(failureClass)).toBe(true);
   });
 
+  it("disables both automatic retry classes when the policy is zero", () => {
+    expect(shouldRetryFailure("transient_infrastructure", 0)).toBe(false);
+    expect(shouldRetryFailure("provider_variance", 0)).toBe(false);
+    expect(shouldRetryFailure("transient_infrastructure", 1)).toBe(true);
+    expect(shouldRetryFailure("provider_variance", 1)).toBe(true);
+  });
+
   it("retries only transient infrastructure failures", () => {
     expect(
       classifyFailure(new Error("Daytona preview connection timed out")),
@@ -823,7 +908,12 @@ describe("runner E2E server isolation", () => {
         OPENAI_API_KEY: "openai",
         ANTHROPIC_API_KEY: "anthropic",
         OPENROUTER_API_KEY: "openrouter",
+        KIMI_MODEL_API_KEY: "kimi",
+        XAI_API_KEY: "xai",
+        GROK_AUTH_JSON: "grok-auth-json",
         DAYTONA_API_KEY: "daytona",
+        XAI_ORG_ID: "xai-sensitive",
+        GROK_HOME: "/outside/grok",
         OPENAI_ORG_ID: "also-provider-sensitive",
         PAPERCLIP_API_KEY: "ambient-board-key",
         PAPERCLIP_AGENT_API_KEY: "ambient-agent-key",
@@ -846,7 +936,12 @@ describe("runner E2E server isolation", () => {
     expect(env.PATH).toBe("/bin");
     expect(env.DATABASE_URL).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.KIMI_MODEL_API_KEY).toBeUndefined();
+    expect(env.XAI_API_KEY).toBeUndefined();
+    expect(env.GROK_AUTH_JSON).toBeUndefined();
     expect(env.OPENAI_ORG_ID).toBeUndefined();
+    expect(env.XAI_ORG_ID).toBeUndefined();
+    expect(env.GROK_HOME).toBeUndefined();
     expect(env.PAPERCLIP_API_KEY).toBeUndefined();
     expect(env.PAPERCLIP_AGENT_API_KEY).toBeUndefined();
     expect(env.XDG_CACHE_HOME).toBe("/tmp/cell/xdg-cache");

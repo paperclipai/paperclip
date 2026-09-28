@@ -15,6 +15,21 @@ const everydayOracleImage =
   "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285";
 
 describe("public repository paid workflow security", () => {
+  it("keeps the manual EC2 image build credential-free and pins the authorized target", async () => {
+    const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/docker-runner-check.yml"), "utf8");
+    const manual = workflow.slice(workflow.indexOf("  authorize_manual:"));
+    expect(manual.match(/AWS_CI_TRUSTED_USER_IDS/gu)).toHaveLength(2);
+    expect(manual.match(/test "\$REPOSITORY_ID" = 1170821064/gu)).toHaveLength(2);
+    expect(manual).toContain('runs-on: runs-on/fleet=paperclip-public-pr-x64/env=public-ci');
+    expect(manual).toContain('repos/$REPOSITORY/git/ref/heads/$TARGET_BRANCH');
+    expect(manual).toContain('ref: ${{ needs.authorize_manual.outputs.target_sha }}');
+    expect(manual).toContain('SOURCE_SHA: ${{ needs.authorize_manual.outputs.target_sha }}');
+    expect([...manual.matchAll(/secrets\.([A-Z_]+)/gu)].map(match => match[1])).toEqual(["GITHUB_TOKEN"]);
+    expect(manual).toContain('pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile');
+    expect(manual).toContain('PAPERCLIP_RUNNER_LOCK_SHA256=$lock_sha');
+    expect(manual).toContain('docker logout ghcr.io');
+  });
+
   it("uses the reviewed master branch for the first-party trusted PR workflow", async () => {
     const ordinaryPrWorkflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/pr.yml"),
@@ -206,7 +221,7 @@ describe("public repository paid workflow security", () => {
     );
     expect(daytonaImageJob).not.toContain("name: runner-e2e-paid");
     expect(daytonaImageJob).not.toMatch(
-      /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI)_API_KEY/,
+      /(?:(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI)_API_KEY|GROK_AUTH_JSON)/,
     );
     expect(authorizeJob).toContain(
       "aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'",
@@ -305,15 +320,15 @@ describe("public repository paid workflow security", () => {
     const grokPreparation = paidJob.indexOf("- name: Install checksum-verified Grok executable");
     expect(grokPreparation).toBeGreaterThan(paidInstall);
     expect(paidExecution).toBeGreaterThan(grokPreparation);
-    expect(paidJob).toContain("if: matrix.environmentId == 'local' && matrix.profileId == 'runner-acpx-grok'");
-    expect(paidJob).toContain("run: node packages/grok-acp/install.mjs");
+    expect(paidJob).toContain("if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-acpx-grok' || matrix.profileId == 'runner-acpx-grok-subscription')");
+    expect(paidJob).toContain("run: sudo node packages/paperclip-runner/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok");
 
     const everydayOracleStep = paidJob.slice(
       everydayOraclePreparation,
       paidExecution,
     );
     expect(everydayOracleStep).toContain(
-      "if: (matrix.suiteId == 'everyday-workflows' || matrix.suiteId == 'grok-qualification') && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')",
+      "if: (matrix.suiteId == 'everyday-workflows' || matrix.suiteId == 'grok-qualification' || matrix.suiteId == 'grok-subscription-qualification') && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')",
     );
     expect(everydayOracleStep).toContain(
       `oracle_image='${everydayOracleImage}'`,
@@ -530,6 +545,7 @@ describe("public repository paid workflow security", () => {
       ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",
       OPENROUTER_API_KEY: "matrix.credentialName == 'OPENROUTER_API_KEY'",
       XAI_API_KEY: "matrix.credentialName == 'XAI_API_KEY'",
+      GROK_AUTH_JSON: "matrix.credentialName == 'GROK_AUTH_JSON'",
       DAYTONA_API_KEY: "matrix.environmentId == 'daytona'",
     })) {
       expect(fullStack).toContain(
@@ -557,7 +573,7 @@ describe("public repository paid workflow security", () => {
       );
       const providerSecretReferences = [
         ...contents.matchAll(
-          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|DAYTONA_API_KEY)['"]\])/g,
+          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)['"]\])/g,
         ),
       ];
       if (providerSecretReferences.length > 0) {

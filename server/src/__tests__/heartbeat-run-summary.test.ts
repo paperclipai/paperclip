@@ -888,6 +888,12 @@ describe("resolveHeartbeatRunResponse", () => {
     );
     expect(isExternalChatPresentationContext({ source: "tool_action_review" })).toBe(false);
     expect(isExternalChatPresentationContext({ source: "tool_action_review" }, true)).toBe(true);
+    expect(isExternalChatPresentationContext({ source: "issue.comment" })).toBe(false);
+    expect(isExternalChatPresentationContext({ source: "issue.comment", externalChatContinuation: true })).toBe(false);
+    expect(isExternalChatPresentationContext({ source: "issue.comment" }, true)).toBe(true);
+    expect(isExternalChatPresentationContext({ source: "issue.comment.reopen" }, true)).toBe(true);
+    expect(isExternalChatPresentationContext({ source: "issue.update" })).toBe(false);
+    expect(isExternalChatPresentationContext({ source: "issue.update" }, true)).toBe(true);
     expect(isExternalChatPresentationContext(null)).toBe(false);
   });
 });

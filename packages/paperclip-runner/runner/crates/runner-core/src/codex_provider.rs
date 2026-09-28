@@ -356,6 +356,9 @@ pub struct CodexProviderConfig {
     // Older persisted configurations deliberately retain the provider default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_skill_instructions: Option<bool>,
+    // Older sessions retain their standalone task envelope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_mode: Option<String>,
 }
 
 /// Explicit per-turn skill selection. The controller resolves assigned skill
@@ -399,6 +402,14 @@ impl CodexProviderConfig {
     }
 
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
+        if !matches!(
+            self.conversation_mode.as_deref(),
+            None | Some("task" | "prepared")
+        ) {
+            return Err(LocalRunnerError::invalid(
+                "unsupported provider context mode",
+            ));
+        }
         if !matches!(
             (self.provider.as_str(), self.driver.as_str()),
             ("codex", "codex_app_server") | ("opencode", "opencode_server")
@@ -1042,6 +1053,9 @@ impl CodexProvider {
                 params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
             }
             if config.provider == "opencode" {
+                if let Some(mode) = &config.conversation_mode {
+                    params_object.insert("conversationMode".to_owned(), json!(mode));
+                }
                 if let Some(contract) = provider.completion_contract.as_ref() {
                     params_object.insert(
                         "completionContract".to_owned(),
@@ -3383,8 +3397,18 @@ fn classify_notification_thread(
             "Codex notification has malformed turn identity",
         ));
     }
-    // This connection-level notification carries no task authority. Codex can
-    // emit it while loading skills during the first turn.
+    // Account and skill updates describe the provider connection, not a task.
+    // Codex can emit them during startup or credential refresh without thread
+    // or turn IDs. Never let them acquire execution authority or expose their
+    // account payload as task output.
+    if matches!(method, "account/updated" | "account/login/completed") {
+        if contains_provider_work_binding(params) {
+            return Err(LocalRunnerError::invalid(
+                "Codex account notification contains execution identity",
+            ));
+        }
+        return Ok(NotificationThread::UnrelatedInformation);
+    }
     if method == "skills/changed" && !contains_provider_work_binding(params) {
         return Ok(NotificationThread::UnrelatedInformation);
     }
@@ -4019,6 +4043,7 @@ done
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             include_skill_instructions: None,
+            conversation_mode: None,
         };
         let mut provider = CodexProvider::start(&config, None).unwrap();
         provider.start_turn("First turn", &config.cwd).unwrap();
@@ -4405,6 +4430,7 @@ done
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             include_skill_instructions: None,
+            conversation_mode: None,
         };
         let mut spawned = None;
         let mut failure = None;
@@ -4489,6 +4515,24 @@ done
     }
 
     #[test]
+    fn preserves_prepared_context_in_the_durable_provider_config() {
+        let config: CodexProviderConfig = serde_json::from_value(json!({
+            "provider": "opencode", "driver": "opencode_server",
+            "providerVersion": QUALIFIED_OPENCODE_VERSION, "command": "node",
+            "cwd": "/workspace", "model": "openrouter/model",
+            "conversationMode": "prepared"
+        }))
+        .unwrap();
+        let stored = serde_json::to_value(config).unwrap();
+        assert_eq!(stored["conversationMode"], "prepared");
+        let restored: CodexProviderConfig = serde_json::from_value(stored).unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap()["conversationMode"],
+            "prepared"
+        );
+    }
+
+    #[test]
     fn admits_only_exact_local_facade_provider_driver_pairs() {
         let mut config = CodexProviderConfig {
             provider: "opencode".to_owned(),
@@ -4506,6 +4550,7 @@ done
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             include_skill_instructions: None,
+            conversation_mode: None,
         };
         config.include_skill_instructions = Some(true);
         assert_eq!(
@@ -4983,6 +5028,38 @@ mod notification_identity_tests {
                 &params
             )
             .is_err());
+        }
+    }
+
+    #[test]
+    fn account_notifications_are_connection_information_without_execution_authority() {
+        for (method, params) in [
+            (
+                "account/updated",
+                json!({"authMode":"chatgpt", "planType":"pro"}),
+            ),
+            (
+                "account/login/completed",
+                json!({"loginId":null, "success":true, "error":null}),
+            ),
+        ] {
+            assert_eq!(
+                classify_notification_thread(method, "root", &BTreeSet::new(), &params).unwrap(),
+                NotificationThread::UnrelatedInformation
+            );
+            for invalid in [
+                json!({"threadId":"other"}),
+                json!({"turnId":"unbound"}),
+                json!({"itemId":"unbound"}),
+                json!({"nested":{"request":{"id":"unbound"}}}),
+                json!({"threadId":7}),
+                json!({"threadId":"root", "thread":{"id":"other"}}),
+            ] {
+                assert!(
+                    classify_notification_thread(method, "root", &BTreeSet::new(), &invalid)
+                        .is_err()
+                );
+            }
         }
     }
 

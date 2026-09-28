@@ -116,13 +116,19 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableMcpAggregators: {
-    title: "MCP aggregators",
-    description:
-      "Show experimental Zapier, Arcade, Composio Connect, and Executor setup. Existing MCP connections keep running when hidden.",
+  enableMemoryConnectors: {
+    title: "Memory connectors",
+    description: "Show experimental Mem0, Zep, Supermemory, Cognee, and Honcho setup. Existing connections keep running when hidden.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
+  },
+  enableMcpAggregators: {
+    title: "MCP aggregators (compatibility)",
+    description: "Deprecated compatibility key. MCP aggregators are always enabled; stored and managed values are ignored.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enablePipelines: {
     title: "Pipelines",

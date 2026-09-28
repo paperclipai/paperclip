@@ -556,6 +556,12 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "cancelled",
 ] as const;
 
+export const retryWorkspaceExportSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  repairNote: z.string().trim().min(20).max(12000),
+}).strict();
+
 export const resolveIssueRecoveryActionSchema = z
   .object({
     executionReconciliation: z
@@ -564,6 +570,7 @@ export const resolveIssueRecoveryActionSchema = z
         providerStopped: z.literal(true),
         actionOutcome: z.enum(["completed", "not_performed", "mixed"]),
         outcomeEvidence: z.string().trim().min(20).max(12000),
+        workspaceRepairEvidence: z.string().trim().min(20).max(12000).optional(),
       })
       .strict()
       .optional(),
@@ -1011,6 +1018,14 @@ export const issueCommentMetadataSchema = z
       .max(160)
       .nullable()
       .optional(),
+    recovery: z.object({
+      kind: z.literal("disposition_repair_escalated"),
+      actionId: z.string().guid(),
+      attemptCount: z.number().int().nonnegative(),
+      maxAttempts: z.number().int().positive(),
+      reason: z.string().trim().min(1).max(160),
+      assigneeAgentId: z.string().guid().nullable(),
+    }).strict().optional(),
     sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
   })
   .strict();
@@ -1076,6 +1091,7 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    upstreamService: z.object({ slug: z.string().min(1).max(120), name: z.string().min(1).max(160), selectionInteractionId: z.string().guid().optional() }).strict().optional(),
     purpose: z.literal("ai").optional(),
     version: z.literal(1),
     serviceSlug: z.string().trim().min(1).max(120),
@@ -1091,6 +1107,7 @@ export const connectionIntentPayloadSchema = z
 export const connectionIntentResultSchema = z
   .object({
     version: z.literal(1),
+    instruction: z.string().max(4000).optional(),
     outcome: z.enum(["connected", "declined", "superseded", "expired"]),
     connectionId: z.string().guid().nullable().optional(),
     reason: z.string().trim().max(4000).nullable().optional(),

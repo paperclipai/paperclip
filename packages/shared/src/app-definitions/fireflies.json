@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "slug": "fireflies",
+  "name": "Fireflies",
+  "description": "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/fireflies.svg"
+  },
+  "urlPatterns": [
+    "https://api.fireflies.ai/*"
+  ],
+  "docsUrl": "https://docs.fireflies.ai/getting-started/mcp-configuration",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://api.fireflies.ai/mcp",
+        "scopesHint": [
+          "email",
+          "profile"
+        ]
+      },
+      "guidanceMd": "Sign in to Fireflies to use meeting transcripts, summaries, and action items. Configure optional summary-ready webhooks separately in a routine's Triggers tab.",
+      "riskTier": "S3",
+      "label": "Sign in with Fireflies",
+      "consoleLinks": {
+        "docs": "https://docs.fireflies.ai/getting-started/mcp-configuration"
+      },
+      "warnings": [
+        "A Fireflies account with access to the meetings you want to use. API keys are available in Settings → Developer Settings."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use your Fireflies API key instead of browser sign-in.",
+      "defaults": {
+        "serverUrl": "https://api.fireflies.ai/mcp"
+      },
+      "guidanceMd": "Open Fireflies Settings → Developer Settings, copy your API key, and paste it below. This key accesses your meeting data; routine webhooks use a separate signing secret.",
+      "riskTier": "S3",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Fireflies API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Fireflies API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://app.fireflies.ai/settings",
+        "docs": "https://docs.fireflies.ai/getting-started/mcp-configuration"
+      },
+      "warnings": [
+        "A Fireflies account with access to the meetings you want to use. API keys are available in Settings → Developer Settings."
+      ]
+    }
+  ]
+}

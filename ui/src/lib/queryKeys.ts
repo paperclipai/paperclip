@@ -592,6 +592,7 @@ export const queryKeys = {
     currentBoardAccess: ["access", "current-board-access"] as const,
   },
   auth: {
+    preferences: (userId: string | null) => ["auth", "preferences", userId] as const,
     session: ["auth", "session"] as const,
   },
   inboxAgentPolicy: {
@@ -614,6 +615,7 @@ export const queryKeys = {
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
   health: ["health"] as const,
+  stagingCommit: ["staging-commit"] as const,
   cloud: {
     stacks: ["cloud", "stacks"] as const,
   },

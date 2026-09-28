@@ -1,8 +1,10 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { workspacePaths } from "./workspace-manifest.js";
+import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -13,7 +15,10 @@ import {
   fetchGitBundleIntoLocalRef,
   integrateImportedGitHead,
   isMissingGitPrerequisiteError,
-  readGitWorkspaceSnapshot,
+  readGitWorkspaceSnapshot as readRawSnapshot,
+  disposeGitWorkspaceSnapshot,
+  type ExpensiveWorkspaceGitInput,
+  type GitWorkspaceSnapshot,
   ReferencedSourceIgnoreScanLimitExceededError,
   readReferencedSourceGitIgnoredPaths,
   REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT,
@@ -26,6 +31,21 @@ import {
 
 const execFile = promisify(execFileCallback);
 
+const snapshots: GitWorkspaceSnapshot[] = [];
+async function readGitWorkspaceSnapshot(...args: Parameters<typeof readRawSnapshot>) {
+  const snapshot = await readRawSnapshot(...args);
+  if (!snapshot) return null;
+  snapshots.push(snapshot);
+  // Small fixture assertions use arrays; production consumes only iterators.
+  return { ...snapshot, overlayPaths: [...workspacePaths(snapshot.overlayPaths)].sort((a,b)=>a.localeCompare(b)),
+    deletedPaths: [...workspacePaths(snapshot.deletedPaths)], ignoredPaths: [...workspacePaths(snapshot.ignoredPaths)] };
+}
+function executeScan(input: ExpensiveWorkspaceGitInput) {
+  if (!input.onStdout) return runLocalGit(input.localDir, [...input.args], input);
+  return runWorkspaceGitProcess({ cwd: input.localDir, args: input.args, timeoutMs: input.timeout,
+    maxStdoutBytes: input.maxBuffer, maxStderrBytes: input.maxBuffer, onStdout: input.onStdout, signal: input.signal, env: input.env });
+}
+
 async function git(cwd: string, args: string[]): Promise<string> {
   return (await runLocalGit(cwd, args)).stdout.trim();
 }
@@ -35,12 +55,13 @@ describe("git workspace sync", () => {
 
   afterEach(async () => {
     setExpensiveWorkspaceGitExecutor(null);
+    for (const snapshot of snapshots.splice(0)) await disposeGitWorkspaceSnapshot(snapshot);
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
-  });
+  }, 30_000); // The output-limit fixture removes 40,000 files on teardown.
 
   it("delegates every host-side full-tree enumeration to the registered scheduler", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scheduler-hook-"));
@@ -50,10 +71,7 @@ describe("git workspace sync", () => {
     const operations: string[] = [];
     setExpensiveWorkspaceGitExecutor(async (input) => {
       operations.push(input.operation);
-      return await runLocalGit(input.localDir, [...input.args], {
-        timeout: input.timeout,
-        maxBuffer: input.maxBuffer,
-      });
+      return executeScan(input);
     });
 
     const snapshot = await readGitWorkspaceSnapshot(repo);
@@ -112,7 +130,7 @@ describe("git workspace sync", () => {
     const failure = Object.assign(new Error("Git enumeration failed"), { code });
     setExpensiveWorkspaceGitExecutor(async (input) => {
       if (input.operation === "adapter_sync.ignored_files") throw failure;
-      return runLocalGit(input.localDir, [...input.args]);
+      return executeScan(input);
     });
     await expect(readGitWorkspaceSnapshot(repo, false)).rejects.toBe(failure);
   });
@@ -128,11 +146,64 @@ describe("git workspace sync", () => {
     let ignoredArgs: readonly string[] = [];
     setExpensiveWorkspaceGitExecutor(async (input) => {
       if (input.operation === "adapter_sync.ignored_files") ignoredArgs = input.args;
-      return runLocalGit(input.localDir, [...input.args]);
+      return executeScan(input);
     });
     expect((await readGitWorkspaceSnapshot(repo))?.ignoredPaths).toEqual(["dependencies", "token.secret"]);
     expect(ignoredArgs).toEqual(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
   });
+
+  it("snapshots a generated directory with more than 1 MiB of filenames", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-large-untracked-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const generatedDir = path.join(repo, "storybook-output");
+    await mkdir(generatedDir);
+    const names = Array.from({ length: 5_000 }, (_, index) => `${"asset-".repeat(36)}${index}.js`);
+    for (let start = 0; start < names.length; start += 100) {
+      await Promise.all(names.slice(start, start + 100).map((name) => writeFile(path.join(generatedDir, name), "")));
+    }
+    const raw = await runLocalGit(repo, ["ls-files", "--others", "--exclude-standard", "-z"], {
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    expect(Buffer.byteLength(raw.stdout)).toBeGreaterThan(1024 * 1024);
+    setExpensiveWorkspaceGitExecutor(executeScan);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    expect(snapshot?.overlayPaths).toEqual(
+      names.map((name) => `storybook-output/${name}`).sort((left, right) => left.localeCompare(right)),
+    );
+
+    // A larger tree exceeds the old 8 MiB bound but fits the new 32 MiB bound.
+    for (let start = 5_000; start < 40_000; start += 100) {
+      await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(
+        path.join(generatedDir, `${"asset-".repeat(36)}${start + index}.js`), "",
+      )));
+    }
+    const largerRaw = await runLocalGit(repo, ["ls-files", "--others", "--exclude-standard", "-z"], {
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    expect(Buffer.byteLength(largerRaw.stdout)).toBeGreaterThan(8 * 1024 * 1024);
+    const largerSnapshot = await readGitWorkspaceSnapshot(repo);
+    expect(largerSnapshot?.overlayPaths).toEqual(
+      largerRaw.stdout.split("\0").filter(Boolean).sort((left, right) => left.localeCompare(right)),
+    );
+
+    // Reuse the files with longer parent paths to exceed 32 MiB without
+    // creating hundreds of thousands of files solely to test the bound.
+    const deepParent = path.join(repo, ...Array.from({ length: 4 }, () => "nested-".repeat(30)));
+    await mkdir(deepParent, { recursive: true });
+    await rename(generatedDir, path.join(deepParent, "storybook-output"));
+    expect(Buffer.byteLength(largerRaw.stdout) + 40_000 * (path.relative(repo, deepParent).length + 1))
+      .toBeGreaterThan(32 * 1024 * 1024);
+    const streamed = await readRawSnapshot(repo);
+    snapshots.push(streamed!);
+    let count = 0;
+    let bytes = 0;
+    for (const relative of workspacePaths(streamed!.overlayPaths)) { count++; bytes += Buffer.byteLength(relative) + 1; }
+    expect(count).toBe(40_000);
+    expect(bytes).toBeGreaterThan(32 * 1024 * 1024);
+    expect(JSON.stringify(streamed).length).toBeLessThan(4096);
+  }, 60_000);
 
   async function createRepo(rootDir: string): Promise<string> {
     const repo = path.join(rootDir, "repo");
@@ -184,6 +255,43 @@ describe("git workspace sync", () => {
       expect(await git(cloneDir, ["branch", "--show-current"])).toBe("main");
       await expect(readFile(path.join(cloneDir, "tracked.txt"), "utf8")).resolves.toBe("base\n");
     });
+  });
+
+  it.skipIf(process.platform === "win32")("preserves nested repository symlinks after the temporary clone is removed", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-nested-links-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const nested = await createRepo(path.join(repo, ".paperclip-repositories"));
+    await writeFile(path.join(repo, ".git/info/exclude"), ".paperclip-repositories/\n");
+    await mkdir(path.join(nested, "skills", "demo"), { recursive: true });
+    await mkdir(path.join(nested, ".claude", "skills"), { recursive: true });
+    await writeFile(path.join(nested, "skills", "demo", "SKILL.md"), "skill content\n");
+    const links = [
+      [".claude/skills/demo", "../../skills/demo"],
+      ["skill.md", "skills/demo/SKILL.md"],
+      ["skill-alias", ".claude/skills/demo"],
+      ["future", "future.txt"],
+    ] as const;
+    for (const [name, target] of links) await symlink(target, path.join(nested, name));
+    await git(nested, ["add", "."]);
+    await git(nested, ["commit", "-m", "add repository links"]);
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    expect(snapshot?.repositories).toHaveLength(1);
+
+    await withShallowGitWorkspaceClone({ localDir: repo, snapshot: snapshot! }, async (cloneDir) => {
+      // The nested clone's callback has already returned and deleted its temp
+      // directory. Relative links must keep their repository meaning here.
+      const copied = path.join(cloneDir, ".paperclip-repositories", "repo");
+      for (const [name, target] of links) {
+        expect((await lstat(path.join(copied, name))).isSymbolicLink()).toBe(true);
+        expect(await readlink(path.join(copied, name))).toBe(target);
+      }
+      expect(await readFile(path.join(copied, ".claude/skills/demo/SKILL.md"), "utf8")).toBe("skill content\n");
+      expect(await readFile(path.join(copied, "skill-alias/SKILL.md"), "utf8")).toBe("skill content\n");
+      await expect(stat(path.join(copied, "future"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await git(copied, ["status", "--porcelain"])).toBe("");
+    });
+    expect(await git(nested, ["status", "--porcelain"])).toBe("");
   });
 
   it("copies the workspace origin remote into the shallow clone", async () => {

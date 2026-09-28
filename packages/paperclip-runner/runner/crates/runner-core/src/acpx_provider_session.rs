@@ -74,14 +74,15 @@ impl AcpxProviderSessionConfig {
         self.transport.validate()?;
         let qualified_model = match self.agent.as_str() {
             "claude" => "claude-sonnet-5",
+            "grok" => "grok-4.7",
             "codex" => "gpt-5.6-sol",
             _ => {
                 return Err(LocalRunnerError::invalid(
-                    "ACPX agent must be claude or codex",
+                    "ACPX agent must be claude, codex, or grok",
                 ))
             }
         };
-        if self.agent != "claude" && self.model != qualified_model {
+        if self.agent != "claude" && self.agent != "grok" && self.model != qualified_model {
             return Err(LocalRunnerError::invalid(format!(
                 "ACPX {} profile requires exact model {qualified_model}",
                 self.agent

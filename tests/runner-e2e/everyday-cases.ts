@@ -32,6 +32,9 @@ export const SLUGIFY_REVISION = `Add an optional --separator argument that accep
 export const LATE_REQUIREMENT = `Also support --max-length as a positive integer. Truncate the final slug to that length, then remove any trailing separator. In particular, input "  Queue--Ready!!  " with --max-length 7 must print "queue-r". Preserve the default behavior.`;
 
 const definitions = [
+  ["provider-decline", "Decline external providers", "Connect HubSpot so you can read my recent contacts. If I choose None for now, explain that you could not retrieve the contacts and finish without connecting.", 2],
+  ["provider-second", "Choose and reuse the second external provider", "Connect HubSpot and read my recent contacts. Report the contact names and verification code returned by the service.", 2],
+  ["provider-native", "Prefer a built-in connection over external providers", "Connect Jira so you can read my recent issues. If I choose Not now, explain that you could not retrieve the issues and finish without connecting.", 2],
   [
     "build-revise",
     "Build, download, and revise a project",

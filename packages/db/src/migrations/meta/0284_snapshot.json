@@ -1,5 +1,5 @@
 {
-  "id": "eefb4898-caef-47fa-8df1-911f51b68bcd",
+  "id": "7db2ceec-ed62-4968-90c9-4c79206cfe34",
   "prevId": "786cd4a9-366b-4934-be90-014e1ee15b51",
   "version": "7",
   "dialect": "postgresql",
@@ -3301,6 +3301,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "keyboard_shortcuts": {
+          "name": "keyboard_shortcuts",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_at": {
           "name": "created_at",
@@ -10129,12 +10136,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "group_id": {
-          "name": "group_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "projection_class": {
           "name": "projection_class",
           "type": "text",
@@ -10334,21 +10335,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "company_secret_proposals_group_idx": {
-          "name": "company_secret_proposals_group_idx",
-          "columns": [
-            {
-              "expression": "group_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -10485,10 +10471,6 @@
         "company_secret_proposals_projection_check": {
           "name": "company_secret_proposals_projection_check",
           "value": "\"company_secret_proposals\".\"projection_class\" = 'unclassified'"
-        },
-        "company_secret_proposals_group_check": {
-          "name": "company_secret_proposals_group_check",
-          "value": "\"company_secret_proposals\".\"group_id\" is null or \"company_secret_proposals\".\"kind\" = 'binding'"
         },
         "company_secret_proposals_shape_check": {
           "name": "company_secret_proposals_shape_check",

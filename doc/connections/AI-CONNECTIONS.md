@@ -99,6 +99,15 @@ Sending `environmentId: null` tests a change back to the instance default.
 
 ## Runtime isolation
 
+Codex ACP terminal failures with category `limit` and explicit usage-exhaustion
+wording enter provider-quota recovery. A supported reset clock uses the existing
+Codex parser; when none is available, recovery uses its existing quota backoff.
+Context, turn, rate, storage-capacity and configured-budget limits retain their
+existing handling. The adapter inspects bounded provider text only in memory
+and retains recovery labels and a parsed timestamp, without copying the text to
+run results or logs. A historical generic terminal-limit message alone does not
+establish quota exhaustion.
+
 `prepareManagedAiRuntime` is shared by runs, environment tests, and adoption.
 Claude ACP validates working directories on the selected execution target. A
 sandbox directory does not need to exist on the Paperclip server. When the agent

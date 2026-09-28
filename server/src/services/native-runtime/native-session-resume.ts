@@ -38,6 +38,9 @@ export function nativeToolContractFingerprintForTarget(
             "always_advertised_run_issue_agent_binding_gated_current_task_description.v2",
           semanticCompletion: "finish_accessible_deliverable_evidence.v4",
           connectorTools: "assigned_resources_and_pinned_skill_bundle.v1",
+          ...(executionTargetKind === "remote"
+            ? { assignedMcpTools: "codex_server_gateway_prp_relay.v1" }
+            : {}),
         },
         tools: [
           { name: "register_deliverable", version: 2 },
@@ -396,6 +399,22 @@ export function buildNativeExecutionWithCheckpoint(input: {
     normalizedSessionId: input.normalizedSessionId,
     resumedSession: input.previousRun !== null,
   });
+  // A presentation-only upgrade must not rotate a healthy provider session or
+  // lose a durable goal. Keep its v4/v5 format until that session naturally ends.
+  // All ordinary identity, workspace, provider, tool and recovery checks still apply.
+  if (input.previousRun && (execution.schema === "paperclip.native-execution-input.v4" || execution.schema === "paperclip.native-execution-input.v5")) {
+    const previousSchema = record(record(input.previousRun.runnerProfileJson).nativeExecutionInput).schema;
+    if ((previousSchema === "paperclip.native-execution-input.v4" || previousSchema === "paperclip.native-execution-input.v5") && previousSchema !== execution.schema) {
+      const { completionSources: _sources, ...common } = execution as typeof execution & { completionSources?: unknown };
+      const retainedFormat = parseNativeExecutionInput({ ...common, schema: previousSchema });
+      const retainedCheckpoint = rebindNativeSessionCheckpoint({
+        previousRun: input.previousRun,
+        currentExecution: retainedFormat,
+        executionTargetKind: input.executionTargetKind,
+      });
+      if (retainedCheckpoint) return { execution: retainedFormat, checkpoint: retainedCheckpoint, normalizedSessionId: input.normalizedSessionId };
+    }
+  }
   const checkpoint = input.previousRun
     ? rebindNativeSessionCheckpoint({
         previousRun: input.previousRun,

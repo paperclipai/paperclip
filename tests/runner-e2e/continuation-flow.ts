@@ -1,3 +1,5 @@
+import { gradeLifecycleBaseline, type LifecycleCheckpoint } from "./lifecycle-baseline.js";
+import { lifecycleLiveCase, lifecycleLiveContinuation, gradeLifecycleNarrative } from "./lifecycle-live-cases.js";
 import { prepareLegacyContinuationSkill } from "./continuation-fixtures.js";
 import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { answerableRuntimeRunIds, isSingleClaudeQuestion } from "./runtime-question-readiness.js";
@@ -46,8 +48,11 @@ export async function runContinuationFlow(input: {
   evidence(name: string, value: unknown): Promise<void>;
 }) {
   const { page, api, fixtures, execution } = input;
-  const scenario = continuationScenario(execution.task.id, input.nonce);
-  const checkpoints: ContinuationCheckpoint[] = [];
+  const lifecycleProbe = lifecycleLiveCase(execution.task.id);
+  const scenario = lifecycleProbe
+    ? lifecycleLiveContinuation(execution.task.id, input.nonce)
+    : continuationScenario(execution.task.id, input.nonce);
+  const checkpoints: LifecycleCheckpoint[] = [];
   let issue: Row | undefined;
   let runs: Row[] = [];
   let checks: ReturnType<typeof gradeContinuation> = [];
@@ -132,6 +137,12 @@ export async function runContinuationFlow(input: {
     );
     checkpoints.push({
       phase,
+      lifecycle: {
+        executionRunId: issue!.executionRunId ?? null,
+        scheduledRetry: issue!.scheduledRetry ?? null,
+        activeRecoveryAction: issue!.activeRecoveryAction ?? null,
+        monitorNextCheckAt: issue!.monitorNextCheckAt ?? null,
+      },
       issue: issue as ContinuationCheckpoint["issue"],
       children: tasks.filter(
         (t) => t.parentId === issue!.id,
@@ -268,6 +279,12 @@ export async function runContinuationFlow(input: {
       checkpoints,
       runtimeMode: execution.profile.expectedRuntimeMode,
     });
+    checks.push(...gradeLifecycleBaseline(checkpoints));
+    if (lifecycleProbe) checks.push(gradeLifecycleNarrative({
+      narrative: lifecycleProbe.narrative,
+      agentId: fixtures.agent.id,
+      initial: checkpoints.find(c => c.phase === "initial"),
+    }));
     if (issue) input.observe(issue, runs, checks);
     await input.evidence("continuation.json", {
       ...scenario,

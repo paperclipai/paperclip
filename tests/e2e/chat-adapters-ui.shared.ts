@@ -998,6 +998,7 @@ oauth_config:
       - reactions:read
       - reactions:write
       - users:read
+      - im:write
       - emoji:read
       - pins:read
       - pins:write

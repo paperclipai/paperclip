@@ -1,6 +1,7 @@
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
+import { DispositionRecoveryNotice, type DispositionRecoverySnapshot } from "../components/DispositionRecoveryNotice";
 import { RichWorkProductCard } from "../components/task-chat/RichWorkProductCard";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
@@ -103,6 +104,7 @@ const mockAccessApi = vi.hoisted(() => ({
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
+  getPreferences: vi.fn(),
 }));
 
 const mockProjectsApi = vi.hoisted(() => ({
@@ -394,6 +396,7 @@ vi.mock("../components/IssueChatThread", () => ({
 // the IssueChatThread stub above.
 vi.mock("../components/TaskChatThread", () => ({
   TaskChatThread: (props: {
+    comments?: Array<{ metadata?: { recovery?: DispositionRecoverySnapshot } | null }>;
     workProducts?: IssueWorkProduct[];
     threadHeader?: ReactNode;
     onStopRun?: (runId: string) => Promise<void>;
@@ -416,6 +419,7 @@ vi.mock("../components/TaskChatThread", () => ({
       <div data-testid="task-chat-thread">
         {props.threadHeader}
         Task chat thread
+        {props.comments?.map((comment, index) => comment.metadata?.recovery ? <DispositionRecoveryNotice key={index} snapshot={comment.metadata.recovery} /> : null)}
         {props.workProducts?.map((workProduct) => (
           <RichWorkProductCard
             key={workProduct.id}
@@ -1370,6 +1374,7 @@ describe("IssueDetail", () => {
     });
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
+    mockAuthApi.getPreferences.mockResolvedValue({ keyboardShortcuts: false });
     mockProjectsApi.list.mockResolvedValue([]);
     mockDecisionsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
@@ -2158,8 +2163,32 @@ describe("IssueDetail", () => {
     });
   });
 
-  it.each([false, true])("reveals new artifacts once in the task panel (mobile: %s)", async (isMobile) => {
+  it("opens Artifacts for existing output without discarding a document deep link", async () => {
+    mockLocation.hash = "#document-agents";
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      documentSummaries: [{
+        id: "agents-doc", companyId: "company-1", issueId: "issue-1",
+        key: "agents", title: "AGENTS.md", format: "markdown",
+        latestRevisionId: "revision-1", latestRevisionNumber: 1,
+        createdByAgentId: "agent-1", createdByUserId: null,
+        updatedByAgentId: "agent-1", updatedByUserId: null,
+        lockedAt: null, lockedByAgentId: null, lockedByUserId: null,
+        createdAt: new Date(), updatedAt: new Date(),
+      }],
+    }));
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>);
+    });
+    await waitForAssertion(() => {
+      const props = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props;
+      expect(props?.artifactsOpenRequestId).toBe(1);
+      expect(props?.documentDeepLink?.documentKey).toBe("agents");
+    });
+  });
+
+  it.each([false, true])("registers new artifacts without opening a closed panel (mobile: %s)", async (isMobile) => {
     mockSidebarState.isMobile = isMobile;
+    mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
     mockPanelState.panelVisible = false;
     mockIssuesApi.get.mockResolvedValue(createIssue());
     await act(async () => {
@@ -2177,14 +2206,15 @@ describe("IssueDetail", () => {
       };
     const file = createAttachment({ id: "new-output", createdByAgentId: "agent-1" });
     act(() => { queryClient.setQueryData(queryKeys.issues.attachments("PAP-1"), [file]); });
-    await waitForAssertion(() => expect(panelProps()?.artifactsOpenRequestId).toBe(1));
+    await flushReact();
+    expect(mockSetPanelVisible).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="mobile-task-side-panel"]')).toBeNull();
     if (isMobile) {
-      expect(document.querySelector('[data-testid="mobile-task-side-panel"]')).not.toBeNull();
-      expect(mockSetPanelVisible).not.toHaveBeenCalled();
-      expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props.artifactsOpenRequestId).toBeUndefined();
-    } else {
-      expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+      const toolbar = mockSetMobileToolbar.mock.calls.map(([node]) => node).filter(Boolean).at(-1);
+      // The pending arrival is consumed only when the user opens the sheet.
+      act(() => toolbar.props.onProperties());
     }
+    await waitForAssertion(() => expect(panelProps()?.artifactsOpenRequestId).toBe(1));
 
     act(() => panelProps().onArtifactsOpened(1));
     await waitForAssertion(() => expect(panelProps().artifactsOpenRequestId).toBeUndefined());
@@ -2543,6 +2573,42 @@ describe("IssueDetail", () => {
     mockIssuesApi.resolveRecoveryAction.mockReset();
   });
 
+  it.each(["success", "failure", "pending question"])("connects the inline disposition retry to current state (%s)", async outcome => {
+    const fail = outcome === "failure";
+    const actionId = "recovery-action-inline";
+    const snapshot: DispositionRecoverySnapshot = { kind: "disposition_repair_escalated", actionId, attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: "agent-1" };
+    const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", activeRecoveryAction: {
+      id: actionId, status: "active", kind: "deliberate_wait_without_target", ownerType: "board", returnOwnerAgentId: "agent-1", wakePolicy: { type: "board_escalation" },
+      companyId: "company-1", sourceIssueId: "issue-1", recoveryIssueId: null, ownerAgentId: null, ownerUserId: null,
+      previousOwnerAgentId: "agent-1", cause: "deliberate_wait_without_target", fingerprint: "fixture", evidence: {}, nextAction: "Retry", monitorPolicy: null,
+      attemptCount: 2, maxAttempts: 2, timeoutAt: null, lastAttemptAt: null, outcome: null, resolutionNote: null, resolvedAt: null, createdAt: new Date(), updatedAt: new Date(),
+    } });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.listComments.mockResolvedValue([{ id: "notice-inline", companyId: issue.companyId, issueId: issue.id, authorType: "system", body: "Unrelated prose", createdAt: new Date(), updatedAt: new Date(), metadata: { version: 1, sections: [], recovery: snapshot } }]);
+    if (outcome === "pending question") mockIssuesApi.listInteractions.mockResolvedValue([{ id: "question-1", kind: "ask_user_questions", status: "pending", payload: { version: 1, questions: [] } }]);
+    if (fail) mockIssuesApi.resolveRecoveryAction.mockRejectedValue(new Error("The task is now paused."));
+    else mockIssuesApi.resolveRecoveryAction.mockResolvedValue({ issue: { ...issue, status: "todo", activeRecoveryAction: null }, recoveryAction: { ...issue.activeRecoveryAction, status: "resolved" } });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>));
+    await flushReact(); await flushReact();
+    const retry = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Retry agent");
+    expect(retry).toBeDefined();
+    if (outcome === "pending question") {
+      expect(retry!.disabled).toBe(true);
+      expect(container.textContent).toContain("Respond to the pending question or confirmation before retrying.");
+      await act(async () => retry!.click());
+      expect(mockIssuesApi.resolveRecoveryAction).not.toHaveBeenCalled();
+      mockIssuesApi.resolveRecoveryAction.mockReset();
+      return;
+    }
+    expect(retry!.disabled).toBe(false);
+    await act(async () => retry!.click());
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.resolveRecoveryAction).toHaveBeenCalledExactlyOnceWith(issue.identifier, { actionId, outcome: "restored", sourceIssueStatus: "todo" });
+      expect(container.textContent).toContain(fail ? "Couldn’t confirm the retry. The task is now paused." : "Retry requested");
+    });
+    mockIssuesApi.resolveRecoveryAction.mockReset();
+  });
+
   it("removes an inbox-origin archived issue and restores it when the toast Undo action is pressed", async () => {
     const issue = createIssue({
       id: "issue-1",
@@ -2771,8 +2837,10 @@ describe("IssueDetail", () => {
       "issues",
     );
     mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    mockAuthApi.getPreferences.mockResolvedValue({ keyboardShortcuts: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: true,
+      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
 
@@ -2811,8 +2879,10 @@ describe("IssueDetail", () => {
       createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox"),
     );
     mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    mockAuthApi.getPreferences.mockResolvedValue({ keyboardShortcuts: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: true,
+      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
 

@@ -4,6 +4,7 @@ import { listenOnFetchAllowedPort } from "../e2e/fetch-allowed-port.js";
 export async function startReviewProvider(
   successText = "Pages: Roadmap, Meeting notes",
   bearerToken?: string,
+  tool?: { name: string; title: string; description: string },
 ) {
   const captures: Array<{ method: string; toolName: string | null; authorized?: boolean }> = [];
   const server: Server = createServer(async (req, res) => {
@@ -36,10 +37,10 @@ export async function startReviewProvider(
           result: {
             tools: [
               {
-                name: "notion:list_pages",
-                title: "List fixture pages",
-                description:
-                  "Reads deterministic pages from the fake Notion provider.",
+                name: tool?.name ?? "notion:list_pages",
+                title: tool?.title ?? "List fixture pages",
+                description: tool?.description ?? "Reads deterministic pages from the fake Notion provider.",
+                annotations: { readOnlyHint: true },
                 inputSchema: {
                   type: "object",
                   properties: { query: { type: "string" } },

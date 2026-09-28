@@ -1471,6 +1471,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if args.iter().any(|value| value == "--account-notifications") {
+                    send(json!({"method":"account/updated", "params":{
+                        "authMode":"chatgpt", "planType":"pro"
+                    }}))?;
+                    send(json!({"method":"account/login/completed", "params":{
+                        "loginId":"fixture-login", "success":true, "error":null
+                    }}))?;
+                }
                 if args.iter().any(|value| value == "--helper-tool-requests") {
                     if !args.iter().any(|value| value == "--foreign-helper-tool") {
                         send(json!({"method":"item/completed", "params":{

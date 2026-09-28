@@ -204,6 +204,16 @@ async function handleMcpGatewayProtocol(
   } catch (err) {
     if (err instanceof ToolGatewayHttpError) {
       const id = (req.body as { id?: unknown } | undefined)?.id ?? null;
+      // Provider tool failures are MCP tool results, not successful calls or
+      // protocol errors. The service has already recorded the failed invocation.
+      if (req.body?.method === "tools/call" && err.reasonCode === "tool_error") {
+        res.json({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: err.message }], isError: true },
+        });
+        return;
+      }
       res.status(err.status).json({
         jsonrpc: "2.0",
         id,

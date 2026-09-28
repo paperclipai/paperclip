@@ -130,8 +130,8 @@ vi.mock("../lib/assignees", () => ({
 }));
 
 vi.mock("./StatusIcon", () => ({
-  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
-    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
+  StatusIcon: ({ status, blockerAttention, className, glyphContainerClassName, size }: { status: string; blockerAttention?: Issue["blockerAttention"]; className?: string; glyphContainerClassName?: string; size?: string }) => (
+    <span className={className} data-glyph-container-class={glyphContainerClassName} data-testid="status-icon" data-size={size} data-status-icon-state={blockerAttention?.state}>{status}</span>
   ),
 }));
 
@@ -438,12 +438,13 @@ function createExecutionState(overrides: Partial<IssueExecutionState> = {}): Iss
   };
 }
 
-function renderPropertiesWithQueryClient(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
+function renderPropertiesWithQueryClient(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>, hiddenSettings: string[] = []) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
     },
   });
+  queryClient.setQueryData(queryKeys.health, { hiddenSettings });
   const root = createRoot(container);
   act(() => {
     root.render(
@@ -526,6 +527,12 @@ describe("IssueProperties", () => {
     expect(surface?.classList).toContain("pl-4");
     expect(surface?.querySelectorAll('[data-property-section="true"]').length).toBeGreaterThan(1);
     expect(surface?.querySelector('[data-property-value="true"]')).not.toBeNull();
+    const statusVisual = surface?.querySelector(
+      '[data-property-label="Status"] + [data-property-value="true"] [data-testid="status-icon"]',
+    );
+    expect(statusVisual).not.toBeNull();
+    expect(statusVisual?.getAttribute("data-size")).toBeNull();
+    expect(statusVisual?.getAttribute("data-glyph-container-class")).toContain("size-6");
     expect(surface?.querySelector('[data-property-section="true"] > div')?.classList)
       .toContain("text-muted-foreground/70");
     const projectLabel = surface?.querySelector('[data-property-label="Project"]');
@@ -3448,6 +3455,21 @@ describe("IssueProperties", () => {
 
     expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
     expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("hides workspace selection but keeps the bound workspace accessible", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({ executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" } })]);
+    const onUpdate = vi.fn();
+    const { root } = renderPropertiesWithQueryClient(container, {
+      issue: createIssue({ projectId: "project-1", executionWorkspaceId: "workspace-1", currentExecutionWorkspace: createExecutionWorkspace() }),
+      childIssues: [], onUpdate, inline: true,
+    }, ["workspaces.isolation"]);
+    await flush();
+    expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
+    expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
 

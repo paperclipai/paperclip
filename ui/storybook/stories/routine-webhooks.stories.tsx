@@ -29,7 +29,7 @@ export const Credentials: Story = {
     await openWebhookForm(context);
     const canvas = within(context.canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "Continue" }));
-    await expect(await canvas.findByRole("button", { name: "Copy Authorization header value" })).toBeVisible();
+    await expect(await canvas.findByRole("button", { name: "Copy Secret key" })).toBeVisible();
   },
 };
 export const Bearer: Story = { name: "03 · Bearer · After delivery", play: openSavedWebhook };

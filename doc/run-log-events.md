@@ -34,6 +34,15 @@ credential material are never written to the run log.
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
+## Omitted Unsafe Workspace Export
+
+`workspace_export_omitted` is an informational system event in the local run log.
+Its payload is `{ "reason": "restore_unsafe_archive" }`, with `"legacy": true`
+when recovering an unsafe failure from an older controller. It records that native
+finalization discarded an unsafe export and continued with the accepted result.
+It contains no archive names, link targets, or raw error details. It does not
+create a task warning, recovery action, Telemetry event, or OpenTelemetry export.
+
 ## Native Restart Recovery Run-Log Event
 
 Paperclip writes a `native.recovery.transition` event for every native restart
@@ -159,6 +168,15 @@ Provider identity diagnostics remain in the local run log. They record the notif
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
+If execution-continuation setup finds that a task no longer exists, is closed,
+or its owner changed, the existing cancellation settlement records
+`continuation_task_ownership_changed`. The run and wake request become cancelled
+before adapter dispatch, with the run-log message
+`stale execution continuation cancelled before dispatch`. Immediate recovery is
+suppressed. Missing source context, authorization failures, and other setup
+errors retain their failure classification. An untyped error with the same
+message is also still a failure; cancellation requires the typed ownership guard.
+
 Bounded retry exhaustion writes one lifecycle receipt per run, retry reason,
 scheduled attempt, and retry limit. Repeated or concurrent recovery checks reuse
 that receipt, including receipts from earlier builds, without advancing the event
@@ -166,6 +184,44 @@ sequence or publishing another live event. Attention reads select the latest
 matching receipt in PostgreSQL and project only the run's issue/task identifiers
 from its context, so historical duplicate receipts cannot multiply run contexts
 in server memory. Existing duplicate events do not require deletion or migration.
+
+### Workspace restore failures
+
+Legacy adapter results can carry `workspaceRestoreFailure` with the code
+`restore_permission_denied`, `restore_lock_timeout`, `restore_unsafe_archive`,
+or `restore_failed`. The heartbeat records `workspace_restore_failed` and keeps
+the run failed and the workspace-finalization barrier closed. Available output,
+usage, session metadata, and the previous execution outcome survive settlement.
+`executionBeforeRestore` retains the earlier error code, exit code, signal, and
+timeout flag. The ordinary redacted error field retains an earlier error message.
+
+The chat reports the restore phase separately from a missing final response.
+A saved-plan link requires a stored document and its run-bound revision or a
+matching run-bound review record. Older unclassified failures use neutral wording. Diagnostics show only
+a validated relative member path, never an archive link target or host path.
+
+An unsafe archive or an outbound confinement refusal keeps the existing execution recovery hold, including across
+conversation resets. It cannot start another model turn until an operator uses
+the existing recovery action to record `executionReconciliation` with
+`workspaceRepairEvidence` (20–12000 characters). This evidence must describe
+verified safe staging or repair for the referenced failed run. It does not grant
+plan approval. Saved comments, document revisions, and confirmation IDs and
+states stay unchanged. Recovery uses the existing delivery identity and links
+the successor to the original failed run. Repair does not reset the automatic
+retry budget. Transient failures retain the existing
+bounded retry policy. Archive confinement remains required.
+
+Sandbox restore tasks also write a `Workspace restore diagnostic` line to the
+run log on failure. `phase` is `workspace` or `asset`, so a failed staged-asset
+copy-back (such as credentials) can be distinguished from workspace restoration. The line
+contains only an allowlisted OS/transport `errorCode` (otherwise `unknown`), an
+optional numeric HTTP error status, and an optional bounded process exit code.
+Up to four nested causes are inspected. Messages, URLs, filesystem paths, asset
+names, credentials, and response bodies are excluded. Every failed outbound
+task emits its own diagnostic; nested repository failures are logged once by
+the enclosing workspace task. The original error and restore safety policy are
+unchanged. These lines stay in the instance run log and its configured durable
+storage, and are not new first-party telemetry events.
 
 ## Codex resume usage snapshot
 

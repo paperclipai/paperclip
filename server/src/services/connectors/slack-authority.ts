@@ -4,7 +4,7 @@ import {
   toolInvocations,
   toolActionRequests,
   type Db,
-  type chatEndpoints,
+  chatEndpoints,
   type chatConversations,
 } from "@paperclipai/db";
 import { and, eq, inArray } from "drizzle-orm";
@@ -17,17 +17,20 @@ export interface SlackTaskBinding {
   runId: string;
   issueId: string;
   workMode?: string;
+  /** Selects a server-verified connection assigned to this agent. */
+  endpointId?: string;
   /** Controller-only operation snapshot; never part of a tool argument schema. */
   identityContextId?: string | null;
   approvedInvocationId?: string;
 }
 export interface SlackTaskAuthority {
   endpoint: typeof chatEndpoints.$inferSelect;
-  conversation: typeof chatConversations.$inferSelect;
+  issueId: string;
+  conversation: typeof chatConversations.$inferSelect | null;
   userId: string;
   slackUserId: string;
   principalId: string;
-  deliveryId: string;
+  deliveryId: string | null;
   identityContextId: string | null;
   revision: string;
   workMode: string;
@@ -176,4 +179,25 @@ export async function slackRunOrigin(db: Db, binding: SlackTaskBinding) {
     origin = parent;
   }
   return { ...captured, sourceMessageId: origin?.messageId ?? null };
+}
+
+/** Enumerate only this agent's connections; each still needs live run/user authority. */
+export async function slackEndpointCandidates(
+  db: Db,
+  binding: Pick<SlackTaskBinding, "companyId" | "agentId" | "endpointId">,
+) {
+  return db
+    .select({ id: chatEndpoints.id })
+    .from(chatEndpoints)
+    .where(
+      and(
+        eq(chatEndpoints.companyId, binding.companyId),
+        eq(chatEndpoints.assignedAgentId, binding.agentId),
+        eq(chatEndpoints.provider, "slack"),
+        inArray(chatEndpoints.status, ["active", "verifying"]),
+        ...(binding.endpointId
+          ? [eq(chatEndpoints.id, binding.endpointId)]
+          : []),
+      ),
+    );
 }

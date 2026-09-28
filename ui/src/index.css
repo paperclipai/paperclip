@@ -230,6 +230,8 @@
   --new-issue-visual-viewport-offset-top: 0px;
   --new-issue-dialog-top-gap: max(1rem, env(safe-area-inset-top));
   --new-issue-dialog-bottom-gap: max(1rem, env(safe-area-inset-bottom));
+  --mobile-entity-picker-visual-viewport-height: 100dvh;
+  --mobile-entity-picker-backdrop: color-mix(in oklab, var(--foreground) 50%, transparent);
 
   /* ────────────────────────────────────────────────────────────────────────
      Motion tokens — chat-style task thread (default; classic legacy view sits
@@ -3005,19 +3007,63 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    software keyboard. The fixed sheet also avoids scale motion during mobile
    viewport resizing. */
 @media (max-width: 40rem) {
-  [data-mobile-entity-picker] {
-    position: fixed !important;
-    inset: auto calc(var(--spacing) * 4) max(calc(var(--spacing) * 4), env(safe-area-inset-bottom)) !important;
-    width: auto !important;
-    max-width: none !important;
-    max-height: calc(100dvh - calc(var(--spacing) * 8)) !important;
+  [data-radix-popper-content-wrapper]:has(> [data-mobile-entity-picker]) {
+    inset: 0 !important;
+    width: 100% !important;
+    height: var(--mobile-entity-picker-visual-viewport-height) !important;
+    min-width: 0 !important;
     transform: none !important;
-    transform-origin: bottom center !important;
-    animation: none !important;
+    will-change: auto !important;
+    pointer-events: none;
   }
 
-  [data-mobile-entity-picker] [data-slot="command-list"] {
-    max-height: min(var(--sz-300px), calc(100dvh - calc(var(--spacing) * 24))) !important;
+  [data-radix-popper-content-wrapper]:has(> [data-mobile-entity-picker])::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--mobile-entity-picker-backdrop);
+    pointer-events: none;
+  }
+
+  [data-mobile-entity-picker] {
+    position: fixed !important;
+    inset:
+      max(calc(var(--spacing) * 4), env(safe-area-inset-top))
+      calc(var(--spacing) * 4)
+      auto !important;
+    width: auto !important;
+    max-width: none !important;
+    height: calc(
+      var(--mobile-entity-picker-visual-viewport-height)
+      - max(calc(var(--spacing) * 4), env(safe-area-inset-top))
+      - max(calc(var(--spacing) * 4), env(safe-area-inset-bottom))
+    ) !important;
+    max-height: none !important;
+    transform: none !important;
+    translate: none !important;
+    transform-origin: bottom center !important;
+    animation: none !important;
+    pointer-events: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 0 !important;
+    overflow: hidden;
+  }
+
+  [data-mobile-entity-picker-header] {
+    display: flex;
+  }
+
+  [data-mobile-entity-picker] > [data-slot="command"] {
+    min-height: 0;
+    flex: 1;
+  }
+
+  [data-mobile-entity-picker] [data-slot="command-list"],
+  [data-mobile-entity-picker-list] {
+    max-height: none !important;
+    min-height: 0;
+    flex: 1;
   }
 }
 :root {

@@ -27,6 +27,27 @@ describe("managed runtime start terminality", () => {
     readiness: { type: "http", timeoutSec: 1, intervalMs: 50 },
   } as Record<string, unknown>;
 
+  it("reports the fetch transport cause and probe count without extending the deadline", async () => {
+    const transportError = new Error("connect ECONNREFUSED 127.0.0.1:42000");
+    const fetchError = new TypeError("fetch failed", { cause: transportError });
+    let now = 0;
+    const refusingFetch = (async () => {
+      now = 1_000;
+      throw fetchError;
+    }) as typeof fetch;
+
+    await expect(waitForRuntimeServiceReadiness({
+      service: hangingService,
+      url: "http://127.0.0.1:42000/",
+      readinessUrl: null,
+      fetchImpl: refusingFetch,
+      now: () => now,
+    })).rejects.toMatchObject({
+      message: "Readiness check failed for http://127.0.0.1:42000/: fetch failed: connect ECONNREFUSED 127.0.0.1:42000 (1 probes over 1000ms)",
+      cause: fetchError,
+    });
+  });
+
   it("fails a readiness check whose probes never answer instead of hanging forever", async () => {
     let probes = 0;
     const abortedProbes: string[] = [];

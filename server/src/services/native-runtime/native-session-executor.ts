@@ -1,3 +1,12 @@
+import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
+import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
+import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
+
+import {
+  isSupportedRemoteCodexVersion,
+  parseCodexCliVersion,
+  REMOTE_CODEX_SUPPORTED_RANGE,
+} from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
@@ -117,6 +126,7 @@ import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { createAssignedMcpTools, getAssignedMcpGateway } from "./assigned-mcp-tools.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { NativeChatAttachmentReadScope } from "./chat-attachment-read.js";
 import {
@@ -270,7 +280,10 @@ export async function detachNativeSessionsForRestart(
 const MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
-const NATIVE_DURABLE_IDENTITY_MAX_BYTES = 2 * 1024 * 1024;
+// Identity is read from the complete control-plane state, including its PRP
+// event window. Match the transport's bounded reader so verbose valid turns do
+// not lose continuation authority merely because their history exceeds 2 MiB.
+const NATIVE_CONTROL_PLANE_STATE_MAX_BYTES = 64 * 1024 * 1024;
 const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
@@ -385,6 +398,7 @@ type WarmNativeSession = {
   session: NativeSession;
   ownerToken: symbol;
   configDigest: string;
+  ownerScope: string;
   companyId: string;
   environmentId: string | null;
   busy: boolean;
@@ -1442,6 +1456,7 @@ class SessionToolAuthorityEpoch {
 const sessionToolAuthorityEpochs = new Map<string, SessionToolAuthorityEpoch>();
 const initializingSessionToolAuthorities = new Set<string>();
 const executingRunnerdSessionScopes = new Map<string, string>();
+const executingNativeOwnerScopes = new Map<string, symbol>();
 
 function nativeSessionKey(execution: NativeExecutionInput): string {
   return (
@@ -1511,6 +1526,45 @@ function nativeSessionScopeKey(execution: NativeExecutionInput): string {
     },
     normalizedSessionId: nativeSessionKey(execution),
   });
+}
+
+// A plan acceptance or explicit reset can rotate the provider/session identity
+// while retaining the same task sandbox and its fixed ingress port.
+function nativeSessionOwnerScope(
+  execution: NativeExecutionInput,
+  environmentId: string | null,
+): string {
+  return canonicalJson({
+    companyId: execution.binding.companyId,
+    agentId: execution.binding.agentId,
+    issueId: execution.binding.issueId,
+    workspace: nativeSessionWorkspaceScope(execution),
+    environmentId,
+  });
+}
+
+async function retireSupersededWarmNativeSessions(
+  ownerScope: string,
+  nextSessionScope: string,
+): Promise<void> {
+  for (const [scope, entry] of warmNativeSessions) {
+    if (scope === nextSessionScope || entry.ownerScope !== ownerScope) continue;
+    if (entry.busy || executingRunnerdSessionScopes.has(scope)) {
+      throw new Error("native_session_supervisor_busy");
+    }
+    if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+    entry.busy = true;
+    entry.closeOnReleaseReason = "warm native session identity changed";
+    try {
+      await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
+      if (warmNativeSessions.get(scope) === entry) warmNativeSessions.delete(scope);
+    } finally {
+      // A failed close retains the owner and prevents launch. A later attempt
+      // must retry retirement, never adopt this partially closed transport.
+      entry.busy = false;
+    }
+  }
 }
 
 function legacyCompanyNativeSessionScopeKey(
@@ -1781,7 +1835,9 @@ function cleanupStateSnapshot(root: string, providerFile = "codex-provider-state
   const bytes = files.map((file) =>
     readBoundedNativeFile(
       resolve(root, file),
-      NATIVE_RUNNER_STATE_MAX_BYTES,
+      file === "control-plane/control-plane-state.json"
+        ? NATIVE_CONTROL_PLANE_STATE_MAX_BYTES
+        : NATIVE_RUNNER_STATE_MAX_BYTES,
       "native_cleanup_maintenance_unproven",
     ),
   );
@@ -4054,7 +4110,7 @@ function hasRetainedWarmTransitionEvidence(root: string): boolean {
     [
       "control-plane",
       "control-plane-state.json",
-      NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+      NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
     ],
     ["runner", "runner-state.json", NATIVE_RUNNER_STATE_MAX_BYTES],
   ] as const) {
@@ -4111,7 +4167,7 @@ function readWarmTransitionSnapshot(root: string) {
   }
   const core = readBoundedNativeFile(
     resolve(root, "control-plane", "control-plane-state.json"),
-    NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+    NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
     "native_runner_warm_transition_recovery_unproven",
   );
   const runner = readBoundedNativeFile(
@@ -4712,7 +4768,9 @@ async function recoverQuiescentRunnerdState(input: {
           throw new Error("unsafe_recovery_state");
         return readBoundedNativeFile(
           resolve(root, directory, name),
-          NATIVE_RUNNER_STATE_MAX_BYTES,
+          directory === "control-plane" && name === "control-plane-state.json"
+            ? NATIVE_CONTROL_PLANE_STATE_MAX_BYTES
+            : NATIVE_RUNNER_STATE_MAX_BYTES,
           "recovery_state_too_large",
         ).toString("utf8");
       };
@@ -4881,15 +4939,15 @@ async function recoverQuiescentRunnerdState(input: {
   const candidate = verified[0]!;
   // Candidate enumeration can await other database reads. Revalidate the
   // selected evidence and dead owner immediately before the atomic moves.
-  for (const [relativePath, expected] of [
-    ["runner/runner-state.json", candidate.runnerBytes],
-    ["runner/codex-provider-state.json", candidate.providerBytes],
-    ["control-plane/control-plane-state.json", candidate.controlBytes],
-  ]) {
+  for (const [relativePath, expected, maxBytes] of [
+    ["runner/runner-state.json", candidate.runnerBytes, NATIVE_RUNNER_STATE_MAX_BYTES],
+    ["runner/codex-provider-state.json", candidate.providerBytes, NATIVE_RUNNER_STATE_MAX_BYTES],
+    ["control-plane/control-plane-state.json", candidate.controlBytes, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES],
+  ] as const) {
     if (
       readBoundedNativeFile(
-        resolve(candidate.root, relativePath!),
-        NATIVE_RUNNER_STATE_MAX_BYTES,
+        resolve(candidate.root, relativePath),
+        maxBytes,
         "recovery_state_too_large",
       ).toString("utf8") !== expected
     ) {
@@ -4952,7 +5010,7 @@ export function runnerdStateProvesIncompleteBootstrap(root: string): boolean {
       JSON.parse(
         readBoundedNativeFile(
           statePath,
-          NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+          NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
           "runner_durable_identity_too_large",
         ).toString("utf8"),
       ),
@@ -5005,7 +5063,7 @@ function readRunnerdDurableIdentity(
       JSON.parse(
         readBoundedNativeFile(
           statePath,
-          NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+          NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
           "runner_durable_identity_too_large",
         ).toString("utf8"),
       ),
@@ -5251,9 +5309,13 @@ export function resolveNativeHarnessPersistenceProfile(
               // Codex creates process-local executable aliases in tmp/arg0;
               // they may point outside the runtime tree and are neither safe
               // nor necessary to restore. Credentials and launch-time config
-              // are also re-materialized in the replacement sandbox.
+              // are also re-materialized in the replacement sandbox. Grok
+              // diagnostics can contain auth fields and are not session state.
               excludeEntries:
-                execution.provider.agent === "codex"
+                execution.provider.agent === "grok"
+                  ? ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", "config.toml", "logs"].map((entry) =>
+                    `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/grok-home/${entry}`)
+                  : execution.provider.agent === "codex"
                   ? CODEX_HOME_NON_PERSISTENT_ENTRIES.map(
                       (entry) =>
                         `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/codex-home/${entry}`,
@@ -7158,7 +7220,20 @@ export async function executePaperclipNativeSession(input: {
   let sessionScopeId: string | null = null;
   let ownsSessionScope = false;
   let executionFailure: unknown;
+  const ownerScope = nativeSessionOwnerScope(
+    input.execution,
+    input.runnerExecutionTarget?.environmentId ?? null,
+  );
+  const ownerToken = Symbol("native execution owner");
   try {
+    // Reserve across session identities before retiring or staging anything.
+    if (executingNativeOwnerScopes.has(ownerScope)) {
+      throw new Error("native_session_supervisor_busy");
+    }
+    executingNativeOwnerScopes.set(ownerScope, ownerToken);
+    await retireSupersededWarmNativeSessions(
+      ownerScope, nativeSessionScopeKey(input.execution),
+    );
     if (!input.useRunnerd) {
       return await executePaperclipNativeSessionWithinScope(input);
     }
@@ -7228,6 +7303,9 @@ export async function executePaperclipNativeSession(input: {
     executionFailure = error;
     throw error;
   } finally {
+    if (executingNativeOwnerScopes.get(ownerScope) === ownerToken) {
+      executingNativeOwnerScopes.delete(ownerScope);
+    }
     startup.resolve(null);
     if (nativeSessionStartups.get(runId) === startup) {
       nativeSessionStartups.delete(runId);
@@ -7966,6 +8044,7 @@ async function executePaperclipNativeSessionWithinScope(
         (hasBrokerCapability &&
           entry.credentialRunId !== input.execution.binding.runId);
       if (
+        entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
         entry.managedAiCredentialIdentity !== input.managedAiCredentialIdentity ||
         credentialRunChanged ||
@@ -8330,6 +8409,9 @@ async function executePaperclipNativeSessionWithinScope(
                     session,
                     ownerToken: warmSessionOwnerToken,
                     configDigest: warmConfigDigest,
+                    ownerScope: nativeSessionOwnerScope(
+                      input.execution, input.runnerExecutionTarget?.environmentId ?? null,
+                    ),
                     companyId: input.execution.binding.companyId,
                     environmentId:
                       input.runnerExecutionTarget?.environmentId ?? null,
@@ -8352,10 +8434,6 @@ async function executePaperclipNativeSessionWithinScope(
               if (session) {
                 const active: ActiveNativeSession = { session, cancelRequested: false };
                 activeNativeSessions.set(input.execution.binding.runId, active);
-                if (session.resolveRuntimeRequest) await liveQuestions.attach();
-                if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
-                  if (session.detachControllerForRestart) await detachActiveNativeSessionForRestart(active);
-                }
                 const startup = nativeSessionStartups.get(input.execution.binding.runId);
                 startup?.resolve(active);
                 if (startup?.stopRequested) {
@@ -8368,6 +8446,33 @@ async function executePaperclipNativeSessionWithinScope(
                   await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup");
                   throw new Error("native_finalization_missing: session returned no semantic result");
                 }
+                // Stop can win after the coordinator claim while the provider
+                // session is still opening. Publishing the handle before this
+                // read closes both sides of the race: earlier Stop is durable;
+                // later Stop can cancel this exact active session.
+                const [currentRun] = await input.db.select({
+                  status: heartbeatRuns.status,
+                  resultJson: heartbeatRuns.resultJson,
+                }).from(heartbeatRuns).where(and(
+                  eq(heartbeatRuns.id, input.execution.binding.runId),
+                  eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+                  eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+                )).limit(1);
+                const cancellation = record(currentRun?.resultJson?.nativeCancellation);
+                if (!currentRun || currentRun.status !== "running" ||
+                    currentRun.resultJson?.startupCancellation ||
+                    (cancellation.scope === "run" &&
+                      ["pending", "acknowledged"].includes(String(cancellation.dispatchState)))) {
+                  await cancelNativeSession(input.execution.binding.runId, "Run stopped during native session startup");
+                  // The execution-owned finally closes the session when this
+                  // callback fails; no provider turn may follow publication.
+                  throw new NativeCancellationPendingRecoveryError();
+                }
+                if (session.resolveRuntimeRequest) await liveQuestions.attach();
+                if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+                  if (session.detachControllerForRestart) await detachActiveNativeSessionForRestart(active);
+                }
+                if (active.cancelRequested) throw new NativeCancellationPendingRecoveryError();
               } else {
                 liveQuestions.close();
                 activeNativeSessions.delete(input.execution.binding.runId);
@@ -9160,14 +9265,17 @@ const REMOTE_PROVIDER_PACK_PINS = {
   acpx: "0.13.1",
   claudeAcp: "0.73.0",
   codexAcp: "1.6.2",
+  grok: "1.0.13",
 } as const;
 const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {
+  grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
   claude:
     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
   codex:
     "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
 } as const;
 const REMOTE_PROVIDER_PACK_ARTIFACT_PATHS = {
+  grokLauncher: "dist/providers/grok/launcher.cjs",
   nodeCommand: "node_modules/node/bin/node",
   productionLock: "pnpm-lock.yaml",
   opencodeCommand: "node_modules/.bin/opencode",
@@ -9187,6 +9295,7 @@ type RemoteProviderPackManifest = {
     bridgeDigest: string;
     acpxProfileDigests: typeof REMOTE_PROVIDER_PACK_PROFILE_DIGESTS;
     artifacts: {
+      grokLauncher: { path: string; sha256: string };
       nodeCommand: { path: string; sha256: string };
       productionLock: { path: string; sha256: string };
       opencodeCommand: { path: string; sha256: string };
@@ -9285,6 +9394,7 @@ export function readRemoteProviderPackManifest(
     );
   }
   const artifactEntries = [
+    ["Grok builtin launcher", payload.artifacts?.grokLauncher, REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.grokLauncher],
     [
       "provider Node",
       payload.artifacts?.nodeCommand,
@@ -10458,9 +10568,35 @@ async function createRunnerdBackendWithinSessionClaim(
   if (nativeReview && !await getNativeReviewAssignment(input.db, {
     ...input.execution.binding, contextSnapshot: nativeReview,
   })) throw new Error("native_review_assignment_no_longer_available");
+  // Remote Codex already sends dynamic tool calls over authenticated PRP. Keep
+  // the assigned gateway on the control plane instead of asking the sandbox to
+  // reach the host's HTTP origin (which may be private or loopback-only).
+  const relayAssignedMcp = remoteTarget !== null && input.execution.provider.kind === "codex";
+  const assignedMcpUrl = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_URL;
+  const assignedMcpToken = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_TOKEN;
+  const assignedMcpName = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_NAME;
+  const hasAssignedMcp = Boolean(assignedMcpName || assignedMcpUrl || assignedMcpToken);
+  if (relayAssignedMcp && hasAssignedMcp && (!assignedMcpName?.trim() || !assignedMcpUrl?.trim() || !assignedMcpToken?.trim())) {
+    throw new Error("assigned native MCP launch binding is incomplete");
+  }
+  const assignedGatewayPublicId = relayAssignedMcp && assignedMcpUrl
+    ? new URL(assignedMcpUrl).pathname.match(/^\/mcp\/gateways\/([a-zA-Z0-9_-]+)$/)?.[1]
+    : undefined;
+  if (relayAssignedMcp && hasAssignedMcp && !assignedGatewayPublicId) {
+    throw new Error("assigned native MCP gateway path is invalid");
+  }
+  const assignedMcpTools = relayAssignedMcp && !nativeReview && assignedMcpUrl && assignedMcpToken
+    ? await createAssignedMcpTools({
+        gateway: getAssignedMcpGateway(input.db),
+        gatewayPublicId: assignedGatewayPublicId!,
+        bearerToken: assignedMcpToken,
+        workMode: input.execution.task.workMode,
+      })
+    : undefined;
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     ...(nativeReview ? { nativeReview } : {}),
     connectorAssignments: connectorAssignments.filter((assignment) => pinnedSkills.has(assignment.skillKey)),
+    assignedMcpTools,
     companyId: input.execution.binding.companyId,
     issueId: input.execution.binding.issueId,
     runId: input.execution.binding.runId,
@@ -10666,6 +10802,7 @@ async function createRunnerdBackendWithinSessionClaim(
     assertRemoteRunnerBuildMetadata(metadata, requiredMode);
   };
 
+  const reportedCodexVersions = new Set<string>();
   const verifyRemoteCodex = async (executable = remoteCodexBinary) => {
     if (!remoteTarget || !remoteCommandRunner || !executable) return;
     const versionResult = await remoteCommandRunner.execute({
@@ -10679,10 +10816,17 @@ async function createRunnerdBackendWithinSessionClaim(
       throw new Error("runner_remote_codex_artifact_verification_failed");
     }
     const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`;
-    const version = versionOutput.match(/\bcodex-cli\s+(\d+\.\d+\.\d+)\b/)?.[1];
-    if (version !== REMOTE_PROVIDER_PACK_PINS.codex) {
+    const version = parseCodexCliVersion(versionOutput);
+    if (!version || !isSupportedRemoteCodexVersion(version)) {
       throw new Error(
-        `runner_remote_provider_artifact_incompatible: expected Codex ${REMOTE_PROVIDER_PACK_PINS.codex}, received ${version ?? "an unrecognized version"}`,
+        `runner_remote_provider_artifact_incompatible: supported Codex versions ${REMOTE_CODEX_SUPPORTED_RANGE}, received ${version ?? "an unrecognized or prerelease version"}; install a supported stable Codex release or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`,
+      );
+    }
+    if (version !== REMOTE_PROVIDER_PACK_PINS.codex && !reportedCodexVersions.has(version)) {
+      reportedCodexVersions.add(version);
+      await input.onLog?.(
+        "stderr",
+        `[paperclip-runner] using compatible Codex ${version} (supported ${REMOTE_CODEX_SUPPORTED_RANGE}; install pin ${REMOTE_PROVIDER_PACK_PINS.codex})\n`,
       );
     }
   };
@@ -10710,7 +10854,7 @@ async function createRunnerdBackendWithinSessionClaim(
       "if(canonical(manifest)!==expected)throw new Error('manifest mismatch')",
       "const hash=(p)=>'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(path.join(root,p))).digest('hex')",
       "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
-      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
+      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
       "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
       "const version=process.versions.node.split('.').map(Number)",
       "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
@@ -10839,9 +10983,33 @@ async function createRunnerdBackendWithinSessionClaim(
       remotePrepared = true;
       return;
     }
-    // A resumed sandbox may already contain the exact controller-owned binary.
-    // Do not upload it every turn, but never treat compatible metadata alone as
-    // proof of artifact identity (especially for an explicit operator override).
+    // Compatibility metadata does not prove artifact identity. Reuse only the
+    // exact controller-owned bytes when the controller artifact is available.
+    const matchesControllerRunnerArtifact = async (executable: string): Promise<boolean> => {
+      const expected = createHash("sha256")
+        .update(readFileSync(controllerRunnerBinary))
+        .digest("hex");
+      try {
+        const probe = await remoteCommandRunner.execute({
+          command: "sh",
+          args: [
+            "-c",
+            'test -x "$1" || exit 1; if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi',
+            "paperclip-runner-artifact",
+            executable,
+          ],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        return probe.exitCode === 0 && !probe.timedOut &&
+          /^[a-f0-9]{64}\s/.test(probe.stdout) &&
+          probe.stdout.trim().split(/\s+/)[0] === expected;
+      } catch {
+        // An unavailable checksum uses the verified staging path.
+        return false;
+      }
+    };
     let runnerArtifactPrepared = false;
     if (
       sandboxLeaseAcquisition?.outcome === "resumed" &&
@@ -10850,32 +11018,7 @@ async function createRunnerdBackendWithinSessionClaim(
       runnerArtifactPrepared = await measureNativeRunnerSpan(
         input.trace,
         "runner.artifact.verify_retained",
-        async () => {
-          const expected = createHash("sha256")
-            .update(readFileSync(controllerRunnerBinary))
-            .digest("hex");
-          try {
-            const probe = await remoteCommandRunner.execute({
-              command: "sh",
-              args: [
-                "-c",
-                'test -x "$1" || exit 1; if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi',
-                "paperclip-runner-artifact",
-                remoteBinary,
-              ],
-              cwd: remoteTarget.remoteCwd,
-              bypassSession: true,
-              timeoutMs: 10_000,
-            });
-            return probe.exitCode === 0 && !probe.timedOut &&
-              /^[a-f0-9]{64}\s/.test(probe.stdout) &&
-              probe.stdout.trim().split(/\s+/)[0] === expected;
-          } catch {
-            // Missing binaries, checksum tools, or a failed probe use the
-            // ordinary verified staging path; none authorizes cached execution.
-            return false;
-          }
-        },
+        () => matchesControllerRunnerArtifact(remoteBinary),
       );
     }
     const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
@@ -10892,6 +11035,10 @@ async function createRunnerdBackendWithinSessionClaim(
             "runner.artifact.verify_preinstalled",
             () => verifyRemoteRunner(requiredMode, preinstalledRunner),
           );
+          if (existsSync(controllerRunnerBinary) &&
+              !await matchesControllerRunnerArtifact(preinstalledRunner)) {
+            throw new Error("runner_remote_preinstalled_artifact_mismatch");
+          }
           await measureNativeRunnerSpan(
             input.trace,
             "runner.artifact.link",
@@ -12005,9 +12152,22 @@ async function createRunnerdBackendWithinSessionClaim(
         },
       }
     : input.execution;
-  const effectiveRunnerEnvironmentBase: NodeJS.ProcessEnv = {
-    ...(input.runnerEnvironment ?? process.env),
+  const isGrok = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "grok";
+  let effectiveRunnerEnvironmentBase: NodeJS.ProcessEnv = {
+    ...(input.runnerEnvironment ?? (isGrok ? {} : process.env)),
   };
+  const grokCredential = isGrok ? await prepareGrokRunnerCredentials({
+    companyId: input.execution.binding.companyId, environment: effectiveRunnerEnvironmentBase, remote: Boolean(remoteTarget),
+    managedHome: input.managedAiCredentialHome,
+  }) : null;
+  if (grokCredential) effectiveRunnerEnvironmentBase = grokCredential.environment;
+  if (relayAssignedMcp) {
+    // The server-held tool authority owns this credential. Do not deliver a
+    // duplicate HTTP MCP server or its bearer token to the remote provider.
+    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_NAME;
+    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_URL;
+    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_TOKEN;
+  }
   // This authority bit is derived only from the selected execution target.
   // Never let an agent, environment binding, or host variable disable the
   // Codex sandbox for a local runner by supplying the same key.
@@ -12043,6 +12203,10 @@ async function createRunnerdBackendWithinSessionClaim(
       "codex-home",
       "opencode",
       "acpx",
+      // Backups belong to the retired provider session. Leaving them active
+      // makes the fresh replacement look like ambiguous lost harness state.
+      // Keep their evidence inside the same continuity-break archive.
+      "failover-backups",
     ]) {
       const source = resolve(root, name);
       if (existsSync(source)) renameSync(source, resolve(archiveRoot, name));
@@ -12147,8 +12311,8 @@ async function createRunnerdBackendWithinSessionClaim(
               acpxAgent: input.execution.provider.agent,
               acpxPermissionMode: input.execution.provider.permissionMode,
               acpxPermissionModePinned:
-                input.execution.schema ===
-                "paperclip.native-execution-input.v4",
+                input.execution.schema === "paperclip.native-execution-input.v4" ||
+                input.execution.schema === "paperclip.native-execution-input.v5",
               acpxRuntimeDirectory: remoteRunnerFilesystemRoot
                 ? posix.join(remoteRunnerFilesystemRoot, "acpx")
                 : resolve(
@@ -12577,6 +12741,40 @@ async function createRunnerdBackendWithinSessionClaim(
   });
   const boundManagedSessions = new WeakSet<NativeSession>();
   const wrapManagedSession = (session: NativeSession): NativeSession => {
+    if (isGrok && grokCredential?.home && !boundManagedSessions.has(session)) {
+      boundManagedSessions.add(session);
+      // The launch runtime directory already ends in "acpx"; ACPX adds its
+      // own namespace beneath it in resolveAcpxRuntimeRoot.
+      const relativeHome = `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/grok-home`;
+      const localHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", relativeHome);
+      const remoteHome = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, relativeHome) : null;
+      const readAuth = async (name: string): Promise<Buffer> => {
+        if (!remoteHome || !remoteCommandRunner) return Buffer.from(await readLocalAiCredentialFile(join(localHome, name)));
+        const script = `const fs=require('node:fs'),path=require('node:path');let fd;try{const file=process.argv[1];let parent=path.dirname(file);while(true){if(!fs.lstatSync(parent).isDirectory())throw Error('directory');const next=path.dirname(parent);if(next===parent)break;parent=next;}fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);const st=fs.fstatSync(fd);if(!st.isFile()||st.uid!==process.getuid()||(st.mode&511)!==384||st.size>65536)throw Error('credential');const b=Buffer.alloc(65537);let n=0;while(n<b.length){const k=fs.readSync(fd,b,n,b.length-n,n);if(!k)break;n+=k;}if(n>65536)throw Error('size');process.stdout.write(b.subarray(0,n).toString('base64'));b.fill(0);}catch(e){process.exitCode=e.code==='ENOENT'?66:1;}finally{if(fd!==undefined)fs.closeSync(fd);}`;
+        const result = await remoteCommandRunner.execute({ command: "node", args: ["-e", script, posix.join(remoteHome, name)], bypassSession: true, timeoutMs: 10000 });
+        if (result.exitCode !== 0 || result.timedOut) throw Object.assign(new Error("Grok credential refresh handoff unavailable"), { code: result.exitCode === 66 ? "ENOENT" : "INVALID_CREDENTIAL" });
+        return Buffer.from(result.stdout, "base64");
+      };
+      return bindManagedNativeCredentialTurn(session, {
+        copyBack: async () => {
+          await copyBackGrokAuth({ hostHomeDir: grokCredential.home!, log: () => {},
+            readSandboxAuth: () => readAuth("auth.json").catch((error) => {
+              if (error.code !== "ENOENT") throw error;
+              return readAuth("auth-refresh.json");
+            }),
+          });
+        },
+        remove: async () => {
+          for (const name of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp"]) {
+            rmSync(join(localHome, name), { force: true });
+            if (remoteHome && remoteCommandRunner) {
+              const result = await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", posix.join(remoteHome, name)], bypassSession: true, timeoutMs: 10000 });
+              if (result.exitCode !== 0 || result.timedOut) throw new Error("Grok credential cleanup failed");
+            }
+          }
+        },
+      });
+    }
     if (!input.managedAiCredentialHome || input.execution.provider.kind !== "codex" || boundManagedSessions.has(session)) return session;
     boundManagedSessions.add(session);
     const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", "auth.json") : null;

@@ -33,7 +33,7 @@ const MAX_RECOVERY_SEMANTIC_RESULT_DEPTH = 128;
 export class HarnessDriverBackend implements NativeSessionBackend {
   readonly #driver: HarnessDriver;
 
-  constructor(driver: HarnessDriver) {
+  constructor(driver: HarnessDriver, readonly preparedTaskConstraints?: readonly string[]) {
     this.#driver = driver;
   }
 

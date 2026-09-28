@@ -30,3 +30,7 @@ export const NarrowSetup: Story = { args: { scenario: "initial" }, globals: { vi
 export const NarrowToolManagement: Story = { args: { scenario: "permissions" }, globals: { viewport: { value: "mobile", isRotated: false } } };
 
 export const NarrowConnectionDetails: Story = { args: { scenario: "connect" }, globals: { viewport: { value: "mobile", isRotated: false } } };
+
+export const InlineCardAccess: Story = { args: { scenario: "initial", inline: true } };
+export const InlineCardConfiguration: Story = { args: { scenario: "connect", inline: true } };
+export const NarrowInlineCard: Story = { args: { scenario: "connect", inline: true }, globals: { viewport: { value: "mobile", isRotated: false } } };

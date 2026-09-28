@@ -1,38 +1,25 @@
 # Cloud build readiness
 
-The `Cloud readiness` workflow starts for every master push. Its versioned
-`Cloud deployable v1` job succeeds only after all three prerequisites succeed:
+The `Cloud readiness` workflow starts for every master push and retains the
+versioned `Cloud source verified v1` job. It calls the full `Release Verify`
+workflow for that exact commit, including typecheck, builds, general and
+serialized tests, and Runner verification. The source proof depends on every
+source check and fails closed if verification fails, is cancelled, or is skipped.
 
-- The existing `Release Verify` workflow checks that exact commit, including
-  typecheck, builds, general and serialized tests, and Runner verification.
-- The reusable `Docker cloud` workflow builds and verifies its Linux AMD64
-  image, including Sentry resolution and orphan reaping, then publishes the
-  full-SHA cloud tag. Cloud readiness owns the master trigger so there is one
-  cloud build per push. Release tags and manual Docker runs retain their callers.
-- The full-SHA image is visible and the exact-source `Cloud migrator artifacts`
-  workflow has succeeded. Readiness verifies the manifest's GitHub attestation
-  against the full SHA, canonical master workflow, and GitHub-hosted runner,
-  then downloads and validates both package archives and the prepared dependency
-  lockfile. The database package pins the matching shared package. New-version
-  npm metadata and tarball propagation are outside this path.
+The recurring public `-cloud` publisher and its `Cloud deployable v1` gate are
+retired. The workflow no longer builds a legacy image or waits for one.
+Keep its filename and source-proof job name stable: npm canary publication and
+downstream image composers consume that exact contract.
 
-The Cloud workflow builds the image with `USER_UID=1001` and `USER_GID=1001`,
-matching the managed runtime. This avoids a startup user remap, which can walk
-the mounted home and delay health checks. Before publishing the full-SHA tag,
-the workflow checks the baked identity without running the entrypoint, then
-checks the normal entrypoint's effective user and writable home. Volume ownership
-repair still runs when needed. The Dockerfile defaults remain `1000:1000` for
-self-hosted builds, and runtime identity overrides remain supported. The first
-build with the new identity must rebuild layers that depend on the base image;
-later builds can reuse those layers.
+Standard images still publish independently through `docker.yml`. The
+`cloud-migrator-artifacts.yml` workflow still publishes signed exact-source
+migrators independently. A downstream composer must verify those artifacts,
+build and test its own image, and record separate deployment readiness.
 
-Verification and image building run concurrently, outside the full npm release's
-concurrency group. Different commits have independent groups. The npm canary
-release reuses `Cloud source verified v1` for the exact master push instead of
-starting a second copy of `Release Verify`. This source-only job depends on every
-source check but does not wait for Docker or migrator publication. npm canary
-publication remains possible when source verification passes and an image build
-fails. Stable releases and candidate-branch betas still run full verification.
+Verification runs outside the full npm release's concurrency group. Different
+commits have independent groups. The npm canary release reuses the source proof
+for its exact master push instead of starting another `Release Verify` run.
+Stable releases and candidate-branch betas still run full verification.
 
 The canary consumer requires the expected workflow ID and path, upstream source
 repository, master push event, full SHA, and a successful job in the latest run
@@ -57,41 +44,36 @@ before that bot's PR merges. Verification must install and test that commit
 without waiting for another merge. The generated lockfile stays in the job's
 workspace; these checks do not commit it back to the repository.
 
-The artifact wait runs for up to 30 minutes and reports what is missing. A
-missing image or an exact-source publisher with no successful run yet means publication
-is pending. An earlier successful push or manual run remains valid after a failed
-retry because publication is immutable. If all matching runs failed, readiness
-fails. An invalid signature, inaccessible or corrupt
-bundle, authorization error, or identity mismatch fails the job. A failed, cancelled, or skipped prerequisite
-cannot produce a successful readiness job. Retry the failed publication or build,
-then rerun the failed readiness workflow jobs to check the same commit again.
+## Consumer contract and retirement boundary
 
-## Consumer contract
+Accept `Cloud source verified v1` only from the latest attempt of the canonical
+`cloud-readiness.yml` master push for the expected repository identity and full
+source SHA. Check the job itself and reject failed, skipped, cancelled, or
+ambiguous proof. This signal verifies source only. It creates no release record,
+certifies no composed image, and deploys no instance.
 
-`Cloud deployable v1` is a source-and-artifact readiness signal. A deployment
-consumer must still resolve and pin the image digest and migrator integrity/lockfile,
-validate migration contents and compatibility, and apply its target health gates.
-The check creates no release record and deploys no instance. A full-SHA tag by
-itself, or a successful migrator dispatch, is not this readiness signal.
+Downstream deployment consumers must separately verify the standard image's
+immutable digest and attestation, the exact-source migrator's signature and
+integrity, migration compatibility, their own image composition, and target
+health. Order automatic candidates by master ancestry, not completion time.
 
-For automatic selection, accept only a successful job named exactly
-`Cloud deployable v1` in the latest attempt of a successful
-`.github/workflows/cloud-readiness.yml` run in `paperclipai/paperclip`, with
-event `push`, head branch `master`, and the expected full head SHA and repository.
-Do not trust a similarly named check from another workflow or a manual branch run.
-Order candidates by master ancestry, not job completion time: an older commit
-finishing late must not roll a fleet backward. Fail closed on API errors.
+Merge this retirement only after all active automatic deployment consumers use
+the standard-image composition contract. A consumer still selecting
+`Cloud deployable v1` will stop advancing at the last legacy-ready commit.
+Do not rename the source proof to the old readiness name or weaken a consumer
+check to hide that dependency.
 
-Cloud consumers must enable `CLOUD_HARNESS_DIRECT_MIGRATOR_ARTIFACTS` before
-this gate is adopted: readiness no longer promises preview npm availability.
-The automatic npm-only migrator dispatcher has been removed. Manual
-`release.yml` runs with `channel=cloud-migrator`, branch previews, and stable
-releases retain their npm publisher for legacy consumers and rollback.
+Existing release records, immutable image digests, migrator artifacts, and
+registry tags are retained for rollback. No registry deletion or live deployment
+is part of this change. Explicit `release.yml` preview requests still use the
+legacy `cloud` Dockerfile target for a specified source commit. They do not
+restart recurring legacy publication. Keep that compatibility path until its
+operator consumers migrate separately.
 
-For rollback, restore the npm dispatcher and gate together before disabling the
-cloud direct-artifact switch. Already-created releases retain their immutable
-archive URLs and lockfiles; keep those objects available. The master producer
-can be retried independently without republishing or overwriting a valid bundle.
+The old `nightly-cloud`, `beta-cloud`, `latest-cloud`, and `canary-cloud` aliases
+stop advancing. Self-hosted standard release aliases continue unchanged. A
+rollback to an already published image needs no rebuild; restoring recurring
+legacy publication would require reverting the publisher retirement.
 
 ## Timing and rollout
 
@@ -107,7 +89,8 @@ exact commit. Keep readiness and deployment as separate milestones:
 | --- | --- | --- |
 | Merge | Merged PR timestamp and full merge commit SHA | Merge |
 | Image available | Successful full-SHA image publication and verification | Merge |
-| Cloud deployable | Successful `Cloud deployable v1` job in the accepted push run and attempt | Merge |
+| Source verified | Successful `Cloud source verified v1` job in the accepted push run and attempt | Merge |
+| Composed image ready | Downstream composition verification and publication succeed | Merge |
 | Canary healthy | Deployment consumer's canary health gate confirms the target commit | Merge |
 | Fleet complete | Campaign succeeds for all eligible targets at that commit | Merge |
 
@@ -118,7 +101,7 @@ does not measure automatic merge-to-deploy latency. A preparation-only run
 resolves artifacts without deploying a target and must not be counted as a
 successful deployment.
 
-Record queue time and the image, source-verification, and artifact-wait durations
+Record queue time and the image, source-verification, migrator, and composition durations
 separately. The slowest prerequisite determines readiness; shortening an already
 faster prerequisite may have no effect on the total. After readiness, measure
 consumer discovery delay, artifact resolution, canary health, and fleet rollout.
@@ -132,23 +115,14 @@ excluded or sleeping targets, retries, and failures with the fleet result. Recor
 runner queue conditions and cache state; one warm or cold run is a sample, not a
 latency guarantee.
 
-Land full-SHA image publication, independent cloud builds, and migrator-only
-publication before enabling this workflow. Until those producers are present,
-the artifact wait cannot succeed. A manual dispatch on master can verify the
-wiring, but automatic consumers should use push runs. Source verification and
-registry checks can be rerun without deploying or changing mutable npm channels.
-
-When reverting this workflow, restore the master push trigger in
-`docker-cloud.yml` in the same change so master images continue to build.
-
 ## Reserved AWS verification capacity
 
-`AWS_POST_MERGE_CI_ENABLED=true` routes cloud source verification, artifact
-waiting, readiness signals, and exact-master migrator preparation to the
+`AWS_POST_MERGE_CI_ENABLED=true` routes cloud source verification and
+exact-master migrator preparation to the
 `paperclip-post-merge` runner group. The separate Fleet label is
 `runs-on/fleet=paperclip-post-merge-x64/env=public-ci`. Its 36 reserved slots use
 the same four-vCPU, 16-GiB machines as approved PR jobs. PR capacity is reduced
-to 64; image capacity stays at eight. The total ceiling remains 108 runners.
+to 64; the separately provisioned image capacity is unchanged by this retirement.
 This keeps PR bursts from consuming every post-merge verification slot.
 
 Every selector checks the canonical repository name and ID, master ref, and a
@@ -172,29 +146,12 @@ Disable the switch and rerun the whole workflow to restore GitHub-hosted
 placement. Assigned jobs keep their original runners. Readiness requirements,
 source checks, and npm integrity checks are unchanged.
 
-## AWS cloud build routing
+## Retired AWS cloud build routing
 
-`AWS_CLOUD_BUILDS_ENABLED=true` routes the Docker cloud job to the
-`paperclip-cloud-build-x64` RunsOn Fleet for canonical `paperclipai/paperclip`
-master pushes and manual master runs. Forks, pull requests, and release tags
-retain GitHub-hosted runners. The separate `AWS_CI_ENABLED` and
-`AWS_CI_TRUSTED_USER_IDS` variables control PR routing.
-
-The cloud Fleet uses a separate runner group, `paperclip-cloud-build`, restricted
-to this repository and `.github/workflows/docker-cloud.yml@refs/heads/master`.
-Provision that group and Fleet before enabling the variable. The cloud runners
-need at least 64 GiB free for Docker and the workspace; the initial configuration
-uses 120 GiB disks with the existing 4-vCPU, 16-GiB machine size. AWS jobs have
-a 40-minute workflow timeout so they finish before the 45-minute instance
-lifetime; GitHub-hosted jobs retain their 60-minute timeout. Keep the registry
-cache and all pushed-image verification steps enabled.
-
-To roll back routing, set `AWS_CLOUD_BUILDS_ENABLED=false`, then rerun the cloud
-workflow. Changing the variable does not migrate an already assigned job.
-Check the Actions job's runner name and runner group to verify placement. Record
-queue time, image verification completion, and `Cloud deployable v1` separately;
-source verification and the migrator still run on GitHub-hosted runners.
-
+`AWS_CLOUD_BUILDS_ENABLED` and the `paperclip-cloud-build` runner group no longer
+route a public image job after this retirement. This source change does not
+delete runner groups, Fleets, credentials, registry images, or cache tags. Review
+shared infrastructure ownership separately before removing those resources.
 
 ### Typecheck Rust dependency cache
 

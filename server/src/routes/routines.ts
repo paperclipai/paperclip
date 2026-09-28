@@ -664,6 +664,7 @@ export function routineRoutes(
       authorizationHeader: req.header("authorization"),
       signatureHeader: req.header("x-paperclip-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),
+      firefliesSignatureHeader: req.header("x-hub-signature"),
       timestampHeader: req.header("x-paperclip-timestamp"),
       idempotencyKey: req.header("idempotency-key") ?? req.header("x-github-delivery"),
       rawBody: (req as { rawBody?: Buffer }).rawBody ?? null,

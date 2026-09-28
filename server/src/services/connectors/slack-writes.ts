@@ -5,6 +5,8 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   assets,
   chatActions,
+  chatEndpoints,
+  chatEndpointResources,
   issueAttachments,
   toolInvocations,
   type Db,
@@ -87,7 +89,7 @@ export async function executeSlackWrite(
     throw forbidden(
       "Create channels in a separate task before reading private research; its content cannot be published to a new destination",
     );
-  if (name !== "slack_create_channel")
+  if (name !== "slack_create_channel" && name !== "slack_open_dm")
     await authorizeSlackWrite(db, authority, api, String(args.channel));
   if (
     name === "slack_invite" &&
@@ -103,7 +105,7 @@ export async function executeSlackWrite(
     .values({
       companyId: binding.companyId,
       endpointId: authority.endpoint.id,
-      conversationId: authority.conversation.id,
+      conversationId: authority.conversation?.id ?? null,
       principalId: authority.principalId,
       kind: "slack_tool_write",
       providerActionId: key,
@@ -165,7 +167,7 @@ export async function executeSlackWrite(
       throw forbidden(
         "Slack authorization changed after this operation was queued",
       );
-    if (name !== "slack_create_channel")
+    if (name !== "slack_create_channel" && name !== "slack_open_dm")
       await authorizeSlackWrite(db, authority, api, String(args.channel));
     if (name === "slack_update_message" || name === "slack_delete_message") {
       const message = await slackMessage(api, args);
@@ -175,7 +177,23 @@ export async function executeSlackWrite(
     if (args.file) await authorizeSlackDocument(db, authority, api, args, true);
     let result: SlackObject;
     const { idempotencyKey: _key, thread_ts: _thread, ...parameters } = args;
-    if (name === "slack_upload_file") {
+    if (name === "slack_open_dm") {
+      if (!authority.endpoint.allowDirectMessages)
+        throw forbidden("Direct messages are disabled");
+      const user = object(
+        (await api("users.info", { user: authority.slackUserId })).user,
+      );
+      if (
+        user.id !== authority.slackUserId ||
+        user.deleted === true ||
+        user.is_bot === true ||
+        user.team_id !== authority.endpoint.providerAccountId
+      )
+        throw forbidden(
+          "The linked Slack user is no longer an active workspace member",
+        );
+      result = await api(tool.method, { users: authority.slackUserId });
+    } else if (name === "slack_upload_file") {
       const [attachment] = await db
         .select({ asset: assets })
         .from(issueAttachments)
@@ -355,7 +373,51 @@ export async function executeSlackWrite(
         channel: args.channel,
         users: (args.users as string[]).join(","),
       });
-    else result = await api(tool.method, parameters);
+    else if (name === "slack_create_channel") {
+      result = await db.transaction(async (tx) => {
+        // Membership callbacks and inbound admission use this same endpoint
+        // lock. Persist the disabled choice before either can discover the new
+        // channel: approval to create it is not approval for ongoing responses.
+        await tx
+          .select({ id: chatEndpoints.id })
+          .from(chatEndpoints)
+          .where(
+            and(
+              eq(chatEndpoints.id, authority.endpoint.id),
+              eq(chatEndpoints.companyId, binding.companyId),
+            ),
+          )
+          .for("update");
+        const created = await api(tool.method, parameters);
+        const channel = object(created.channel);
+        if (typeof channel.id !== "string")
+          throw conflict("Slack did not return the created channel ID");
+        await tx
+          .insert(chatEndpointResources)
+          .values({
+            companyId: binding.companyId,
+            endpointId: authority.endpoint.id,
+            type: "channel",
+            providerResourceId: channel.id,
+            label: `#${String(channel.name ?? args.name)}`,
+            availability: "available",
+            enabled: false,
+            metadata: {
+              source: "slack_tool_create_channel",
+              private: args.is_private === true,
+            },
+          })
+          .onConflictDoUpdate({
+            target: [
+              chatEndpointResources.endpointId,
+              chatEndpointResources.type,
+              chatEndpointResources.providerResourceId,
+            ],
+            set: { enabled: false, updatedAt: new Date() },
+          });
+        return created;
+      });
+    } else result = await api(tool.method, parameters);
     const receipt = {
       channel:
         typeof result.channel === "string"

@@ -18,6 +18,11 @@ Paperclip surfaces and whether the resulting artifact and state are usable.
 The names describe the system under test; “headless” is an execution option,
 not an eval category.
 
+The explicit Product E2E `completion-updates` suite compares onboarding and
+idle Agent Chat handoffs on native Claude/Codex. It separates mechanical
+completion delivery/result access from semantic review of the retained answer;
+see the [probe contract](../tests/runner-e2e/README.md#completion-update-probes-explicit-only).
+
 ## Selecting a family
 
 Use **Runner Evals** for a runner protocol, adapter, transport, native session,
@@ -66,11 +71,24 @@ Daytona paths. Its [fixture contract](../tests/runner-e2e/README.md) distinguish
 startup cancellation from active response cancellation and HTTP send replay
 from ambiguous provider action recovery. Select it explicitly; `--all` excludes it.
 
+The explicit-only `context-integrity` Product E2E suite covers ordered public
+comment continuation and explicit invocation of an assigned pinned skill across
+the seven selected legacy/native local profiles. Select it by suite or exact
+execution ID because `--all` excludes explicit-only suites. Each cell applies a
+1,000-cent company and agent budget hard stop before task creation and records
+both limits in its evidence.
+
 The explicit-only `agent-chat-stories` suite covers the experimental settings
 lifecycle for a configured native agent and follow-ups during active work. Its
 fixture-driven file wait and persisted-plan oracle are documented in the
 [Product E2E guide](../tests/runner-e2e/README.md). It does not qualify the native
 onboarding wizard or change the native API-tool rollout defaults.
+
+The explicit-only `grok-qualification` and `grok-subscription-qualification`
+Product suites exercise Grok Build with API and company subscription
+authentication respectively. Keep their results separate; the subscription
+fixture seeds an explicitly supplied login and does not qualify interactive
+login. See the [Grok fixture contract](../tests/runner-e2e/README.md#grok-build-qualification).
 
 ## Validation ladder
 
@@ -137,6 +155,14 @@ family-specific classifier and read the attempt evidence before changing an
 analytical label.
 
 ## Evidence, provenance, and history
+
+Retained result snapshots and dated measurement reports belong in
+`paperclip-evals`; application tests, Product E2E fixtures/graders, and executable
+scenario inventories remain in this repository. Keep a compact results index
+with immutable archive links and public report links, as in the
+[lifecycle baseline](../tests/lifecycle-baseline/README.md#recorded-results-moved-to-paperclip-evals).
+The private archive is not a dependency of app test execution. Keep large logs,
+traces, and videos in the existing campaign artifact storage.
 
 An Evalbook report is a presentation of immutable attempt records, not the
 source of truth. Keep the campaign ID, Paperclip commit, `paperclip-evals`
@@ -232,3 +258,24 @@ records. See the [workflow and qualification limits](../tests/runner-e2e/README.
 The 26 native `first-task` cells exercise onboarding before native selection
 becomes the UI default. Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
+
+## Lifecycle behavior baseline
+
+The credential-free [lifecycle baseline](../tests/lifecycle-baseline/README.md)
+joins unit, scripted-runner, and database integration assertions to a scenario
+inventory before changing narrative-based lifecycle policy. Run
+`pnpm test:lifecycle-baseline` to retain current passes and failures. Its Product
+E2E matcher calibration is separate from live execution; unrun live coverage
+remains explicitly unmeasured.
+
+The separate [live lifecycle baseline](../tests/runner-e2e/LIFECYCLE-BASELINE.md)
+defines 46 real-provider Product E2E cells, including paired narrative probes and
+named existing controls on legacy and native Codex. Discover it with
+`pnpm test:e2e:runner -- --list --suite lifecycle-baseline`. Historical execution
+results and follow-up coverage are recorded in that suite's guide.
+
+Continuation accounting has an explicit-only eight-cell Product E2E [baseline suite](../tests/runner-e2e/CONTINUATION-ACCOUNTING.md), complementing the deterministic lifecycle inventory.
+
+The explicit-only Product E2E `api-response-reading` suite verifies retrieval of
+large saved API responses on local and Daytona native Codex runs. See the
+[Runner E2E guide](../tests/runner-e2e/README.md#bounded-api-response-reading).

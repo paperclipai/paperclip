@@ -8,6 +8,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import {
   createPaperclipCloudConnector,
@@ -23,6 +24,13 @@ import {
 const instanceId = "inst_test";
 const companyId = "company_test";
 const subject = "user_test";
+
+// Captured from the producer's in-memory HTTP integration test, using synthetic
+// enrollment and a signed request with a callback outside the enrolled origins.
+// Retain only the HTTP status and exact JSON error body, never request data.
+const originRejectionContract = JSON.parse(readFileSync(
+  new URL("./fixtures/cloud-connector-origin-rejection.json", import.meta.url), "utf8",
+)) as { status: number; body: { error: string } };
 
 function rawPrivateKey(key: KeyObject): string {
   const jwk = key.export({ format: "jwk" }) as { d?: string };
@@ -46,6 +54,94 @@ function config() {
 }
 
 describe("Paperclip Cloud connector", () => {
+  async function rejection(response: Response) {
+    const connector = createPaperclipCloudConnector({
+      config: config().config,
+      request: vi.fn(async () => response) as typeof fetch,
+    });
+    return connector.startAuthorization({
+      subject, companyId, profile: "gmail.read",
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "private-state",
+    }).catch((error: unknown) => error);
+  }
+
+  it("accepts the producer's origin-rejection HTTP contract", async () => {
+    expect(await rejection(Response.json(originRejectionContract.body, {
+      status: originRejectionContract.status,
+    }))).toMatchObject({
+      code: "CONNECTOR_REQUEST_FAILED", status: 400,
+      message: "Paperclip Cloud connector rejected the request (operation=session, status=400, reason=RETURN_ORIGIN_NOT_ENROLLED)",
+    });
+  });
+
+  it("retains an allowlisted rejection reason without broker messages or credentials", async () => {
+    const error = await rejection(Response.json({
+      error: "RETURN_ORIGIN_NOT_ENROLLED",
+      message: "DO_NOT_REPORT private-state access-secret https://private.example.test",
+    }, { status: 400 }));
+    expect(error).toBeInstanceOf(PaperclipCloudConnectorError);
+    expect(error).toMatchObject({
+      code: "CONNECTOR_REQUEST_FAILED", status: 400,
+      message: "Paperclip Cloud connector rejected the request (operation=session, status=400, reason=RETURN_ORIGIN_NOT_ENROLLED)",
+    });
+    expect(JSON.stringify(error)).not.toMatch(/DO_NOT_REPORT|private-state|access-secret|private\.example/);
+  });
+
+  it.each([
+    JSON.stringify({ error: "CUSTOM_SECRET_ERROR", message: "DO_NOT_REPORT" }),
+    JSON.stringify({ error: { code: "RETURN_ORIGIN_NOT_ENROLLED" } }),
+    "<html>DO_NOT_REPORT</html>",
+    JSON.stringify({ error: "RETURN_ORIGIN_NOT_ENROLLED", padding: "x".repeat(4_096) }),
+  ])("drops unknown, malformed, or oversized rejection bodies", async (body) => {
+    const error = await rejection(new Response(body, { status: 409 }));
+    expect(error).toMatchObject({
+      code: "REAUTHORIZATION_REQUIRED", status: 409,
+      message: "Paperclip Cloud connector rejected the request (operation=session, status=409, reason=UNKNOWN_BROKER_ERROR)",
+    });
+  });
+
+  it("keeps the original status when the error body stream fails", async () => {
+    const response = new Response(new ReadableStream({
+      start(controller) { controller.error(new Error("DO_NOT_REPORT")); },
+    }), { status: 503 });
+    expect(await rejection(response)).toMatchObject({
+      code: "CONNECTOR_REQUEST_FAILED", status: 503,
+      message: expect.stringContaining("reason=UNKNOWN_BROKER_ERROR"),
+    });
+  });
+
+  it("keeps the original failure when a response body is absent or already locked", async () => {
+    const locked = Response.json({ error: "RETURN_ORIGIN_NOT_ENROLLED" }, { status: 401 });
+    const reader = locked.body!.getReader();
+    try {
+      for (const response of [new Response(null, { status: 401 }), locked]) {
+        expect(await rejection(response)).toMatchObject({
+          code: "CONNECTOR_REQUEST_FAILED", status: 401,
+          message: expect.stringContaining("reason=UNKNOWN_BROKER_ERROR"),
+        });
+      }
+    } finally {
+      await reader.cancel();
+    }
+  });
+
+  it("bounds a stalled diagnostic read and does not wait for cancellation", async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    try {
+      const pending = rejection(new Response(new ReadableStream({ cancel }), { status: 400 }));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(await pending).toMatchObject({
+        code: "CONNECTOR_REQUEST_FAILED", status: 400,
+        message: expect.stringContaining("reason=UNKNOWN_BROKER_ERROR"),
+      });
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refreshes capabilities after enrollment and rejects stale cache writes", async () => {
     const keys = config().config;
     const env = {

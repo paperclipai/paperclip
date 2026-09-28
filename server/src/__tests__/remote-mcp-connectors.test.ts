@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, heartbeatRuns, issues, toolCatalogEntries, toolConnectionInstalls, toolInvocations, companies, companyMemberships, createDb, toolConnections, toolPolicies, toolProfileEntries } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, toolCatalogEntries, toolConnectionInstalls, toolInvocations, companies, companyMemberships, instanceSettings, createDb, toolConnections, toolPolicies, toolProfileEntries } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -23,7 +23,6 @@ describe("remote connector lifecycle", () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(keyDir, "key"));
     fixture = await startEmbeddedPostgresTestDatabase("mcp-connectors-test-");
     db = createDb(fixture.connectionString);
-    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
   });
   afterAll(async () => { await fixture?.cleanup(); vi.unstubAllEnvs(); if (keyDir) await rm(keyDir, { recursive: true, force: true }); });
   async function company() {
@@ -51,28 +50,28 @@ describe("remote connector lifecycle", () => {
     });
     return { service, requests, add: () => { added = true; }, remove: () => { removed = true; }, restore: () => { removed = false; } };
   }
-  it("defaults MCP aggregators off and rejects direct setup without provider requests or credential writes", async () => {
-    expect(normalizeExperimentalSettings({}).enableMcpAggregators).toBe(false);
+  it.each([undefined, false])("allows all aggregator setup with stored setting %s", async (legacyValue) => {
+    await db.delete(instanceSettings);
+    if (legacyValue !== undefined) await db.insert(instanceSettings).values({ experimental: { enableMcpAggregators: legacyValue } });
+    expect(normalizeExperimentalSettings({ enableMcpAggregators: legacyValue }).enableMcpAggregators).toBe(true);
+    expect((await instanceSettingsService(db).getExperimental()).enableMcpAggregators).toBe(true);
     const org = await company(); const remote = remoteFixture();
-    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: false });
-    try {
-      const app = express();
-      app.use((req, _res, next) => { req.actor = { type: "board", userId: actor.actorId, source: "local_implicit", isInstanceAdmin: true }; next(); });
-      app.use("/api", toolAccessRoutes(db, { paperclipCloudConnector: null }));
-      const gallery = await request(app).get(`/api/companies/${org.id}/tools/gallery`);
-      expect(gallery.status).toBe(200);
-      expect(gallery.body.apps.some((entry: { slug: string }) => ["zapier", "arcade", "composio", "executor"].includes(entry.slug))).toBe(false);
-      expect(gallery.body.apps.some((entry: { slug: string }) => entry.slug === "notion")).toBe(true);
-      for (const [galleryKey, connectionMethodKey] of [["zapier", "generated-url"], ["arcade", "mcp"], ["composio", "mcp"], ["executor", "mcp"]]) {
-        await expect(remote.service.connectGalleryApp(org.id, { galleryKey, connectionMethodKey, saveDraft: true }, actor))
-          .rejects.toMatchObject({ status: 403, details: { code: "mcp_aggregators_disabled" } });
-      }
-      await expect(remote.service.preflightGalleryAppMetadata("composio", "mcp"))
-        .rejects.toMatchObject({ status: 403 });
-      expect(remote.requests).toHaveLength(0);
-      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, org.id))).toHaveLength(0);
-    } finally {
-      await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
+    const app = express();
+    app.use((req, _res, next) => { req.actor = { type: "board", userId: actor.actorId, source: "local_implicit", isInstanceAdmin: true }; next(); });
+    app.use("/api", toolAccessRoutes(db, { paperclipCloudConnector: null }));
+    const gallery = await request(app).get(`/api/companies/${org.id}/tools/gallery`);
+    expect(gallery.status).toBe(200);
+    expect(gallery.body.apps.map((entry: { slug: string }) => entry.slug)).toEqual(expect.arrayContaining(["zapier", "arcade", "composio", "executor", "notion"]));
+    expect(gallery.body.apps.some((entry: { slug: string }) => entry.slug === "mem0")).toBe(false);
+    for (const [galleryKey, connectionMethodKey, link] of [
+      ["zapier", "generated-url", "https://mcp.zapier.com/api/v1/connect?token=fixture-secret"],
+      ["arcade", "mcp", "https://api.arcade.dev/mcp/fixture"],
+      ["composio", "mcp", "https://connect.composio.dev/mcp"],
+      ["executor", "mcp", "https://example.com/mcp"],
+    ]) {
+      const connected = await remote.service.connectGalleryApp(org.id, { galleryKey, connectionMethodKey, link, authMode: "none" }, actor);
+      expect(connected.catalog).toHaveLength(3);
+      expect(connected.connectionId).toBeTruthy();
     }
   });
   it.each([

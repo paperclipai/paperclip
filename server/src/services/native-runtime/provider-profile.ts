@@ -15,6 +15,7 @@ export const DEFAULT_OPENCODE_RUNNER_MODEL =
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;
 
 export const QUALIFIED_ACPX_RUNNER_MODELS = {
+  grok: "grok-4.7",
   claude: "claude-sonnet-5",
   codex: "gpt-5.6-sol",
 } as const;
@@ -404,7 +405,7 @@ export function resolvePaperclipRunnerProviderProfile(
   }
 
   const acpxAgent = config.acpxAgent ?? "claude";
-  if (acpxAgent !== "claude" && acpxAgent !== "codex") {
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
       "Paperclip Runner ACPX requires the qualified Claude or Codex agent profile; Pi is not available.",

@@ -7,7 +7,12 @@ export const slackSearchConfigSchema = z
   })
   .strict();
 
-const channel = z.string().regex(/^[CGD][A-Z0-9]+$/).describe("Slack channel ID (for example C012AB3CD), not a channel name or URL. Use the assigned source channel or slack_channels results.");
+const channel = z
+  .string()
+  .regex(/^[CGD][A-Z0-9]+$/)
+  .describe(
+    "Slack channel ID (for example C012AB3CD), not a channel name or URL. Use the assigned source channel or slack_channels results.",
+  );
 const user = z.string().regex(/^[UW][A-Z0-9]+$/);
 const timestamp = z.string().regex(/^\d+\.\d+$/);
 const text = z.string().min(1).max(12000);
@@ -15,7 +20,14 @@ const cursor = z.string().max(2048).optional();
 const page = { cursor, limit: z.number().int().min(1).max(100).optional() };
 const channelPage = { channel, ...page };
 const message = { channel, ts: timestamp, thread_ts: timestamp.optional() };
-const write = { idempotencyKey: z.string().uuid().describe("A UUID, such as 9c0dc094-41b6-4d84-a2f1-1df331774489. Do not use a descriptive string or a register_deliverable key. Reuse this UUID only for the same operation.") };
+const write = {
+  idempotencyKey: z
+    .string()
+    .uuid()
+    .describe(
+      "A UUID, such as 9c0dc094-41b6-4d84-a2f1-1df331774489. Do not use a descriptive string or a register_deliverable key. Reuse this UUID only for the same operation.",
+    ),
+};
 const file = z.string().regex(/^F[A-Z0-9]+$/);
 const document = {
   channel,
@@ -33,7 +45,18 @@ function tool<N extends string, S extends z.ZodRawShape>(
   description: string,
   shape: S,
 ) {
-  const schema = z.object(shape).strict();
+  const schema = z
+    .object({
+      ...shape,
+      endpointId: z
+        .string()
+        .uuid()
+        .optional()
+        .describe(
+          "Optional assigned Slack connection ID. Use the supplied resource ID when more than one bot is available; it never grants access to another agent's bot.",
+        ),
+    })
+    .strict();
   return {
     name: `slack_${name}` as const,
     method,
@@ -46,8 +69,17 @@ function tool<N extends string, S extends z.ZodRawShape>(
 }
 
 /** Reviewed allowlist. Scopes separated by | are alternatives, not cumulative requirements.
- * No model-supplied method, token, endpoint, identity, workspace or upload URL. */
+ * No model-supplied method, token, identity, workspace or upload URL.
+ * The optional endpoint selector is authorized against the assigned agent on every call. */
 export const SLACK_TOOLS = [
+  tool(
+    "open_dm",
+    "conversations.open",
+    ["im:write"],
+    "write",
+    "Open or resume this bot's DM with the current task's linked requester. Returns a channel ID for slack_post_message. Never opens another person's DM.",
+    write,
+  ),
   tool(
     "delivery",
     "chat.getPermalink",
@@ -418,11 +450,13 @@ export type SlackToolName = (typeof SLACK_TOOLS)[number]["name"];
 export const slackToolCallSchema = z
   .object({
     tool: z.string().min(1).max(100),
+    endpointId: z.string().uuid().optional(),
     arguments: z.record(z.string(), z.unknown()),
   })
   .strict();
 
 export const SLACK_BOT_TOOL_SCOPES = [
+  "im:write",
   "emoji:read",
   "pins:read",
   "pins:write",

@@ -291,7 +291,7 @@ function ReconnectForm({
     : null;
   const fields = (method?.credentialFields ?? []).map((field) => ({
     ...field,
-    configPath: credentialConfigPath(field),
+    configPath: credentialConfigPath(field, method),
     helpUrl: method?.consoleLinks?.keys ?? method?.consoleLinks?.docs ?? "",
   }));
   const [values, setValues] = useState<Record<string, string>>({});

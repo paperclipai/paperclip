@@ -1089,6 +1089,30 @@ it("quiesces the control route before checkpoint and containment regardless of p
   expect(failedCheckpointSteps).toEqual(["release", "checkpoint", "kill"]);
 });
 
+it("does not release a session before asynchronous process containment settles", async () => {
+  let finishKill!: () => void;
+  const killed = new Promise<void>((resolve) => { finishKill = resolve; });
+  const steps: string[] = [];
+  const released = runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: false,
+    release: () => { steps.push("route-closed"); },
+    checkpoint: () => { steps.push("checkpoint"); },
+    forceKill: async () => { steps.push("kill-dispatched"); await killed; steps.push("process-exited"); },
+  }).then(() => { steps.push("session-reusable"); });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(steps).toEqual(["route-closed", "checkpoint", "kill-dispatched"]);
+  finishKill();
+  await released;
+  expect(steps).toEqual(["route-closed", "checkpoint", "kill-dispatched", "process-exited", "session-reusable"]);
+});
+
+it("refuses session reuse when asynchronous process containment fails", async () => {
+  await expect(runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: true, release: null, checkpoint: null,
+    forceKill: async () => { throw new Error("remote process still alive"); },
+  })).rejects.toThrow("remote process still alive");
+});
+
 it("waits for the exact durable suspension command behind prior close work", async () => {
   const commands = [
     {
@@ -1344,6 +1368,15 @@ it("derives the ACPX package authority only from the verified dist/cli layout", 
       "/unverified/acpx-runtime-sidecar.cjs",
     ),
   ).toThrow("ACPX sidecar must use the provider package dist/cli layout");
+});
+
+it("uses the public server npm package as the authority for vendored sidecars", () => {
+  expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+    "/clean/node_modules/@paperclipai/server/dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs",
+  )).toEqual({
+    root: "/clean/node_modules/@paperclipai/server",
+    manifest: "/clean/node_modules/@paperclipai/server/package.json",
+  });
 });
 
 it("keeps a self-rooted pnpm deployment inside its dependency authority", async () => {
@@ -1698,6 +1731,7 @@ it.each([
         environment: {
           PATH: "/bin",
           ...credentialEnvironment,
+          PAPERCLIP_ACPX_BUILTIN_ROOT: "/attacker/builtin",
           PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/attacker/package-root",
           PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
             "/attacker/package-root/package.json",
@@ -1726,6 +1760,7 @@ it.each([
       PAPERCLIP_RUN_ID: "run-1",
       PAPERCLIP_NORMALIZED_SESSION_ID: "session-1",
       PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: "/isolated/runtime-context.json",
+      PAPERCLIP_ACPX_BUILTIN_ROOT: "/verified/provider-pack/dist/providers",
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/verified/provider-pack",
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
         "/verified/provider-pack/package.json",
@@ -2118,6 +2153,33 @@ it("routes canonical session goals back through the Codex notification facade", 
   expect(runnerdCanonicalNotificationMethod("session.goal.cleared", {})).toBe(
     "thread/goal/cleared",
   );
+});
+
+it("keeps canonical ACPX reasoning out of assistant deltas", () => {
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "reasoning", channel: "summary", text: "Private reasoning",
+  })).toBe("item/reasoning/summaryTextDelta");
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "reasoning", channel: "detail", text: "Private reasoning",
+  })).toBe("item/reasoning/textDelta");
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "agentMessage", text: "Visible answer",
+  })).toBe("item/agentMessage/delta");
+});
+
+it("preserves reasoning kinds and order inside coalesced canonical deltas", () => {
+  const events = [
+    { kind: "reasoning", channel: "summary", text: "Private reasoning", itemId: "thought-1" },
+    { kind: "agentMessage", text: "Visible answer", itemId: "answer-1" },
+    { kind: "reasoning", channel: "detail", text: "Private detail", itemId: "thought-2" },
+  ];
+  expect(expandRunnerdCanonicalNotifications("item/agentMessage/delta", {
+    coalescedCount: events.length, events,
+  }, "item.delta")).toEqual([
+    { method: "item/reasoning/summaryTextDelta", params: events[0] },
+    { method: "item/agentMessage/delta", params: events[1] },
+    { method: "item/reasoning/textDelta", params: events[2] },
+  ]);
 });
 
 it("continues consuming after the durable committed-event window rolls", () => {
@@ -7199,3 +7261,74 @@ it("resolves explicit skills to the remote provider home and rejects unassigned 
   }
   expect(() => resolveRunnerdCodexSkillInputs([skill], null, "/runner/codex-home")).toThrow("assigned runtime skill");
 });
+
+
+it("preserves prepared input through runnerd and the real OpenCode proxy boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-prepared-opencode-"));
+  // The qualified launch boundary unlinks its executable after exec. Use a
+  // native wrapper, like the real OpenCode binary; a shebang script would need
+  // to reopen the now-unlinked path in its interpreter.
+  const executable = join(root, "fake-opencode");
+  const fixture = resolve("test/fixtures/fake-opencode-server.mjs");
+  execFileSync("cc", ["-x", "c", "-o", executable, "-"], {
+    input: `#include <unistd.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(process.execPath)}; args[1] = ${JSON.stringify(fixture)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }`,
+  });
+  // Use the production bundler without depending on (or mutating) shared dist
+  // artifacts. The Vitest CI lane builds Rust but does not build TypeScript.
+  const proxy = join(root, "opencode-app-server-proxy.cjs");
+  const proxyBytes = execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import { bundleVerifiedProviderEntrypoints } from "./scripts/build-verified-provider-entrypoints.mjs";
+    const entries = await bundleVerifiedProviderEntrypoints({ write: false });
+    const proxy = entries.find(({ entrypoint }) => entrypoint.name === "opencode-app-server-proxy");
+    process.stdout.write(proxy.verifiedResult.outputFiles[0].contents);
+  `], { maxBuffer: 16 * 1024 * 1024 });
+  await writeFile(proxy, proxyBytes, { mode: 0o755 });
+  const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
+  const runtime = join(root, "opencode");
+  const bundle = createCapabilityRunnerdCodexTransport({
+    provider: "opencode",
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    stateDirectory: join(root, "runner-state"),
+    opencodeRuntimeDirectory: runtime,
+    opencodeCommand: executable,
+    opencodeCommandSha256: digest(executable),
+    opencodeProxyPath: proxy,
+    opencodeProxySha256: digest(proxy),
+    providerNodeCommand: process.execPath,
+    providerNodeCommandSha256: digest(process.execPath),
+    environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+  });
+  const task = createCodexTaskEnvelope({
+    objective: "Preserve the prepared task.", contractRevision: "prepared-v1",
+    criteria: [{ id: "objective", requirement: "Keep this request unchanged." }],
+  });
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: task,
+    conversationMode: "prepared",
+    model: "openrouter/deepseek/deepseek-v4-flash-0731",
+    transportFactory: () => bundle.transport,
+    workingDirectoryAuthority: "remote_runner",
+    environment: { PAPERCLIP_WORKSPACE_CWD: root },
+  });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+  const prepared = JSON.stringify({
+    schema: "paperclip.native-model-envelope.v3",
+    task: { prompt: "Keep this request unchanged." },
+    completionContract: { revision: "prepared-v1", criteria: task.completionContract.criteria },
+  });
+  try {
+    session = await driver.openSession({ runId: "prepared-opencode", normalizedSessionId: "prepared-opencode", workingDirectory: root });
+    await session.startTurn({ message: { role: "user", text: prepared } });
+    for await (const event of session.events()) {
+      if (event.eventType === "turn.completed") break;
+    }
+    const sessionRoots = (await readdir(runtime, { withFileTypes: true })).filter((entry) => entry.isDirectory());
+    expect(sessionRoots).toHaveLength(1);
+    const requests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(requests.map((request) => request.parts)).toEqual([[{ type: "text", text: prepared }]]);
+  } finally {
+    await session?.close();
+    await bundle.transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);

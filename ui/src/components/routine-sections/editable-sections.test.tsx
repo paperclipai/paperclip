@@ -82,8 +82,9 @@ describe("TriggersSection", () => {
     await click("Add trigger");
     await choose("When another app sends a webhook");
     await click("Continue");
-    expect(api.createTrigger).toHaveBeenCalledWith("routine-1", { kind: "webhook", signingMode: "bearer", setupPending: true });
-    expect(container.textContent).toContain("Bearer one-time-secret");
+    expect(api.createTrigger).toHaveBeenCalledWith("routine-1", { kind: "webhook", signingMode: "app_webhook", setupPending: true });
+    expect(container.textContent).toContain("one-time-secret");
+    expect(container.textContent).toContain("signing secret field");
     expect(button("Copy for your agent")).toBeTruthy();
     expect(JSON.stringify(Object.values(sessionStorage))).not.toContain("one-time-secret");
     await click("Check connection");

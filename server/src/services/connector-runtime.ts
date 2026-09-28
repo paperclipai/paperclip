@@ -25,6 +25,7 @@ type ToolBinding = AgentBinding & {
   runId: string;
   issueId: string;
   workMode?: string;
+  endpointId?: string;
 };
 type Resource = {
   id: string;

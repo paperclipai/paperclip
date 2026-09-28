@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { buildPaperclipTaskMarkdown } from "../services/heartbeat.js";
 import {
   claudeCommandSupportsEffortFlag,
   claudeSessionCwdMatchesExecutionTarget,
@@ -351,6 +352,63 @@ function createLocalSandboxRunner() {
 }
 
 describe("claude execute", () => {
+  it("passes real assignment markdown and ordered current events once through the CLI", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-context-owner-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-901", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase" },
+      wakeComments: [
+        { id: "comment-a", body: "Same event body." },
+        { id: "comment-b", body: "Same event body." },
+      ],
+      includeWakeComments: false,
+    });
+    const historicalMarkdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-901", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase" },
+      wakeComments: [
+        { id: "comment-a", body: "Same event body." },
+        { id: "comment-b", body: "Same event body." },
+      ],
+    });
+    try {
+      await execute({
+        runId: "run-context-owner",
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli", command: commandPath, cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Custom template keeps {{paperclipTaskMarkdown}} and {{paperclipWakePrompt}}.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipTaskMarkdown: historicalMarkdown,
+          paperclipTaskMarkdownAssignment: markdown,
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: { id: "issue-1", identifier: "PAP-901", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase", status: "in_progress" },
+            comments: [
+              { id: "comment-a", issueId: "issue-1", body: "Same event body.", bodyTruncated: false, createdAt: "2026-09-21T00:00:00.000Z" },
+              { id: "comment-b", issueId: "issue-1", body: "Same event body.", bodyTruncated: false, createdAt: "2026-09-21T00:01:00.000Z" },
+            ],
+            commentWindow: { requestedCount: 2, includedCount: 2, missingCount: 0 },
+            fallbackFetchNeeded: false,
+          },
+          paperclipTurnContext: { version: 1, assignment: { owner: "task_markdown" }, events: { owner: "wake_prompt", comments: [{ id: "comment-a", revision: "a" }, { id: "comment-b", revision: "b" }] } },
+        },
+        onLog: async () => {},
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("Custom template keeps");
+      expect(capture.prompt.indexOf("comment-a")).toBeLessThan(capture.prompt.indexOf("comment-b"));
+      expect(capture.prompt.split("Same event body.")).toHaveLength(3);
+      expect(capture.prompt.split("Repeat phrase Repeat phrase")).toHaveLength(4);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     [undefined, "claude-opus-5"],
     ["", "claude-opus-5"],

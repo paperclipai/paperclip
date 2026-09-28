@@ -22,6 +22,9 @@ export default defineConfig(({ mode }) => ({
   esbuild:
     mode === "production"
       ? {
+          // React's component trace uses function names. Keep those useful in
+          // error reports without publishing source maps or page context.
+          keepNames: true,
           drop: ["console", "debugger"],
           legalComments: "none",
         }

@@ -22,7 +22,7 @@ const actorFields = {
   createdAt: now, updatedAt: now,
 };
 
-function webhook(signingMode: string, index = 1, webhookUrl = defaultWebhookUrl): RoutineTrigger {
+export function webhook(signingMode: string, index = 1, webhookUrl = defaultWebhookUrl): RoutineTrigger {
   return {
     ...actorFields, id: `webhook-${index}`, companyId, routineId,
     kind: "webhook", label: "Deployment completed", enabled: true,
@@ -48,7 +48,7 @@ const completedRun: RoutineRunSummary = {
   },
 };
 
-const baseRoutine: RoutineDetailData = {
+export const baseRoutine: RoutineDetailData = {
   ...actorFields, id: routineId, companyId, projectId: null, goalId: null,
   parentIssueId: null, responsibleUserId: null,
   title: "Verify a deployment",
@@ -95,7 +95,7 @@ const routineActivity: ActivityEvent[] = [
 type Props = {
   preview?: ReactNode;
   webhookUrl?: string;
-  signingMode: "bearer" | "hmac_sha256" | "github_hmac" | "none";
+  signingMode: "app_webhook" | "fireflies_hmac" | "bearer" | "hmac_sha256" | "github_hmac" | "none";
   state: "setup" | "credentials" | "configured" | "failure" | "overview" | "list" | "runs" | "activity";
 };
 

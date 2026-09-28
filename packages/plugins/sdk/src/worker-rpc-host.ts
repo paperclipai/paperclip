@@ -1,3 +1,4 @@
+import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
  *
@@ -1571,7 +1572,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           ? (err as any).code
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
-      sendMessage(createErrorResponse(id, errorCode, errorMessage));
+      sendMessage(createErrorResponse(id, errorCode, errorMessage,
+        method === "environmentAcquireLease" || method === "environmentDestroyLease"
+          ? environmentCreationCleanupErrorData(err) : undefined));
     }
   }
 
@@ -1636,6 +1639,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentReleaseLease":
         return handleEnvironmentReleaseLease(params as PluginEnvironmentReleaseLeaseParams);
+      case "environmentStopLease":
+        if (!plugin.definition.onEnvironmentStopLease) throw methodNotImplemented("environmentStopLease");
+        return plugin.definition.onEnvironmentStopLease(params as PluginEnvironmentReleaseLeaseParams);
 
       case "environmentDestroyLease":
         return handleEnvironmentDestroyLease(params as PluginEnvironmentDestroyLeaseParams);
@@ -1737,6 +1743,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
     if (plugin.definition.onEnvironmentResumeLease) supportedMethods.push("environmentResumeLease");
     if (plugin.definition.onEnvironmentReleaseLease) supportedMethods.push("environmentReleaseLease");
+    if (plugin.definition.onEnvironmentStopLease) supportedMethods.push("environmentStopLease");
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");

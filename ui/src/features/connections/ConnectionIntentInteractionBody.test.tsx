@@ -44,7 +44,7 @@ vi.mock("./ConnectionSetupFlow", () => ({
     requestedAgentId?: string;
     existingConnections?: ToolConnection[];
     onUseExisting?: (id: string) => Promise<void>;
-    onComplete?: (completion: { connectionId: string }) => void;
+    onComplete?: (completion: { connectionId: string } | { resolvedByCallback: true }) => void;
     onPhaseChange?: (phase: "needs_retry") => void;
     onCancel?: () => void;
   }) => (
@@ -66,6 +66,7 @@ vi.mock("./ConnectionSetupFlow", () => ({
       >
         Connect new
       </button>
+      <button onClick={() => props.onComplete?.({ resolvedByCallback: true })}>Simulate OAuth callback</button>
       <button onClick={() => props.onPhaseChange?.("needs_retry")}>
         Simulate retry
       </button>
@@ -218,6 +219,24 @@ describe("ConnectionIntentInteractionBody states and audience", () => {
 });
 
 describe("ConnectionIntentInteractionBody dialog behavior", () => {
+  it("verifies inline OAuth callback hints against durable server acceptance", async () => {
+    const options = { requestedAgentId: pendingConnectionIntentInteraction.payload.requestingAgentId, existingConnections: [], interaction: pendingConnectionIntentInteraction };
+    setupOptionsMock.mockResolvedValue(options);
+    renderBody();
+    await act(() => button("Connect / Use existing")?.click());
+    await flush();
+    const readsBeforeMessage = setupOptionsMock.mock.calls.length;
+    await act(() => button("Simulate OAuth callback")?.click());
+    await flush();
+    expect(setupOptionsMock.mock.calls.length).toBeGreaterThan(readsBeforeMessage);
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(completeMock).not.toHaveBeenCalled();
+    setupOptionsMock.mockResolvedValue({ ...options, interaction: connectedConnectionIntentInteraction });
+    await act(() => button("Simulate OAuth callback")?.click());
+    await waitForAssertion(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
   it("shows loading, then passes existing choices and the locked requesting agent to the shared flow", async () => {
     let resolveSetup!: (value: unknown) => void;
     setupOptionsMock.mockReturnValue(

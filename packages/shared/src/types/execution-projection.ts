@@ -64,4 +64,6 @@ export interface ExecutionReconciliation {
   providerStopped: true;
   actionOutcome: "completed" | "not_performed" | "mixed";
   outcomeEvidence: string;
+  /** Operator evidence bound to this failed run; required after workspace restore failure. */
+  workspaceRepairEvidence?: string;
 }

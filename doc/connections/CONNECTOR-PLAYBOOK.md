@@ -13,6 +13,14 @@ classification, credential boundaries, and production validation requirements
 are specified below so contributors can implement a connector without access
 to an internal issue tracker.
 
+Inline task connection cards must use the same provider setup controller and
+fields as Apps: URL guidance, authentication options, validation, and recovery.
+Keep dialogs bounded to the form width on wide screens and scrollable on narrow
+screens. A task request locks agent access to its requester and returns to the
+card after completion; reusing an account must preserve its existing access.
+OAuth popups need a normal sign-in link fallback, and callback messages must be
+verified against durable server state before accepting the request.
+
 For chat and email setup, account linking, and ongoing configuration, also follow
 [Chat connector UX](./CHAT-CONNECTOR-UX.md). It covers step navigation, footer
 layout, credential instructions, provider handoffs, identity linking, optional
@@ -458,6 +466,12 @@ connection work or enforce a real tenant boundary. Follow these rules:
 - Show browser sign-in/pending/return only for a real OAuth handoff supported by
   the chosen authentication. Zapier's pasted MCP URL or bearer token requires no
   Paperclip sign-in window. Advanced token/header setups need no invented OAuth step.
+- On an OAuth failure or cancellation, explain the outcome on the return screen
+  and offer a retry of the same saved connection. Do not silently return to a blank
+  setup form or display untrusted provider error text from the callback URL.
+- Resuming a saved connection retains its credential identity. Show that identity
+  as fixed in Access, and start OAuth with the credential policy returned by the
+  server. Do not offer personal/shared choices that the server will ignore.
 - Put optional narrowing in fields marked `advanced: true`.
 - Give hidden fields a `defaultValue`; never create a hidden required field the
   server cannot fill.
@@ -2183,3 +2197,51 @@ For Slack bot tool contributions, use [Slack task tools](SLACK-TASK-TOOLS.md). I
 documents verified task authority, read/write boundaries, per-user search grants,
 method/scope contracts, delivery and current runtime limitations. Keep bot tools
 separate from the user-authorized Slack MCP connection.
+
+### Agent discovery through MCP aggregators
+
+`connections_search` owns the next-step guidance. Its `instruction` is authored by
+Paperclip, never copied from provider tool descriptions. Core agent guidance only
+needs to call search, follow that instruction, and respect saved user choices.
+
+Exact built-in matches (including reviewed aliases) take precedence over external
+routes. An explicit query such as “HubSpot through Arcade” keeps the named
+provider and returns instructions to pass its app slug as `targetService` with the
+direct provider request only when a persisted message from the responsible human
+proves that choice. An agent-supplied query alone does not count. Unclear or missing
+message evidence falls back to a question naming that provider and None; alternatives
+remain a provider-choice question. New human consent must postdate any saved decline
+or different choice. Native administrative restrictions still cannot be bypassed. A
+missing built-in match can return eligible
+Composio, Arcade, Executor, and Zapier routes in that order. Search itself makes no
+provider requests and starts no authorization.
+
+Maintain the reviewed support snapshot in
+`packages/shared/src/connection-routing.ts`. Add a service only after checking its
+official provider catalog; update only that app/provider claim’s verification date
+and the service aliases. Do not refresh other claims’ dates without checking them. A catalog
+listing establishes possible support, not the user's gateway configuration or
+account authorization. Executor requires evidence from the authorized workspace's
+indexed tools. Search must not read another user's private catalog. Unknown
+services return an unverified result rather than an invented route.
+
+For fallback, pass the returned `providerQuestion` unchanged to
+`ask_user_questions`. The question names the external services and includes None.
+After the human answers, pass the selected `via:provider:app` service and the saved
+question's `selectionInteractionId` to `connection_request`. The server validates
+the task, requesting agent, responsible user, disclosure, answer, and current route
+eligibility. A pending question is reused. A decline remains effective across
+continuations; `retryProviderChoice` is only for an explicit user request to
+reconsider and still requires a new human answer before setup.
+
+Reuse the existing provider connection where eligible. New setup retains the app
+name as “Connect HubSpot through Arcade,” with the usual Access → Connect flow.
+Successful provider setup returns a provider-specific continuation `instruction`:
+the agent must verify the requested app and complete any app authorization before
+claiming it works. Do not create child connections or broaden existing grants.
+
+The `Apps / Connections / Provider choice` Storybooks use simulated support and
+in-memory provider responses. The `provider-native`, `provider-decline`, and
+`provider-second` Product E2E cases exercise native preference, persisted choice,
+restart recovery, and an independently observed gateway read. They do not prove
+compatibility with the real external providers.

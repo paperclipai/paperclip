@@ -52,7 +52,9 @@ export const instanceExperimentalSettingsSchema = z.object({
   // configs continue to load during upgrades.
   enableApps: z.boolean().default(true),
   enableChatConnectors: z.boolean().default(false),
-  enableMcpAggregators: z.boolean().default(false),
+  // Compatibility only: old stored and managed values must still parse.
+  enableMcpAggregators: z.boolean().default(true),
+  enableMemoryConnectors: z.boolean().default(false),
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableAgentChat: z.boolean().default(false),

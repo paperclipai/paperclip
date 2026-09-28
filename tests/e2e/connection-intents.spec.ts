@@ -123,16 +123,27 @@ const post = async (url, body, token = process.env.PAPERCLIP_RUNTIME_TOOLS_TOKEN
   if (!response.ok) throw new Error(\`\${response.status}: \${await response.text()}\`);
   return await response.json();
 };
+const apiHeaders = { authorization: \`Bearer \${process.env.PAPERCLIP_API_KEY}\`, "content-type": "application/json", "x-paperclip-run-id": process.env.PAPERCLIP_RUN_ID };
+const runResponse = await fetch(\`\${process.env.PAPERCLIP_API_URL}/api/heartbeat-runs/\${process.env.PAPERCLIP_RUN_ID}\`, { headers: apiHeaders });
+if (!runResponse.ok) throw new Error(await runResponse.text());
+const run = await runResponse.json();
+const issueId = process.env.PAPERCLIP_TASK_ID ?? run.contextSnapshot.issueId;
+if (!issueId) throw new Error("Missing task binding");
 const search = await post(process.env.PAPERCLIP_RUNTIME_TOOLS_CONNECTIONS_SEARCH_URL, { query: "notion" });
 const notion = search.results.find((result) => result.service === "notion");
 if (!notion) throw new Error("Notion was not advertised");
 if (notion.state !== "ready") {
   const requested = await post(process.env.PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL, { service: notion.service });
   if (requested.state !== "needs_user_action") throw new Error("Expected a user-action request");
+  const comment = await fetch(\`\${process.env.PAPERCLIP_API_URL}/api/issues/\${issueId}/comments\`, {
+    method: "POST",
+    headers: apiHeaders,
+    body: JSON.stringify({ body: "Requested Notion access through the connection card." })
+  });
+  if (!comment.ok) throw new Error(await comment.text());
   console.log("waiting for connection intent");
   process.exit(0);
 }
-const apiHeaders = { authorization: \`Bearer \${process.env.PAPERCLIP_API_KEY}\`, "content-type": "application/json" };
 const sessionResponse = await fetch(\`\${process.env.PAPERCLIP_API_URL}/api/tool-gateway/sessions\`, {
   method: "POST",
   headers: apiHeaders,
@@ -153,6 +164,13 @@ const call = await fetch(\`\${process.env.PAPERCLIP_API_URL}/api/tool-gateway/to
 });
 if (!call.ok) throw new Error(await call.text());
 console.log(await call.text());
+// Successful tool use must end with a durable task disposition.
+const completion = await fetch(\`\${process.env.PAPERCLIP_API_URL}/api/issues/\${issueId}\`, {
+  method: "PATCH",
+  headers: apiHeaders,
+  body: JSON.stringify({ status: "done", comment: "Read the requested Notion page inventory." })
+});
+if (!completion.ok) throw new Error(await completion.text());
 `;
 }
 
@@ -261,6 +279,10 @@ test("store setup and task connection intent share one fake provider through con
       timeout: 30_000,
     });
 
+    const callsBeforeContinuation = provider.captures.filter(
+      (capture) => capture.method === "tools/call" && capture.toolName === "notion:list_pages",
+    ).length;
+
     // Entry point two: a scripted agent requests Notion, then the same shared
     // provider is reused from the task dialog and appears in the fresh run.
     const scout = await createAgent(
@@ -339,13 +361,22 @@ test("store setup and task connection intent share one fake provider through con
       .toBe("succeeded");
     await expect
       .poll(() =>
-        provider.captures.some(
+        provider.captures.filter(
           (capture) =>
             capture.method === "tools/call" &&
             capture.toolName === "notion:list_pages",
-        ),
+        ).length,
       )
-      .toBe(true);
+      .toBe(callsBeforeContinuation + 1);
+    const completedIssue = await json<{ status: string }>(
+      await request.get(`/api/issues/${issue.id}`),
+    );
+    expect(completedIssue.status).toBe("done");
+    const finalRuns = await json<Array<{ id: string; status: string }>>(
+      await request.get(`/api/companies/${seed.companyId}/heartbeat-runs?agentId=${scout.id}&limit=10`),
+    );
+    expect(finalRuns).toHaveLength(2);
+    expect(finalRuns.every((run) => run.status === "succeeded")).toBe(true);
 
     const interactions = await json<Array<{ kind: string; status: string }>>(
       await request.get(`/api/issues/${issue.id}/interactions`),

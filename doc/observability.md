@@ -411,6 +411,25 @@ not inherit a previous run's identity or fingerprint.
 The browser sends no page URL, no referrer, no user agent, and no
 breadcrumb.
 
+Application and route error-boundary reports also include:
+
+- `react_error_boundary`: `app` or `route`.
+- `react.componentStack`: up to 40 React component names. Frame locations,
+  URLs, arguments, and unrecognized lines are omitted. Parsing examines at
+  most 16 KiB of input. Production builds preserve function names so this
+  trace remains useful after minification; this adds some bundle size.
+- `browser_state`: document readiness, visibility, and a boolean indicating
+  the `translated-ltr` or `translated-rtl` root class used by browser translation.
+  The marker is evidence of DOM translation, not proof of the error's cause;
+  its absence does not exclude other translators or DOM-changing extensions.
+
+These fields are captured at the failure, before asynchronous reporting, and
+attached only to that event. They include no component props, DOM text, HTML,
+element identifiers, arbitrary CSS classes, route, or query string. Failed
+diagnostic reads do not prevent the original exception from being reported.
+The monitoring gate and sign-out behavior still apply. This context does not
+suppress errors, change DOM operations, or disable browser translation.
+
 ### Fail-open behavior
 
 A failed Sentry import or a failed init never stops the server and never

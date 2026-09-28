@@ -63,7 +63,7 @@ export function fixtureTools(provider: RemoteMcpProviderId, broad = false) {
 }
 
 export const reviewScenarios = [
-  "journey", "initial", "selected_agents", "connect", "advanced", "connecting", "sign_in", "returned", "cancelled", "invalid_url", "rejected", "unreachable", "permissions", "broad", "completed", "reconnect", "draft", "new_tools", "direct_tools", "provider_pending",
+  "journey", "initial", "selected_agents", "connect", "advanced", "connecting", "sign_in", "returned", "cancelled", "oauth_failed", "invalid_url", "rejected", "unreachable", "permissions", "broad", "completed", "reconnect", "draft", "new_tools", "direct_tools", "provider_pending",
 ] as const;
 export type ReviewScenario = typeof reviewScenarios[number];
 
@@ -77,8 +77,8 @@ export function initialReviewState(provider: RemoteMcpProviderId, scenario: Revi
   if (scenario === "direct_tools") tools = [readAction("GMAIL_FETCH_EMAILS", "Fetch emails", "An individual action from an externally configured direct-tools session.")];
   if (scenario === "new_tools") tools = [...tools, newFixtureTool];
   const access = ["journey", "initial", "selected_agents"].includes(scenario);
-  const setupComplete = !access && !["connect", "advanced", "connecting", "sign_in", "cancelled", "invalid_url", "rejected", "unreachable", "draft"].includes(scenario);
-  const connectCases: Partial<Record<ReviewScenario, ConnectStatus>> = { connect: "idle", advanced: "idle", connecting: "connecting", sign_in: "sign_in", cancelled: "cancelled", invalid_url: "invalid_url", rejected: "rejected", unreachable: "unreachable", reconnect: "idle" };
+  const setupComplete = !access && !["connect", "advanced", "connecting", "sign_in", "cancelled", "oauth_failed", "invalid_url", "rejected", "unreachable", "draft"].includes(scenario);
+  const connectCases: Partial<Record<ReviewScenario, ConnectStatus>> = { connect: "idle", advanced: "idle", connecting: "connecting", sign_in: "sign_in", cancelled: "cancelled", oauth_failed: "oauth_failed", invalid_url: "invalid_url", rejected: "rejected", unreachable: "unreachable", reconnect: "idle" };
   const isConnect = scenario in connectCases;
   const state: RemoteMcpSetupState = {
     step: access ? "access" : isConnect ? "connect" : scenario === "completed" ? "management" : scenario === "draft" ? "draft" : "permissions",

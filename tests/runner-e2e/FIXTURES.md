@@ -46,6 +46,14 @@ Agent `adapterConfig.env` values must be `{type:"secret_ref", secretId,
 version:"latest"}` objects supplied to the factory. A fixture source containing
 a raw secret-looking value is rejected by catalog validation.
 
+The manual Grok subscription profile uses `GROK_AUTH_JSON` as an explicit login
+fixture. It does not put this credential in agent configuration or substitute an
+API key. Setup seeds a new company-scoped Grok home inside the disposable instance
+with mode 0700 and an exclusive mode-0600 auth file. Setup rejects redirected,
+occupied, or nonisolated homes. Production runner discovery and refresh operate on
+that company login; teardown destroys it after the remote environment is removed.
+This fixture tests subscription execution, not the interactive browser login flow.
+
 ## Environments
 
 An `EnvironmentFixture` declares driver/provider, credential requirements,
@@ -122,6 +130,11 @@ the complete-catalog size, and credential-free unit tests in the same change.
 Paid tests never silently skip a missing credential or unsupported artifact.
 
 ## New Paperclip object fixtures
+
+The explicit-only `lifecycle-baseline` suite reuses this registry and existing
+continuation, chat and governed-action flows. Its narrative pairs require actual
+agent/run-attributed comments or exact visible responses. See
+[the live baseline contract](LIFECYCLE-BASELINE.md) for selectors and proof boundaries.
 
 Register new objects in `live-fixtures.ts` with explicit dependencies in
 `FixtureRegistry`. Setup must use a public API. Teardown runs in reverse order
@@ -215,3 +228,8 @@ observable active execution; no provider output or database outcome is fabricate
 A worker-crash case sends SIGKILL only to a positively identified running native
 worker PID, then uses the production Retry button. Each gate is released in a
 finally block. Source facts and boundary state are retained with the attempt.
+The lifecycle suite also includes two legacy disposition-repair probes. Their
+first provider turn intentionally omits task disposition, and their second turn
+must be an automatic, causally bound repair that records completion. They use
+public task comments/status APIs and run-detail evidence; no private runtime
+hooks or database mutations are used by the fixture.

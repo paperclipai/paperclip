@@ -1,5 +1,7 @@
 import type { ConnectionIntentInteraction } from "./issue.js";
 import type { ToolConnection } from "./tool-access.js";
+import type { AskUserQuestionsQuestion } from "./issue.js";
+import type { RemoteMcpConnectorId } from "../remote-mcp-connectors.js";
 
 export type ConnectionAvailabilityState =
   | "ready"
@@ -9,7 +11,15 @@ export type ConnectionAvailabilityState =
 
 export interface ConnectionSearchResultItem {
   service: string;
-  source?: "catalog" | "configured";
+  source?: "catalog" | "configured" | "aggregator";
+  aggregator?: {
+    provider: RemoteMcpConnectorId;
+    targetService: string;
+    targetName: string;
+    evidenceUrl: string | null;
+    verifiedAt: string;
+    readiness: "requires_provider_setup" | "requires_app_verification";
+  };
   reason?: string;
   name: string;
   description: string | null;
@@ -27,6 +37,10 @@ export interface ConnectionsSearchResult {
   version: 1;
   query: string;
   results: ConnectionSearchResultItem[];
+  /** Paperclip-authored next step; provider content must never supply this field. */
+  instruction?: string;
+  providerQuestion?: AskUserQuestionsQuestion;
+  selectionInteractionId?: string;
 }
 
 export interface ConnectionRequestResult {

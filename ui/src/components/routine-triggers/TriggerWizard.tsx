@@ -26,6 +26,8 @@ export type TriggerDraft = {
   step: number;
   availableStep: number;
   sender: "custom" | "github";
+  /** Retained when resuming webhooks created before generic signed-app support. */
+  signingMode?: "bearer" | "app_webhook" | "fireflies_hmac";
   frequency: string;
   time: string;
   weekday: string;
@@ -49,6 +51,7 @@ export function webhookAgentInstructions(
   webhookUrl: string,
   webhookSecret: string,
   setupPending = true,
+  signingMode: TriggerDraft["signingMode"] = "app_webhook",
 ) {
   const common = [
     `Connect the sending app to the Paperclip routine ${JSON.stringify(routineTitle)}.`,
@@ -68,8 +71,13 @@ export function webhookAgentInstructions(
         ]
       : [
           `Secret key: ${webhookSecret}`,
-          `Authorization: Bearer ${webhookSecret}`,
-          "Set the HTTP header name to Authorization and its value to the complete Bearer value above, including the space after Bearer.",
+          ...(signingMode === "bearer" ? [] : [
+            `If the app asks for a signing secret, paste the secret key above. Paperclip accepts HMAC-SHA256 over the exact request body in ${signingMode === "fireflies_hmac" ? "X-Hub-Signature" : "X-Hub-Signature or X-Hub-Signature-256"}, formatted sha256=<hex digest>.`,
+          ]),
+          ...(signingMode === "fireflies_hmac" ? [] : [
+            `For apps with custom headers, use Authorization: Bearer ${webhookSecret}`,
+          ]),
+          "Subscribe only to the events that should start this routine. Public services need a publicly reachable HTTPS URL.",
           "In the sending app, add a webhook using this URL, POST method, JSON body, and headers, then save it.",
           "Send a unique Idempotency-Key header for each event and reuse it on retries, so retrying a setup test after activation cannot start the routine.",
           'Example JSON body: {"event":"deployment.completed","environment":"production"}',
@@ -420,6 +428,11 @@ export function RoutineTriggerWizard({
             </div>
           </fieldset>
         )}
+        {draft.kind === "webhook" && draft.step === 0 && (
+          <p className="text-sm text-muted-foreground">
+            Public services need a publicly reachable HTTPS webhook URL.
+          </p>
+        )}
         {!schedule && draft.step === 1 && (
           <div className="space-y-5">
             {webhookSecret && (
@@ -429,6 +442,8 @@ export function RoutineTriggerWizard({
                   routineTitle,
                   webhookUrl,
                   webhookSecret,
+                  true,
+                  draft.signingMode,
                 )}
               />
             )}
@@ -436,10 +451,19 @@ export function RoutineTriggerWizard({
               label={github ? "Payload URL" : "Webhook URL"}
               value={webhookUrl}
             />
+            {!github && draft.signingMode !== "bearer" && (
+              <p className="text-sm text-muted-foreground">
+                Paste this key into your app’s signing secret field.
+                {draft.signingMode !== "fireflies_hmac" && <>
+                  {" "}If your app uses custom headers instead, set Authorization to Bearer followed
+                  by a space and this key.
+                </>}
+              </p>
+            )}
             {webhookSecret ? (
               <CopyField
-                label={github ? "Secret" : "Authorization header value"}
-                value={github ? webhookSecret : `Bearer ${webhookSecret}`}
+                label={github ? "Secret" : draft.signingMode === "bearer" ? "Authorization header value" : "Secret key"}
+                value={!github && draft.signingMode === "bearer" ? `Bearer ${webhookSecret}` : webhookSecret}
               />
             ) : (
               <div className="space-y-2">

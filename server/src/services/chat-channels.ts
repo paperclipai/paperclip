@@ -1,3 +1,7 @@
+import { withSlackBoardLease } from "./slack-board-lease.js";
+import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
+import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
+import { assertSlackBoardWorkAllowed } from "./slack-board-resume.js";
 import { slackExplicitPublicationDuplicate } from "./connectors/slack-publication.js";
 import { rememberVerifiedSlackSearchEvent, slackSearchActionToken } from "./connectors/slack-search-context.js";
 import { slackAuthorizationRevision } from "./connectors/slack-revision.js";
@@ -6711,11 +6715,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function resolveCredentialRefs(
     endpoint: EndpointRow,
     refs: ToolCredentialSecretRef[],
+    database: DbOrTransaction = db,
   ): Promise<Record<string, string>> {
     const values: Record<string, string> = {};
     for (const ref of refs) {
       const key = ref.configPath.replace(/^credentials\./, "");
-      values[key] = await secrets.resolveSecretValue(
+      values[key] = await (database === db ? secrets : secretService(database as Db)).resolveSecretValue(
         endpoint.companyId,
         ref.secretId,
         ref.versionSelector ?? "latest",
@@ -6733,8 +6738,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function resolveCredentials(
     endpoint: EndpointRow,
+    database: DbOrTransaction = db,
   ): Promise<Record<string, string>> {
-    const connection = await db
+    const connection = await database
       .select({ refs: toolConnections.credentialSecretRefs, config: toolConnections.config })
       .from(toolConnections)
       .where(
@@ -6745,7 +6751,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .then((rows) => rows[0] ?? null);
     if (!connection) throw notFound("Chat connection not found");
-    const values = await resolveCredentialRefs(endpoint, connection.refs);
+    const values = await resolveCredentialRefs(endpoint, connection.refs, database);
     if (endpoint.provider === "imessage-photon") {
       const configuration = photonChannelConfigurationSchema.parse(connection.config.photon);
       return { ...values, ...configuration, lineId: configuration.allocation === "shared" ? photonSharedScope(configuration.projectId) : configuration.lineId };
@@ -7344,7 +7350,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         label: item.label,
         providerUrl: item.providerUrl ?? null,
         availability: "available",
-        enabled: false,
+        // Slack inventory contains only channels the bot has joined. Apply the
+        // invitation default on insert; conflict updates preserve operator choices.
+        enabled:
+          endpoint.provider === "slack" &&
+          item.type === "channel" &&
+          item.metadata?.creator !== endpoint.botExternalId,
         metadata: item.metadata ?? {},
       })
       .onConflictDoUpdate({
@@ -10544,7 +10555,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         providerResourceId,
         label: resourceLabel.label,
         availability: "available",
-        enabled: thread.isDM || enabledBySetupActivation,
+        // Slack can deliver the invitation's app_mention before the membership
+        // callback. Give either arrival order the same new-channel default.
+        enabled:
+          thread.isDM ||
+          enabledBySetupActivation ||
+          (endpoint.provider === "slack" && type === "channel"),
       })
       .onConflictDoUpdate({
         target: [
@@ -15423,6 +15439,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         message.raw,
       );
       const mayEnableSetupDestination =
+        // Slack channels start enabled. Never use first-test activation to
+        // override an existing channel the operator explicitly disabled.
+        endpoint.provider !== "slack" &&
         endpoint.provider !== "imessage-photon" &&
         !thread.isDM &&
         endpoint.status === "verifying" &&
@@ -24246,7 +24265,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 label: migratedLabel,
                 providerUrl: effect.providerUrl ?? null,
                 availability: effect.availability,
-                enabled: migratedEnabled,
+                enabled:
+                  migratedEnabled ||
+                  (currentEndpoint.provider === "slack" &&
+                    effect.resourceType === "channel" &&
+                    effect.availability === "available"),
                 metadata: effect.metadata ?? {},
               })
               .onConflictDoUpdate({
@@ -27673,6 +27696,80 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
    * authenticated attachment downloads through the endpoint runtime; unsafe
    * or no-longer-available files are omitted without losing the text turn.
    */
+  async function processPendingSlackBoardMessages(limit = 25) {
+    const pending = await db.select({ id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId }).from(chatActions)
+      .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.companyId, chatActions.companyId)))
+      .where(and(eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received"), notInArray(chatEndpoints.status, ["paused", "attention"])))
+      .orderBy(asc(chatActions.createdAt)).limit(limit);
+    for (const candidate of pending) {
+      await withSlackBoardLease(db, { ...candidate, actionId: candidate.id }, fetchImpl, async (lease) => {
+        const [action] = await db.select().from(chatActions).where(and(eq(chatActions.id, candidate.id), eq(chatActions.status, "received")));
+        if (!action) return;
+        const issueId = String(action.payload.issueId);
+        const userId = String(action.payload.userId);
+        const agentId = String(action.payload.agentId);
+        const commentId = String(action.payload.commentId);
+        async function cancelWork(message: string) {
+          await lease.commit(async (tx) => {
+            await tx.update(chatActions).set({ status: "cancelled", result: { code: "slack_board_work_not_authorized", message }, updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+            await tx.update(chatPublications).set({ state: "cancelled", redactedError: message, nextAttemptAt: null, updatedAt: new Date() }).where(and(
+              eq(chatPublications.companyId, action.companyId), eq(chatPublications.endpointId, action.endpointId),
+              eq(chatPublications.conversationId, action.conversationId!), eq(chatPublications.commentId, commentId),
+              inArray(chatPublications.state, ["pending", "retry"]),
+            ));
+          });
+        }
+        const currentEndpoint = await endpointRecord(action.endpointId);
+        if (currentEndpoint && ["paused", "attention"].includes(currentEndpoint.endpoint.status)) return;
+        const bindings = await slackBoardReplyBindings(db, { companyId: action.companyId, issueId, userId, agentId, commentIds: [commentId] });
+        if (!bindings.some(binding => binding.endpointId === action.endpointId && binding.conversationId === action.conversationId)) {
+          await cancelWork("The Slack message author no longer has access to this conversation");
+          return;
+        }
+        try {
+          const [publication] = await db.select().from(chatPublications).where(and(eq(chatPublications.companyId, action.companyId), eq(chatPublications.endpointId, action.endpointId), eq(chatPublications.commentId, commentId))).limit(1);
+          const [conversation] = await db.select().from(chatConversations).where(and(eq(chatConversations.companyId, action.companyId), eq(chatConversations.id, action.conversationId!)));
+          const credentials = currentEndpoint ? await resolveCredentials(currentEndpoint.endpoint) : null;
+          if (!publication || !conversation || !currentEndpoint || !await authorizeSlackBoardPublication(db, currentEndpoint.endpoint, conversation, publication, credentials?.botToken ?? "", lease.fetch)) {
+            throw forbidden("The Slack message author no longer has access to this conversation");
+          }
+          // Persist the resume and its marker together before waking. If a
+          // scheduler response is lost, retry cannot reopen work a second time.
+          const issue = await lease.commit(async (tx) => {
+            const [current] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, action.companyId), eq(issues.assigneeAgentId, agentId))).for("update");
+            if (!current) throw forbidden("The task is no longer assigned to the Slack agent");
+            await assertSlackBoardWorkAllowed(tx as unknown as Db, current);
+            if (action.result?.resumeApplied !== true) {
+              if (["done", "blocked"].includes(current.status)) {
+                await issueService(tx as unknown as Db).update(current.id, { status: "todo", actorUserId: userId });
+                await logActivity(tx as unknown as Db, { companyId: current.companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: current.id, details: { status: "todo", source: "slack_board_message" } });
+              }
+              await tx.update(chatActions).set({ result: { resumeApplied: true }, updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+            }
+            return current;
+          });
+          await lease.commit(async () => {});
+          await options.heartbeat.wakeup(agentId, {
+            source: "automation", triggerDetail: "system", reason: "issue_commented",
+            idempotencyKey: `slack-board-comment:${action.id}`, allowRunCoalescing: false,
+            requestedByActorType: "user", requestedByActorId: userId,
+            payload: { issueId, commentId, resumeIntent: true, followUpRequested: true },
+            contextSnapshot: { issueId, taskId: issueId, taskKey: issue.identifier ?? issueId, wakeCommentId: commentId, source: "issue.comment", resumeIntent: true, followUpRequested: true },
+          });
+          await lease.commit(async (tx) => {
+            await tx.update(chatActions).set({ status: "processed", updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+          });
+        } catch (error) {
+          if (error instanceof HttpError && [400, 403, 404, 409].includes(error.status)) {
+            await cancelWork(error.message);
+            return;
+          }
+          logger.warn({ actionId: action.id, error: error instanceof Error ? error.message : "Wakeup failed" }, "Slack Board message wakeup will retry");
+        }
+      });
+    }
+  }
+
   async function processPendingDeliveries(limit = 25, onlyDeliveryId?: string) {
     await settleRejectedInboundWakeups(onlyDeliveryId);
     // Provider-visible effects that are not backed by a task publication use
@@ -27682,6 +27779,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const actionRecovery = onlyDeliveryId
       ? null
       : Promise.allSettled([
+          processPendingSlackBoardMessages(limit),
           processPendingGitHubWebhookIngress(limit),
           processPendingProviderEffects(limit),
           processPendingReceiptReactions(limit),
@@ -30591,6 +30689,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         });
         return { rejection: rejectionDetails(invalidIds) };
       }
+      if (emailBoundary?.endpoint.provider === "slack") {
+        const [issue] = await tx.select().from(issues).where(and(eq(issues.id, conversation.issueId), eq(issues.companyId, conversation.companyId)));
+        if (!issue) throw notFound("Task not found");
+        await assertSlackBoardWorkAllowed(tx as unknown as Db, issue);
+        await mirrorSlackBoardComment(tx, comment, { publicationKey: idempotencyKey, wakeAgent: true, endpointId, conversationId, attachmentIds });
+        const [created] = await tx.select().from(chatPublications).where(and(eq(chatPublications.companyId, conversation.companyId), eq(chatPublications.idempotencyKey, idempotencyKey)));
+        if (!created) throw conflict("This Slack task is no longer assigned to the connected agent");
+        return created;
+      }
       const attachedFiles = attachmentIds.length
         ? await tx
             .select({
@@ -30690,6 +30797,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         publication.rejection,
       );
     }
+    if (emailBoundary?.endpoint.provider === "slack") await processPendingSlackBoardMessages();
     await processPendingPublications();
     const batch = publication.commentId
       ? await db
@@ -33829,6 +33937,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         return null;
       }
       let authorizationActionId: string | null = null;
+      if (endpoint.provider === "slack") {
+        const credentials = await resolveCredentials(endpoint, tx);
+        if (!await authorizeSlackBoardPublication(tx, endpoint, conversation, input.publication, credentials.botToken ?? "", fetchImpl)) return null;
+      }
       if (
         input.publication.idempotencyKey.startsWith("wake:") &&
         !(await authorizeInboundWakePublication(tx, input.publication))
@@ -37826,6 +37938,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .from(chatPublications)
           .where(
             and(
+              // An explicit Board send promises both delivery and work. Keep
+              // its text/files pending until the durable wake has been accepted.
+              sql`not exists (select 1 from chat_actions a where a.company_id = ${chatPublications.companyId} and a.endpoint_id = ${chatPublications.endpointId} and a.conversation_id = ${chatPublications.conversationId} and a.kind = 'slack_board_message' and a.status = 'received' and a.payload->>'commentId' = ${chatPublications.commentId}::text)`,
               or(
                 and(
                   sql`not exists (select 1 from chat_endpoints e where e.id = ${chatPublications.endpointId} and e.publication_mode = 'explicit')`,
@@ -38166,7 +38281,52 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           ? sql`${chatActions.payload}->>'commentId' = ${identity.sourceMessageId}`
           : eq(chatActions.id, run.wakeupRequestId ?? "00000000-0000-0000-0000-000000000000"),
       )).limit(1);
-      if (!action || action.payload.requestedByActorType !== "user" || action.payload.requestedByActorId !== run.responsibleUserId)
+      if (!action) {
+        // Ordinary tasks and routines use their accepted responsible user, never
+        // an earlier Slack sender or the connection owner's credentials.
+        const [message] = identity.sourceMessageId ? await tx.select().from(issueComments)
+          .where(and(eq(issueComments.companyId, binding.companyId), eq(issueComments.issueId, binding.issueId),
+            eq(issueComments.id, identity.sourceMessageId), isNull(issueComments.deletedAt))) : [];
+        if (identity.sourceMessageId && (!message || message.authorType !== "user" || message.authorUserId !== run.responsibleUserId))
+          throw forbidden("Slack tools require the current task requester's identity");
+        // An external participant may not acquire unrelated bot connections by
+        // falling back to ordinary-task access after source admission fails.
+        if (identity.sourceMessageId) {
+          const [external] = await tx.select({ id: chatMessageLinks.id }).from(chatMessageLinks)
+            .where(and(eq(chatMessageLinks.companyId, binding.companyId), eq(chatMessageLinks.commentId, identity.sourceMessageId), eq(chatMessageLinks.direction, "inbound"))).limit(1);
+          if (external) throw forbidden("External messages require their originating Slack connection");
+        }
+        const endpoints = await tx.select().from(chatEndpoints).where(and(
+          eq(chatEndpoints.companyId, binding.companyId), eq(chatEndpoints.provider, "slack"),
+          eq(chatEndpoints.assignedAgentId, binding.agentId), eq(chatEndpoints.status, "active"),
+          ...(binding.endpointId ? [eq(chatEndpoints.id, binding.endpointId)] : []),
+        )).for("no key update");
+        if (endpoints.length !== 1) throw forbidden("Select an active Slack connection assigned to this agent");
+        const endpoint = endpoints[0]!;
+        const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, binding.companyId), eq(issues.id, binding.issueId), eq(issues.assigneeAgentId, binding.agentId)));
+        if (!issue) throw forbidden("Slack tools require a task assigned to this agent");
+        const [member] = await tx.select().from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, binding.companyId), eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, run.responsibleUserId!), eq(companyMemberships.status, "active"), ne(companyMemberships.membershipRole, "viewer"),
+        ));
+        if (!member) throw forbidden("The responsible user must be an active company operator");
+        const links = await tx.select({ principal: chatExternalPrincipals }).from(chatIdentityLinks)
+          .innerJoin(chatExternalPrincipals, and(eq(chatExternalPrincipals.id, chatIdentityLinks.principalId), eq(chatExternalPrincipals.companyId, binding.companyId)))
+          .where(and(eq(chatIdentityLinks.companyId, binding.companyId), eq(chatIdentityLinks.endpointId, endpoint.id),
+            eq(chatIdentityLinks.paperclipUserId, run.responsibleUserId!), eq(chatIdentityLinks.status, "linked"),
+            eq(chatExternalPrincipals.provider, "slack"), eq(chatExternalPrincipals.providerAccountId, endpoint.providerAccountId!), eq(chatExternalPrincipals.isBot, false)));
+        if (links.length !== 1) throw forbidden("Link your Slack account to this connection before using it from tasks or routines");
+        // A Board message changes who is directing the work, not the privacy
+        // of context already present in its linked Slack conversation.
+        const conversations = await tx.select().from(chatConversations).where(and(
+          eq(chatConversations.companyId, binding.companyId), eq(chatConversations.endpointId, endpoint.id),
+          eq(chatConversations.issueId, binding.issueId),
+        )).limit(2);
+        if (conversations.length > 1) throw forbidden("The task's Slack conversation boundary is ambiguous");
+        return { endpoint, issue, conversation: conversations[0] ?? null, delivery: null, principalId: links[0]!.principal.id, slackUserId: links[0]!.principal.externalId };
+      }
+      if (action.payload.requestedByActorType !== "user" || action.payload.requestedByActorId !== run.responsibleUserId ||
+          (binding.endpointId && action.endpointId !== binding.endpointId))
         throw forbidden("Slack tools require a verified linked Slack request");
       // This standalone resolver does not own the scheduler's issue lock. Use
       // the ingress lock order (endpoint, then issue) so a normal webhook or
@@ -38191,18 +38351,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const credentials = await resolveCredentials(resolved.endpoint);
     if (!credentials.botToken) throw forbidden("Slack bot credential is unavailable");
     return {
-      endpoint: resolved.endpoint, conversation: resolved.conversation,
+      endpoint: resolved.endpoint, issueId: binding.issueId, conversation: resolved.conversation,
       principalId: resolved.principalId, slackUserId: resolved.slackUserId,
-      userId: run.responsibleUserId, deliveryId: resolved.delivery.id,
+      userId: run.responsibleUserId, deliveryId: resolved.delivery?.id ?? null,
       identityContextId: identity.context?.id ?? null,
       workMode: resolved.issue.workMode,
       revision: createHash("sha256").update(JSON.stringify([
-        resolved.endpoint.status, resolved.endpoint.allowDirectMessages, resolved.conversation.sessionGeneration,
+        resolved.endpoint.status, resolved.endpoint.allowDirectMessages, resolved.conversation?.sessionGeneration ?? null,
         run.responsibleUserId, credentials.botToken,
         await slackAuthorizationRevision(db, binding.companyId, resolved.endpoint.id, resolved.endpoint.connectionId, binding.agentId, run.responsibleUserId),
       ])).digest("hex"),
       botToken: credentials.botToken,
-      searchActionToken: slackSearchActionToken(db, resolved.endpoint.id, resolved.endpoint.providerAccountId!, resolved.slackUserId, String((resolved.delivery.normalizedEvent.message as Record<string, unknown> | undefined)?.providerMessageId ?? "")),
+      searchActionToken: resolved.delivery ? slackSearchActionToken(db, resolved.endpoint.id, resolved.endpoint.providerAccountId!, resolved.slackUserId, String((resolved.delivery.normalizedEvent.message as Record<string, unknown> | undefined)?.providerMessageId ?? "")) : null,
     };
   });
 

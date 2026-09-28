@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
@@ -40,6 +42,27 @@ describe("local disk storage provider", () => {
 
     expect(fetchedBody.toString("utf8")).toBe("hello image bytes");
     expect(stored.sha256).toHaveLength(64);
+  });
+
+  it("writes streamed files with exact metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+    const service = createStorageService(createLocalDiskStorageProvider(root));
+    const bytes = Buffer.from("streamed response");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const stored = await service.putFile({ companyId: "company-1", namespace: "runner-api", originalFilename: "response.txt",
+      contentType: "text/plain", body: Readable.from([bytes.subarray(0, 4), bytes.subarray(4)]), byteSize: bytes.length, sha256 });
+    expect(stored).toMatchObject({ byteSize: bytes.length, sha256 });
+    expect(await readStreamToBuffer((await service.getObject("company-1", stored.objectKey)).stream)).toEqual(bytes);
+  });
+
+  it("removes partial local uploads when their source fails", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+    const provider = createLocalDiskStorageProvider(root);
+    const body = Readable.from((async function* () { yield Buffer.from("partial"); throw new Error("source failed"); })());
+    await expect(provider.putObject({ objectKey: "company-1/failed", contentType: "text/plain", contentLength: 20, body })).rejects.toThrow("source failed");
+    expect(await fs.readdir(path.join(root, "company-1"))).toEqual([]);
   });
 
   it("streams only requested byte ranges", async () => {
