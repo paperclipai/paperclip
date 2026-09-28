@@ -685,6 +685,7 @@
       "properties": {
         "brief": {
           "additionalProperties": false,
+          "description": "Give the human answering this request the context your run has. Include it for human-facing requests (default anyone, human_only, or an addressed user); a company may require it, and a missing brief then fails with 422.",
           "properties": {
             "recommendation": {
               "description": "Your pick, if you have one.",
@@ -698,19 +699,14 @@
                 "additionalProperties": false,
                 "properties": {
                   "agentId": {
-                    "description": "Agent id in this company.",
                     "maxLength": 240,
-                    "minLength": 1,
                     "type": "string"
                   },
                   "issueId": {
-                    "description": "Task id in this company.",
                     "maxLength": 240,
-                    "minLength": 1,
                     "type": "string"
                   },
                   "note": {
-                    "description": "Why this is relevant.",
                     "maxLength": 300,
                     "minLength": 1,
                     "type": "string"
@@ -755,7 +751,10 @@
             "whyStopped",
             "whatWeNeed"
           ],
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "continuationPolicy": {
           "enum": [

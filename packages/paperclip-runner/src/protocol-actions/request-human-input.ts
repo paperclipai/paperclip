@@ -1,4 +1,59 @@
 /** Canonical definition and documentation for `request_human_input`. */
+
+/**
+ * Mirrors @paperclipai/shared's decisionBriefSchema (DecisionBrief v1).
+ * Nullable because the server accepts an explicit null brief. Reused by
+ * both tool surfaces below and by ../catalog/semantic-action-catalog.ts.
+ */
+export const decisionBriefInputSchema = {
+  "type": ["object", "null"],
+  "description": "Give the human answering this request the context your run has. Include it for human-facing requests (default anyone, human_only, or an addressed user); a company may require it, and a missing brief then fails with 422.",
+  "properties": {
+    "version": { "type": "integer", "enum": [1] },
+    "whatIsHappening": {
+      "type": "string",
+      "description": "The work in progress, who requested it, and the parent task.",
+      "minLength": 1,
+      "maxLength": 1200
+    },
+    "whyStopped": {
+      "type": "string",
+      "description": "The concrete fact that blocked you and why the decision is not yours to make.",
+      "minLength": 1,
+      "maxLength": 1200
+    },
+    "whatWeNeed": {
+      "type": "string",
+      "description": "The question and the consequence of each option. Put your pick in recommendation, not here.",
+      "minLength": 1,
+      "maxLength": 1200
+    },
+    "recommendation": {
+      "type": "string",
+      "description": "Your pick, if you have one.",
+      "minLength": 1,
+      "maxLength": 400
+    },
+    "relatedWork": {
+      "type": "array",
+      "description": "Links a human cannot already see. Parent, sibling, and blocker tasks are shown automatically; do not restate them.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "issueId": { "type": "string", "maxLength": 240 },
+          "agentId": { "type": "string", "maxLength": 240 },
+          "note": { "type": "string", "minLength": 1, "maxLength": 300 }
+        },
+        "required": ["note"],
+        "additionalProperties": false
+      },
+      "maxItems": 8
+    }
+  },
+  "required": ["version", "whatIsHappening", "whyStopped", "whatWeNeed"],
+  "additionalProperties": false
+} as const;
+
 export const requestHumanInputAction = {
   "id": "request_human_input",
   "canonical": {
@@ -27,7 +82,7 @@ export const requestHumanInputAction = {
   },
   "documentation": {
     "title": "Request structured human input",
-    "description": "Create a durable human question or approval card on the current Paperclip task bound to this run; Paperclip renders it and authenticates the response. Use questions with continuationPolicy='wake_assignee' when an answer is needed, including otherwise tool-free chat turns. Supply a stable idempotencyKey and reuse it on retries. For one question at a time, ask only the next unanswered question and wait for its real answer. Never infer answers, answer your own card, or treat clarification as approval. Preserve existing review gates. Call this tool before claiming a question was asked; if creation fails, report the failure. Do not fabricate answer links or Markdown buttons, post duplicate cards, or substitute call_api. Use payload.questions for choices and payload.questionSet for text fields; see the payload schema for formats.",
+    "description": "Create a durable human question or approval card on the current Paperclip task bound to this run; Paperclip renders it and authenticates the response. Use questions with continuationPolicy='wake_assignee' when an answer is needed, including otherwise tool-free chat turns. Supply a stable idempotencyKey and reuse it on retries. For one question at a time, ask only the next unanswered question and wait for its real answer. Never infer answers, answer your own card, or treat clarification as approval. Preserve existing review gates. Call this tool before claiming a question was asked; if creation fails, report the failure. Do not fabricate answer links or Markdown buttons, post duplicate cards, or substitute call_api. Use payload.questions for choices and payload.questionSet for text fields; see the payload schema for formats. Include brief for human-facing requests (default anyone, human_only, or an addressed user); a company may require it, and a missing brief then fails with 422.",
     "note": null
   },
   "examples": {
@@ -74,7 +129,7 @@ export const requestHumanInputAction = {
       "operationId": "request_human_input",
       "version": 1,
       "title": "Request structured human input",
-      "description": "Create a durable human question or approval card on the current Paperclip task bound to this run; Paperclip renders it and authenticates the response. Use questions with continuationPolicy='wake_assignee' when an answer is needed, including otherwise tool-free chat turns. Supply a stable idempotencyKey and reuse it on retries. For one question at a time, ask only the next unanswered question and wait for its real answer. Never infer answers, answer your own card, or treat clarification as approval. Preserve existing review gates. Call this tool before claiming a question was asked; if creation fails, report the failure. Do not fabricate answer links or Markdown buttons, post duplicate cards, or substitute call_api. Use payload.questions for choices and payload.questionSet for text fields; see the payload schema for formats.",
+      "description": "Create a durable human question or approval card on the current Paperclip task bound to this run; Paperclip renders it and authenticates the response. Use questions with continuationPolicy='wake_assignee' when an answer is needed, including otherwise tool-free chat turns. Supply a stable idempotencyKey and reuse it on retries. For one question at a time, ask only the next unanswered question and wait for its real answer. Never infer answers, answer your own card, or treat clarification as approval. Preserve existing review gates. Call this tool before claiming a question was asked; if creation fails, report the failure. Do not fabricate answer links or Markdown buttons, post duplicate cards, or substitute call_api. Use payload.questions for choices and payload.questionSet for text fields; see the payload schema for formats. Include brief for human-facing requests (default anyone, human_only, or an addressed user); a company may require it, and a missing brief then fails with 422.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -132,7 +187,8 @@ export const requestHumanInputAction = {
               "wake_assignee",
               "wake_assignee_on_accept"
             ]
-          }
+          },
+          "brief": decisionBriefInputSchema
         },
         "required": [
           "idempotencyKey",
@@ -258,7 +314,8 @@ export const requestHumanInputAction = {
               "wake_assignee",
               "wake_assignee_on_accept"
             ]
-          }
+          },
+          "brief": decisionBriefInputSchema
         },
         "required": [
           "interactionKind",

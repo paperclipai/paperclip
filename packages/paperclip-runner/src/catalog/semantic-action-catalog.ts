@@ -9,6 +9,7 @@ import { createSkillAction } from "../protocol-actions/create-skill.js";
 import { searchApiAction } from "../protocol-actions/search-api.js";
 import { callApiAction } from "../protocol-actions/call-api.js";
 import { projectIconSchema, projectRepositoryUrlSchema } from "../protocol-actions/create-project.js";
+import { decisionBriefInputSchema } from "../protocol-actions/request-human-input.js";
 
 const ALL_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 const WORK_MODES = ["standard", "planning", "skill_test"] as const;
@@ -58,40 +59,6 @@ const openObject: PaperclipJsonSchema = {
 const idempotency = {
   idempotencyKey: text("Caller-stable retry key.", 240),
 } as const;
-/** Mirrors @paperclipai/shared's decisionBriefSchema (DecisionBrief v1). */
-const decisionBrief: PaperclipJsonSchema = object(
-  {
-    version: { type: "integer", enum: [1] },
-    whatIsHappening: text(
-      "The work in progress, who requested it, and the parent task.",
-      1200,
-    ),
-    whyStopped: text(
-      "The concrete fact that blocked you and why the decision is not yours to make.",
-      1200,
-    ),
-    whatWeNeed: text(
-      "The question and the consequence of each option. Put your pick in recommendation, not here.",
-      1200,
-    ),
-    recommendation: text("Your pick, if you have one.", 400),
-    relatedWork: {
-      type: "array",
-      description:
-        "Links a human cannot already see. Parent, sibling, and blocker tasks are shown automatically; do not restate them.",
-      items: object(
-        {
-          issueId: text("Task id in this company.", 240),
-          agentId: text("Agent id in this company.", 240),
-          note: text("Why this is relevant.", 300),
-        },
-        ["note"],
-      ),
-      maxItems: 8,
-    },
-  },
-  ["version", "whatIsHappening", "whyStopped", "whatWeNeed"],
-);
 const operationReceipt = object(
   {
     commandId: text("Stable command identifier.", 200),
@@ -270,7 +237,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         continuationPolicy: {
           enum: ["none", "wake_assignee", "wake_assignee_on_accept"],
         },
-        brief: decisionBrief,
+        brief: decisionBriefInputSchema,
       },
       [
         "idempotencyKey",

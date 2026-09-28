@@ -1372,6 +1372,14 @@ describe("PaperclipRunnerToolAuthority", () => {
       runId: briefRunId,
     });
 
+    // The advertised tool schema is what the model actually sees; asserting
+    // only the service-layer behavior below would miss a definitions() gap.
+    const advertised = authority.definitions().find((tool) => tool.name === "request_human_input") as {
+      inputSchema: { properties: Record<string, unknown>; required: string[] };
+    };
+    expect(advertised.inputSchema.properties).toHaveProperty("brief");
+    expect(advertised.inputSchema.required).not.toContain("brief");
+
     const baseArguments = {
       idempotencyKey: "brief-missing",
       interactionKind: "checkbox",

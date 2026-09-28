@@ -6,6 +6,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import { createTaskAction } from "../protocol-actions/create-task.js";
 import { createProjectAction } from "../protocol-actions/create-project.js";
+import { requestHumanInputAction } from "../protocol-actions/request-human-input.js";
 
 import {
   PAPERCLIP_SEMANTIC_ACTION_CATALOG,
@@ -159,5 +160,40 @@ describe("semantic action catalog", () => {
       expect(keys).not.toContain("execute");
       expect(keys).not.toContain("binding");
     }
+  });
+
+  it("advertises an optional, nullable decision brief on request_human_input on every tool surface", () => {
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    const brief = {
+      version: 1,
+      whatIsHappening: "Integrating the payment gateway requested in CAT-50.",
+      whyStopped: "Two providers meet the requirements; the choice changes cost.",
+      whatWeNeed: "Pick Stripe or Adyen.",
+    };
+    const liveSchema = requestHumanInputAction.live.descriptor.inputSchema;
+    const scenarioSchema = requestHumanInputAction.scenario.descriptor.inputSchema;
+    const catalogSchema = paperclipSemanticAction("request_human_input")!.inputSchema;
+
+    for (const schema of [liveSchema, scenarioSchema, catalogSchema]) {
+      expect(schema.properties).toHaveProperty("brief");
+      expect(schema.required).not.toContain("brief");
+    }
+
+    const validateLive = ajv.compile(liveSchema);
+    const liveInput = { idempotencyKey: "brief-1", interactionKind: "confirmation", title: "Pick a provider", prompt: "Which provider?", continuationPolicy: "none" };
+    expect(validateLive({ ...liveInput, brief }), JSON.stringify(validateLive.errors)).toBe(true);
+    expect(validateLive({ ...liveInput, brief: null })).toBe(true);
+    expect(validateLive(liveInput)).toBe(true);
+    expect(validateLive({ ...liveInput, brief: { version: 1 } })).toBe(false);
+
+    const validateScenario = ajv.compile(scenarioSchema);
+    const scenarioInput = { interactionKind: "confirmation", title: "Pick a provider", prompt: "Which provider?", continuationPolicy: "none" };
+    expect(validateScenario({ ...scenarioInput, brief }), JSON.stringify(validateScenario.errors)).toBe(true);
+    expect(validateScenario({ ...scenarioInput, brief: null })).toBe(true);
+
+    const validateCatalog = ajv.compile(catalogSchema);
+    const catalogInput = { idempotencyKey: "brief-2", interactionKind: "confirmation", title: "Pick a provider", prompt: "Which provider?", continuationPolicy: "none" };
+    expect(validateCatalog({ ...catalogInput, brief }), JSON.stringify(validateCatalog.errors)).toBe(true);
+    expect(validateCatalog({ ...catalogInput, brief: null })).toBe(true);
   });
 });
