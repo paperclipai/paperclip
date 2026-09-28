@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, rateLimitRetryDelayForTest, resolveSessionKey } from "./execute.js";
+import { execute, mapFinalResultForTest, normalizeRetryNotBeforeForTest, parseSseFramesForTest, rateLimitRetryDelayForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import { parseHermesGatewayStdoutLine } from "../ui/parse-stdout.js";
 
@@ -692,7 +692,12 @@ describe("execute", () => {
       expect(result.exitCode).toBe(1);
       expect(result.errorCode).toBe("hermes_gateway_rate_limited");
       expect(result.errorFamily).toBe("transient_upstream");
-      expect(result.retryNotBefore).toBe("1");
+      // retryNotBefore must reach the platform as an absolute timestamp: the
+      // scheduler parses it with new Date(value), so a raw "45" would schedule
+      // the retry in 2045.
+      const retryAt = Date.parse(String(result.retryNotBefore));
+      expect(Number.isFinite(retryAt)).toBe(true);
+      expect(Math.abs(retryAt - Date.now())).toBeLessThanOrEqual(180_000);
       const createCalls = fetchMock.mock.calls.filter(
         ([input, init]) => String(input).endsWith("/v1/runs") && init?.method === "POST",
       );
@@ -718,8 +723,57 @@ describe("execute", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_rate_limited");
-    expect(result.retryNotBefore).toBe("45");
+    // The delta-seconds header must be converted to an absolute timestamp for
+    // the platform scheduler (new Date(value) would parse "45" as 2045).
+    expect(result.retryNotBefore).not.toBe("45");
+    const retryAt = Date.parse(String(result.retryNotBefore));
+    expect(Number.isFinite(retryAt)).toBe(true);
+    expect(retryAt - Date.now()).toBeGreaterThanOrEqual(44_000);
+    expect(retryAt - Date.now()).toBeLessThanOrEqual(46_000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the retry schedule when the run-log sink fails on the retry line", async () => {
+    vi.useFakeTimers();
+    try {
+      let createCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          createCalls += 1;
+          if (createCalls === 1) {
+            return new Response(
+              JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+              { status: 429, headers: { "retry-after": "1" } },
+            );
+          }
+          return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          return new Response(
+            sseStream(["event: run.completed", "data: {\"status\":\"completed\",\"output\":\"done\"}", ""].join("\n")),
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onLog = vi.fn(async (_stream: "stdout" | "stderr", chunk: string) => {
+        if (String(chunk).includes("retrying")) throw new Error("log sink down");
+        return undefined;
+      });
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(0);
+      expect(createCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not retry a 429 that does not come from the gateway's create limiter", async () => {
@@ -1269,6 +1323,28 @@ describe("mapFinalResultForTest", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
+  });
+});
+
+describe("normalizeRetryNotBeforeForTest", () => {
+  it("converts delta-seconds Retry-After into an absolute timestamp", () => {
+    const at = Date.parse(String(normalizeRetryNotBeforeForTest("45")));
+    expect(Number.isFinite(at)).toBe(true);
+    expect(at - Date.now()).toBeGreaterThanOrEqual(44_000);
+    expect(at - Date.now()).toBeLessThanOrEqual(46_000);
+  });
+
+  it("passes HTTP-date Retry-After values through as absolute timestamps", () => {
+    const header = new Date(Date.now() + 30_000).toUTCString();
+    const at = Date.parse(String(normalizeRetryNotBeforeForTest(header)));
+    expect(Number.isFinite(at)).toBe(true);
+    expect(Math.abs(at - (Date.now() + 30_000))).toBeLessThanOrEqual(1_500);
+  });
+
+  it("returns null for absent or unparseable values", () => {
+    expect(normalizeRetryNotBeforeForTest(null)).toBeNull();
+    expect(normalizeRetryNotBeforeForTest("")).toBeNull();
+    expect(normalizeRetryNotBeforeForTest("not-a-date")).toBeNull();
   });
 });
 

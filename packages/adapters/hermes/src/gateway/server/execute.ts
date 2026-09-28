@@ -442,6 +442,25 @@ function fetchFailureMessage(err: unknown): string {
   return causeCode ? `${message} (${causeCode}: ${causeMessage})` : `${message} (${causeMessage})`;
 }
 
+// The platform's transient-retry scheduler reads retryNotBefore as an absolute
+// timestamp (new Date(value)), so a delta-seconds Retry-After must be converted
+// before the value leaves the adapter: the raw "45" would be parsed as a date
+// in 2045 and the run would not be retried for years.
+export function normalizeRetryNotBeforeForTest(
+  raw: string | null | undefined,
+  nowMs: () => number = Date.now,
+): string | null {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value) return null;
+  if (/^\d+$/.test(value)) {
+    const deltaMs = Number.parseInt(value, 10) * 1_000;
+    return new Date(nowMs() + deltaMs).toISOString();
+  }
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) return null;
+  return new Date(at).toISOString();
+}
+
 async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
@@ -465,7 +484,7 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
     const err = new Error(`Hermes gateway HTTP ${response.status}`) as HermesHttpError;
     err.status = response.status;
     err.code = classified.code;
-    err.retryNotBefore = response.headers.get("retry-after");
+    err.retryNotBefore = normalizeRetryNotBeforeForTest(response.headers.get("retry-after"));
     err.body = body;
     const reason = httpFailureReason(response.status);
     if (reason) requestConnectionFailures.set(err, {
@@ -1061,10 +1080,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? rateLimitRetryDelayForTest(rateLimitAttempt, (err as HermesHttpError).retryNotBefore)
           : null;
         if (delayMs === null) throw err;
-        await ctx.onLog(
-          "stderr",
-          `[hermes-gateway] run create rate limited (HTTP 429); retrying in ${Math.round(delayMs / 100) / 10}s (retry ${rateLimitAttempt + 1}/${RATE_LIMIT_RETRY_DELAYS_MS.length})\n`,
-        );
+        try {
+          await ctx.onLog(
+            "stderr",
+            `[hermes-gateway] run create rate limited (HTTP 429); retrying in ${Math.round(delayMs / 100) / 10}s (retry ${rateLimitAttempt + 1}/${RATE_LIMIT_RETRY_DELAYS_MS.length})\n`,
+          );
+        } catch {
+          // A failed run-log write must not cancel the retry or replace the
+          // 429: swallow the sink error and keep the backoff schedule.
+        }
         await delay(delayMs, ctx.signal);
         if (ctx.signal?.aborted) throw err;
         rateLimitAttempt += 1;
