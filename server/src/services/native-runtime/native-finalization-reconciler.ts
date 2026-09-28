@@ -1,4 +1,4 @@
-import { restoreNativeWorkspaceExportRepairs } from "./native-workspace-export-recovery.js";
+import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -547,8 +547,8 @@ export async function reconcileNativeFinalizations(
     }) => Promise<void>;
   } = {},
 ) {
-  await restoreNativeWorkspaceExportRepairs(db, runIds).catch((err) => {
-    logger.warn({ err }, "Workspace export repair projection remains pending");
+  await recoverLegacyUnsafeWorkspaceExports(db, runIds).catch((err) => {
+    logger.warn({ err }, "Historical unsafe export recovery remains pending");
   });
   await dismissObsoleteNativePolicyReviews(db, runIds).catch((err) => {
     logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");

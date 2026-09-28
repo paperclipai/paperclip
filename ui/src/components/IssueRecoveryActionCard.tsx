@@ -1118,7 +1118,7 @@ export function IssueRecoveryActionCard({
     showBreakGlass ||
     showRepairAction;
 
-  if (requiresExecutionReconciliation(action.cause)) return null;
+  if (requiresExecutionReconciliation(action.cause) || action.cause === "native_workspace_sync_out_unsafe_archive") return null;
 
   return (
     <section

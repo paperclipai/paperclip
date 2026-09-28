@@ -1725,4 +1725,8 @@ An unsafe workspace link does not fail an accepted native task result. Retry
 export automatically with confined entries only and keep archive confinement in
 place. If the export remains unsafe, omit it and finish the saved result under
 normal completion rules. Record diagnostics only in run logs; do not add a task
-warning or manual repair action. See `native-workspace-finalization-recovery.md`.
+warning or manual repair action. This also applies to historical unsafe failures:
+omit the already-rejected export, clear stale repair notices, and finalize the
+accepted result without another provider turn, even when its old sandbox is
+unavailable. Preserve current ownership and newer-work fences. See
+`native-workspace-finalization-recovery.md`.

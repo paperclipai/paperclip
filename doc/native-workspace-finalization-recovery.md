@@ -100,7 +100,7 @@ Transient export failures retry three times, then produce
 and the exact sandbox is stopped and retained for export-only recovery. The
 reason identifies a transport/copyback failure, not an inferred disk-space cause.
 New unsafe archives use the automatic policy above and do not create this hold.
-Existing repair holds from earlier controllers remain recoverable.
+Historical unsafe-archive holds recover automatically as described below; they do not use this operator flow.
 
 A board member with runtime management access can complete the saved result:
 
@@ -156,10 +156,22 @@ Daytona plugin, run that exact Vitest file with `PAPERCLIP_LIVE_EXPORT_RESUME=1`
 `DAYTONA_API_KEY`, and `PAPERCLIP_LIVE_EXPORT_RESUME_IMAGE` set to an immutable
 image digest. It creates one disposable ephemeral sandbox and database, injects probe and stop transport failures, and verifies a fresh runtime can stop the sandbox while preserving exact nonce bytes. It also injects three transient failures at the production finalizer boundary and verifies retained work plus export-only retry admission. This boundary test does not claim physical copyback or result commitment; historical browser Product E2E supplied that proof before automatic unsafe-export recovery. It deletes only that owned fixture after proof.
 
-The reconciliation sweep also restores a repair notice that an older generic
-sweeper incorrectly resolved as `new_source_execution_path`, but only for the
-current blocked task with its accepted result and exact stopped lease. It does
-not reopen the run or replace a different current recovery action.
+### Historical unsafe exports
+
+The reconciliation sweep automatically recovers accepted results that an older
+controller terminalized with `native_workspace_sync_out_unsafe_archive`. It
+omits the already-rejected export without accessing the old provider, so a
+stopped, unavailable, or deleted sandbox cannot require user repair. The
+omission barrier and result re-admission are atomic under finalization ownership.
+The normal status arbiter still enforces current ownership, contracts, and gates.
+
+This works with active, incorrectly resolved, or missing old repair actions. It
+clears the matching stale unsafe notices instead of restoring them. Newer runs,
+changed task ownership or contracts, another active recovery action, and explicit
+operator dispositions prevent replay of old results. No provider turn is created.
+Diagnostics appear only in the local run log; no unsafe-export activity notice,
+repair card, or recovery chip is created. Existing stop-only allocation intents
+retain their exact ownership and cleanup protections.
 
 Daytona stop-only preservation disables provider auto-delete and refreshes the provider record to confirm the disabled policy before stopping. An unavailable or unconfirmed policy leaves cleanup pending; it never falls back to stop or delete. The original ephemeral destroy policy applies only after exact accepted-result copyback and commitment.
 

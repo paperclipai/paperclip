@@ -2028,7 +2028,7 @@ describe("agent issue mutation checkout ownership", () => {
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
       .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "todo" });
     expect.soft(res.status).toBe(409);
-    expect.soft(res.body.details?.code).toBe("workspace_export_retry_required");
+    expect.soft(res.body.details?.code).toBe("workspace_export_automatic_recovery");
     expect.soft(mockIssueService.update).not.toHaveBeenCalled();
     expect.soft(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });

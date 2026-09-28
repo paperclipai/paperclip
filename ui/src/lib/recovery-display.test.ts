@@ -323,3 +323,9 @@ describe("deriveRecoveryDisplayState", () => {
     ).toBe("in_progress");
   });
 });
+
+// Historical unsafe exports are recovered by the control plane without a task warning.
+it.each(["active", "escalated", "resolved"] as const)("hides historical unsafe recovery chips: %s", status => {
+  expect(deriveActiveRecoveryDisplayState({ status, kind: "active_run_watchdog", outcome: null,
+    cause: "native_workspace_sync_out_unsafe_archive", ownerType: "board" })).toBeNull();
+});

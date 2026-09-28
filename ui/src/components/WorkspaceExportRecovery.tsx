@@ -26,9 +26,7 @@ export function WorkspaceExportRecovery({ issueId, action, canManage, onQueued }
   return <section aria-label="Workspace export repair" className="flex flex-col gap-2 p-4 text-sm">
     <p className="font-medium">Workspace export needs repair</p>
     {queued ? <p role="status">Export is queued for the saved result. The agent will not repeat its work.</p> : <>
-      <p className="text-muted-foreground">{action.cause === "native_workspace_sync_out_unsafe_archive"
-        ? "Resume the retained sandbox in its provider console and repair the unsafe link or path. Preserve the other files, then retry export here."
-        : "Automatic workspace export retries stopped. Inspect the export failure, restore provider or destination availability, and preserve the saved files in the retained sandbox. Retry export here when the cause is resolved."}</p>
+      <p className="text-muted-foreground">{"Automatic workspace export retries stopped. Inspect the export failure, restore provider or destination availability, and preserve the saved files in the retained sandbox. Retry export here when the cause is resolved."}</p>
       {canManage ? <>
         <Label htmlFor={noteId}>Repair performed</Label>
         <Textarea id={noteId} value={repairNote} onChange={event => setRepairNote(event.target.value)} maxLength={12_000}

@@ -37,7 +37,8 @@ Paperclip Telemetry export, and legacy adapters do not use this writer.
 ## Omitted Unsafe Workspace Export
 
 `workspace_export_omitted` is an informational system event in the local run log.
-Its payload is `{ "reason": "restore_unsafe_archive" }`. It records that native
+Its payload is `{ "reason": "restore_unsafe_archive" }`, with `"legacy": true`
+when recovering an unsafe failure from an older controller. It records that native
 finalization discarded an unsafe export and continued with the accepted result.
 It contains no archive names, link targets, or raw error details. It does not
 create a task warning, recovery action, Telemetry event, or OpenTelemetry export.

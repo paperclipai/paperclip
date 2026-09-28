@@ -13,6 +13,9 @@ import {
   nativeRunResults,
   workAssessments,
   issueRecoveryActions,
+  agentWakeupRequests,
+  workspaceOperations,
+  activityLog,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -50,6 +53,8 @@ function captureRunFailureCallsFrom(fromIndex: number) {
 
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { restoreNativeWorkspaceBestEffort } from "./native-workspace-best-effort.js";
+import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
+import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { deliverExecutionStatuses } from "../execution-status-delivery.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
@@ -738,6 +743,47 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       { level: "info", payload: { reason: "restore_unsafe_archive" } },
     ]);
     expect(JSON.stringify(events)).not.toContain("/private/tool");
+  });
+
+  it.each(["active", "resolved", "missing"])("automatically completes a legacy unsafe result with a %s repair action and no sandbox", async actionState => {
+    const fixture = await seedNativeRun();
+    await db.update(completionContracts).set({ risk: "low", completionAuthority: "agent_claim_policy" }).where(eq(completionContracts.id, fixture.contractId));
+    await driveToCompleteResult(fixture, CONTROL_PLANE_CONFORMANCE_TERMINAL, {
+      ...CONTROL_PLANE_CONFORMANCE_RESULT,
+      completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim!, contractRevision: "telemetry-v1" },
+    });
+    const originalResults = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: "native_workspace_sync_out_unsafe_archive" }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await db.update(heartbeatRuns).set({ status: "failed", nativePhase: "terminal_failure", errorCode: "native_workspace_sync_out_unsafe_archive",
+      runnerProfileJson: { nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: "missing-old-sandbox", remoteCwd: "/work", resourceDisposition: "destroy" } },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, fixture.issueId));
+    if (actionState !== "missing") await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: fixture.issueId,
+      kind: "active_run_watchdog", ownerType: "board", cause: "native_workspace_sync_out_unsafe_archive", fingerprint: fixture.runId,
+      evidence: { runId: fixture.runId }, nextAction: "Repair the unsafe link manually", status: actionState,
+      ...(actionState === "resolved" ? { outcome: "restored", resolutionNote: "new_source_execution_path", resolvedAt: new Date() } : {}),
+    });
+    const priorWakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    const priorActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, fixture.issueId));
+    await recoverLegacyUnsafeWorkspaceExports(db, [fixture.runId]);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, fixture.issueId))).toEqual(priorActivity);
+    // No environment runtime is supplied: a stopped, deleted, or unavailable
+    // provider cannot prevent omission and accepted-result commitment.
+    await reconcileNativeFinalizations(db, [fixture.runId]);
+    await reconcileNativeFinalizations(db, [fixture.runId]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)))[0]).toMatchObject({ status: "succeeded", nativePhase: "committed", error: null, errorCode: null });
+    expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0].status).toBe("done");
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId))).toEqual(originalResults);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual(priorWakeups);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, fixture.issueId))).toHaveLength(1);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(actions.every(action => action.status === "resolved" && action.nextAction === "")).toBe(true);
+    expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, fixture.runId)))[0]).toMatchObject({ status: "succeeded", metadata: { workspaceSync: { omitted: true, legacy: true } } });
+    const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, fixture.runId));
+    expect(events.filter(event => event.eventType === "workspace_export_omitted")).toMatchObject([{ level: "info", payload: { reason: "restore_unsafe_archive", legacy: true } }]);
+    expect(events.filter(event => event.eventType === "workspace_export_omitted")).toHaveLength(1);
   });
 
   it("emits exactly one event for a cancel_continuations write (trap 2: :685/:518 overlap)", async () => {

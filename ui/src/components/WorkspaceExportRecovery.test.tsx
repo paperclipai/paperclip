@@ -7,7 +7,7 @@ import type { IssueRecoveryAction } from "@paperclipai/shared";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
 const retry = vi.hoisted(() => vi.fn());
 vi.mock("../api/issues", () => ({ issuesApi: { retryWorkspaceExport: retry } }));
-const action = { id: "action", cause: "native_workspace_sync_out_unsafe_archive", status: "active", updatedAt: "2026-01-01T00:00:00Z", ownerType: "board", evidence: { runId: "run" }, wakePolicy: null } as unknown as IssueRecoveryAction;
+const action = { id: "action", cause: "native_workspace_sync_out_retry_exhausted", status: "active", updatedAt: "2026-01-01T00:00:00Z", ownerType: "board", evidence: { runId: "run" }, wakePolicy: null } as unknown as IssueRecoveryAction;
 describe("WorkspaceExportRecovery", () => {
   let root: Root, container: HTMLDivElement, client: QueryClient;
   const onQueued = vi.fn();
@@ -23,7 +23,7 @@ describe("WorkspaceExportRecovery", () => {
   async function enterNote() {
     const textarea = container.querySelector("textarea")!;
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Removed the fixture link while preserving all safe files.");
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Restored provider connectivity while preserving all saved files.");
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
@@ -34,7 +34,7 @@ describe("WorkspaceExportRecovery", () => {
   it("requires a repair note and submits only the exact recorded run", async () => {
     await mount(); expect(container.querySelector("button")!.disabled).toBe(true);
     await enterNote(); await submit();
-    expect(retry).toHaveBeenCalledWith("issue", { actionId: "action", runId: "run", repairNote: "Removed the fixture link while preserving all safe files." });
+    expect(retry).toHaveBeenCalledWith("issue", { actionId: "action", runId: "run", repairNote: "Restored provider connectivity while preserving all saved files." });
     expect(onQueued).toHaveBeenCalledOnce();
     expect(container.querySelector('[role="status"]')?.textContent).toContain("agent will not repeat its work");
   });
@@ -59,6 +59,11 @@ describe("WorkspaceExportRecovery", () => {
     expect(container.textContent).not.toContain("unsafe link");
     await enterNote(); await submit();
     expect(retry).toHaveBeenCalledWith("issue", expect.objectContaining({ runId: "run" }));
+  });
+  it("never asks users to repair historical unsafe exports", async () => {
+    await mount({ action: { ...action, cause: "native_workspace_sync_out_unsafe_archive" } });
+    expect(container.textContent).toBe("");
+    expect(retry).not.toHaveBeenCalled();
   });
   it("does not offer a second retry while the same export is queued", async () => {
     await mount({ action: { ...action, wakePolicy: { kind: "resume_native_run" } } });
