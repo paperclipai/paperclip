@@ -53,7 +53,9 @@ export function createGitStreamingTask(base: RunnerTaskFixture): RunnerTaskFixtu
     // CI needs more than the ordinary warm fixture's ten minutes to prepare
     // and copy back 60,000 files (a measured continuation took eleven minutes).
     turnTimeoutMs: 15 * 60_000,
-    attemptTimeoutMs: { ...base.attemptTimeoutMs, daytona: 45 * 60_000 },
+    // Reserve another five minutes for setup, host checks, and cleanup outside
+    // the three per-turn deadlines.
+    attemptTimeoutMs: { ...base.attemptTimeoutMs, daytona: 50 * 60_000 },
     buildTitle: nonce => `Runner E2E Git streaming ${nonce}`,
     buildPrompt: nonce => [
       "Execute this bounded fixture command once in the current execution workspace. It creates 60,000 small untracked files whose Git filename list exceeds 32 MiB. Keep all files untracked; do not add, commit, rename, delete, or ignore them. Do not print the filenames or file contents.",

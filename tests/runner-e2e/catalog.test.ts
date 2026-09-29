@@ -35,7 +35,7 @@ describe("runner E2E catalog", () => {
     const suite = runnerSuites.find(suite => suite.id === "daytona-git-streaming")!;
     expect(suite.manualOnly).toBe(true);
     expect(runnerMatrix.filter(entry => entry.suite.id === suite.id)).toHaveLength(1);
-    expect(suite.tasks[0]).toMatchObject({ expectedRunCount: 3, flow: "warm_three_turn", turnTimeoutMs: 15 * 60_000, attemptTimeoutMs: { daytona: 45 * 60_000 } });
+    expect(suite.tasks[0]).toMatchObject({ expectedRunCount: 3, flow: "warm_three_turn", turnTimeoutMs: 15 * 60_000, attemptTimeoutMs: { daytona: 50 * 60_000 } });
     expect(daytonaWarmContinuityTask).toMatchObject({ turnTimeoutMs: 10 * 60_000, attemptTimeoutMs: { daytona: 30 * 60_000 } });
     expect(suite.definitionMetadata).toMatchObject({ generatedFileCount: 60_000, filenameBytes: 39_828_890, nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25 });
     const secretRefs = {
