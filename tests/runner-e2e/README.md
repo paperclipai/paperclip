@@ -865,6 +865,8 @@ Cancelled task, and a persisted response attributed to that run. The waiter
 allows the response to arrive after cancellation. Missing responses, operator
 cleanup cancellations, provider errors, unauthorized outputs, and active runs
 still fail.
+The response check proves persistence and attribution. It does not grade the
+reply's wording; the saved task, output, and run state prove non-execution.
 
 An obsolete queued wake with `issue_terminal_status` is not a provider failure
 when `startedAt` is explicitly null and its issue is durably Done or Cancelled.

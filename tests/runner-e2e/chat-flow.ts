@@ -84,9 +84,9 @@ export function isChatClarificationReply(body: string): boolean {
     const items = [...listRequest[1].matchAll(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/gm)];
     // A work checklist ("Create the task; write the note") is not a request
     // for information. Outcome/ownership assertions still run independently.
-    const action = /^(?:to\s|(?:create|write|start|execute|run|build|send|publish|deliver|finish|complete|assign)\b)/i;
+    const action = /^(?:to\s|(?:create|write|start|execute|run|build|send|publish|deliver|finish|complete|assign|plan|draft)\b)/i;
     if (items.length >= 2 && items.every(([, item]) =>
-      /[\p{L}\p{N}]/u.test(item) && !action.test(item.replace(/^[*_`]+/, "")),
+      /[\p{L}\p{N}]/u.test(item) && !action.test(item.replace(/^\[[ xX]\]\s*/, "").replace(/^[*_`]+/, "")),
     )) return true;
   }
   const request = body.match(

@@ -95,7 +95,8 @@ If you only have the club name, audience, and tone, that is enough to begin; I c
     expect(isChatClarificationReply("We need:\n1. Intended readers\n2. Delivery date")).toBe(true);
     for (const body of ["I need:", "I need:\n- .\n- ...", "I needed:\n- Audience\n- Tone",
       "I need:\n- to create the task\n- to write the note", "I need to create the task and write the note.",
-      "I need:\n- Create the task\n- Write the note", "We need:\n1. **Build** the page\n2. **Publish** the site"]) {
+      "I need:\n- Create the task\n- Write the note", "We need:\n1. **Build** the page\n2. **Publish** the site",
+      "I need:\n- Plan the note\n- Draft it", "I need:\n- [ ] Create task\n- [ ] Write note"]) {
       expect(isChatClarificationReply(body), body).toBe(false);
     }
   });
