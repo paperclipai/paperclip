@@ -1,0 +1,1 @@
+ALTER TABLE "agent_task_sessions" ADD COLUMN "goal_source_epoch" text;

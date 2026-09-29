@@ -1,0 +1,3 @@
+ALTER TABLE "native_authority_records" ADD COLUMN "body_encoding" text DEFAULT 'json' NOT NULL;--> statement-breakpoint
+ALTER TABLE "native_authority_records" ADD COLUMN "body_bytes" bigint;--> statement-breakpoint
+ALTER TABLE "native_authority_records" ADD CONSTRAINT "native_authority_records_body_encoding_valid" CHECK (("native_authority_records"."body_encoding" = 'json' AND "native_authority_records"."body_bytes" IS NULL) OR ("native_authority_records"."body_encoding" = 'object.v1' AND "native_authority_records"."body_bytes" IS NOT NULL AND "native_authority_records"."body_bytes" BETWEEN 1 AND 1048576));

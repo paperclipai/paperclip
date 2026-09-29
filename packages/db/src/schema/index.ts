@@ -210,3 +210,10 @@ export { aiConnectionDefaults } from "./ai_connection_defaults.js";
 export { aiProviderDefaults } from "./ai_provider_defaults.js";
 export * from "./email.js";
 export { announcementDismissals, announcementPublications } from "./announcement_dismissals.js";
+export { nativeSessionAuthorities, nativeAuthorityRecords, nativeAuthorityWork, nativeSourceCursors, nativeSourceEpochs } from "./native_session_authorities.js";
+
+export { nativeOutputBodyChunks } from "./native_output_body_chunks.js";
+export { nativeRunProcessEvidence } from "./native_run_process_evidence.js";
+
+export { heartbeatRunEventEpochs, heartbeatRunEventHeads, heartbeatRunEventLinks } from "./heartbeat_run_event_history.js";
+export { nativeToolReceipts, nativeToolReceiptReferences } from "./native_tool_receipts.js";

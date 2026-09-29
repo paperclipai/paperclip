@@ -44,6 +44,13 @@ export const runnerGoalPendingActionSchema = z.enum([
 ]);
 export type RunnerGoalPendingAction = z.infer<typeof runnerGoalPendingActionSchema>;
 
+export const runnerGoalRevisionTokenSchema = z.string().regex(/^r:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+export const runnerGoalRevisionSchema = z.union([
+  z.number().int().safe().nonnegative(),
+  runnerGoalRevisionTokenSchema,
+]);
+export type RunnerGoalRevision = z.infer<typeof runnerGoalRevisionSchema>;
+
 export interface RunnerGoalCapability {
   availability: RunnerGoalAvailability;
   verified?: boolean;
@@ -81,7 +88,7 @@ export interface RunnerGoalProjection {
   workingNow: boolean;
   activeRunId: string | null;
   pendingAction: RunnerGoalPendingAction | null;
-  revision: number;
+  revision: RunnerGoalRevision;
   observedAt: string | null;
 }
 
@@ -95,7 +102,7 @@ export const runnerGoalActionRequestSchema = z
   .object({
     requestId: z.string().trim().min(1).max(160),
     agentId: z.string().uuid(),
-    expectedRevision: z.number().int().nonnegative(),
+    expectedRevision: runnerGoalRevisionSchema,
     action: runnerGoalActionSchema,
     objective: objectiveSchema.optional(),
     tokenBudget: z.number().int().positive().nullable().optional(),

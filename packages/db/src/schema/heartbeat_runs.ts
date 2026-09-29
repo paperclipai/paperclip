@@ -53,6 +53,7 @@ export const heartbeatRuns = pgTable(
     driverVersion: text("driver_version"),
     completionContractId: uuid("completion_contract_id"),
     completionContractSha256: text("completion_contract_sha256"),
+    eventEpoch: text("event_epoch").notNull().default(""),
     nextEventSeq: bigint("next_event_seq", { mode: "number" }).notNull().default(1),
     nativePhase: text("native_phase"),
     nativePhaseUpdatedAt: timestamp("native_phase_updated_at", { withTimezone: true }),
@@ -75,7 +76,7 @@ export const heartbeatRuns = pgTable(
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
-    lastOutputSeq: integer("last_output_seq").notNull().default(0),
+    lastOutputSeq: bigint("last_output_seq", { mode: "number" }).notNull().default(0),
     lastOutputStream: text("last_output_stream"),
     lastOutputBytes: bigint("last_output_bytes", { mode: "number" }),
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
@@ -105,6 +106,7 @@ export const heartbeatRuns = pgTable(
     nativeReplacementPredecessorUq: uniqueIndex("heartbeat_runs_native_replacement_predecessor_uq")
       .on(table.companyId, table.retryOfRunId)
       .where(sql`${table.scheduledRetryReason} = 'native_safe_replacement'`),
+    companyRunUq: unique("heartbeat_runs_company_id_run_id_uq").on(table.companyId, table.id),
     companyNativeIssueRunUq: unique("heartbeat_runs_company_native_issue_id_uq").on(
       table.companyId,
       table.nativeIssueId,

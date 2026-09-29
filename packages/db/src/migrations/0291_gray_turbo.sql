@@ -1,0 +1,1 @@
+ALTER TABLE "heartbeat_runs" ALTER COLUMN "last_output_seq" SET DATA TYPE bigint;

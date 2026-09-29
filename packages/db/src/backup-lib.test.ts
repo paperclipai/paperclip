@@ -4,7 +4,7 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore, withDatabaseBackupSnapshot } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -602,4 +602,69 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     20_000,
   );
+});
+
+describeEmbeddedPostgres("coordinated database snapshots", () => {
+  for (const engine of ["javascript", "transformed-auto", "pg_dump"] as const) {
+    it.skipIf(engine === "pg_dump" && !process.env.PAPERCLIP_TEST_PG_DUMP)(
+      `restores one exported authority/receipt point while writers continue (${engine})`, async () => {
+        const connectionString = await createTempDatabase();
+        const restoreConnectionString = await createSiblingDatabase(connectionString, "snapshot_restore_target");
+        const writer = postgres(connectionString, { max: 1, onnotice: () => {} });
+        const restored = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+        const backupDir = createTempDir("paperclip-db-snapshot-");
+        try {
+          await writer.unsafe(`
+            CREATE TABLE snapshot_receipts (id text PRIMARY KEY, body text NOT NULL);
+            CREATE TABLE snapshot_authority (id integer PRIMARY KEY, generation text NOT NULL, receipt text NOT NULL REFERENCES snapshot_receipts(id));
+            INSERT INTO snapshot_receipts VALUES ('before', repeat('original receipt ', 4096));
+            INSERT INTO snapshot_authority VALUES (1, '9007199254740993', 'before');
+          `);
+          const backup = await withDatabaseBackupSnapshot({ connectionString }, async ({ id, sql }) => {
+            expect((await sql`SELECT generation FROM snapshot_authority`)[0]?.generation).toBe("9007199254740993");
+            await writer.begin(async tx => {
+              await tx`INSERT INTO snapshot_receipts VALUES ('after', 'new receipt')`;
+              await tx`UPDATE snapshot_authority SET generation = '9007199254740994', receipt = 'after'`;
+              await tx`DELETE FROM snapshot_receipts WHERE id = 'before'`;
+            });
+            const result = await runDatabaseBackup({ connectionString, backupDir,
+              retention: { dailyDays: 1, weeklyWeeks: 0, monthlyMonths: 0 }, snapshotId: id,
+              backupEngine: engine === "transformed-auto" ? "auto" : engine,
+              ...(engine === "transformed-auto" ? { excludeTables: ["not_a_table"] } : {}),
+            });
+            expect((await sql`SELECT generation FROM snapshot_authority`)[0]?.generation).toBe("9007199254740993");
+            return result;
+          });
+          await runDatabaseRestore({ connectionString: restoreConnectionString, backupFile: backup.backupFile });
+          expect(await restored`SELECT generation, receipt FROM snapshot_authority`).toEqual([{ generation: "9007199254740993", receipt: "before" }]);
+          expect(await restored`SELECT id, body FROM snapshot_receipts`).toEqual([{ id: "before", body: "original receipt ".repeat(4096) }]);
+          expect((await writer`SELECT generation FROM snapshot_authority`)[0]?.generation).toBe("9007199254740994");
+        } finally { await Promise.all([writer.end(), restored.end()]); }
+      }, 90_000,
+    );
+  }
+
+  it("does not publish a backup if the exported snapshot has expired", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-db-expired-snapshot-");
+    const snapshotId = await withDatabaseBackupSnapshot({ connectionString }, async ({ id }) => id);
+    const engines = process.env.PAPERCLIP_TEST_PG_DUMP ? ["javascript", "pg_dump", "auto"] as const : ["javascript"] as const;
+    for (const backupEngine of engines) {
+      const directory = path.join(backupDir, backupEngine);
+      await expect(runDatabaseBackup({ connectionString, backupDir: directory, snapshotId, backupEngine,
+        retention: { dailyDays: 1, weeklyWeeks: 0, monthlyMonths: 0 },
+      })).rejects.toThrow(/snapshot/i);
+      expect(fs.readdirSync(directory)).toEqual([]);
+    }
+  }, 90_000);
+});
+
+it("validates snapshot identifiers before opening a database or output file", async () => {
+  const backupDir = path.join(createTempDir("paperclip-db-invalid-snapshot-"), "absent");
+  for (const snapshotId of ["", "snapshot' ; SELECT 1; --", "00000001-00000001-1\n", "00000001-00000001-" + "9".repeat(100)]) {
+    await expect(runDatabaseBackup({ connectionString: "postgres://invalid:1/unreachable", backupDir, snapshotId,
+      retention: { dailyDays: 1, weeklyWeeks: 0, monthlyMonths: 0 },
+    })).rejects.toThrow("database_backup_snapshot_invalid");
+    expect(fs.existsSync(backupDir)).toBe(false);
+  }
 });

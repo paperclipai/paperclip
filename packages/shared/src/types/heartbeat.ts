@@ -290,11 +290,16 @@ export interface ChatFailedRunRetryResponse {
 }
 
 export interface HeartbeatRunEvent {
-  id: number;
+  id: number | string;
   companyId: string;
   runId: string;
   agentId: string;
   seq: number;
+  eventEpoch?: string;
+  cursor?: string;
+  historyBefore?: boolean;
+  /** More rows follow even when the response reached its byte budget first. */
+  historyAfter?: boolean;
   eventType: string;
   stream: "system" | "stdout" | "stderr" | null;
   level: "info" | "warn" | "error" | null;
@@ -302,6 +307,18 @@ export interface HeartbeatRunEvent {
   message: string | null;
   payload: Record<string, unknown> | null;
   createdAt: Date;
+}
+
+/** Page of the persisted run log. Exact cursors are decimal byte offsets;
+ * clients must retain them verbatim instead of counting rendered characters. */
+export interface HeartbeatRunLogPage {
+  runId: string;
+  store: string;
+  logRef: string;
+  content: string;
+  nextOffset?: number;
+  cursor?: string;
+  hasMore?: boolean;
 }
 
 export interface AgentRuntimeState {
@@ -374,4 +391,13 @@ export interface InstanceSchedulerHeartbeatAgent {
   heartbeatEnabled: boolean;
   schedulerActive: boolean;
   lastHeartbeatAt: Date | null;
+}
+
+/** A single admitted provider output, scoped by its authenticated run URL. */
+export interface RunOutputBodyReference {
+  schema: "paperclip.output.body.v1";
+  bodyId: string;
+  sha256: string;
+  byteLength: string;
+  mediaType: "text/plain; charset=utf-8";
 }

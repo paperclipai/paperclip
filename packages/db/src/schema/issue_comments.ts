@@ -5,7 +5,8 @@ import type {
   IssueCommentPresentation,
   SourceTrustMetadata,
 } from "@paperclipai/shared";
-import { pgTable, uuid, text, timestamp, index, jsonb, unique, integer } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, index, jsonb, unique, integer, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
@@ -23,6 +24,8 @@ export const issueComments = pgTable(
     onBehalfOfUserId: text("on_behalf_of_user_id").references(() => authUsers.id, { onDelete: "set null" }),
     authorType: text("author_type").$type<IssueCommentAuthorType>(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    // Server-derived with the business receipt, never supplied by a comment author.
+    nativeToolGenerated: boolean("native_tool_generated").notNull().default(false),
     // Persisted result of best-effort agent-attribution derivation for comments
     // authored by a non-human sentinel (e.g. `local-board`). Populated once by a
     // backfill migration and lazily on read so the load path stops re-scanning
@@ -49,6 +52,9 @@ export const issueComments = pgTable(
     companyIdUq: unique("issue_comments_company_id_uq").on(table.companyId, table.id),
     issueIdx: index("issue_comments_issue_idx").on(table.issueId),
     companyIdx: index("issue_comments_company_idx").on(table.companyId),
+    nativeRunResponseIdx: index("issue_comments_native_run_response_idx").on(
+      table.companyId, table.createdByRunId, table.issueId, table.createdAt.desc(), table.id.desc(),
+    ).where(sql`NOT ${table.nativeToolGenerated}`),
     companyIssueCreatedAtIdx: index("issue_comments_company_issue_created_at_idx").on(
       table.companyId,
       table.issueId,

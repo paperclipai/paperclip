@@ -22,6 +22,7 @@ export {
 } from "./test-embedded-postgres.js";
 export {
   runDatabaseBackup,
+  withDatabaseBackupSnapshot,
   runDatabaseRestore,
   formatDatabaseBackupResult,
   type BackupRetentionPolicy,

@@ -1,0 +1,4 @@
+ALTER TABLE "native_authority_records" DROP CONSTRAINT "native_authority_records_sequence_uq";--> statement-breakpoint
+ALTER TABLE "native_authority_records" DROP CONSTRAINT "native_authority_records_sequence_positive";--> statement-breakpoint
+CREATE UNIQUE INDEX "native_authority_records_sequence_uq" ON "native_authority_records" USING btree ("company_id","normalized_session_id","run_id","kind","sequence") WHERE "native_authority_records"."kind" <> 'effect';--> statement-breakpoint
+ALTER TABLE "native_authority_records" ADD CONSTRAINT "native_authority_records_sequence_positive" CHECK ("native_authority_records"."sequence" > 0 OR ("native_authority_records"."kind" = 'effect' AND "native_authority_records"."sequence" = 0));

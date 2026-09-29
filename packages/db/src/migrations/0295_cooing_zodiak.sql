@@ -1,0 +1,2 @@
+ALTER TABLE "native_authority_records" DROP CONSTRAINT "native_authority_records_sequence_epoch_valid";--> statement-breakpoint
+ALTER TABLE "native_authority_records" ADD CONSTRAINT "native_authority_records_sequence_epoch_valid" CHECK ("native_authority_records"."sequence_epoch" = '' OR ("native_authority_records"."kind" IN ('command', 'event') AND "native_authority_records"."sequence_epoch" ~ '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'));

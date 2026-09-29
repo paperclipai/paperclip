@@ -272,7 +272,12 @@ path.
 Durable agent session goals are an additive projection on
 `agent_task_sessions`, distinct from the business-goal hierarchy. The row stores
 the negotiated goal capability, normalized snapshot and status, desired state,
-provider source cursor, monotonic projection revision, and observation time.
+provider source cursor, opaque equality-only projection revision token, and
+observation time. `goal_revision` remains as a legacy numeric compatibility
+value; the first mutation writes `goal_revision_token` without incrementing the
+legacy column. A stale numeric expectation cannot match after token activation.
+The source epoch/cursor orders provider updates and is independent of this CAS
+token.
 `agent_session_goal_actions` is the control outbox: `(session_id, request_id)`
 is unique, so retries return the original accepted action. Provider source
 ordering fences duplicate and stale updates, and a cleared projection retains
@@ -353,6 +358,14 @@ plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
 `paperclipai db:backup` / `pnpm db:backup` commands and backup retention
 configuration.
 
+The JavaScript exporter reads catalog and table data through one repeatable-read,
+read-only transaction with bounded row cursors. Coordinated background backup
+code can use `withDatabaseBackupSnapshot` to read authority rows and supply its
+exported `snapshotId` to `runDatabaseBackup`; both export engines use that exact
+database snapshot. The owning callback must stay open until export completes.
+An expired snapshot fails the backup. This database boundary alone does not
+capture runner SQLite stores, provider files, or external output objects.
+
 Database backups do not include non-database instance files such as local-disk
 uploads, workspace files, or the local encrypted secrets master key. Back those paths
 up separately when you need full instance disaster recovery.
@@ -432,3 +445,108 @@ cleanup authority; it does not prove that remote inference has stopped. Recovery
 revokes the previous boot identity with a conditional update. Its own claim also
 expires so another sweep can finish cleanup after a restart. Historical rows keep
 null ownership fields and follow the previous recovery path.
+
+
+### Experimental indexed native authority
+
+Fresh local Codex sessions can opt into `PAPERCLIP_NATIVE_INDEXED_STATE=1`.
+Migration `0285_flimsy_eternals` adds company/run/session-scoped
+`native_session_authorities` (bounded current state and generation),
+`native_authority_records` (immutable protocol receipts and raw events), and
+`native_source_cursors` (cached contiguous run-log acceptance cursors). The
+production adapter lives in `server/src/services/native-runtime/postgres-authority-store.ts`.
+The controller checkpoint and raw protocol event receipt share a transaction
+before a transport ACK. Driver-normalized `heartbeat_run_events` have a different
+sequence and continue through the existing event writer. They must not share
+raw transport sequence keys.
+
+Migration `0293_dazzling_the_hood` reserves sequence zero for unordered effect
+receipts. Effects are addressed by company/session/semantic identity, not by
+sequence. Their existing positive sequences remain immutable. Command/event
+sequences retain their positive, per-run uniqueness constraints.
+
+Migration `0292_rainy_leader` changes the authority's `generation` from a
+signed integer to an opaque `r:<UUIDv4>` commit identity, with its exact
+`committed_from` predecessor in the same transaction. Writers compare equality;
+they do not increment or sort revisions. Existing decimal revisions remain
+readable, including the old signed-64-bit maximum. The next successful write
+replaces that revision without changing the run or session. Interrupted legacy
+activation proves one transition from the stored predecessor, not arithmetic
+on an opaque value. Event sequences remain a separate, numeric contract.
+
+Migration `0287_nebulous_lockjaw` adds paged unresolved process owners independent
+of transcript retention. Migration `0288_brown_alex_power` adds a small output
+body catalog keyed by company, run, body digest and source sequence. Migration
+`0289_fresh_firebird` adds current server-observed process lifecycle evidence and
+an event foreign-key index for the body catalog. Process evidence is committed
+with each server launch/identity/stop event; old runs backfill once under the run
+lock. Neither ordinary recovery nor a body download scans the run's historical
+output. The lifecycle row survives historical event retention and is invalidated
+by a later launch. It is not a substitute for exact process-tree ownership.
+
+Migration `0290_broken_warbound` distinguishes inline receipt JSON from immutable
+payload references and stores the original byte length for page admission.
+Large receipts and output chunks use the configured local/S3 storage provider.
+Upload and exact read-back verification precede the database transaction; the
+original canonical digest remains the replay identity. Missing or corrupt
+required objects fail closed. A failed publication can leave an immutable
+orphan; automatic orphan collection is not implemented yet.
+
+Current authority format `paperclip.runner.current-authority.v2` keeps pending
+work and a fixed set of typed receipt references. Recovery reads just those
+receipts, validates their scope/sequence/digest, and rechecks the current
+generation. Existing completion-contract and accepted-result checks then use
+the resolved bounded view. Older indexed rows remain readable; older binaries
+reject the v2 current-state schema instead of mistaking missing settled arrays
+for empty history.
+
+Runner and Codex provider state use private local SQLite WAL/FULL databases;
+small JSON files are locators, never standalone execution authority. Do not
+copy a live SQLite file without a consistent backup protocol or its committed
+WAL. Legacy retained-session import and cross-store operational backup/restore
+remain unqualified, so this format is disabled for fresh sessions by default.
+See the [design and qualification status](plans/2026-09-28-unbounded-runner-history.md).
+
+Run-output progress uses a `bigint` `heartbeat_runs.last_output_seq`, matching
+the larger run-event counters. Migration 0291 removes the former signed 32-bit
+output-count boundary. API values remain JavaScript-safe numeric progress;
+transparent lifetime epoch rotation is specified separately in the
+[history lifetime contract](architecture/runner-history-lifetime.md).
+
+
+Command receipts have an optional `sequence_epoch` namespace (migration 0294).
+The retained namespace is the empty string. Uniqueness includes that namespace
+for ordered records, while command identity remains unique across the entire
+run. Controller transitions store exact close receipts and the new current head
+in one transaction; resetting an ordinal alone never establishes a new epoch.
+
+The runner history event-epoch migration `0295_cooing_zodiak.sql` extends the
+existing `native_authority_records.sequence_epoch` constraint to raw events.
+Event pages select the exact namespace; identity deduplication remains across
+the run. This does not change normalized run-log source or public event cursors.
+
+
+Normalized source delivery uses migrations 0296–0297. One current source head
+and immutable close receipts separate local event ordinals from lifetime
+ordering. The first successor event closes the exact contiguous predecessor in
+the same transaction. Output chunk keys are body-local offsets, independent of
+source ordinals. The migration validates old chunk identities before coalescing
+exact duplicates. Migration 0296 replaces the existing replay uniqueness index
+under the transactional migration lock; large installations need a maintenance
+window for that one-time rebuild. This is not a foreground continuation step.
+Goal projections store the source epoch separately from source run ownership.
+
+Migration `0298_brown_northstar` adds nullable
+`agent_task_sessions.goal_revision_token`. Existing rows retain their numeric
+`goal_revision` until a successful mutation installs an opaque `r:<UUIDv4>`
+token. This is an equality authority, not a sortable revision or source cursor.
+
+Migration `0299_flaky_justin_hammer` converts public
+`heartbeat_run_events.id` values to text (preserving old IDs as decimal strings),
+adds `event_epoch`, and creates indexed epoch heads and semantic-lane links.
+New event cursors are `e:<epoch>:<seq>`; sequence values are bounded to one
+epoch and must not be compared across epochs. The migration backfills the link
+and head indexes from existing history in one operation. That backfill and its
+index/constraint replacement are O(history) work and may hold transactional
+locks: plan a maintenance window for large installations. It is a one-time
+migration cost, not hidden foreground continuation work.

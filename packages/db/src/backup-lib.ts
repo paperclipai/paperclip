@@ -28,6 +28,9 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /** Exported by a still-open, same-database transaction. Both engines must
+   * import this exact snapshot; failure must never select a newer point. */
+  snapshotId?: string;
 };
 
 export type RunDatabaseBackupResult = {
@@ -321,6 +324,7 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  snapshotId?: string;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -332,6 +336,7 @@ async function runPgDumpBackup(opts: {
       "--if-exists",
       "--no-owner",
       "--no-privileges",
+      ...(opts.snapshotId ? [`--snapshot=${opts.snapshotId}`] : []),
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
@@ -524,12 +529,37 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
   };
 }
 
+function validateSnapshotId(id: string): void {
+  // PostgreSQL exports three bounded hexadecimal/decimal components. Validate
+  // before interpolating its required SQL string literal or starting a child.
+  if (id !== id.trim() || !/^[0-9a-f]{8}-[0-9a-f]{8}-[1-9][0-9]{0,9}$/i.test(id)) throw new Error("database_backup_snapshot_invalid");
+}
+
+/** Own a repeatable database read point while coordinating a background backup.
+ * The callback may read bounded authority rows through sql and pass id to the
+ * exporter. No execution transaction should wait for this history-sized job.
+ * Exported snapshots cease to be importable when the callback finishes. */
+export async function withDatabaseBackupSnapshot<T>(
+  options: Pick<RunDatabaseBackupOptions, "connectionString" | "connectTimeoutSeconds">,
+  consume: (snapshot: { id: string; sql: postgres.TransactionSql }) => Promise<T>,
+): Promise<T> {
+  const pool = postgres(options.connectionString, { max: 1, connect_timeout: Math.max(1, Math.trunc(options.connectTimeoutSeconds ?? 5)) });
+  try {
+    return await pool.begin("isolation level repeatable read read only", async sql => {
+      const [row] = await sql<{ id: string }[]>`SELECT pg_export_snapshot() AS id`;
+      if (!row) throw new Error("database_backup_snapshot_missing");
+      validateSnapshotId(row.id);
+      return consume({ id: row.id, sql });
+    }) as T;
+  } finally { await pool.end(); }
+}
+
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
+  if (opts.snapshotId !== undefined) validateSnapshotId(opts.snapshotId);
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
-  let effectiveBackupEngine = backupEngine;
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
@@ -554,6 +584,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectionString: opts.connectionString,
           backupFile,
           connectTimeout,
+          snapshotId: opts.snapshotId,
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
@@ -570,7 +601,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (backupEngine === "pg_dump") {
           throw error;
         }
-        effectiveBackupEngine = "javascript";
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         sqlClosed = false;
       }
@@ -578,447 +608,434 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     await sql`SELECT 1`;
 
-    const emit = (line: string) => writer.emit(line);
-    const emitStatement = (statement: string) => {
-      emit(statement);
-      emit(STATEMENT_BREAKPOINT);
-    };
-    const emitStatementBoundary = () => {
-      emit(STATEMENT_BREAKPOINT);
-    };
+    await sql.begin("isolation level repeatable read read only", async sql => {
+      if (opts.snapshotId) await sql.unsafe(`SET TRANSACTION SNAPSHOT '${opts.snapshotId}'`);
+      const emit = (line: string) => writer.emit(line);
+      const emitStatement = (statement: string) => {
+        emit(statement);
+        emit(STATEMENT_BREAKPOINT);
+      };
+      const emitStatementBoundary = () => {
+        emit(STATEMENT_BREAKPOINT);
+      };
 
-    emit("-- Paperclip database backup");
-    emit(`-- Created: ${new Date().toISOString()}`);
-    emit("");
-    emitStatement("BEGIN;");
-    emitStatement("SET LOCAL session_replication_role = replica;");
-    emitStatement("SET LOCAL client_min_messages = warning;");
-    emitStatement("SET LOCAL check_function_bodies = false;");
-    emit("");
-
-    const allTables = await sql<TableDefinition[]>`
-      SELECT table_schema AS schema_name, table_name AS tablename
-      FROM information_schema.tables
-      WHERE table_type = 'BASE TABLE'
-        AND ${sql.unsafe(nonSystemSchemaPredicate("table_schema"))}
-      ORDER BY table_schema, table_name
-    `;
-    const tables = allTables;
-    const includedTableNames = new Set(tables.map(({ schema_name, tablename }) => tableKey(schema_name, tablename)));
-    const includedSchemas = new Set(tables.map(({ schema_name }) => schema_name));
-
-    // Get all enums
-    const enums = await sql<{ schema_name: string; typname: string; labels: string[] }[]>`
-      SELECT n.nspname AS schema_name, t.typname, array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
-      FROM pg_type t
-      JOIN pg_enum e ON t.oid = e.enumtypid
-      JOIN pg_namespace n ON t.typnamespace = n.oid
-      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
-      GROUP BY n.nspname, t.typname
-      ORDER BY n.nspname, t.typname
-    `;
-    for (const e of enums) includedSchemas.add(e.schema_name);
-
-    const allSequences = await sql<SequenceDefinition[]>`
-      SELECT
-        s.sequence_schema,
-        s.sequence_name,
-        s.data_type,
-        s.start_value,
-        s.minimum_value,
-        s.maximum_value,
-        s.increment,
-        s.cycle_option,
-        tblns.nspname AS owner_schema,
-        tbl.relname AS owner_table,
-        attr.attname AS owner_column
-      FROM information_schema.sequences s
-      JOIN pg_class seq ON seq.relname = s.sequence_name
-      JOIN pg_namespace n ON n.oid = seq.relnamespace AND n.nspname = s.sequence_schema
-      LEFT JOIN pg_depend dep ON dep.objid = seq.oid AND dep.deptype = 'a'
-      LEFT JOIN pg_class tbl ON tbl.oid = dep.refobjid
-      LEFT JOIN pg_namespace tblns ON tblns.oid = tbl.relnamespace
-      LEFT JOIN pg_attribute attr ON attr.attrelid = tbl.oid AND attr.attnum = dep.refobjsubid
-      WHERE ${sql.unsafe(nonSystemSchemaPredicate("s.sequence_schema"))}
-      ORDER BY s.sequence_schema, s.sequence_name
-    `;
-    const sequences = allSequences.filter(
-      (seq) => !seq.owner_table || includedTableNames.has(tableKey(seq.owner_schema ?? "public", seq.owner_table)),
-    );
-
-    const schemas = new Set<string>(includedSchemas);
-    for (const seq of sequences) schemas.add(seq.sequence_schema);
-    const extraSchemas = [...schemas].filter((schemaName) => schemaName !== "public");
-    if (extraSchemas.length > 0) {
-      emit("-- Schemas");
-      for (const schemaName of extraSchemas) {
-        emitStatement(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schemaName)};`);
-      }
+      emit("-- Paperclip database backup");
+      emit(`-- Created: ${new Date().toISOString()}`);
       emit("");
-    }
-
-    for (const e of enums) {
-      const labels = e.labels.map((l) => `'${l.replace(/'/g, "''")}'`).join(", ");
-      emitStatement(`CREATE TYPE ${quoteQualifiedName(e.schema_name, e.typname)} AS ENUM (${labels});`);
-    }
-    if (enums.length > 0) emit("");
-
-    const extensions = await sql<ExtensionDefinition[]>`
-      SELECT
-        e.extname AS extension_name,
-        n.nspname AS schema_name
-      FROM pg_extension e
-      JOIN pg_namespace n ON n.oid = e.extnamespace
-      WHERE e.extname <> 'plpgsql'
-      ORDER BY e.extname
-    `;
-    if (extensions.length > 0) {
-      emit("-- Extensions");
-      for (const extension of extensions) {
-        emitStatement(
-          `CREATE EXTENSION IF NOT EXISTS ${quoteIdentifier(extension.extension_name)} WITH SCHEMA ${quoteIdentifier(extension.schema_name)};`,
-        );
-      }
+      emitStatement("BEGIN;");
+      emitStatement("SET LOCAL session_replication_role = replica;");
+      emitStatement("SET LOCAL client_min_messages = warning;");
+      emitStatement("SET LOCAL check_function_bodies = false;");
       emit("");
-    }
 
-    if (sequences.length > 0) {
-      emit("-- Sequences");
-      for (const seq of sequences) {
-        const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
-        emitStatement(`DROP SEQUENCE IF EXISTS ${qualifiedSequenceName} CASCADE;`);
-        emitStatement(
-          `CREATE SEQUENCE ${qualifiedSequenceName} AS ${seq.data_type} INCREMENT BY ${seq.increment} MINVALUE ${seq.minimum_value} MAXVALUE ${seq.maximum_value} START WITH ${seq.start_value}${seq.cycle_option === "YES" ? " CYCLE" : " NO CYCLE"};`,
-        );
-      }
-      emit("");
-    }
-
-    // Get full CREATE TABLE DDL via column info
-    for (const { schema_name, tablename } of tables) {
-      const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
-      const columns = await sql<{
-        column_name: string;
-        data_type: string;
-        udt_schema: string;
-        udt_name: string;
-        is_nullable: string;
-        column_default: string | null;
-        character_maximum_length: number | null;
-        numeric_precision: number | null;
-        numeric_scale: number | null;
-      }[]>`
-        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
-               character_maximum_length, numeric_precision, numeric_scale
-        FROM information_schema.columns
-        WHERE table_schema = ${schema_name} AND table_name = ${tablename}
-        ORDER BY ordinal_position
+      const allTables = await sql<TableDefinition[]>`
+        SELECT table_schema AS schema_name, table_name AS tablename
+        FROM information_schema.tables
+        WHERE table_type = 'BASE TABLE'
+          AND ${sql.unsafe(nonSystemSchemaPredicate("table_schema"))}
+        ORDER BY table_schema, table_name
       `;
+      const tables = allTables;
+      const includedTableNames = new Set(tables.map(({ schema_name, tablename }) => tableKey(schema_name, tablename)));
+      const includedSchemas = new Set(tables.map(({ schema_name }) => schema_name));
 
-      emit(`-- Table: ${schema_name}.${tablename}`);
-      emitStatement(`DROP TABLE IF EXISTS ${qualifiedTableName} CASCADE;`);
+      // Get all enums
+      const enums = await sql<{ schema_name: string; typname: string; labels: string[] }[]>`
+        SELECT n.nspname AS schema_name, t.typname, array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
+        FROM pg_type t
+        JOIN pg_enum e ON t.oid = e.enumtypid
+        JOIN pg_namespace n ON t.typnamespace = n.oid
+        WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+        GROUP BY n.nspname, t.typname
+        ORDER BY n.nspname, t.typname
+      `;
+      for (const e of enums) includedSchemas.add(e.schema_name);
 
-      const colDefs: string[] = [];
-      for (const col of columns) {
-        let typeStr: string;
-        if (col.data_type === "USER-DEFINED") {
-          typeStr = quoteQualifiedName(col.udt_schema, col.udt_name);
-        } else if (col.data_type === "ARRAY") {
-          const elementType = col.udt_name.replace(/^_/, "");
-          typeStr = col.udt_schema === "pg_catalog"
-            ? `${elementType}[]`
-            : `${quoteQualifiedName(col.udt_schema, elementType)}[]`;
-        } else if (col.data_type === "character varying") {
-          typeStr = col.character_maximum_length
-            ? `varchar(${col.character_maximum_length})`
-            : "varchar";
-        } else if (col.data_type === "numeric" && col.numeric_precision != null) {
-          typeStr =
-            col.numeric_scale != null
-              ? `numeric(${col.numeric_precision}, ${col.numeric_scale})`
-              : `numeric(${col.numeric_precision})`;
-        } else {
-          typeStr = col.data_type;
+      const allSequences = await sql<SequenceDefinition[]>`
+        SELECT
+          s.sequence_schema,
+          s.sequence_name,
+          s.data_type,
+          s.start_value,
+          s.minimum_value,
+          s.maximum_value,
+          s.increment,
+          s.cycle_option,
+          tblns.nspname AS owner_schema,
+          tbl.relname AS owner_table,
+          attr.attname AS owner_column
+        FROM information_schema.sequences s
+        JOIN pg_class seq ON seq.relname = s.sequence_name
+        JOIN pg_namespace n ON n.oid = seq.relnamespace AND n.nspname = s.sequence_schema
+        LEFT JOIN pg_depend dep ON dep.objid = seq.oid AND dep.deptype = 'a'
+        LEFT JOIN pg_class tbl ON tbl.oid = dep.refobjid
+        LEFT JOIN pg_namespace tblns ON tblns.oid = tbl.relnamespace
+        LEFT JOIN pg_attribute attr ON attr.attrelid = tbl.oid AND attr.attnum = dep.refobjsubid
+        WHERE ${sql.unsafe(nonSystemSchemaPredicate("s.sequence_schema"))}
+        ORDER BY s.sequence_schema, s.sequence_name
+      `;
+      const sequences = allSequences.filter(
+        (seq) => !seq.owner_table || includedTableNames.has(tableKey(seq.owner_schema ?? "public", seq.owner_table)),
+      );
+
+      const schemas = new Set<string>(includedSchemas);
+      for (const seq of sequences) schemas.add(seq.sequence_schema);
+      const extraSchemas = [...schemas].filter((schemaName) => schemaName !== "public");
+      if (extraSchemas.length > 0) {
+        emit("-- Schemas");
+        for (const schemaName of extraSchemas) {
+          emitStatement(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schemaName)};`);
+        }
+        emit("");
+      }
+
+      for (const e of enums) {
+        const labels = e.labels.map((l) => `'${l.replace(/'/g, "''")}'`).join(", ");
+        emitStatement(`CREATE TYPE ${quoteQualifiedName(e.schema_name, e.typname)} AS ENUM (${labels});`);
+      }
+      if (enums.length > 0) emit("");
+
+      const extensions = await sql<ExtensionDefinition[]>`
+        SELECT
+          e.extname AS extension_name,
+          n.nspname AS schema_name
+        FROM pg_extension e
+        JOIN pg_namespace n ON n.oid = e.extnamespace
+        WHERE e.extname <> 'plpgsql'
+        ORDER BY e.extname
+      `;
+      if (extensions.length > 0) {
+        emit("-- Extensions");
+        for (const extension of extensions) {
+          emitStatement(
+            `CREATE EXTENSION IF NOT EXISTS ${quoteIdentifier(extension.extension_name)} WITH SCHEMA ${quoteIdentifier(extension.schema_name)};`,
+          );
+        }
+        emit("");
+      }
+
+      if (sequences.length > 0) {
+        emit("-- Sequences");
+        for (const seq of sequences) {
+          const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
+          emitStatement(`DROP SEQUENCE IF EXISTS ${qualifiedSequenceName} CASCADE;`);
+          emitStatement(
+            `CREATE SEQUENCE ${qualifiedSequenceName} AS ${seq.data_type} INCREMENT BY ${seq.increment} MINVALUE ${seq.minimum_value} MAXVALUE ${seq.maximum_value} START WITH ${seq.start_value}${seq.cycle_option === "YES" ? " CYCLE" : " NO CYCLE"};`,
+          );
+        }
+        emit("");
+      }
+
+      // Get full CREATE TABLE DDL via column info
+      for (const { schema_name, tablename } of tables) {
+        const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
+        const columns = await sql<{
+          column_name: string;
+          data_type: string;
+          udt_schema: string;
+          udt_name: string;
+          is_nullable: string;
+          column_default: string | null;
+          character_maximum_length: number | null;
+          numeric_precision: number | null;
+          numeric_scale: number | null;
+        }[]>`
+          SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
+                 character_maximum_length, numeric_precision, numeric_scale
+          FROM information_schema.columns
+          WHERE table_schema = ${schema_name} AND table_name = ${tablename}
+          ORDER BY ordinal_position
+        `;
+
+        emit(`-- Table: ${schema_name}.${tablename}`);
+        emitStatement(`DROP TABLE IF EXISTS ${qualifiedTableName} CASCADE;`);
+
+        const colDefs: string[] = [];
+        for (const col of columns) {
+          let typeStr: string;
+          if (col.data_type === "USER-DEFINED") {
+            typeStr = quoteQualifiedName(col.udt_schema, col.udt_name);
+          } else if (col.data_type === "ARRAY") {
+            const elementType = col.udt_name.replace(/^_/, "");
+            typeStr = col.udt_schema === "pg_catalog"
+              ? `${elementType}[]`
+              : `${quoteQualifiedName(col.udt_schema, elementType)}[]`;
+          } else if (col.data_type === "character varying") {
+            typeStr = col.character_maximum_length
+              ? `varchar(${col.character_maximum_length})`
+              : "varchar";
+          } else if (col.data_type === "numeric" && col.numeric_precision != null) {
+            typeStr =
+              col.numeric_scale != null
+                ? `numeric(${col.numeric_precision}, ${col.numeric_scale})`
+                : `numeric(${col.numeric_precision})`;
+          } else {
+            typeStr = col.data_type;
+          }
+
+          let def = `  "${col.column_name}" ${typeStr}`;
+          if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
+          if (col.is_nullable === "NO") def += " NOT NULL";
+          colDefs.push(def);
         }
 
-        let def = `  "${col.column_name}" ${typeStr}`;
-        if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
-        if (col.is_nullable === "NO") def += " NOT NULL";
-        colDefs.push(def);
+        // Primary key
+        const pk = await sql<{ constraint_name: string; column_names: string[] }[]>`
+          SELECT c.conname AS constraint_name,
+                 array_agg(a.attname ORDER BY array_position(c.conkey, a.attnum)) AS column_names
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+          JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+          WHERE n.nspname = ${schema_name} AND t.relname = ${tablename} AND c.contype = 'p'
+          GROUP BY c.conname
+        `;
+        for (const p of pk) {
+          const cols = p.column_names.map((c) => `"${c}"`).join(", ");
+          colDefs.push(`  CONSTRAINT "${p.constraint_name}" PRIMARY KEY (${cols})`);
+        }
+
+        emit(`CREATE TABLE ${qualifiedTableName} (`);
+        emit(colDefs.join(",\n"));
+        emit(");");
+        emitStatementBoundary();
+        emit("");
       }
 
-      // Primary key
-      const pk = await sql<{ constraint_name: string; column_names: string[] }[]>`
+      const ownedSequences = sequences.filter((seq) => seq.owner_table && seq.owner_column);
+      if (ownedSequences.length > 0) {
+        emit("-- Sequence ownership");
+        for (const seq of ownedSequences) {
+          emitStatement(
+            `ALTER SEQUENCE ${quoteQualifiedName(seq.sequence_schema, seq.sequence_name)} OWNED BY ${quoteQualifiedName(seq.owner_schema ?? "public", seq.owner_table!)}.${quoteIdentifier(seq.owner_column!)};`,
+          );
+        }
+        emit("");
+      }
+
+      // Unique constraints must exist before foreign keys that reference them.
+      const allUniqueConstraints = await sql<{
+        constraint_name: string;
+        schema_name: string;
+        tablename: string;
+        column_names: string[];
+      }[]>`
         SELECT c.conname AS constraint_name,
+               n.nspname AS schema_name,
+               t.relname AS tablename,
                array_agg(a.attname ORDER BY array_position(c.conkey, a.attnum)) AS column_names
         FROM pg_constraint c
         JOIN pg_class t ON t.oid = c.conrelid
         JOIN pg_namespace n ON n.oid = t.relnamespace
         JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
-        WHERE n.nspname = ${schema_name} AND t.relname = ${tablename} AND c.contype = 'p'
-        GROUP BY c.conname
+        WHERE c.contype = 'u'
+          AND ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+        GROUP BY c.conname, n.nspname, t.relname
+        ORDER BY n.nspname, t.relname, c.conname
       `;
-      for (const p of pk) {
-        const cols = p.column_names.map((c) => `"${c}"`).join(", ");
-        colDefs.push(`  CONSTRAINT "${p.constraint_name}" PRIMARY KEY (${cols})`);
-      }
+      const uniques = allUniqueConstraints.filter((entry) => includedTableNames.has(tableKey(entry.schema_name, entry.tablename)));
 
-      emit(`CREATE TABLE ${qualifiedTableName} (`);
-      emit(colDefs.join(",\n"));
-      emit(");");
-      emitStatementBoundary();
-      emit("");
-    }
-
-    const ownedSequences = sequences.filter((seq) => seq.owner_table && seq.owner_column);
-    if (ownedSequences.length > 0) {
-      emit("-- Sequence ownership");
-      for (const seq of ownedSequences) {
-        emitStatement(
-          `ALTER SEQUENCE ${quoteQualifiedName(seq.sequence_schema, seq.sequence_name)} OWNED BY ${quoteQualifiedName(seq.owner_schema ?? "public", seq.owner_table!)}.${quoteIdentifier(seq.owner_column!)};`,
-        );
-      }
-      emit("");
-    }
-
-    // Unique constraints must exist before foreign keys that reference them.
-    const allUniqueConstraints = await sql<{
-      constraint_name: string;
-      schema_name: string;
-      tablename: string;
-      column_names: string[];
-    }[]>`
-      SELECT c.conname AS constraint_name,
-             n.nspname AS schema_name,
-             t.relname AS tablename,
-             array_agg(a.attname ORDER BY array_position(c.conkey, a.attnum)) AS column_names
-      FROM pg_constraint c
-      JOIN pg_class t ON t.oid = c.conrelid
-      JOIN pg_namespace n ON n.oid = t.relnamespace
-      JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
-      WHERE c.contype = 'u'
-        AND ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
-      GROUP BY c.conname, n.nspname, t.relname
-      ORDER BY n.nspname, t.relname, c.conname
-    `;
-    const uniques = allUniqueConstraints.filter((entry) => includedTableNames.has(tableKey(entry.schema_name, entry.tablename)));
-
-    if (uniques.length > 0) {
-      emit("-- Unique constraints");
-      for (const u of uniques) {
-        const cols = u.column_names.map((c) => `"${c}"`).join(", ");
-        emitStatement(`ALTER TABLE ${quoteQualifiedName(u.schema_name, u.tablename)} ADD CONSTRAINT "${u.constraint_name}" UNIQUE (${cols});`);
-      }
-      emit("");
-    }
-
-    // Collect foreign keys now. Emit them after routines and standalone indexes
-    // because PostgreSQL permits a non-constraint unique index to be the target
-    // of a foreign key.
-    const allForeignKeys = await sql<{
-      constraint_name: string;
-      source_schema: string;
-      source_table: string;
-      source_columns: string[];
-      target_schema: string;
-      target_table: string;
-      target_columns: string[];
-      update_rule: string;
-      delete_rule: string;
-    }[]>`
-      SELECT
-        c.conname AS constraint_name,
-        srcn.nspname AS source_schema,
-        src.relname AS source_table,
-        array_agg(sa.attname ORDER BY key_columns.ordinal_position) AS source_columns,
-        tgtn.nspname AS target_schema,
-        tgt.relname AS target_table,
-        array_agg(ta.attname ORDER BY key_columns.ordinal_position) AS target_columns,
-        CASE c.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS update_rule,
-        CASE c.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS delete_rule
-      FROM pg_constraint c
-      JOIN pg_class src ON src.oid = c.conrelid
-      JOIN pg_namespace srcn ON srcn.oid = src.relnamespace
-      JOIN pg_class tgt ON tgt.oid = c.confrelid
-      JOIN pg_namespace tgtn ON tgtn.oid = tgt.relnamespace
-      JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS key_columns(source_attnum, target_attnum, ordinal_position) ON true
-      JOIN pg_attribute sa ON sa.attrelid = src.oid AND sa.attnum = key_columns.source_attnum
-      JOIN pg_attribute ta ON ta.attrelid = tgt.oid AND ta.attnum = key_columns.target_attnum
-      WHERE c.contype = 'f'
-        AND ${sql.unsafe(nonSystemSchemaPredicate("srcn.nspname"))}
-      GROUP BY c.conname, srcn.nspname, src.relname, tgtn.nspname, tgt.relname, c.confupdtype, c.confdeltype
-      ORDER BY srcn.nspname, src.relname, c.conname
-    `;
-    const fks = allForeignKeys.filter(
-      (fk) => includedTableNames.has(tableKey(fk.source_schema, fk.source_table))
-        && includedTableNames.has(tableKey(fk.target_schema, fk.target_table)),
-    );
-
-    // JavaScript backups are used when a worktree seed filters or transforms
-    // table data. Preserve user-defined routines before indexes because an
-    // expression index may depend on a user-defined function.
-    const routines = await sql<{ definition: string }[]>`
-      SELECT pg_get_functiondef(p.oid) AS definition
-      FROM pg_proc p
-      JOIN pg_namespace n ON n.oid = p.pronamespace
-      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
-        AND p.prokind IN ('f', 'p')
-        AND NOT EXISTS (
-          SELECT 1
-          FROM pg_depend d
-          WHERE d.classid = 'pg_proc'::regclass
-            AND d.objid = p.oid
-            AND d.deptype = 'e'
-        )
-      ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
-    `;
-    if (routines.length > 0) {
-      emit("-- Functions and procedures");
-      for (const routine of routines) {
-        const definition = routine.definition.trimEnd();
-        emitStatement(definition.endsWith(";") ? definition : `${definition};`);
-      }
-      emit("");
-    }
-
-    // Indexes (non-primary, non-unique-constraint)
-    const allIndexes = await sql<{ schema_name: string; tablename: string; indexdef: string }[]>`
-      SELECT schemaname AS schema_name, tablename, indexdef
-      FROM pg_indexes
-      WHERE ${sql.unsafe(nonSystemSchemaPredicate("schemaname"))}
-        AND indexname NOT IN (
-          SELECT conname FROM pg_constraint c
-          JOIN pg_namespace n ON n.oid = c.connamespace
-          WHERE n.nspname = pg_indexes.schemaname
-        )
-      ORDER BY schemaname, tablename, indexname
-    `;
-    const indexes = allIndexes.filter((entry) => includedTableNames.has(tableKey(entry.schema_name, entry.tablename)));
-
-    if (indexes.length > 0) {
-      emit("-- Indexes");
-      for (const idx of indexes) {
-        emitStatement(`${idx.indexdef};`);
-      }
-      emit("");
-    }
-
-    if (fks.length > 0) {
-      emit("-- Foreign keys");
-      for (const fk of fks) {
-        const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
-        const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
-        emitStatement(
-          `ALTER TABLE ${quoteQualifiedName(fk.source_schema, fk.source_table)} ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES ${quoteQualifiedName(fk.target_schema, fk.target_table)} (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
-        );
-      }
-      emit("");
-    }
-
-    // Dump data for each table
-    for (const { schema_name, tablename } of tables) {
-      const currentTableKey = tableKey(schema_name, tablename);
-      const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
-      const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
-      if (excludedTableNames.has(currentTableKey) || (count[0]?.n ?? 0) === 0) continue;
-
-      // Get column info for this table
-      const cols = await sql<{ column_name: string; data_type: string }[]>`
-        SELECT column_name, data_type
-        FROM information_schema.columns
-        WHERE table_schema = ${schema_name} AND table_name = ${tablename}
-        ORDER BY ordinal_position
-      `;
-      const colNames = cols.map((c) => `"${c.column_name}"`).join(", ");
-
-      emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
-
-      const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
-      if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
-        emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
-        await writer.writeRaw("\n");
-        const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
-        try {
-          const copyStream = await copySql
-            .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
-            .readable();
-          for await (const chunk of copyStream) {
-            await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-          }
-        } finally {
-          await copySql.end();
+      if (uniques.length > 0) {
+        emit("-- Unique constraints");
+        for (const u of uniques) {
+          const cols = u.column_names.map((c) => `"${c}"`).join(", ");
+          emitStatement(`ALTER TABLE ${quoteQualifiedName(u.schema_name, u.tablename)} ADD CONSTRAINT "${u.constraint_name}" UNIQUE (${cols});`);
         }
-        await writer.writeRaw("\\.\n");
-        emitStatementBoundary();
         emit("");
-        continue;
       }
 
-      const rowCursor = sql
-        .unsafe(`SELECT * FROM ${qualifiedTableName}`)
-        .values()
-        .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
-      for await (const rows of rowCursor) {
-        for (const row of rows) {
-          const values = row.map((rawValue, index) =>
-            formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
+      // Collect foreign keys now. Emit them after routines and standalone indexes
+      // because PostgreSQL permits a non-constraint unique index to be the target
+      // of a foreign key.
+      const allForeignKeys = await sql<{
+        constraint_name: string;
+        source_schema: string;
+        source_table: string;
+        source_columns: string[];
+        target_schema: string;
+        target_table: string;
+        target_columns: string[];
+        update_rule: string;
+        delete_rule: string;
+      }[]>`
+        SELECT
+          c.conname AS constraint_name,
+          srcn.nspname AS source_schema,
+          src.relname AS source_table,
+          array_agg(sa.attname ORDER BY key_columns.ordinal_position) AS source_columns,
+          tgtn.nspname AS target_schema,
+          tgt.relname AS target_table,
+          array_agg(ta.attname ORDER BY key_columns.ordinal_position) AS target_columns,
+          CASE c.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS update_rule,
+          CASE c.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS delete_rule
+        FROM pg_constraint c
+        JOIN pg_class src ON src.oid = c.conrelid
+        JOIN pg_namespace srcn ON srcn.oid = src.relnamespace
+        JOIN pg_class tgt ON tgt.oid = c.confrelid
+        JOIN pg_namespace tgtn ON tgtn.oid = tgt.relnamespace
+        JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS key_columns(source_attnum, target_attnum, ordinal_position) ON true
+        JOIN pg_attribute sa ON sa.attrelid = src.oid AND sa.attnum = key_columns.source_attnum
+        JOIN pg_attribute ta ON ta.attrelid = tgt.oid AND ta.attnum = key_columns.target_attnum
+        WHERE c.contype = 'f'
+          AND ${sql.unsafe(nonSystemSchemaPredicate("srcn.nspname"))}
+        GROUP BY c.conname, srcn.nspname, src.relname, tgtn.nspname, tgt.relname, c.confupdtype, c.confdeltype
+        ORDER BY srcn.nspname, src.relname, c.conname
+      `;
+      const fks = allForeignKeys.filter(
+        (fk) => includedTableNames.has(tableKey(fk.source_schema, fk.source_table))
+          && includedTableNames.has(tableKey(fk.target_schema, fk.target_table)),
+      );
+
+      // JavaScript backups are used when a worktree seed filters or transforms
+      // table data. Preserve user-defined routines before indexes because an
+      // expression index may depend on a user-defined function.
+      const routines = await sql<{ definition: string }[]>`
+        SELECT pg_get_functiondef(p.oid) AS definition
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+          AND p.prokind IN ('f', 'p')
+          AND NOT EXISTS (
+            SELECT 1
+            FROM pg_depend d
+            WHERE d.classid = 'pg_proc'::regclass
+              AND d.objid = p.oid
+              AND d.deptype = 'e'
+          )
+        ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
+      `;
+      if (routines.length > 0) {
+        emit("-- Functions and procedures");
+        for (const routine of routines) {
+          const definition = routine.definition.trimEnd();
+          emitStatement(definition.endsWith(";") ? definition : `${definition};`);
+        }
+        emit("");
+      }
+
+      // Indexes (non-primary, non-unique-constraint)
+      const allIndexes = await sql<{ schema_name: string; tablename: string; indexdef: string }[]>`
+        SELECT schemaname AS schema_name, tablename, indexdef
+        FROM pg_indexes
+        WHERE ${sql.unsafe(nonSystemSchemaPredicate("schemaname"))}
+          AND indexname NOT IN (
+            SELECT conname FROM pg_constraint c
+            JOIN pg_namespace n ON n.oid = c.connamespace
+            WHERE n.nspname = pg_indexes.schemaname
+          )
+        ORDER BY schemaname, tablename, indexname
+      `;
+      const indexes = allIndexes.filter((entry) => includedTableNames.has(tableKey(entry.schema_name, entry.tablename)));
+
+      if (indexes.length > 0) {
+        emit("-- Indexes");
+        for (const idx of indexes) {
+          emitStatement(`${idx.indexdef};`);
+        }
+        emit("");
+      }
+
+      if (fks.length > 0) {
+        emit("-- Foreign keys");
+        for (const fk of fks) {
+          const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
+          const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
+          emitStatement(
+            `ALTER TABLE ${quoteQualifiedName(fk.source_schema, fk.source_table)} ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES ${quoteQualifiedName(fk.target_schema, fk.target_table)} (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
           );
-          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
         }
-        await writer.drain();
+        emit("");
       }
-      emit("");
-    }
 
-    const allTriggers = await sql<{
-      schema_name: string;
-      tablename: string;
-      definition: string;
-    }[]>`
-      SELECT
-        n.nspname AS schema_name,
-        c.relname AS tablename,
-        pg_get_triggerdef(t.oid, true) AS definition
-      FROM pg_trigger t
-      JOIN pg_class c ON c.oid = t.tgrelid
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE NOT t.tgisinternal
-        AND ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
-      ORDER BY n.nspname, c.relname, t.tgname
-    `;
-    const triggers = allTriggers.filter((entry) => (
-      includedTableNames.has(tableKey(entry.schema_name, entry.tablename))
-    ));
-    if (triggers.length > 0) {
-      emit("-- Triggers");
-      for (const trigger of triggers) {
-        emitStatement(`${trigger.definition};`);
-      }
-      emit("");
-    }
+      // Dump data for each table
+      for (const { schema_name, tablename } of tables) {
+        const currentTableKey = tableKey(schema_name, tablename);
+        const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
+        const count = await sql.unsafe<{ n: string }[]>(`SELECT count(*)::text AS n FROM ${qualifiedTableName}`);
+        if (excludedTableNames.has(currentTableKey) || (count[0]?.n ?? "0") === "0") continue;
 
-    // Sequence values
-    if (sequences.length > 0) {
-      emit("-- Sequence values");
-      for (const seq of sequences) {
-        const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
-        const val = await sql.unsafe<{ last_value: string; is_called: boolean }[]>(
-          `SELECT last_value::text, is_called FROM ${qualifiedSequenceName}`,
-        );
-        const skipSequenceValue =
-          seq.owner_table !== null
-            && excludedTableNames.has(seq.owner_table);
-        if (val[0] && !skipSequenceValue) {
-          emitStatement(`SELECT setval('${qualifiedSequenceName.replaceAll("'", "''")}', ${val[0].last_value}, ${val[0].is_called ? "true" : "false"});`);
+        // Get column info for this table
+        const cols = await sql<{ column_name: string; data_type: string }[]>`
+          SELECT column_name, data_type
+          FROM information_schema.columns
+          WHERE table_schema = ${schema_name} AND table_name = ${tablename}
+          ORDER BY ordinal_position
+        `;
+        const colNames = cols.map((c) => `"${c.column_name}"`).join(", ");
+
+        emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
+
+        const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
+        // Use the bounded row cursor for every JavaScript export, including
+        // filtered auto-mode backups. A separate COPY connection would not
+        // share this snapshot; postgres.js COPY on the transaction connection
+        // can stall after its stream ends, before the next statement executes.
+        const rowCursor = sql
+          .unsafe(`SELECT * FROM ${qualifiedTableName}`)
+          .values()
+          .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
+        for await (const rows of rowCursor) {
+          for (const row of rows) {
+            const values = row.map((rawValue, index) =>
+              formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
+            );
+            emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+          }
+          await writer.drain();
         }
+        emit("");
       }
+
+      const allTriggers = await sql<{
+        schema_name: string;
+        tablename: string;
+        definition: string;
+      }[]>`
+        SELECT
+          n.nspname AS schema_name,
+          c.relname AS tablename,
+          pg_get_triggerdef(t.oid, true) AS definition
+        FROM pg_trigger t
+        JOIN pg_class c ON c.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE NOT t.tgisinternal
+          AND ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+        ORDER BY n.nspname, c.relname, t.tgname
+      `;
+      const triggers = allTriggers.filter((entry) => (
+        includedTableNames.has(tableKey(entry.schema_name, entry.tablename))
+      ));
+      if (triggers.length > 0) {
+        emit("-- Triggers");
+        for (const trigger of triggers) {
+          emitStatement(`${trigger.definition};`);
+        }
+        emit("");
+      }
+
+      // Sequence values
+      if (sequences.length > 0) {
+        emit("-- Sequence values");
+        for (const seq of sequences) {
+          const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
+          const val = await sql.unsafe<{ last_value: string; is_called: boolean }[]>(
+            `SELECT last_value::text, is_called FROM ${qualifiedSequenceName}`,
+          );
+          const skipSequenceValue =
+            seq.owner_table !== null
+              && excludedTableNames.has(seq.owner_table);
+          if (val[0] && !skipSequenceValue) {
+            emitStatement(`SELECT setval('${qualifiedSequenceName.replaceAll("'", "''")}', ${val[0].last_value}, ${val[0].is_called ? "true" : "false"});`);
+          }
+        }
+        emit("");
+      }
+
+      emitStatement("COMMIT;");
       emit("");
-    }
 
-    emitStatement("COMMIT;");
-    emit("");
-
-    await writer.close();
+      await writer.close();
+    });
 
     // Compress the SQL file with gzip
     const sqlReadStream = createReadStream(sqlFile);

@@ -887,6 +887,8 @@ export type {
   GitWorktreeInProgressOperation,
   HeartbeatRun,
   HeartbeatRunEvent,
+  HeartbeatRunLogPage,
+  RunOutputBodyReference,
   HeartbeatRunStatusPhase,
   ProviderTraceDebugRequest,
   ProviderTraceDirection,

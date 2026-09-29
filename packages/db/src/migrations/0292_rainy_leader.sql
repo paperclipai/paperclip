@@ -1,0 +1,5 @@
+ALTER TABLE "native_session_authorities" DROP CONSTRAINT "native_session_authorities_generation_positive";--> statement-breakpoint
+ALTER TABLE "native_session_authorities" ALTER COLUMN "generation" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "native_session_authorities" ADD COLUMN "committed_from" text;--> statement-breakpoint
+ALTER TABLE "native_session_authorities" ADD CONSTRAINT "native_session_authorities_predecessor_valid" CHECK (("native_session_authorities"."generation" NOT LIKE 'r:%' OR "native_session_authorities"."committed_from" IS NOT NULL) AND ("native_session_authorities"."committed_from" IS NULL OR ("native_session_authorities"."committed_from" <> "native_session_authorities"."generation" AND "native_session_authorities"."committed_from" ~ '^(r:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}|0|[1-9][0-9]{0,18})$')));--> statement-breakpoint
+ALTER TABLE "native_session_authorities" ADD CONSTRAINT "native_session_authorities_generation_positive" CHECK ("native_session_authorities"."generation" ~ '^(r:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}|[1-9][0-9]{0,18})$');

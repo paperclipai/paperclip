@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "native_authority_records_session_effect_uq" ON "native_authority_records" USING btree ("company_id","normalized_session_id","record_id") WHERE "native_authority_records"."kind" = 'effect';

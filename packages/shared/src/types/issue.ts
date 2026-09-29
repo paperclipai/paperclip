@@ -952,6 +952,8 @@ export interface IssueComment {
   /** Responsible user attribution. Legacy and plugin-provided comment values may omit it. */
   onBehalfOfUserId?: string | null;
   createdByRunId?: string | null;
+  /** Server-derived progress/file-preparation provenance; not an author input. */
+  nativeToolGenerated?: boolean;
   derivedAuthorAgentId?: string | null;
   derivedCreatedByRunId?: string | null;
   derivedAuthorSource?: IssueCommentDerivedAuthorSource | null;
