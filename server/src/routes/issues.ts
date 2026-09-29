@@ -2207,6 +2207,24 @@ async function assertCanManageIssueMonitor(
   );
 }
 
+/**
+ * Daybreak is an account/workspace cybersecurity capability. Issue mutation
+ * access alone must never let an agent grant or suppress that capability on a
+ * task; only an authenticated board user may choose an explicit task override.
+ */
+function assertDaybreakOverrideMutationAllowed(
+  req: Request,
+  assigneeAdapterOverrides: unknown,
+) {
+  if (!assigneeAdapterOverrides || typeof assigneeAdapterOverrides !== "object") return;
+  const adapterConfig = (assigneeAdapterOverrides as { adapterConfig?: unknown }).adapterConfig;
+  if (!adapterConfig || typeof adapterConfig !== "object") return;
+  if (typeof (adapterConfig as { daybreakEnabled?: unknown }).daybreakEnabled !== "boolean") return;
+  if (req.actor.type !== "board") {
+    throw forbidden("Only an authenticated board user may configure Codex Daybreak access for a task");
+  }
+}
+
 function summarizeIssueMonitor(
   issue: {
     monitorNextCheckAt?: Date | null;
@@ -12779,6 +12797,7 @@ export function issueRoutes(
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
+      assertDaybreakOverrideMutationAllowed(req, updateFields.assigneeAdapterOverrides);
       if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
         throw unprocessable("Send conversation messages through the comments endpoint with a clientRequestId");
       }
