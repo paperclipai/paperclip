@@ -143,8 +143,9 @@ function optionalString(value: unknown): string | null {
     : null;
 }
 
-/** A task may change the Codex model and effort, but not the agent's provider identity. */
-export function projectPaperclipRunnerCodexTaskConfig(
+/** A task may change a local Runner model (and Codex effort), but not provider identity. */
+export function projectPaperclipRunnerTaskConfig(
+  backend: "codex_app_server" | "opencode_server",
   agentConfig: unknown,
   taskOverrides: unknown,
 ): Record<string, unknown> {
@@ -152,8 +153,10 @@ export function projectPaperclipRunnerCodexTaskConfig(
   const task = asRecord(taskOverrides);
   const config = { ...base };
   const model = optionalString(task.model);
-  const effortKey = ["modelReasoningEffort", "reasoningEffort", "effort"].find((key) => key in task);
-  if ((model !== null && model !== optionalString(base.model)) || effortKey !== undefined) {
+  const effortKey = backend === "codex_app_server"
+    ? ["modelReasoningEffort", "reasoningEffort", "effort"].find((key) => key in task)
+    : undefined;
+  if (backend === "codex_app_server" && ((model !== null && model !== optionalString(base.model)) || effortKey !== undefined)) {
     delete config.modelReasoningEffort;
     delete config.reasoningEffort;
     delete config.effort;

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertAgentCoreProfileRecoveryBinding,
   assertManagedProfileRecoveryBinding,
-  projectPaperclipRunnerCodexTaskConfig,
+  projectPaperclipRunnerTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
 
@@ -58,15 +58,30 @@ describe("Paperclip Runner native provider configuration", () => {
 
   it("uses only task model and effort overrides without changing the Runner provider", () => {
     const base = { provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "ultra", codexPermissionMode: "never" };
-    const projected = projectPaperclipRunnerCodexTaskConfig(base, {
+    const projected = projectPaperclipRunnerTaskConfig("codex_app_server", base, {
       provider: "opencode", model: "gpt-6-luna", managedProfileId: "other-profile",
     });
     expect(projected).toEqual({ provider: "codex", model: "gpt-6-luna", codexPermissionMode: "never" });
     expect(resolvePaperclipRunnerNativeProviderInput({
       backend: "codex_app_server", adapterConfig: projected,
     })).toEqual({ provider: "codex", model: "gpt-6-luna", codexApprovalPolicy: "never" });
-    expect(projectPaperclipRunnerCodexTaskConfig(base, { modelReasoningEffort: "high" }))
+    expect(projectPaperclipRunnerTaskConfig("codex_app_server", base, { modelReasoningEffort: "high" }))
       .toMatchObject({ provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "high" });
+  });
+
+  it("uses an OpenCode task model without changing the Runner provider", () => {
+    const projected = projectPaperclipRunnerTaskConfig(
+      "opencode_server",
+      { provider: "opencode", model: "openrouter/qwen/qwen3-coder-next", opencodePermissionMode: "deny" },
+      { provider: "codex", model: "openrouter/deepseek/deepseek-v4-flash-0731", modelReasoningEffort: "ultra" },
+    );
+    expect(projected).toEqual({
+      provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", opencodePermissionMode: "deny",
+    });
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "opencode_server", adapterConfig: projected }))
+      .toEqual({
+        provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", opencodePermissionMode: "deny",
+      });
   });
 
   it("requires persisted Claude recovery to use the qualified identity and current profile secret", () => {
