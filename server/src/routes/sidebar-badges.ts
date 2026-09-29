@@ -78,7 +78,9 @@ export function sidebarBadgeRoutes(db: Db) {
 
     // Company health alerts belong in All, not the personal inbox badge.
     const badges = await svc.get(companyId, {
-      currentUserId: req.actor.type === "board" ? req.actor.userId ?? null : undefined,
+      currentUserId: req.actor.type === "board"
+        ? req.actor.userId ?? null
+        : req.actor.onBehalfOfUserId ?? null,
       dismissals: dismissedAtByKey,
       joinRequests: visibleJoinRequests,
     });

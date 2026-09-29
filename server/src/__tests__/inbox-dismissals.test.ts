@@ -65,7 +65,9 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     { userId: "user-2", expected: 1 },
     { userId: "uninvolved-user", expected: 0 },
     { userId: "local-board", expected: 1 },
-  ])("scopes failed-run badges to $userId", async ({ userId, expected }) => {
+    { userId: "user-1", actorType: "agent", expected: 1 },
+    { userId: null, actorType: "agent", expected: 0 },
+  ])("scopes failed-run badges to $userId (actor=$actorType)", async ({ userId, actorType, expected }) => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "PAP" });
     for (const responsibleUserId of ["user-1", "user-2", null]) {
@@ -86,7 +88,9 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     ]);
     const app = express();
     app.use((req, _res, next) => {
-      req.actor = { type: "board", source: userId === "local-board" ? "local_implicit" : "session", userId, companyIds: [companyId], isInstanceAdmin: true };
+      req.actor = actorType === "agent"
+        ? { type: "agent", source: "agent_jwt", agentId: sharedAgentId, companyId, onBehalfOfUserId: userId, onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }] }
+        : { type: "board", source: userId === "local-board" ? "local_implicit" : "session", userId: userId!, companyIds: [companyId], isInstanceAdmin: true };
       next();
     });
     app.use("/api", sidebarBadgeRoutes(db));
