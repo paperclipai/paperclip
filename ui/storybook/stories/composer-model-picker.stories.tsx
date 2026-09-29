@@ -75,8 +75,21 @@ export const ResetToAgentDefault: Story = {
   },
 };
 export const Claude: Story = {
-  name: "07 · Claude Code · low to high",
-  args: { agentId: "claude", initialPanel: "settings", initialEffort: "medium" },
+  name: "07 · Claude Sonnet 5 · full effort range",
+  args: { agentId: "claude", initialPanel: "settings", initialEffort: "max" },
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
+    await expect(screen.getByTestId("selected-effort")).toHaveTextContent("Max");
+  },
+};
+export const ClaudeHaiku: Story = {
+  name: "07b · Claude Haiku · no effort override",
+  args: { agentId: "claude", initialModel: "claude-haiku-4-5", initialPanel: "settings" },
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.queryByRole("slider")).toBeNull();
+  },
 };
 export const OpenRouterSearch: Story = {
   name: "08 · OpenRouter · search this provider",
@@ -116,8 +129,16 @@ export const PiThinking: Story = {
   args: { agentId: "pi", initialPanel: "settings", initialEffort: "high" },
 };
 export const KimiSupported: Story = {
-  name: "12 · Kimi K3 · low, high, max",
+  name: "12 · Kimi CLI K3 · low, high, max",
   args: { agentId: "kimi", initialPanel: "settings", initialEffort: "high" },
+};
+export const KimiAcpNoEffort: Story = {
+  name: "12b · Kimi ACP K3 · no effort override",
+  args: { agentId: "kimi-acp", initialPanel: "settings" },
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.queryByRole("slider")).toBeNull();
+  },
 };
 export const KimiModelDefault: Story = {
   name: "13 · Kimi highspeed · no effort override",
@@ -143,9 +164,14 @@ export const RunnerCodexEffort: Story = {
   name: "16b · Runner · Codex effort",
   args: { agentId: "runner", initialPanel: "settings", initialModel: "gpt-6-astra", initialEffort: "high" },
 };
-export const GrokModelOnly: Story = {
-  name: "17 · Grok · model only",
-  args: { agentId: "grok", initialPanel: "settings" },
+export const GrokEffort: Story = {
+  name: "17 · Grok 4.7 · reasoning effort",
+  args: { agentId: "grok", initialPanel: "settings", initialModel: "grok-4.7", initialEffort: "xhigh" },
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
+    await expect(screen.getByTestId("selected-effort")).toHaveTextContent("Extra High");
+  },
 };
 export const HermesManual: Story = {
   name: "17b · Hermes CLI · manual model ID",
@@ -261,6 +287,44 @@ export const ProductionRunnerCodexEffort: Story = {
     const screen = within(canvasElement.ownerDocument.body);
     await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
     await expect(screen.getByTestId("selected-effort")).toHaveTextContent("High");
+  },
+};
+
+export const ProductionClaudeEffort: Story = {
+  name: "23aa · App Claude Sonnet 5 effort",
+  render: () => <ComposerRunSettingsLiveStory agentId="claude" initialPanel="settings" initialEffort="max" />,
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
+    await expect(screen.getByTestId("selected-effort")).toHaveTextContent("Max");
+  },
+};
+
+export const ProductionGrokEffort: Story = {
+  name: "23ab · App Grok 4.7 effort",
+  render: () => <ComposerRunSettingsLiveStory agentId="grok" initialPanel="settings" initialModel="grok-4.7" initialEffort="xhigh" />,
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
+    await expect(screen.getByTestId("selected-effort")).toHaveTextContent("Extra High");
+  },
+};
+
+export const ProductionKimiAcpNoEffort: Story = {
+  name: "23ac · App Kimi ACP without effort",
+  render: () => <ComposerRunSettingsLiveStory agentId="kimi-acp" initialPanel="settings" />,
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.queryByRole("slider")).toBeNull();
+  },
+};
+
+export const ProductionKimiCliEffort: Story = {
+  name: "23ad · App Kimi CLI effort",
+  render: () => <ComposerRunSettingsLiveStory agentId="kimi" initialPanel="settings" initialEffort="high" />,
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
   },
 };
 

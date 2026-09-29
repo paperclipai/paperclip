@@ -117,6 +117,9 @@ choices. Codex uses the curated adapter catalog unless the instance declares
 `PAPERCLIP_ADAPTER_MODELS`; general OpenAI API models are not Codex choices.
 The Paperclip Runner Codex profile shows the same known model effort levels.
 Its selected effort is saved with the run and sent to Codex for each turn.
+Claude Code uses model-specific effort levels; Haiku has no effort slider.
+Grok uses its adapter's reasoning levels. Kimi shows effort only when its
+agent uses the CLI engine, because the default ACP engine ignores effort.
 
 The Storybook visual regression suite uses external PNG baselines instead of
 committed screenshots:

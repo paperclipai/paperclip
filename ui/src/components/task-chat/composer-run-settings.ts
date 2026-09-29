@@ -1,4 +1,6 @@
 import { codexLocalReasoningEffortsForModel, isCodexLocalFastModeSupported, isCodexLocalKnownModel } from "@paperclipai/adapter-codex-local";
+import { claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
+import { grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
 import { modelSupportsEffort, KIMI_SUPPORTED_EFFORTS } from "@paperclipai/adapter-kimi-local";
 import { aiConnectionBindingSchema, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 
@@ -39,9 +41,10 @@ export function composerEfforts(agent: Agent | undefined, model: string, catalog
     return isCodexLocalKnownModel(model) ? codexLocalReasoningEffortsForModel(model) : [];
   }
   if (!catalogIds.includes(model)) return [];
-  if (agent.adapterType === "claude_local") return ["low", "medium", "high"];
+  if (agent.adapterType === "claude_local") return claudeLocalReasoningEffortsForModel(model);
+  if (agent.adapterType === "grok_local") return grokLocalReasoningEffortsForModel(model);
   if (agent.adapterType === "pi_local") return ["off", "minimal", "low", "medium", "high", "xhigh"];
-  if (agent.adapterType === "kimi_local" && modelSupportsEffort(model)) return KIMI_SUPPORTED_EFFORTS;
+  if (agent.adapterType === "kimi_local" && agent.adapterConfig.engine === "cli" && modelSupportsEffort(model)) return KIMI_SUPPORTED_EFFORTS;
   return [];
 }
 
@@ -64,6 +67,7 @@ export function readComposerRunSettings(overrides: IssueAssigneeAdapterOverrides
 function composerEffortKey(adapterType: string | undefined): string | null {
   if (adapterType === "codex_local" || adapterType === "paperclip_runner") return "modelReasoningEffort";
   if (adapterType === "claude_local" || adapterType === "kimi_local") return "effort";
+  if (adapterType === "grok_local") return "reasoningEffort";
   if (adapterType === "pi_local") return "thinking";
   if (adapterType === "opencode_local") return "variant";
   return null;
