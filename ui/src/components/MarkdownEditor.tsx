@@ -1366,8 +1366,27 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         isDragOver && "ring-1 ring-primary/60 bg-accent/20",
         className,
       )}
+      onInputCapture={(event) => {
+        if (
+          !readOnly
+          && event.target instanceof HTMLElement
+          && event.target.closest('[contenteditable="true"]')
+        ) {
+          // Actual input may be the editor's first change. An intentional clear
+          // must not be mistaken for its programmatic empty mount reset.
+          initialChildOnChangeRef.current = false;
+        }
+      }}
       onKeyDownCapture={(e) => {
         if (readOnly) return;
+        if (
+          (e.key === "Backspace" || e.key === "Delete")
+          && e.target instanceof HTMLElement
+          && e.target.closest('[contenteditable="true"]')
+        ) {
+          // Lexical handles deletion on keydown and may suppress DOM input.
+          initialChildOnChangeRef.current = false;
+        }
         // Cmd/Ctrl+Enter to submit
         if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();

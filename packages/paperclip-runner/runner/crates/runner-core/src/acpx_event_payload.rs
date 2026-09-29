@@ -380,7 +380,7 @@ fn sanitize_question_set(mut value: Value) -> Result<Value, LocalRunnerError> {
             };
             // IDs, answer modes, and validation patterns are protocol values:
             // changing them would break response correlation or semantics.
-            redact_object_text(question, &["header", "prompt", "helpText"]);
+            redact_object_text(question, &["header", "prompt", "helpText", "initialText"]);
             if let Some(options) = question.get_mut("options").and_then(Value::as_array_mut) {
                 for option in options {
                     if let Some(option) = option.as_object_mut() {
@@ -615,6 +615,15 @@ pub(crate) fn validate_question_set(value: &Value) -> Result<(), LocalRunnerErro
         if !ids.insert(id) {
             return Err(LocalRunnerError::invalid(
                 "ACPX input question ids must be unique",
+            ));
+        }
+        if question
+            .get("initialText")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.chars().count() > 100_000)
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX initial text exceeds its Unicode code-point bound",
             ));
         }
         let mut option_ids = BTreeSet::new();

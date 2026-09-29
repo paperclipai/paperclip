@@ -186,14 +186,12 @@ describe("runner semantic MCP bridge", () => {
     expect(handler).toHaveBeenCalledTimes(2);
   });
 
-  it("times out calls and honors MCP cancellation", async () => {
-    const starts: string[] = [];
+  it("times out calls", async () => {
     const bridge = await startRunnerToolBridge({
       tools: [tool("documents.read")],
       timeoutMs: 20,
-      handler: ({ callId, signal }) =>
+      handler: ({ signal }) =>
         new Promise((_resolve, reject) => {
-          starts.push(callId);
           signal.addEventListener(
             "abort",
             () => reject(new Error("handler aborted")),
@@ -217,15 +215,36 @@ describe("runner semantic MCP bridge", () => {
         content: [{ text: "Paperclip tool call timed out" }],
       },
     });
+  });
+
+  it("honors MCP cancellation after the handler starts", async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const aborted = vi.fn();
+    const bridge = await startRunnerToolBridge({
+      tools: [tool("documents.read")],
+      timeoutMs: 60_000,
+      handler: ({ signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          aborted();
+          reject(new Error("handler aborted"));
+        }, { once: true });
+        markStarted();
+      }),
+    });
+    bridges.push(bridge);
     const pending = rpc(bridge, {
       id: "cancel-me",
       method: "tools/call",
       params: { name: "documents.read", arguments: {} },
     });
-    await vi.waitFor(() => expect(starts).toContain("cancel-me"), {
-      interval: 1,
-      timeout: 15,
-    });
+    // Observe request arrival without racing the separate timeout behavior.
+    // Retain the rejection for the assertion while avoiding an unhandled fetch
+    // rejection if a failed test closes the bridge before the request arrives.
+    void pending.catch(() => undefined);
+    await started;
     expect(
       (
         await rpc(bridge, {
@@ -240,6 +259,7 @@ describe("runner semantic MCP bridge", () => {
         content: [{ text: "Paperclip tool call cancelled" }],
       },
     });
+    expect(aborted).toHaveBeenCalledOnce();
   });
 
   it("preserves successful mutation identity when the result is oversized", async () => {

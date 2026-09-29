@@ -85,7 +85,7 @@
     {
       "path": "schemas/question-set.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/question-set.schema.json",
-      "sha256": "6aeb2b880a60356cb48acfe26605acd9412a1df65f5308397d3ec521db5ea70f"
+      "sha256": "81dc76610e40665dbc4a42e4029296dffc597ba0bbee1fe92a130dffc0c07cba"
     },
     {
       "path": "schemas/request.schema.json",

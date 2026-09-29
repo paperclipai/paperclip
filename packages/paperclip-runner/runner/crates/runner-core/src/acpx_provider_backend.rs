@@ -142,6 +142,41 @@ struct AcpxProviderDescriptor {
     runtime_context: Value,
 }
 
+// Only controller-authenticated run grants move between provider lifetimes.
+// Keep prompt, bundle/skill identities, assignment policy, and unknown fields
+// in this comparison; a new filesystem copy is not a new provider profile.
+fn runtime_context_session_identity(context: &Value) -> Option<Value> {
+    let mut identity = context.clone();
+    for pointer in [
+        "/instructions/bundle/rootPath",
+        "/instructions/workingCopy/rootPath",
+    ] {
+        if let Some(value) = identity.pointer_mut(pointer) {
+            if !value.as_str().is_some_and(|path| !path.is_empty()) {
+                return None;
+            }
+            *value = Value::Null;
+        }
+    }
+    if let Some(skills) = identity.get_mut("skills").and_then(Value::as_array_mut) {
+        for skill in skills {
+            if let Some(value) = skill.pointer_mut("/bundle/rootPath") {
+                if !value.as_str().is_some_and(|path| !path.is_empty()) {
+                    return None;
+                }
+                *value = Value::Null;
+            }
+        }
+    }
+    if let Some(value) = identity.pointer_mut("/mcp/bindingId") {
+        if !value.is_null() && !value.as_str().is_some_and(|binding| !binding.is_empty()) {
+            return None;
+        }
+        *value = Value::Null;
+    }
+    Some(identity)
+}
+
 impl AcpxProviderDescriptor {
     fn validate_session(
         &self,
@@ -1048,16 +1083,41 @@ impl AcpxCommandExecutor {
             .pending_events
             .iter()
             .all(|event| event.event_type == "session.resumed");
-        if state.lifecycle == "closed"
-            || state.provider_exit_unconfirmed
-            || state.identity.is_none()
-            || state.active_turn_id.is_some()
-            || !only_recovery_notice_pending
-            || durable_descriptor != state.descriptor
-        {
-            return Err(DurableRunnerError::invalid(
-                "run.attach requires the same settled ACPX provider profile and session",
-            ));
+        let run_grants_changed = descriptor.instructions != state.descriptor.instructions
+            || descriptor.runtime_context != state.descriptor.runtime_context;
+        let context_compatible = runtime_context_session_identity(&descriptor.runtime_context)
+            .zip(runtime_context_session_identity(
+                &state.descriptor.runtime_context,
+            ))
+            .is_some_and(|(current, prior)| current == prior);
+        // System instructions and registered paths are refreshed by the current
+        // authenticated controller only when attaching a new run. All other
+        // provider/session/permission/transport fields remain immutable.
+        durable_descriptor.instructions = state.descriptor.instructions.clone();
+        durable_descriptor.runtime_context = state.descriptor.runtime_context.clone();
+        let rejection = if state.lifecycle == "closed" {
+            Some("provider_closed")
+        } else if state.provider_exit_unconfirmed {
+            Some("provider_exit_unconfirmed")
+        } else if state.identity.is_none() {
+            Some("provider_identity_unavailable")
+        } else if state.active_turn_id.is_some() {
+            Some("provider_turn_active")
+        } else if !only_recovery_notice_pending {
+            Some("provider_events_pending")
+        } else if durable_descriptor != state.descriptor {
+            Some("immutable_provider_identity_changed")
+        } else if !context_compatible {
+            Some("runtime_context_identity_changed")
+        } else if run_grants_changed && descriptor.run_id == state.descriptor.run_id {
+            Some("same_run_grant_changed")
+        } else {
+            None
+        };
+        if let Some(reason) = rejection {
+            return Err(DurableRunnerError::invalid(format!(
+                "run.attach requires the same settled ACPX provider profile and session: {reason}"
+            )));
         }
         if let Some(session) = self.session.as_mut() {
             session
@@ -2880,6 +2940,26 @@ mod tests {
         descriptor_value["sidecarArgs"] = json!([]);
         descriptor_value["runtimeDirectory"] = json!(runtime);
         descriptor_value["cwd"] = json!(workspace);
+        let prior_root = directory.join("old-registered-copy");
+        let current_root = directory.join("new-registered-copy");
+        fs::create_dir_all(&prior_root).unwrap();
+        fs::create_dir_all(&current_root).unwrap();
+        descriptor_value["instructions"] = json!(format!(
+            "Current AGENT_HOME: {}. Custom entry.",
+            prior_root.display()
+        ));
+        descriptor_value["runtimeContext"] = json!({
+            "aggregateDigest": "a".repeat(64),
+            "prompt": {"revision": "pinned", "digest": "b".repeat(64)},
+            "instructions": {
+                "entryPath": "AGENTS.md",
+                "bundle": {"digest": "c".repeat(64), "rootPath": "/old-bundle"},
+                "workingCopy": {"kind": "agent_files", "entryPath": "AGENTS.md", "rootPath": prior_root},
+            },
+            "skills": [{"key": "skill-1", "bundle": {"digest": "d".repeat(64), "rootPath": "/old-skill"}}],
+            "mcp": {"assignmentSetId": "assignment-1", "digest": "e".repeat(64), "bindingId": "old-run-binding"},
+            "futurePolicy": {"companyId": "company-1"},
+        });
         let original_descriptor: AcpxProviderDescriptor =
             serde_json::from_value(descriptor_value.clone()).unwrap();
         let identity = AcpxProviderSessionIdentity {
@@ -2995,11 +3075,57 @@ mod tests {
             .contains("requires run.attach before commands from a new run"));
 
         descriptor_value["runId"] = json!("run-2");
+        fs::remove_dir_all(&prior_root).unwrap();
+        descriptor_value["instructions"] = json!(format!(
+            "Current AGENT_HOME: {}. Fresh custom entry.",
+            current_root.display()
+        ));
+        descriptor_value["runtimeContext"]["instructions"]["workingCopy"]["rootPath"] =
+            json!(current_root);
+        descriptor_value["runtimeContext"]["instructions"]["bundle"]["rootPath"] =
+            json!("/new-bundle");
+        descriptor_value["runtimeContext"]["skills"][0]["bundle"]["rootPath"] = json!("/new-skill");
+        descriptor_value["runtimeContext"]["mcp"]["bindingId"] = json!("new-run-binding");
         attached
             .attach_run(&json!({"provider": descriptor_value}))
             .unwrap();
         assert_eq!(attached.state.as_ref().unwrap().descriptor.run_id, "run-2");
         assert!(!marker.exists());
+        let refreshed = &attached.state.as_ref().unwrap().descriptor;
+        assert_eq!(
+            refreshed.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        assert_eq!(refreshed.instructions, descriptor_value["instructions"]);
+        let session_config = refreshed
+            .session_config(
+                attached.state.as_ref().unwrap().tool_set.clone(),
+                attached.state.as_ref().unwrap().identity.clone(),
+                Some(&launch_profile),
+            )
+            .unwrap();
+        assert_eq!(
+            session_config.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        assert_eq!(
+            session_config.system_instructions,
+            descriptor_value["instructions"]
+        );
+        // Both persistence and the sidecar launch config receive the new grant.
+        let persisted: AcpxDurableState =
+            serde_json::from_slice(&fs::read(attached.state_path()).unwrap()).unwrap();
+        assert_eq!(
+            persisted.descriptor.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        let mut same_run_mutation = descriptor_value.clone();
+        same_run_mutation["instructions"] = json!("A different grant in the same run");
+        assert!(attached
+            .attach_run(&json!({"provider": same_run_mutation}))
+            .unwrap_err()
+            .to_string()
+            .contains("same_run_grant_changed"));
 
         // In-place warm handoff executes under the old authority. Only the
         // authenticated next-authority boundary may admit the new descriptor;
@@ -3029,9 +3155,100 @@ mod tests {
             json!("other-session");
         assert!(original.attach_run(&wrong_session).is_err());
         let mut changed_profile = warm_payload.clone();
-        changed_profile["provider"]["instructions"] = json!("different profile");
+        changed_profile["provider"]["cwd"] = json!("/different-workspace");
         assert!(original.attach_run(&changed_profile).is_err());
+        for pointer in [
+            "/aggregateDigest",
+            "/prompt/digest",
+            "/instructions/entryPath",
+            "/instructions/workingCopy/entryPath",
+            "/instructions/workingCopy/kind",
+            "/instructions/bundle/digest",
+            "/skills/0/key",
+            "/skills/0/bundle/digest",
+            "/mcp/assignmentSetId",
+            "/mcp/digest",
+            "/futurePolicy/companyId",
+        ] {
+            let mut changed_context = warm_payload.clone();
+            *changed_context["provider"]["runtimeContext"]
+                .pointer_mut(pointer)
+                .unwrap() = json!("changed");
+            assert!(
+                original
+                    .attach_run(&changed_context)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("runtime_context_identity_changed"),
+                "{pointer}"
+            );
+        }
+        for pointer in [
+            "/instructions/workingCopy/rootPath",
+            "/instructions/bundle/rootPath",
+            "/skills/0/bundle/rootPath",
+            "/mcp/bindingId",
+        ] {
+            let mut malformed_grant = warm_payload.clone();
+            *malformed_grant["provider"]["runtimeContext"]
+                .pointer_mut(pointer)
+                .unwrap() = json!(17);
+            assert!(original
+                .attach_run(&malformed_grant)
+                .unwrap_err()
+                .to_string()
+                .contains("runtime_context_identity_changed"));
+        }
+        assert_ne!(
+            runtime_context_session_identity(&Value::Null),
+            runtime_context_session_identity(&descriptor_value["runtimeContext"])
+        );
+        let mut missing_context = warm_payload.clone();
+        missing_context["provider"]["runtimeContext"] = Value::Null;
+        assert!(original
+            .attach_run(&missing_context)
+            .unwrap_err()
+            .to_string()
+            .contains("runtime_context_identity_changed"));
+        let saved_context = original
+            .state
+            .as_ref()
+            .unwrap()
+            .descriptor
+            .runtime_context
+            .clone();
+        original.state.as_mut().unwrap().descriptor.runtime_context = Value::Null;
+        let error = original.attach_run(&warm_payload).unwrap_err().to_string();
+        assert!(error.contains("runtime_context_identity_changed"));
+        assert!(!error.contains(&current_root.to_string_lossy().to_string()));
+        assert!(!error.contains("Fresh custom entry"));
+        original.state.as_mut().unwrap().descriptor.runtime_context = saved_context;
+        let mut unknown_context_field = warm_payload.clone();
+        unknown_context_field["provider"]["runtimeContext"]["newPolicy"] =
+            json!("not silently ignored");
+        assert!(original
+            .attach_run(&unknown_context_field)
+            .unwrap_err()
+            .to_string()
+            .contains("runtime_context_identity_changed"));
+        let mut active = original.state.clone().unwrap();
+        active.active_turn_id = Some("turn-active".to_owned());
+        let settled = original.state.replace(active).unwrap();
+        assert!(original
+            .attach_run(&warm_payload)
+            .unwrap_err()
+            .to_string()
+            .contains("provider_turn_active"));
+        original.state = Some(settled);
         original.attach_run(&warm_payload).unwrap();
+        assert_eq!(
+            original.state.as_ref().unwrap().descriptor.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        assert_eq!(
+            original.state.as_ref().unwrap().descriptor.instructions,
+            descriptor_value["instructions"]
+        );
         assert_eq!(original.state.as_ref().unwrap().descriptor.run_id, "run-2");
         assert_eq!(original.context.run_id, "run-1");
         original.rotate_authority(&attached_config);

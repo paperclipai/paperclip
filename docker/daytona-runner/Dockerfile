@@ -14,6 +14,11 @@ RUN cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip
 
 FROM node:24.21.0-bookworm@sha256:5a750d3be5e5c80275f8c9a5367c3aed99c2875656590c8d0701c7ee687f5f0a AS provider-pack-build
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+# Bound build-time memory on hosts that expose many CPUs but little RAM.
+# These settings belong only to this build stage, never the runtime image.
+ENV NODE_OPTIONS=--max-old-space-size=1024 \
+    npm_config_child_concurrency=1 \
+    npm_config_network_concurrency=4
 WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY patches ./patches
@@ -29,14 +34,18 @@ COPY cli/package.json ./cli/package.json
 # Reject registry-time drift BEFORE installing packages or running lifecycle code.
 # Refresh this digest together with source/provider dependency changes.
 ARG PAPERCLIP_RUNNER_LOCK_SHA256=9eea60187c6c808efb4d936a234a8d8000beac45253091abd4c5348132bd1408
-RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
+# pnpm 9 subtracts PNPM_WORKERS from available CPUs; it is not a worker count.
+# Subtract all available CPUs to select its minimum (one tarball worker).
+RUN export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
+    && printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 # Optional qualification assets; this never promotes candidate profiles.
 ARG PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=
 RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
-RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
+RUN export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
+    && pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
       node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
         "--candidate-providers=${PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS}" \

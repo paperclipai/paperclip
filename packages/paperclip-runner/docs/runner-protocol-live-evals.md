@@ -154,6 +154,16 @@ versions and patched ACP server bytes. Do not replace this step with a fresh
 `patchedDependencies`, so the resulting ACPX executables no longer match their
 qualified digests.
 
+Candidate ACPX evals require both `--candidate-profile <agent>` and
+`--expected-acpx-profile <JSON>`. The eval program supplies the exact configured
+profile as the JSON argument. Before creating a runtime context or provider
+service, the built CLI compares every profile field, including model, version
+and command digest, with its own resolved profile. Missing, extra or mismatched
+fields fail admission. Older CLIs reject the new flag before execution; there
+is no retry without the check. The daemon's own profile admission and binary
+digest check remain independent gates. Post-run scoring still compares the
+retained profile as evidence, but cannot replace this pre-launch check.
+
 The direct eval CLI also materializes a minimal immutable native runtime
 context in each isolated attempt workspace. This keeps the direct layer on the
 same `paperclip.native-execution-input.v3` contract as production, including

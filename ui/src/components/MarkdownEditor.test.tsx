@@ -164,6 +164,17 @@ vi.mock("@mdxeditor/editor", async () => {
         className={className}
         contentEditable
         suppressContentEditableWarning
+        onKeyDown={(event) => {
+          if (event.key === "Delete" || event.key === "Backspace") {
+            setContent("");
+            onChange?.("");
+          }
+        }}
+        onInput={(event) => {
+          const next = event.currentTarget.textContent ?? "";
+          setContent(next);
+          onChange?.(next);
+        }}
       >
         {/* The real editor paints resolved text, never the escapes that carried it in. */}
         {content.replace(/\\</g, "<") || placeholder || ""}
@@ -374,6 +385,43 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("allows a user to clear loaded text as the first editor change", async () => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="Loaded draft" onChange={handleChange} />);
+    });
+    await flush();
+    expect(handleChange).not.toHaveBeenCalled();
+
+    const editor = container.querySelector('[contenteditable="true"]')!;
+    await act(async () => {
+      editor.textContent = "";
+      editor.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+      }));
+    });
+    expect(handleChange).toHaveBeenCalledExactlyOnceWith("");
+
+    await act(async () => root.unmount());
+  });
+
+  it.each(["Delete", "Backspace"])("allows first-change clearing when Lexical handles %s without an input event", async (key) => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="Loaded draft" onChange={handleChange} />);
+    });
+    await flush();
+    const editor = container.querySelector('[contenteditable="true"]')!;
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key }));
+    });
+    expect(handleChange).toHaveBeenCalledExactlyOnceWith("");
+    await act(async () => root.unmount());
   });
 
   it("does not recreate the mention decoration observer when the external value changes", async () => {

@@ -107,6 +107,21 @@ Codex answer objects, OpenCode answer arrays, and ACP typed content exist only
 inside their adapters; `origin` may retain the provider method and adapter name
 for diagnostics but never provider response data.
 
+Text-mode questions may include `initialText` (at most 100,000 Unicode code points,
+within the existing 196 KiB question-set bound). It supplies an editable starting
+draft, including empty text and whitespace. ACP plain-string `default` values map
+without trimming; numeric defaults become editable numeric text. Select questions
+do not accept this field. The UI preserves saved drafts and existing responses
+ahead of provider defaults. Initial text never submits or resolves a request:
+the operator must explicitly submit, and all existing response validation still
+applies. Canonical text answers retain submitted whitespace and literal escape
+sequences; legacy and select custom answers retain their existing normalization.
+JSON Schema, TypeScript and Rust count draft Unicode code points alike. Existing
+submitted-answer limits still count UTF-16 code units; a draft can require editing
+before it satisfies those limits or field-specific constraints. Required blank
+answers remain invalid. Redaction, company scope and durable
+replay rules remain in force.
+
 Question and option order is significant, while answers are keyed by stable
 question IDs and selections reference stable option IDs. The canonical modes
 are `text`, `single_select`, and `multi_select`. Text validation is repeated at

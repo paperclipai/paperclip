@@ -406,3 +406,77 @@ fn rejects_payloads_before_decoding_when_scope_or_size_is_invalid() {
     let error = decode_acpx_event(&scope, &oversized).unwrap_err();
     assert!(error.to_string().contains("256 KiB"));
 }
+
+#[test]
+fn input_initial_text_survives_wire_admission_with_existing_redaction() {
+    let scope = active_scope();
+    let input = |initial: Value, mode: &str| {
+        json!({"requestId":"request-1","questionSet":{
+            "schema":"paperclip.question_set.v1","questions":[{"id":"draft","prompt":"Edit", "required":true,
+            "answerMode":mode,"initialText":initial}]
+        }})
+    };
+    let text = "  Draft 漢字\n".repeat(1_000);
+    let decoded = decode_acpx_event(
+        &scope,
+        &event(
+            GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+            input(json!(text), "text"),
+        ),
+    )
+    .unwrap();
+    match decoded {
+        AcpxEventPayload::InputRequested { question_set, .. } => {
+            assert_eq!(question_set["questions"][0]["initialText"], json!(text))
+        }
+        _ => panic!("input request expected"),
+    }
+    let decoded = decode_acpx_event(
+        &scope,
+        &event(
+            GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+            input(json!("token=private-prefill"), "text"),
+        ),
+    )
+    .unwrap();
+    match decoded {
+        AcpxEventPayload::InputRequested { question_set, .. } => {
+            assert_eq!(
+                question_set["questions"][0]["initialText"],
+                "token=[REDACTED]"
+            );
+            assert!(question_set["description"]
+                .as_str()
+                .unwrap()
+                .contains("redacted"));
+        }
+        _ => panic!("input request expected"),
+    }
+    for code_points in [100_000, 100_001] {
+        let initial = format!("{}😀", "a".repeat(code_points - 1));
+        let payload = input(json!(initial), "text");
+        assert!(serde_json::to_vec(&payload).unwrap().len() < 196 * 1024);
+        let result = decode_acpx_event(
+            &scope,
+            &event(
+                GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+                payload,
+            ),
+        );
+        assert_eq!(result.is_ok(), code_points == 100_000);
+    }
+    for invalid in [
+        input(json!(1), "text"),
+        input(json!("a".repeat(100_001)), "text"),
+        input(json!("default"), "single_select"),
+    ] {
+        assert!(decode_acpx_event(
+            &scope,
+            &event(
+                GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+                invalid
+            )
+        )
+        .is_err());
+    }
+}

@@ -78,7 +78,10 @@ try {
 
 async function pack(packageRoot, destination) {
   const before = new Set(await readdir(destination));
-  run("npm", ["pack", "--ignore-scripts", "--pack-destination", destination], packageRoot, { quiet: true });
+  // These installed dependencies are pack inputs, not our development cwd.
+  // Keep their publisher devEngines intact without adopting their toolchain;
+  // normal tarball contents and clean-consumer runtime engine checks still apply.
+  run("npm", ["pack", resolve(packageRoot), "--ignore-scripts", "--pack-destination", destination], destination, { quiet: true });
   const created = (await readdir(destination))
     .filter((entry) => entry.endsWith(".tgz") && !before.has(entry))
     .sort();

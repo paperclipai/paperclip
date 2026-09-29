@@ -3146,6 +3146,30 @@ mod tests {
     }
 
     #[test]
+    fn durable_question_initial_text_survives_serialized_reload_without_resolution() {
+        let mut config = config(PathBuf::from("unused"));
+        config.max_outbox_bytes = 512 * 1024;
+        config.max_frame_bytes = 256 * 1024;
+        let mut state = DurableState::new(&config);
+        let text = "  Editable draft 漢字\n".repeat(1_000);
+        state.enqueue_event(&config, "runtime_request.created", EventPriority::P0, json!({
+            "request": {"schema":"paperclip.runtime_request.v2", "requestKind":"runtime", "requestId":"edit-1",
+                "type":"input", "status":"pending", "input":{"schema":"paperclip.question_set.v1", "questions":[{
+                    "id":"draft", "prompt":"Edit", "answerMode":"text", "required":true, "initialText":text
+                }]}}
+        })).unwrap();
+        let reloaded: DurableState =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        let request = reloaded.outbox[0]
+            .envelope
+            .pointer("/payload/payload/request")
+            .unwrap();
+        assert_eq!(request["input"]["questions"][0]["initialText"], json!(text));
+        assert_eq!(request["status"], "pending");
+        assert!(request.get("response").is_none());
+    }
+
+    #[test]
     fn durable_question_sets_preserve_safe_identity_and_redact_display_text() {
         let config = config(PathBuf::from("unused"));
         let mut state = DurableState::new(&config);

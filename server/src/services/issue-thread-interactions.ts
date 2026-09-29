@@ -1,3 +1,4 @@
+import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import {
   currentContinuationOrigins,
   deliveredContinuationCommentIds,
@@ -1668,6 +1669,7 @@ function resolveRequestItemVerdictSubmissions(args: {
 
 function normalizeQuestionAnswers(args: {
   questions: AskUserQuestionsInteraction["payload"]["questions"];
+  textQuestionIds?: ReadonlySet<string>;
   answers: RespondIssueThreadInteraction["answers"];
 }) {
   const questionById = new Map(
@@ -1702,7 +1704,11 @@ function normalizeQuestionAnswers(args: {
       );
     }
 
-    const otherText = answer.otherText?.trim() ?? "";
+    // Canonical text fields may contain code or intentional whitespace. The
+    // legacy custom-answer path keeps its historical newline/trim behavior.
+    const otherText = args.textQuestionIds?.has(answer.questionId)
+      ? answer.otherText ?? ""
+      : normalizeEscapedLineBreaks(answer.otherText ?? "").trim();
     answerByQuestionId.set(answer.questionId, {
       questionId: answer.questionId,
       optionIds: uniqueOptionIds,
@@ -1714,7 +1720,7 @@ function normalizeQuestionAnswers(args: {
     const answer = answerByQuestionId.get(question.id);
     if (
       question.required &&
-      (!answer || (answer.optionIds.length === 0 && !answer.otherText))
+      (!answer || (answer.optionIds.length === 0 && !answer.otherText?.trim()))
     ) {
       throw unprocessable(`Question ${question.id} requires an answer`);
     }
@@ -4845,6 +4851,9 @@ export function issueThreadInteractionService(
       ) as AskUserQuestionsInteraction;
       const normalizedAnswers = normalizeQuestionAnswers({
         questions: interaction.payload.questions,
+        textQuestionIds: new Set((interaction.payload.questionSet?.questions ?? [])
+          .filter((question) => question.answerMode === "text")
+          .map((question) => question.id)),
         answers: input.answers,
       });
 
