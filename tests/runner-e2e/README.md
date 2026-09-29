@@ -262,8 +262,10 @@ Each later turn updates all 60,000 generated files to distinct turn-specific
 contents. Before each follow-up and after the last turn an independent host oracle reads every copied-back file
 and proves the generated NUL-delimited filename list exceeds 32 MiB
 (39,828,890 bytes). It also checks whitespace, newline, option-like, Unicode,
-and glob-like filenames. This uses the warm suite's time bounds, billing scope,
-screenshots, and explicit sandbox cleanup; `--all` excludes it.
+and glob-like filenames. Each turn is bounded to fifteen minutes and the cell
+to forty-five minutes: preparing and copying back this many files exceeded the
+ordinary warm fixture's ten-minute turn limit on CI. It keeps the warm suite's
+billing scope, screenshots, and explicit sandbox cleanup; `--all` excludes it.
 Before each follow-up and after the last turn, public durable run records must
 show committed native finalization, successful workspace receipts, no active
 workspace operation (including cleanup without a run ID), and no scheduled native recovery. A succeeded run or
