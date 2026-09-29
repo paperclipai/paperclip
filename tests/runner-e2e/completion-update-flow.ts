@@ -69,7 +69,8 @@ export async function observeCompletionUpdate(input: {
         // A client-side route can return HTTP 200 even when the task is missing.
         // Open the actual rendered target and prove that its task loaded.
         await input.page.goto(url.href, { waitUntil: "domcontentloaded" });
-        await expect(input.page.getByRole("heading", { name: String(observation!.worker.title), exact: true })).toBeVisible();
+        await expect(input.page.getByTestId("task-chat-history-loading")).toHaveCount(0);
+        await expect(input.page.getByTestId("issue-detail-header").getByRole("heading", { name: String(observation!.worker.title), exact: true })).toBeVisible();
         const accessibleWorker = await input.api.get<Row>(`/api/issues/${encodeURIComponent(observation!.worker.identifier ?? input.workerId)}`);
         expect(accessibleWorker.id).toBe(input.workerId);
         const accessibleOutput = await readChatOutputDocument(input.api, accessibleWorker.id, input.marker);
