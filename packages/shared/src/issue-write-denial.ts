@@ -31,6 +31,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_assignee_run_lock",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
+  "cross_issue_influence_source_issue_required",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -260,6 +261,22 @@ export function describeIssueWriteDenial(
           `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
           `and retry.`,
 
+      };
+
+    case "cross_issue_influence_source_issue_required":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Run source issue",
+        title: "This run has no source issue",
+        description:
+          `This request has a valid heartbeat run, but the run has no persisted source issue. ` +
+          `The source issue is required to distinguish same-issue writes from cross-issue writes.`,
+        whoCanAct: `${actor}, from a new issue-scoped run.`,
+        sanctionedPath:
+          `End this run and start a new issue-scoped run through a task assignment or issue-scoped wake. ` +
+          `The new run must have a persisted source issue; checking out a task or resending the current run header does not add one.`,
       };
 
     case "issue_write_attribution_spoof_rejected":

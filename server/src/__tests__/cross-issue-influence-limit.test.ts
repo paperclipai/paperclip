@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { describe, expect, it, vi } from "vitest";
 import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   CROSS_ISSUE_INFLUENCE_LIMIT,
@@ -13,26 +15,40 @@ function counterDb(
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
+  const run = runOverrides === null ? null : {
+    id: "11111111-1111-4111-8111-111111111111",
+    companyId: "22222222-2222-4222-8222-222222222222",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    responsibleUserId: "user-1",
+    contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
+    ...runOverrides,
+  };
   const tx = {
     select: (selection: Record<string, unknown>) => ({
       from: () => ({
-        where: () => {
+        where: (condition: SQL) => {
           if (Object.keys(selection).includes("count")) {
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          // This checks the query contract; it is not a database/concurrency test.
+          const query = new PgDialect().sqlToQuery(condition);
+          expect(query.sql).toBe(
+            '("heartbeat_runs"."id" = $1 and "heartbeat_runs"."company_id" = $2 and "heartbeat_runs"."agent_id" = $3)',
+          );
+          expect(query.params).toEqual([
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+            "33333333-3333-4333-8333-333333333333",
+          ]);
+          const matches = run && run.id === query.params[0]
+            && run.companyId === query.params[1] && run.agentId === query.params[2];
           return {
-            for: () => ({
-              then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
-                id: "11111111-1111-4111-8111-111111111111",
-                companyId: "22222222-2222-4222-8222-222222222222",
-                agentId: "33333333-3333-4333-8333-333333333333",
-                responsibleUserId: "user-1",
-                contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
-                ...runOverrides,
-              }]),
-            }),
+            for: (mode: string) => {
+              expect(mode).toBe("update");
+              return Promise.resolve(matches ? [run] : []);
+            },
           };
         },
       }),
@@ -46,7 +62,7 @@ function counterDb(
   };
   return {
     db: {
-      transaction: async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx),
+      transaction: vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx)),
     },
     inserted,
     get observedCount() {
@@ -164,8 +180,9 @@ describe("cross-issue influence limit rollout", () => {
 
   it.each([
     ["missing", null],
-    ["wrong-agent", { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
-    ["wrong-company", { companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+    ["wrong-run", { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", contextSnapshot: {} }],
+    ["wrong-agent", { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", contextSnapshot: {} }],
+    ["wrong-company", { companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", contextSnapshot: {} }],
   ] as const)("fails closed for a %s locked run", async (_label, runOverrides) => {
     const fake = counterDb(0, runOverrides);
 
@@ -177,40 +194,84 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: {
+        code: "cross_issue_influence_run_context_required",
+        sanctionedPath: expect.stringContaining("X-Paperclip-Run-Id"),
+      },
     });
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed before querying for a malformed run id", async () => {
+  it.each(["", "attacker-controlled-run-id"])("fails closed before querying for invalid run id %j", async (runId) => {
     const fake = counterDb();
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
       companyId: "22222222-2222-4222-8222-222222222222",
-      runId: "attacker-controlled-run-id",
+      runId,
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: {
+        code: "cross_issue_influence_run_context_required",
+        sanctionedPath: expect.stringContaining("X-Paperclip-Run-Id"),
+      },
     });
+    expect(fake.db.transaction).not.toHaveBeenCalled();
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
-    const fake = counterDb(0, { contextSnapshot: {} });
+  it.each([
+    ["absent fields", {}],
+    ["null snapshot", null],
+    ["non-object snapshot", "source-issue"],
+    ["array snapshot", [{ issueId: "44444444-4444-4444-8444-444444444444" }]],
+    ["blank fields", { issueId: "  ", taskId: "\t" }],
+    ["non-string fields", { issueId: 42, taskId: { id: "source-issue" } }],
+  ])("identifies missing persisted source context (%s) without spending the cap", async (_label, contextSnapshot) => {
+    const fake = counterDb(20, { contextSnapshot });
 
-    await expect(observeCrossIssueInfluence(fake.db as never, {
+    const denied = observeCrossIssueInfluence(fake.db as never, {
       companyId: "22222222-2222-4222-8222-222222222222",
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
     });
+    await expect(denied).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("persisted source issue"),
+      details: {
+        code: "cross_issue_influence_source_issue_required",
+        sanctionedPath: expect.stringContaining("new issue-scoped run"),
+      },
+    });
+    await expect(denied).rejects.toMatchObject({
+      message: expect.not.stringMatching(/X-Paperclip-Run-Id|PAPERCLIP_RUN_ID/),
+    });
+    expect(fake.observedCount).toBe(20);
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it.each([
+    ["issueId wins over taskId", { issueId: "55555555-5555-4555-8555-555555555555", taskId: "other-issue" }],
+    ["legacy taskId", { taskId: "55555555-5555-4555-8555-555555555555" }],
+    ["blank issueId falls back", { issueId: " ", taskId: " 55555555-5555-4555-8555-555555555555 " }],
+    ["non-string issueId falls back", { issueId: 42, taskId: "55555555-5555-4555-8555-555555555555" }],
+    ["case-insensitive issue identifier", { issueId: " task-482 " }],
+  ])("preserves same-issue exemption for %s", async (_label, contextSnapshot) => {
+    const fake = counterDb(20, { contextSnapshot });
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueIdentifier: "TASK-482",
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toBeNull();
+    expect(fake.observedCount).toBe(20);
     expect(fake.inserted).toEqual([]);
   });
 });
