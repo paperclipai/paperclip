@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
+import { useJoinRequestAccess } from "@/hooks/useJoinRequestAccess";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
@@ -798,6 +799,7 @@ export function Inbox() {
 function StreamlinedInbox() {
   const streamlinedUiEnabled = true;
   const { selectedCompanyId } = useCompany();
+  const canApproveJoins = useJoinRequestAccess(selectedCompanyId);
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openNewIssue } = useDialogActions();
   const { isMobile } = useSidebar();
@@ -927,7 +929,7 @@ function StreamlinedInbox() {
         throw err;
       }
     },
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && canApproveJoins === true,
     retry: false,
   });
 

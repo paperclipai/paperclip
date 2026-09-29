@@ -4182,6 +4182,16 @@ export function accessRoutes(
     res.json(invitesForCompany);
   });
 
+  router.get("/companies/:companyId/join-requests/access", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const canApproveJoins =
+      req.actor.type === "board" &&
+      (isLocalImplicit(req) || Boolean(req.actor.isInstanceAdmin) ||
+        await access.canUser(companyId, req.actor.userId ?? null, "joins:approve"));
+    res.json({ canApproveJoins });
+  });
+
   router.get("/companies/:companyId/join-requests", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "joins:approve");

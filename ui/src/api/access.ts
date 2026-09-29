@@ -306,6 +306,9 @@ export const accessApi = {
 
   revokeInvite: (inviteId: string) => api.post(`/invites/${inviteId}/revoke`, {}),
 
+  getJoinRequestAccess: (companyId: string) =>
+    api.get<{ canApproveJoins: boolean }>(`/companies/${companyId}/join-requests/access`),
+
   listJoinRequests: (
     companyId: string,
     status: "pending_approval" | "approved" | "rejected" = "pending_approval",

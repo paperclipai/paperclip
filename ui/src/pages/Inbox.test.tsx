@@ -25,6 +25,7 @@ const externalObjectMocks = vi.hoisted(() => ({
 const apiMocks = vi.hoisted(() => ({
   approvalsList: vi.fn(),
   joinRequestsList: vi.fn(),
+  joinRequestAccess: vi.fn(),
   userDirectoryList: vi.fn(),
   authSession: vi.fn(),
   dashboardSummary: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("../api/access", async () => {
     ...actual,
     accessApi: {
       listJoinRequests: apiMocks.joinRequestsList,
+      getJoinRequestAccess: apiMocks.joinRequestAccess,
       listUserDirectory: apiMocks.userDirectoryList,
     },
   };
@@ -347,6 +349,7 @@ function resetInboxApiMocks() {
   routerMock.navigate.mockReset();
   apiMocks.approvalsList.mockResolvedValue([]);
   apiMocks.joinRequestsList.mockResolvedValue([]);
+  apiMocks.joinRequestAccess.mockResolvedValue({ canApproveJoins: true });
   apiMocks.userDirectoryList.mockResolvedValue({ users: [] });
   apiMocks.authSession.mockResolvedValue({
     user: { id: "local-board" },
@@ -464,6 +467,22 @@ describe("Inbox toolbar", () => {
 
     expect(container.querySelector('[aria-label^="External objects:"]')).toBeNull();
 
+    act(() => root.unmount());
+  });
+
+  it("does not load join requests without approval access", async () => {
+    apiMocks.joinRequestAccess.mockResolvedValue({ canApproveJoins: false });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(apiMocks.joinRequestAccess).toHaveBeenCalled());
+    expect(apiMocks.joinRequestsList).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
 

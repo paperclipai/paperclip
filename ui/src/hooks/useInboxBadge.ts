@@ -14,6 +14,7 @@ import {
   useLocalInboxArchiveIssueIds,
 } from "../lib/inboxArchiveCache";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "./useSharedPolling";
+import { useJoinRequestAccess } from "./useJoinRequestAccess";
 import {
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
@@ -178,6 +179,7 @@ export function useReadInboxItems() {
 }
 
 export function useInboxBadge(companyId: string | null | undefined) {
+  const canApproveJoins = useJoinRequestAccess(companyId);
   const locallyArchivedIssueIds = useLocalInboxArchiveIssueIds(companyId);
   const { dismissed: dismissedAlerts } = useDismissedInboxAlerts();
   const { dismissedAtByKey } = useInboxDismissals(companyId);
@@ -204,7 +206,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
         throw err;
       }
     },
-    enabled: !!companyId,
+    enabled: !!companyId && canApproveJoins === true,
     retry: false,
   });
 
