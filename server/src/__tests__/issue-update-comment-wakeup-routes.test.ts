@@ -727,13 +727,13 @@ describe("issue update comment wakeups", () => {
   });
 
   it.each((["post", "patch"] as const).flatMap((method) =>
-    ["assignee_comment", "board_comment", "human_owned", "unassigned", "blocked_parent", "done_parent"].map((scenario) => ({ method, scenario })),
+    ["assignee_comment", "board_comment", "human_owned", "unassigned", "blocked_parent", "done_parent", "done_comment", ...(method === "patch" ? ["closing_comment"] : [])].map((scenario) => ({ method, scenario })),
   ))("keeps $method mentions as context for $scenario", async ({ method, scenario }) => {
-    const selfComment = ["assignee_comment", "blocked_parent", "done_parent"].includes(scenario);
+    const selfComment = ["assignee_comment", "blocked_parent", "done_parent", "done_comment", "closing_comment"].includes(scenario);
     const existing = makeIssue({
       assigneeAgentId: ["human_owned", "unassigned"].includes(scenario) ? null : ASSIGNEE_AGENT_ID,
       assigneeUserId: scenario === "human_owned" ? "local-board" : null,
-      status: scenario === "blocked_parent" ? "blocked" : scenario === "done_parent" ? "done" : "in_progress",
+      status: scenario === "blocked_parent" ? "blocked" : ["done_parent", "done_comment"].includes(scenario) ? "done" : "in_progress",
       executionRunId: selfComment ? SOURCE_RUN_ID : null,
     });
     const child = makeIssue({
@@ -742,14 +742,16 @@ describe("issue update comment wakeups", () => {
       status: scenario === "done_parent" ? "done" : "in_progress",
       executionRunId: "55555555-5555-4555-8555-555555555555",
     });
-    const body = `[@QA](agent://${MENTIONED_AGENT_ID}) is relevant; see [${child.identifier}](/PAP/issues/${child.identifier}).`;
+    const body = ["blocked_parent", "done_parent"].includes(scenario)
+      ? `[@QA](agent://${MENTIONED_AGENT_ID}) is relevant; see [${child.identifier}](/PAP/issues/${child.identifier}).`
+      : `Finished the task. [@QA](agent://${MENTIONED_AGENT_ID}) has relevant context.`;
     const originalComment = {
       id: "context-note", issueId: existing.id, companyId: existing.companyId, body,
       createdByRunId: selfComment ? SOURCE_RUN_ID : null,
     };
     mockIssueService.getById.mockImplementation(async (id) => id === child.id ? child : existing);
     mockIssueService.getByIdentifier.mockResolvedValue(child);
-    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(scenario === "closing_comment" ? { ...existing, status: "done" } : existing);
     mockIssueService.addComment.mockResolvedValue(originalComment);
     mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [child], blocks: [] });
@@ -763,7 +765,7 @@ describe("issue update comment wakeups", () => {
       ? request(app).post(`/api/issues/${existing.id}/comments`)
       : request(app).patch(`/api/issues/${existing.id}`);
     if (selfComment) req.set("X-Paperclip-Run-Id", SOURCE_RUN_ID);
-    const res = await req.send(method === "post" ? { body } : { comment: body });
+    const res = await req.send(method === "post" ? { body } : { comment: body, ...(scenario === "closing_comment" ? { status: "done" } : {}) });
     expect(res.status).toBe(method === "post" ? 201 : 200);
     // Wake scheduling runs after sending the response. Drain its resolved
     // mock promises before asserting that no extra work was dispatched.
