@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -38,15 +38,28 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let companyId!: string;
   let agentId!: string;
+  let inheritedEnv: NodeJS.ProcessEnv;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-failure-report-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  beforeEach(() => {
+    // Unknown host values intentionally count as secrets, including short values
+    // such as "1". Keep these fixtures independent of the developer/CI environment
+    // and add secret values explicitly in the tests that exercise redaction.
+    inheritedEnv = process.env;
+    process.env = Object.fromEntries(
+      ["PATH", "HOME", "USER", "USERNAME", "LOGNAME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"]
+        .flatMap((key) => inheritedEnv[key] === undefined ? [] : [[key, inheritedEnv[key]]]),
+    );
+  });
+
   afterEach(async () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    process.env = inheritedEnv;
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -229,6 +242,16 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(captured).not.toHaveProperty("secretValues");
   });
 
+  it("still redacts short values from unknown host settings", async () => {
+    await seedCompanyAndAgent();
+    vi.stubEnv("FIXTURE_CUSTOM_VALUE", "1");
+
+    await reportRunFailure(db, buildRun());
+
+    expect(mockCaptureRunFailure.mock.calls[0][0].errorMessage)
+      .toBe(`the provider process exited with code ${REDACTED_EVENT_VALUE}`);
+  });
+
   it("captures nothing for succeeded, cancelled, and interrupted", async () => {
     await seedCompanyAndAgent();
     for (const status of ["succeeded", "cancelled", "interrupted"] as const) {
@@ -368,7 +391,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(errorMessage).toBe("x".repeat(MAX_ERROR_MESSAGE_LENGTH - 12) + "\n[truncated]");
   });
 
-  it("does not change a short error message", async () => {
+  it("preserves a short error message with known public host settings", async () => {
     vi.stubEnv("PAPERCLIP_DB_BACKUP_ENABLED", "false");
     vi.stubEnv("PAPERCLIP_DB_BACKUP_RETENTION_DAYS", "1");
     vi.stubEnv("GITHUB_RUN_ATTEMPT", "1");
