@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 import type { AdapterExecutionContext, AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
@@ -2671,6 +2672,77 @@ describe("shared ACPX engine runtime behavior", () => {
       expect(files[0]).not.toContain(TOKEN_VALUE);
       const persisted = JSON.parse(files[0]!) as { acpx?: { session_options?: Record<string, unknown> } };
       expect(persisted.acpx?.session_options).toEqual({ model: "example-model" });
+    });
+  });
+
+  // These tests use the real ACPX runtime, the real file session store, and a
+  // real ACP agent process (`scripts/mcp-fixtures/servers/acp-isolation-agent.mjs`,
+  // the fixture that `mcp-isolation.integration.test.ts` also uses). Only the
+  // agent is a fixture: ACPX itself writes the session record.
+  // The fresh-session retry branch (second `ensureSession` call) needs a resume
+  // error raised during `ensureSession`. This fixture agent raises it at turn
+  // time instead, so that branch stays covered by the mocked-runtime tests above.
+  describe("session record persistence (real ACPX runtime)", () => {
+    const TOKEN_NAME = "EXAMPLE_SERVICE_TOKEN";
+    const TOKEN_VALUE = "example-token-value-0123456789";
+    const fixtureAgent = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../../scripts/mcp-fixtures/servers/acp-isolation-agent.mjs",
+    );
+
+    function runReal(stateDir: string, runId: string, sessionParams?: unknown) {
+      const execute = createAcpxEngineExecutor({});
+      return execute({
+        runId,
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: sessionParams ? { sessionParams } : {},
+        config: {
+          agent: "custom",
+          agentCommand: `"${process.execPath}" "${fixtureAgent}"`,
+          stateDir,
+          mode: "persistent",
+          env: { [TOKEN_NAME]: TOKEN_VALUE },
+          timeoutSec: 30,
+        },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+    }
+
+    async function readSessionFiles(stateDir: string) {
+      const dir = path.join(stateDir, "sessions");
+      const names = (await fs.readdir(dir)).filter((name) => name.endsWith(".json"));
+      return await Promise.all(names.map((name) => fs.readFile(path.join(dir, name), "utf8")));
+    }
+
+    it("does not persist the launch env when ACPX writes a new session record", async () => {
+      const stateDir = path.join(await makeTempRoot(), "state");
+      const result = await runReal(stateDir, "run-1");
+      expect(result.exitCode).toBe(0);
+
+      const files = await readSessionFiles(stateDir);
+      expect(files).toHaveLength(1);
+      expect(files[0]).not.toContain(TOKEN_VALUE);
+      const persisted = JSON.parse(files[0]!) as { acpx?: { session_options?: { env?: unknown } } };
+      expect(persisted.acpx?.session_options?.env).toBeUndefined();
+    });
+
+    it("reloads the stripped record on a later run without writing the env back", async () => {
+      const stateDir = path.join(await makeTempRoot(), "state");
+      const first = await runReal(stateDir, "run-1");
+      expect(first.exitCode).toBe(0);
+      const [beforeFile] = await readSessionFiles(stateDir);
+      expect(beforeFile).not.toContain(TOKEN_VALUE);
+
+      // ACPX loads the stripped record through the Paperclip store wrapper and
+      // saves it again. The fixture agent cannot continue a previous session,
+      // so this run may end in an error; the assertions are about the record.
+      await runReal(stateDir, "run-2", first.sessionParams);
+
+      const files = await readSessionFiles(stateDir);
+      expect(files).toHaveLength(1);
+      for (const file of files) expect(file).not.toContain(TOKEN_VALUE);
     });
   });
 
