@@ -251,6 +251,27 @@ describe("chat publication commit signals", () => {
     expect(presentationMarker).toBeGreaterThan(committedComment);
   });
 
+  it("publishes the terminal run event before legacy comment attribution backfill", () => {
+    const heartbeatSource = readFileSync(
+      new URL("./heartbeat.ts", import.meta.url),
+      "utf8",
+    );
+    const finalizationStart = heartbeatSource.indexOf(
+      "const finalizedRun = persistedRun",
+    );
+    const terminalEvent = heartbeatSource.indexOf(
+      "await appendRunEvent(finalizedRun",
+      finalizationStart,
+    );
+    const attributionBackfill = heartbeatSource.indexOf(
+      "await issuesSvc.persistRunLogCommentAttribution",
+      finalizationStart,
+    );
+    expect(finalizationStart).toBeGreaterThanOrEqual(0);
+    expect(terminalEvent).toBeGreaterThan(finalizationStart);
+    expect(attributionBackfill).toBeGreaterThan(terminalEvent);
+  });
+
   it("accepts only the closed durable progress and final-presentation event types", () => {
     for (const eventType of SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES) {
       expect(

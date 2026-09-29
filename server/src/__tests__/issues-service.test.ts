@@ -36,6 +36,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { getRunLogStore } from "../services/run-log-store.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -2601,6 +2602,326 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(comments.map((comment) => comment.id)).toEqual([commentId]);
     expect(comments[0]?.body).toBe("Comment should be visible");
+  });
+
+  it("does not wait on locked legacy comment rows while deriving attribution", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "LegacyCommentAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked legacy comment issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-05-12T22:58:00.000Z"),
+      startedAt: new Date("2026-05-12T22:58:00.000Z"),
+      finishedAt: new Date("2026-05-12T23:14:00.000Z"),
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      createdByRunId: runId,
+      body: "Legacy agent comment",
+      createdAt: new Date("2026-05-12T23:00:00.000Z"),
+      updatedAt: new Date("2026-05-12T23:00:00.000Z"),
+    });
+
+    const lockingDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const lockAcquired = deferred<void>();
+    const releaseLock = deferred<void>();
+    const lockPromise = lockingDb.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT ${issueComments.id} FROM ${issueComments} WHERE ${issueComments.id} = ${commentId} FOR UPDATE`,
+      );
+      lockAcquired.resolve();
+      await releaseLock.promise;
+    });
+
+    await lockAcquired.promise;
+    try {
+      const startedAt = performance.now();
+      const reads = Promise.all([
+        svc.listComments(issueId, { order: "desc", limit: 50 }),
+        svc.listComments(issueId, { order: "desc", limit: 50 }),
+      ]);
+      const results = await Promise.race([
+        reads,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("comment reads waited on the locked attribution row")),
+            1_500,
+          ),
+        ),
+      ]);
+      expect(performance.now() - startedAt).toBeLessThan(1_500);
+
+      for (const comments of results) {
+        expect(comments).toHaveLength(1);
+        expect(comments[0]).toMatchObject({
+          id: commentId,
+          derivedAuthorAgentId: agentId,
+          derivedCreatedByRunId: runId,
+          derivedAuthorSource: "run_id",
+        });
+      }
+
+      const stored = await db
+        .select({ derivedAuthorAgentId: issueComments.derivedAuthorAgentId })
+        .from(issueComments)
+        .where(eq(issueComments.id, commentId))
+        .then((rows) => rows[0] ?? null);
+      expect(stored?.derivedAuthorAgentId).toBeNull();
+    } finally {
+      releaseLock.resolve();
+      await lockPromise;
+    }
+  });
+
+  async function seedRunLogAttributionFixture(options?: {
+    commentOnDifferentIssue?: boolean;
+    directCreatedByRunId?: boolean;
+    omitActivityProvenance?: boolean;
+  }) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const commentIssueId = options?.commentOnDifferentIssue
+      ? randomUUID()
+      : issueId;
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const directRunId = options?.directCreatedByRunId ? randomUUID() : null;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "RunLogAttributionAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Run-log attribution issue",
+        status: "todo",
+        priority: "medium",
+      },
+      ...(commentIssueId === issueId
+        ? []
+        : [
+            {
+              id: commentIssueId,
+              companyId,
+              title: "Other issue",
+              status: "todo" as const,
+              priority: "medium" as const,
+            },
+          ]),
+    ]);
+
+    const runLogStore = getRunLogStore();
+    const logHandle = await runLogStore.begin({ companyId, agentId, runId });
+    await runLogStore.append(logHandle, {
+      stream: "system",
+      chunk: `comment id: ${commentId}\n`,
+      ts: "2026-05-12T23:00:01.000Z",
+    });
+    const logSummary = await runLogStore.finalize(logHandle);
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-05-12T22:58:00.000Z"),
+      startedAt: new Date("2026-05-12T22:58:00.000Z"),
+      finishedAt: new Date("2026-05-12T23:14:00.000Z"),
+      logStore: logHandle.store,
+      logRef: logHandle.logRef,
+      logBytes: logSummary.bytes,
+    });
+    if (directRunId) {
+      await db.insert(heartbeatRuns).values({
+        id: directRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: { issueId: commentIssueId },
+        createdAt: new Date("2026-05-12T22:59:00.000Z"),
+        startedAt: new Date("2026-05-12T22:59:00.000Z"),
+        finishedAt: new Date("2026-05-12T23:01:00.000Z"),
+      });
+    }
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId: commentIssueId,
+      authorUserId: "local-board",
+      createdByRunId: directRunId,
+      body: "Legacy agent comment",
+      createdAt: new Date("2026-05-12T23:00:00.000Z"),
+      updatedAt: new Date("2026-05-12T23:00:00.000Z"),
+    });
+    if (!options?.omitActivityProvenance) {
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: commentIssueId,
+        details: { commentId },
+        createdAt: new Date("2026-05-12T23:00:01.000Z"),
+      });
+    }
+
+    return { companyId, agentId, issueId, commentIssueId, commentId, runId };
+  }
+
+  it("persists run-log-only attribution after run finalization without waiting on locked rows", async () => {
+    const { agentId, commentId, runId } =
+      await seedRunLogAttributionFixture();
+
+    const lockingDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const lockAcquired = deferred<void>();
+    const releaseLock = deferred<void>();
+    const lockPromise = lockingDb.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT ${issueComments.id} FROM ${issueComments} WHERE ${issueComments.id} = ${commentId} FOR UPDATE`,
+      );
+      lockAcquired.resolve();
+      await releaseLock.promise;
+    });
+
+    await lockAcquired.promise;
+    try {
+      const startedAt = performance.now();
+      await expect(
+        svc.persistRunLogCommentAttribution(runId),
+      ).resolves.toBe(0);
+      expect(performance.now() - startedAt).toBeLessThan(1_500);
+    } finally {
+      releaseLock.resolve();
+      await lockPromise;
+    }
+
+    let stored: {
+      derivedAuthorAgentId: string | null;
+      derivedCreatedByRunId: string | null;
+      derivedAuthorSource: string | null;
+    } | null = null;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      stored = await db
+        .select({
+          derivedAuthorAgentId: issueComments.derivedAuthorAgentId,
+          derivedCreatedByRunId: issueComments.derivedCreatedByRunId,
+          derivedAuthorSource: issueComments.derivedAuthorSource,
+        })
+        .from(issueComments)
+        .where(eq(issueComments.id, commentId))
+        .then((rows) => rows[0] ?? null);
+      if (stored?.derivedAuthorAgentId) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(stored).toEqual({
+      derivedAuthorAgentId: agentId,
+      derivedCreatedByRunId: runId,
+      derivedAuthorSource: "run_log_comment_post",
+    });
+  });
+
+  it("persists an activity-proven run-log marker for a comment on another issue", async () => {
+    const { commentId, runId } = await seedRunLogAttributionFixture({
+      commentOnDifferentIssue: true,
+    });
+
+    await expect(svc.persistRunLogCommentAttribution(runId)).resolves.toBe(1);
+    const stored = await db
+      .select({ derivedAuthorAgentId: issueComments.derivedAuthorAgentId })
+      .from(issueComments)
+      .where(eq(issueComments.id, commentId))
+      .then((rows) => rows[0] ?? null);
+    expect(stored?.derivedAuthorAgentId).not.toBeNull();
+  });
+
+  it("does not persist a cross-issue log marker without activity provenance", async () => {
+    const { commentId, runId } = await seedRunLogAttributionFixture({
+      commentOnDifferentIssue: true,
+      omitActivityProvenance: true,
+    });
+
+    await expect(svc.persistRunLogCommentAttribution(runId)).resolves.toBe(0);
+    const stored = await db
+      .select({ derivedAuthorAgentId: issueComments.derivedAuthorAgentId })
+      .from(issueComments)
+      .where(eq(issueComments.id, commentId))
+      .then((rows) => rows[0] ?? null);
+    expect(stored?.derivedAuthorAgentId).toBeNull();
+  });
+
+  it("does not override direct run attribution with a run-log marker", async () => {
+    const { commentId, runId } = await seedRunLogAttributionFixture({
+      directCreatedByRunId: true,
+    });
+
+    await expect(svc.persistRunLogCommentAttribution(runId)).resolves.toBe(0);
+    const stored = await db
+      .select({
+        createdByRunId: issueComments.createdByRunId,
+        derivedAuthorAgentId: issueComments.derivedAuthorAgentId,
+      })
+      .from(issueComments)
+      .where(eq(issueComments.id, commentId))
+      .then((rows) => rows[0] ?? null);
+    expect(stored?.createdByRunId).not.toBeNull();
+    expect(stored?.derivedAuthorAgentId).toBeNull();
   });
 
   it("lists user comments when a candidate attribution run log is missing", async () => {

@@ -13,6 +13,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   gt,
   getTableColumns,
   gte,
@@ -21,6 +22,7 @@ import {
   isNull,
   like,
   lt,
+  lte,
   ne,
   notExists,
   notInArray,
@@ -231,6 +233,9 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+const ISSUE_COMMENT_RUN_LOG_PERSIST_RETRY_DELAYS_MS = [250, 1_000, 5_000] as const;
+const ISSUE_COMMENT_RUN_LOG_POST_MARKER =
+  /comment id:\s*([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/gi;
 export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS =
   ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -6809,39 +6814,6 @@ export function issueService(db: Db) {
     return content;
   }
 
-  // Persist a resolved attribution so subsequent reads stop re-scanning run
-  // logs (and old "Board" threads stay fixed durably). Best-effort: a write
-  // failure must never break the read path. The `IS NULL` guard keeps this
-  // idempotent and avoids clobbering a value another reader just stored.
-  async function persistDerivedIssueCommentAttribution(
-    derivedByCommentId: ReadonlyMap<string, DerivedIssueCommentAttribution>,
-  ) {
-    if (derivedByCommentId.size === 0) return;
-    // One bulk `UPDATE ... FROM (VALUES ...)` so the read path is never blocked
-    // on N sequential round-trips for a large legacy thread. The `IS NULL` guard
-    // keeps this idempotent and avoids clobbering a value another reader just
-    // stored. Best-effort: a write failure must never break the read path.
-    const rows = [...derivedByCommentId].map(
-      ([commentId, derived]) =>
-        sql`(${commentId}::uuid, ${derived.derivedAuthorAgentId}::uuid, ${derived.derivedCreatedByRunId}::uuid, ${derived.derivedAuthorSource}::text)`,
-    );
-    try {
-      await db.execute(sql`
-        UPDATE ${issueComments} AS c
-        SET derived_author_agent_id = v.agent_id,
-            derived_created_by_run_id = v.run_id,
-            derived_author_source = v.source
-        FROM (VALUES ${sql.join(rows, sql`, `)}) AS v(comment_id, agent_id, run_id, source)
-        WHERE c.id = v.comment_id AND c.derived_author_agent_id IS NULL
-      `);
-    } catch (err) {
-      logger.warn(
-        { err, commentIds: [...derivedByCommentId.keys()] },
-        "failed to persist derived issue-comment attribution",
-      );
-    }
-  }
-
   async function enrichCommentsWithDerivedAgentAttribution<
     T extends {
       id: string;
@@ -7046,12 +7018,169 @@ export function issueService(db: Db) {
 
     if (derivedByCommentId.size === 0) return comments;
 
-    await persistDerivedIssueCommentAttribution(derivedByCommentId);
-
     return comments.map((comment) => {
       const derived = derivedByCommentId.get(comment.id);
       return derived ? { ...comment, ...derived } : comment;
     });
+  }
+
+  async function persistRunLogCommentAttribution(
+    runId: string,
+    retryAttempt = 0,
+  ) {
+    const run = await db
+      .select({
+        runId: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        logStore: heartbeatRuns.logStore,
+        logRef: heartbeatRuns.logRef,
+        logBytes: heartbeatRuns.logBytes,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run?.finishedAt || !run.logRef || !run.logBytes) return 0;
+
+    const issueId =
+      readStringFromRecord(run.contextSnapshot, "issueId") ??
+      readStringFromRecord(run.contextSnapshot, "taskId");
+    if (!issueId) return 0;
+
+    const logContent = await readRunLogText(run);
+    const markedCommentIds = [
+      ...new Set(
+        [...logContent.matchAll(ISSUE_COMMENT_RUN_LOG_POST_MARKER)].map(
+          (match) => match[1]!.toLowerCase(),
+        ),
+      ),
+    ];
+    if (markedCommentIds.length === 0) return 0;
+
+    const runStartedAt = run.startedAt ?? run.createdAt;
+    const runAttributionEnd = new Date(
+      run.finishedAt.getTime() + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS,
+    );
+    const candidates = await db
+      .select({
+        id: issueComments.id,
+        authorUserId: issueComments.authorUserId,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, run.companyId),
+          inArray(issueComments.id, markedCommentIds),
+          isNull(issueComments.authorAgentId),
+          isNull(issueComments.createdByRunId),
+          isNull(issueComments.derivedAuthorAgentId),
+          isNotNull(issueComments.authorUserId),
+          gte(issueComments.createdAt, runStartedAt),
+          lte(issueComments.createdAt, runAttributionEnd),
+          exists(
+            db
+              .select({ id: activityLog.id })
+              .from(activityLog)
+              .where(
+                and(
+                  eq(activityLog.companyId, run.companyId),
+                  eq(activityLog.runId, run.runId),
+                  eq(activityLog.action, "issue.comment_added"),
+                  eq(activityLog.entityType, "issue"),
+                  sql`${activityLog.entityId} = ${issueComments.issueId}::text`,
+                  sql`${activityLog.details} ->> 'commentId' = ${issueComments.id}::text`,
+                ),
+              ),
+          ),
+        ),
+      );
+    if (candidates.length === 0) return 0;
+
+    const nonSentinelAuthorUserIds = [
+      ...new Set(
+        candidates
+          .map((comment) => comment.authorUserId)
+          .filter(
+            (id): id is string =>
+              !!id && !NON_HUMAN_SENTINEL_AUTHOR_USER_IDS.has(id),
+          ),
+      ),
+    ];
+    const genuineUserIds = nonSentinelAuthorUserIds.length
+      ? new Set(
+          (
+            await db
+              .select({ id: authUsers.id })
+              .from(authUsers)
+              .where(inArray(authUsers.id, nonSentinelAuthorUserIds))
+          ).map((row) => row.id),
+        )
+      : new Set<string>();
+    const eligibleCommentIds = candidates
+      .filter(
+        (comment) =>
+          NON_HUMAN_SENTINEL_AUTHOR_USER_IDS.has(comment.authorUserId!) ||
+          !genuineUserIds.has(comment.authorUserId!),
+      )
+      .map((comment) => comment.id);
+    if (eligibleCommentIds.length === 0) return 0;
+
+    const updatedCount = await db.transaction(async (tx) => {
+      const unlockedCommentIds = await tx
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(
+          and(
+            inArray(issueComments.id, eligibleCommentIds),
+            isNull(issueComments.authorAgentId),
+            isNull(issueComments.createdByRunId),
+            isNull(issueComments.derivedAuthorAgentId),
+          ),
+        )
+        .for("update", { skipLocked: true })
+        .then((rows) => rows.map((row) => row.id));
+      if (unlockedCommentIds.length === 0) return 0;
+
+      return tx
+        .update(issueComments)
+        .set({
+          derivedAuthorAgentId: run.agentId,
+          derivedCreatedByRunId: run.runId,
+          derivedAuthorSource: "run_log_comment_post",
+        })
+        .where(inArray(issueComments.id, unlockedCommentIds))
+        .returning({ id: issueComments.id })
+        .then((rows) => rows.length);
+    });
+    if (updatedCount < eligibleCommentIds.length) {
+      const retryDelay = ISSUE_COMMENT_RUN_LOG_PERSIST_RETRY_DELAYS_MS[retryAttempt];
+      if (retryDelay !== undefined) {
+        const retryTimer = setTimeout(() => {
+          void persistRunLogCommentAttribution(runId, retryAttempt + 1).catch(
+            (err) => {
+              logger.warn(
+                { err, runId, retryAttempt: retryAttempt + 1 },
+                "failed to retry run-log comment attribution persistence",
+              );
+            },
+          );
+        }, retryDelay);
+        retryTimer.unref?.();
+      } else {
+        logger.warn(
+          {
+            runId,
+            skippedCommentCount: eligibleCommentIds.length - updatedCount,
+          },
+          "run-log comment attribution remained locked after bounded retries",
+        );
+      }
+    }
+    return updatedCount;
   }
 
   async function isTreeHoldInteractionCheckoutAllowed(
@@ -11869,6 +11998,8 @@ export function issueService(db: Db) {
         .where(eq(labels.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),
+
+    persistRunLogCommentAttribution,
 
     listComments: async (
       issueId: string,
