@@ -306,7 +306,8 @@ export async function setupLiveFixtures(input: {
     },
   });
 
-  if (execution.environment.configurationKey === "warm-reuse-v1") {
+  if (execution.environment.configurationKey === "warm-reuse-v1"
+    || (execution.suite.id === "extended-harnesses" && execution.task.id === "file-edit-validate")) {
     registry.register<ProjectRecord>({
       id: "project",
       dependencies: ["company", "environment"],
@@ -316,9 +317,9 @@ export async function setupLiveFixtures(input: {
         return api.post<ProjectRecord>(
           `/api/companies/${company.id}/projects`,
           {
-            name: `Runner E2E warm project ${input.executionNonce}`,
+            name: `Runner E2E workspace project ${input.executionNonce}`,
             description:
-              "Ephemeral project anchoring a reusable Daytona execution workspace",
+              "Ephemeral project anchoring the fixture execution workspace and file copy-back",
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "shared_workspace",

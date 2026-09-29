@@ -66,6 +66,7 @@ export function buildNativeExecutionInput(input: {
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   acpxAgent?: NativeAcpxAgent;
   codexApprovalPolicy?: NativeCodexApprovalPolicy;
+  codexReasoningEffort?: string;
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   model?: string | null;
@@ -281,6 +282,7 @@ export function buildNativeExecutionInput(input: {
             kind: "codex",
             model: input.model ?? null,
             approvalPolicy: input.codexApprovalPolicy ?? "never",
+            ...(input.codexReasoningEffort ? { reasoningEffort: input.codexReasoningEffort } : {}),
           },
     completionContract: {
       id: input.completionContract.id,

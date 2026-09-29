@@ -282,6 +282,7 @@ Experimental Agent Chat presents one persistent task per person and agent as a s
 ### Implications
 
 - An agent's "inbox" is: tasks assigned to them + comments on tasks they're involved in
+- A human's Mine inbox and its badge include failed runs attributed to that human, not another user's runs. All retains company-wide failure visibility. Historical unattributed runs remain in the local single-user board's Mine view; see `SPEC-implementation.md` for the routing contract.
 - The CEO delegates by creating tasks assigned to the CTO
 - The CTO breaks those down into sub-tasks assigned to engineers
 - Discussion happens in task comments, not a side channel
@@ -413,6 +414,13 @@ Tasks use **single assignment** (one agent per task) with **atomic checkout**:
 3. If the task is already assigned to the requesting agent from a previous session, they can resume
 
 No optimistic locking or CRDTs needed. The single-assignment model + atomic checkout prevents conflicts at the design level.
+
+Agent @-mentions provide context without waking agents or changing task ownership. New work requires explicit assignment, delegation, or a review request; ordinary issue comments can still wake the current assignee.
+
+Releasing a terminal task clears execution locks while preserving its assigned
+owner and final status. Assignment remains part of the work history after Done
+or Cancelled. Releasing unfinished work still relinquishes the agent assignment;
+only an active `in_progress` task returns to `todo`.
 
 ### Human in the Loop
 
@@ -619,6 +627,18 @@ Agents cannot
 read or change these preferences. The legacy instance general setting is retained
 for API compatibility but no longer controls shortcut behavior in the app;
 users opt in individually after the upgrade.
+
+Managed agents own a persistent file directory across tasks and sessions. The
+Instructions Editor and stopped agent execution synchronize the same current
+files, including AGENTS.md and its supporting files. Task working directories and
+provider home directories remain separate concepts. Concurrent runs synchronize only
+the files they change, with the last sync winning for the same file. Temporary
+copies are cleaned up; this storage does not add a revision-history system. See
+[agent-files.md](agent-files.md) for lifecycle and upgrade compatibility.
+
+Full agent storage produces a run warning without stopping current or future
+work. Storage limits constrain saved file changes, not the agent's ability to run
+and remove files to recover space.
 
 ### Unsafe native workspace exports
 

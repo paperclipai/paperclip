@@ -633,23 +633,19 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(executedRunIds).toContain(retryRun!.id);
   });
 
-  it("defers a non-assignee run and executes its retry despite the assignee mismatch", async () => {
+  it("preserves a legacy accepted mention run through workspace retry", async () => {
     const fixture = await seedWorkspaceFixture();
 
-    // A comment-mention wake for an agent that is NOT the issue assignee —
-    // the interaction-wake shape that legitimately reaches adapter dispatch
-    // without assignee-ship.
-    const run = await heartbeat.invoke(
-      fixture.nonAssigneeAgentId,
-      "on_demand",
-      {
-        issueId: fixture.issueId,
-        wakeReason: "issue_comment_mentioned",
-        commentId: randomUUID(),
+    // Existing queued work can contain coalesced assignment or feedback.
+    // Only new mention requests are ignored; keep accepted work's rules.
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: fixture.companyId, agentId: fixture.nonAssigneeAgentId,
+      invocationSource: "on_demand", status: "queued", responsibleUserId: "responsible-user",
+      contextSnapshot: {
+        issueId: fixture.issueId, wakeReason: "issue_comment_mentioned", commentId: randomUUID(),
       },
-      "system",
-    );
-    expect(run).not.toBeNull();
+    }).returning();
+    await heartbeat.resumeQueuedRuns();
 
     const deferred = await waitForRunToLeaveActiveStates(run!.id);
     expect(deferred?.status).toBe("cancelled");

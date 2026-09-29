@@ -1,3 +1,4 @@
+import { isAcpxCanonicalInputMethod } from "../acpx/profile-extensions.js";
 import type { HarnessRuntimeRequest, PaperclipQuestionSet } from "../../contracts/harness-driver.js";
 import {
   CODEX_BLOCK_TOOL_NAME,
@@ -292,7 +293,7 @@ async function handleServerRequestBody(
       prompt: runtimeRequestPrompt(requestKind, request.params),
       details: record(redactCodexValue(boundedCodexValue(request.params))),
       ...(input !== null ? { input } : {}),
-      origin: request.method === "elicitation/create" ? {
+      origin: isAcpxCanonicalInputMethod(request.method) || request.method === "session/request_permission" ? {
         adapter: "acpx-runtime-sidecar",
         provider: text(record(request.params.origin).provider, "acpx"),
         method: request.method,

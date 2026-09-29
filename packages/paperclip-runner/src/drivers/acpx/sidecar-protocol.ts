@@ -46,6 +46,7 @@ export interface AcpxSidecarOpenParams {
   model: string;
   permissionMode: NativeAcpxPermissionMode;
   permissionModePinned: boolean;
+  providerPolicy?: { readOnly: boolean };
   systemInstructions: string;
   runtimeContext: NativeRuntimeContextSnapshot | null;
   tools: readonly Readonly<Record<string, unknown>>[];

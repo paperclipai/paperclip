@@ -11,6 +11,7 @@ import type {
   PaperclipQuestionSet,
 } from "@paperclipai/adapter-utils";
 import type { MentionOption } from "@/components/MarkdownEditor";
+import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -515,9 +516,14 @@ export function QuestionForm({
       }}
     >
       {questionSet.description ? (
-        <p className="mb-3 text-sm text-muted-foreground">
-          {questionSet.description}
-        </p>
+        <div
+          role="region"
+          aria-label="Question context"
+          tabIndex={0}
+          className="mb-3 max-h-96 overflow-auto text-sm text-muted-foreground"
+        >
+          <MarkdownBody mediaMode="reference" linkIssueReferences={false}>{questionSet.description}</MarkdownBody>
+        </div>
       ) : null}
       {question.answerMode === "text" ? (
         <div className="mb-2 flex items-center gap-3 text-xs text-muted-foreground">

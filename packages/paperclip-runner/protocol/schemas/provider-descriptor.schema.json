@@ -18,14 +18,15 @@
     "endpointQualifier": { "type": "string", "minLength": 1, "maxLength": 240 },
     "memoryId": { "type": "string", "minLength": 1, "maxLength": 240 },
     "eventExpiryDays": { "const": 90 },
-    "agent": { "enum": ["pi", "claude", "codex"] },
+    "agent": { "enum": ["pi", "claude", "codex", "cursor", "copilot"] },
     "requestedModel": { "type": "string", "minLength": 1, "maxLength": 240 },
     "acpProtocolVersion": { "const": 1 },
     "agentServerPackage": { "type": "string", "minLength": 1, "maxLength": 240 },
     "agentServerVersion": { "type": "string", "minLength": 1, "maxLength": 120 },
     "agentRuntimePackage": { "type": ["string", "null"], "maxLength": 240 },
     "agentRuntimeVersion": { "type": ["string", "null"], "maxLength": 120 },
-    "acpxRecordId": { "type": ["string", "null"], "maxLength": 240 }
+    "acpxRecordId": { "type": ["string", "null"], "maxLength": 240 },
+    "turnControls": { "$ref": "#/$defs/turnControls" }
   },
   "allOf": [
     {
@@ -96,5 +97,16 @@
       }
     }
   ],
+  "$defs": {
+    "turnControls": {
+      "type": "object",
+      "required": ["steering", "queuedFollowUp"],
+      "properties": {
+        "steering": { "type": "boolean" },
+        "queuedFollowUp": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
   "additionalProperties": false
 }

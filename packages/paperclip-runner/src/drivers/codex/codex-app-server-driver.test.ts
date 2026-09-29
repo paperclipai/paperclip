@@ -1436,6 +1436,18 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  it("sends the selected reasoning effort with the Codex turn", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], { model: "gpt-6-astra", reasoningEffort: "ultra" }).openSession({
+      runId: "run-effort",
+      normalizedSessionId: "session-effort",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    await session.startTurn({ message: { role: "user", text: "Continue" } });
+    expect(transport.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ effort: "ultra" });
+    await session.close({ reason: "test complete" });
+  });
+
   it("fails closed when the installed app-server does not confirm plan mode", async () => {
     const transport = new FakeCodexTransport();
     transport.confirmCollaborationMode = false;
@@ -1484,6 +1496,38 @@ describe("Codex app-server Codex driver", () => {
         workingDirectory: "/",
       }),
     ).rejects.toThrow("cannot be a filesystem root");
+  });
+
+  it("uses negotiated ACP controls through the Codex transport facade", async () => {
+    let controls = { steering: false, queuedFollowUp: false };
+    const transport = Object.assign(new FakeCodexTransport(), { turnControlCapabilities: () => ({ ...controls }) });
+    const session = await makeDriver([transport], {
+      driverIdentity: { kind: "acpx_runtime", displayName: "Pi ACP", version: "test" },
+      capabilities: { steering: false },
+    }).openSession({ runId: "run-pi", normalizedSessionId: "session-pi", workingDirectory: TEST_WORKING_DIRECTORY });
+    try {
+      expect(session.turnControlCapabilities?.()).toEqual(controls);
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+      await expect(session.steer?.({ turnId, message: { role: "user", text: "Change" } })).rejects.toThrow("not negotiated");
+      controls = { steering: true, queuedFollowUp: true };
+      expect(session.turnControlCapabilities?.()).toEqual(controls);
+      const input = { turnId, correlationId: "queued-1", mode: "follow_up" as const, message: { role: "user" as const, text: "Then validate" } };
+      await session.steer?.(input);
+      expect(transport.calls.find(call => call.method === "turn/steer")?.params).toMatchObject({ expectedTurnId: turnId, mode: "follow_up", correlationId: "queued-1" });
+      await expect(session.steer?.(input)).rejects.toThrow("already acknowledged");
+      expect(transport.calls.filter(call => call.method === "turn/steer")).toHaveLength(1);
+    } finally { await session.close({ reason: "verified" }); }
+  });
+
+  it("keeps native follow-up disabled for the Codex app-server driver", async () => {
+    const transport = Object.assign(new FakeCodexTransport(), { turnControlCapabilities: () => ({ steering: true, queuedFollowUp: true }) });
+    const session = await makeDriver([transport]).openSession({ runId: "run-codex", normalizedSessionId: "session-codex", workingDirectory: TEST_WORKING_DIRECTORY });
+    try {
+      expect(session.turnControlCapabilities?.()).toEqual({ steering: true, queuedFollowUp: false });
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+      await expect(session.steer?.({ turnId, mode: "follow_up", message: { role: "user", text: "Queue" } })).rejects.toThrow("not negotiated");
+      expect(transport.calls.filter(call => call.method === "turn/steer")).toHaveLength(0);
+    } finally { await session.close({ reason: "verified" }); }
   });
 
   it("steers and interrupts an active turn without replacing the session", async () => {

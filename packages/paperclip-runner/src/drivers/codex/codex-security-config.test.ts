@@ -12,6 +12,25 @@ import {
 } from "./codex-security-config.js";
 
 describe("Codex security configuration", () => {
+  it("allows only the registered private instruction directory while keeping shared context read-only", () => {
+    const args = createIsolatedCodexAppServerArgs({ HOME: "/host/home" }, ["/runtime/immutable-context"], "/runtime/instruction-edits/run-1").join("\n");
+    expect(args).toContain('"/runtime/instruction-edits/run-1"="write"');
+    expect(args).toContain('"/runtime/immutable-context"="read"');
+    expect(args).not.toContain('"/runtime"="write"');
+    expect(args).toContain('"/host/home"="none"');
+    expect(createIsolatedCodexAppServerArgs({ PAPERCLIP_INSTRUCTION_ROOT: "/host/home" }).join("\n"))
+      .not.toContain('"/host/home"="write"');
+  });
+
+  it("exposes AGENT_HOME only when it matches the controller-registered writable directory", () => {
+    const root = "/agent-files/run-1";
+    const registered = createIsolatedCodexAppServerArgs({ AGENT_HOME: root, HOME: "/provider" }, [], root).join("\n");
+    expect(registered).toContain('AGENT_HOME="/agent-files/run-1"');
+    expect(registered).toContain('"/provider"="none"');
+    expect(createIsolatedCodexAppServerArgs({ AGENT_HOME: "/arbitrary" }, [], root).join("\n")).not.toContain("AGENT_HOME");
+    expect(createIsolatedCodexAppServerArgs({ AGENT_HOME: root }).join("\n")).not.toContain("AGENT_HOME");
+  });
+
   it("makes the installed npm Codex native sandbox executable readable without exposing its parent workspace", () => {
     const command = evalProviderTransportOptions("codex").codexCommand!;
     const manifest = createRequire(command).resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`);

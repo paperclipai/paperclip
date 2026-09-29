@@ -97,6 +97,24 @@ const driver: HarnessDriver = {
 };
 
 describe("HarnessDriverBackend", () => {
+  it("refreshes negotiated controls after a warm handshake and separates follow-ups", async () => {
+    let controls = { steering: false, queuedFollowUp: false };
+    const steer = vi.fn(async () => {});
+    const session = Object.assign(new FakeHarnessSession(), { steer, turnControlCapabilities: () => ({ ...controls }) });
+    const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+    const opened = await backend.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    expect(await opened.capabilities()).toMatchObject({ steering: false, queuedFollowUp: false });
+    controls = { steering: false, queuedFollowUp: true };
+    expect(await opened.capabilities()).toMatchObject(controls);
+    expect(() => opened.steer!({ turnId: "turn-1", message: { role: "user", text: "steer" }, correlationId: "c-1" })).toThrow();
+    await opened.steer!({ turnId: "turn-1", message: { role: "user", text: "follow" }, correlationId: "c-2", mode: "follow_up" });
+    expect(steer).toHaveBeenCalledWith(expect.objectContaining({ mode: "follow_up" }));
+    controls = { steering: true, queuedFollowUp: false };
+    expect(await opened.capabilities()).toMatchObject(controls);
+    expect(() => opened.steer!({ turnId: "turn-1", message: { role: "user", text: "follow" }, correlationId: "c-3", mode: "follow_up" })).toThrow();
+  });
   it.each([false, true])("honors driver steering support even when the transport exposes a steer method (%s)", async supported => {
     const steer = vi.fn(async () => { throw new Error("provider does not support steering"); });
     const session = Object.assign(new FakeHarnessSession(), { steer });

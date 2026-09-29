@@ -573,7 +573,9 @@ function parseQuestionSet(value: unknown): PaperclipQuestionSet | null {
   return {
     schema: "paperclip.question_set.v1",
     ...(nullableText(input.title) ? { title: text(input.title).slice(0, 1_000) } : {}),
-    ...(nullableText(input.description) ? { description: text(input.description).slice(0, 4_000) } : {}),
+    // Native plan decisions bind to the complete canonical question context.
+    // The event boundary rejects oversized context rather than approving a slice.
+    ...(nullableText(input.description) ? { description: text(input.description) } : {}),
     ...(nullableText(input.submitLabel) ? { submitLabel: text(input.submitLabel).slice(0, 200) } : {}),
     questions,
   };
@@ -703,6 +705,11 @@ function parsePrpEvent(
     return entry ? [entry] : [{ kind: "system", ts, text: "Runner: Ignored an unsafe workspace file reference" }];
   }
   if (eventType.startsWith("runtime_request.")) {
+    const request = record(payload.request ?? payload);
+    const input = record(request.input);
+    if (typeof input.description === "string" && input.description.length > 100_000) {
+      return [{ kind: "system", ts, text: "Runner: Cannot display this input request because its complete context exceeds 100,000 characters. No decision can be submitted from this request." }];
+    }
     const entry = runtimeRequestEntry(eventType, payload, event, ts, state);
     return entry ? [entry] : [];
   }

@@ -28,6 +28,7 @@ export interface NativeSessionCapabilities {
   typedEvents: boolean;
   typedEventFamilies?: TypedEventFamilyCapability[];
   steering: boolean;
+  queuedFollowUp?: boolean;
   interruption: boolean;
   structuredResult: boolean;
   read?: boolean;
@@ -47,3 +48,9 @@ export interface NativeUserMessage {
   text: string;
 }
 import type { TypedEventFamilyCapability } from "../provider-events.js";
+
+/** Live provider handshake; queued follow-up is distinct from active steering. */
+export interface NativeTurnControlCapabilities {
+  steering: boolean;
+  queuedFollowUp: boolean;
+}

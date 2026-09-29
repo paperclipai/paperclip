@@ -608,3 +608,72 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
         assert!(!input.to_string().contains("actual-credential"));
     }
 }
+
+#[test]
+fn terminal_requests_expire_with_their_projected_identity_before_terminal_and_never_replay() {
+    for status in ["failed", "cancelled", "interrupted", "completed"] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        let long_id = format!("input-{}", "x".repeat(200));
+        let input = state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeInputRequested, Some("turn-1"),
+            json!({"requestId":long_id,"questionSet":question_set(),"origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/create_plan"}}))).unwrap();
+        state.accept_event(&event(2, GeneratedAcpxSidecarEventType::RuntimePermissionRequested, Some("turn-1"),
+            json!({"requestId":"permission-1","title":"Run validation","choices":[{"key":"cancel","label":"Cancel"}]}))).unwrap();
+        let context = AcpxEventProjectionContext {
+            run_id: "run-1".into(),
+            normalized_session_id: "session-1".into(),
+            turn_id: "turn-1".into(),
+            provider_turn_id: Some("turn-1".into()),
+            item_id: "item-1".into(),
+        };
+        let created = project_acpx_state_event(&context, &input[0]).unwrap();
+        let projected_id = created[0].payload["request"]["requestId"].clone();
+        let terminal = state
+            .accept_event(&event(
+                3,
+                GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                Some("turn-1"),
+                json!({"status":status}),
+            ))
+            .unwrap();
+        let projected: Vec<_> = terminal
+            .iter()
+            .flat_map(|event| project_acpx_state_event(&context, event).unwrap())
+            .collect();
+        assert_eq!(projected.len(), 3);
+        assert_eq!(projected[0].payload["requestId"], "permission-1");
+        assert_eq!(projected[1].payload["requestId"], projected_id);
+        assert_eq!(projected[1].payload["request"]["input"], question_set());
+        assert_eq!(
+            projected[1].payload["request"]["origin"]["method"],
+            "cursor/create_plan"
+        );
+        for ended in &projected[..2] {
+            assert_eq!(ended.payload["replayAllowed"], false);
+            assert_eq!(
+                ended.event_type,
+                if matches!(status, "cancelled" | "interrupted") {
+                    "runtime_request.cancelled"
+                } else {
+                    "runtime_request.expired"
+                }
+            );
+        }
+        assert!(projected[2].event_type.starts_with("turn."));
+        assert!(state
+            .pending_question_set(projected_id.as_str().unwrap())
+            .is_none());
+        assert!(state.complete_permission("permission-1").is_err());
+        assert!(state
+            .complete_input(projected_id.as_str().unwrap())
+            .is_err());
+        assert!(state
+            .accept_event(&event(
+                4,
+                GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                Some("turn-1"),
+                json!({"status":status})
+            ))
+            .is_err());
+    }
+}

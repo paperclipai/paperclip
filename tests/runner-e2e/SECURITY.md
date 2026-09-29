@@ -278,3 +278,17 @@ specific process signal, never a name-based or machine-wide process kill.
 The bounded fixture command is released even on failure; normal instance cleanup
 still owns all disposable processes and files. No credentials enter the prompt,
 fault metadata, or structured grading fixtures.
+
+### Candidate ACP qualification
+
+The explicit-only `extended-harnesses` launcher removes ambient candidate
+admission, then authorizes only selected candidate/model pairs in its isolated
+server process. The server never reads admission from agent configuration,
+resolved credential bindings, or provider environment. Invalid, duplicate and
+mismatched authorization fails closed. Verified packaging and normal company
+and tool governance still apply. `CURSOR_AUTH_TOKEN` and
+`COPILOT_GITHUB_TOKEN` enter via encrypted company secret references, and all
+Cursor, Copilot, GitHub and GH environment variables are stripped from the
+server environment. GitHub PAT shapes are included in retained-evidence scans.
+Candidates have no automatic infrastructure retries; spending must be reconciled
+before a deliberate repeat.
