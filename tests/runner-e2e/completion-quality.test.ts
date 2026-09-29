@@ -11,6 +11,20 @@ describe("completion semantic qualification", () => {
     expect(request.text.format.schema.properties.criteria.items.properties.evidenceIds.items.enum)
       .toEqual(["task", "doc", "reply"]);
   });
+  it("includes only observed, same-reply links to known task results", () => {
+    const o = { ...observation, worker: { ...observation.worker, identifier: "GARDEN-2" }, renderedLinks: [
+      { commentId: "reply", href: "/GARDEN/issues/GARDEN-2?private-query=ignored" },
+      { commentId: "reply", href: "/GARDEN/issues/GARDEN-2" },
+      { commentId: "other-reply", href: "/issues/task" },
+      { commentId: "reply", href: "/issues/foreign" },
+      { commentId: "reply", href: "https://external.invalid/issues/task" },
+      { commentId: "reply", href: "//external.invalid/issues/task" },
+      { commentId: "reply", href: "/%invalid/issues/task" },
+    ] };
+    const evidence = JSON.parse(completionQualityRequest(o).input);
+    expect(evidence.replies[0].renderedResultLinks).toEqual([{ taskId: "task", href: "/GARDEN/issues/GARDEN-2" }]);
+    expect(JSON.parse(completionQualityRequest(observation).input).replies[0].renderedResultLinks).toEqual([]);
+  });
   it("preserves a failure even when the other criteria pass", () => {
     expect(validateCompletionQuality({ criteria, reports }, observation).passed).toBe(true);
     expect(validateCompletionQuality({ reports, criteria: criteria.map((c, i) => ({ ...c, passed: i !== 0 })) }, observation).passed).toBe(false);
@@ -101,7 +115,7 @@ describe("completion semantic qualification", () => {
     const controls = completionQualityControls(observation);
     expect(controls.map(c => [c.name, c.expectedPass])).toEqual([["accurate", true], ["stale", false], ["unsupported", false], ["corrected", true],
       ["duplicate", false], ["redundant-acknowledgement", false], ["distinct-tasks", true],
-      ["pending-then-joint", true], ["joint-then-repeated", false], ["supported-content-check", true], ["unsupported-content-check", false], ["completion-then-result", true], ["completion-then-result-then-repeat", false], ["recap-with-new-result", true]]);
+      ["pending-then-joint", true], ["joint-then-repeated", false], ["supported-content-check", true], ["unsupported-content-check", false], ["rendered-task-link", true], ["unlinked-status-only", false], ["completion-then-result", true], ["completion-then-result-then-repeat", false], ["recap-with-new-result", true]]);
     expect(controls[3].observation.comments).toHaveLength(2);
     expect(controls[4].observation.comments[0].body).not.toBe(controls[4].observation.comments[1].body);
     const distinct = JSON.parse(completionQualityRequest(controls[6].observation).input);
