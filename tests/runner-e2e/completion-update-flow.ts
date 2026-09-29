@@ -4,6 +4,7 @@ import path from "node:path";
 import { resolveManagedProjectWorkspaceDir, resolveDefaultAgentWorkspaceDir } from "../../server/src/home-paths.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { sendChatMessage, readChatOutputDocument, collectChatRunEvidence, type ChatFlowInput, type ChatRun } from "./chat-flow.js";
+import { arm as armDocumentGate, clear as clearDocumentGate, release as releaseDocumentGate, waitUntilHeld } from "./context-comment-gate.js";
 import { prepareChatBrief } from "./chat-stories.js";
 import { completionDelivery, completionOutputUsesReleasedBrief, type CompletionObservation } from "./completion-updates.js";
 
@@ -130,7 +131,6 @@ export async function runChatCompletionUpdate(context: {
   const restart = execution.task.id === "handoff-completion-restart";
   const taskCount = multiple ? 2 : 1;
   const userMessages: string[] = [];
-  const replyWait = busy ? await prepareChatBrief(resolveDefaultAgentWorkspaceDir(f.agent.id), `${input.nonce}-reply`, 240_000) : null;
   const completionWait = restart ? await prepareChatBrief(resolveDefaultAgentWorkspaceDir(f.agent.id), `${input.nonce}-completion`, 240_000) : null;
   if (completionWait) {
     const instruction = `For automatic delegated-work completion updates, first run node ${completionWait.scriptPath} and read the organizer's reference before posting your final reply. Do not run this script for the initial task handoff or other user messages. Reading this reference does not authorize additional tasks or changes to the completed work.`;
@@ -176,13 +176,18 @@ export async function runChatCompletionUpdate(context: {
     await input.evidence("completion-update-boundary.json", { task, source: await api.get(`/api/issues/${context.issue().id}`), runs: await context.allRuns(), gateReady: true, prompt, reference });
     await input.capture("completion-idle", "Chat is idle while Riley waits for the brief", "completion-idle.png");
     let busyRun: ChatRun | undefined;
-    if (replyWait) {
-      const busyPrompt = `A separate question while Riley works: run node ${replyWait.scriptPath} to read my supplied reference, then acknowledge that reference here. Wait for the command to finish; if your tool starts it as a background job, poll that job until it returns the reference. Keep this turn open and do not send a final reply before reading the supplied reference. This is discussion only; do not create tasks or projects.`;
+    if (busy) {
+      await clearDocumentGate(context.issue().id);
+      await armDocumentGate(context.issue().id);
+      const busyPrompt = `A separate request while Riley works: save a Paperclip document on this conversation with key brief-reference, title Conversation reference, and body REFERENCE${marker}. Once the save succeeds, acknowledge that reference here. Keep this in the current conversation; do not create tasks or projects.`;
       userMessages.push(busyPrompt);
       await sendChatMessage(page, busyPrompt);
-      await pollUntil({ label: "source reply is running at its brief gate", deadlineAt: Date.now() + 120_000, intervalMs: 1000,
-        load: async () => { busyRun = (await context.allRuns()).find(r => r.contextSnapshot?.issueId === context.issue().id && r.status === "running");
-          return Boolean(busyRun) && await readFile(replyWait.ready, "utf8").catch(() => "") === "waiting"; }, accept: Boolean });
+      await waitUntilHeld(context.issue().id, Date.now() + 120_000);
+      busyRun = (await context.allRuns()).find(r => r.contextSnapshot?.issueId === context.issue().id && r.status === "running");
+      expect(busyRun, "source provider must be awaiting its committed document response").toBeTruthy();
+      const reference = await api.get<Row>(`/api/issues/${context.issue().id}/documents/brief-reference`);
+      expect(reference.body).toBe(`REFERENCE${marker}`);
+      await input.evidence("completion-busy-document-gate.json", { sourceRun: busyRun, document: reference, responseHeld: true });
     }
     await writeFile(wait.gate, brief);
     await pollUntil({ label: "delegated welcome note completed", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
@@ -206,7 +211,7 @@ export async function runChatCompletionUpdate(context: {
           ["deferred_issue_execution", "queued"].includes(w.status)) });
       expect((await context.allRuns()).find(r => r.id === busyRun!.id)?.status).toBe("running");
       await input.evidence("completion-busy-queued-wake.json", wakeBoundary);
-      await writeFile(replyWait!.gate, `REFERENCE${marker}`);
+      await releaseDocumentGate(context.issue().id);
     }
     if (restart) {
       const reportingRun = await pollUntil({ label: "completion reply is waiting at its reference gate before publication", deadlineAt: Date.now() + 120_000, intervalMs: 1000,
@@ -228,7 +233,7 @@ export async function runChatCompletionUpdate(context: {
       await pollUntil({ label: "delegated note completed", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
         load: () => api.get<Row>(`/api/issues/${item.id}`), accept: t => t.status === "done" });
       await observeCompletionUpdate({ ...input, sourceId: context.issue().id, workerId: item.id, marker, allRuns: context.allRuns,
-        fixtureRequest: `${prompt}\nOrganizer's brief: ${brief}`,
+        fixtureRequest: `${userMessages.join("\n\n")}\nOrganizer's brief: ${brief}`,
         relatedWorkerIds: delegated.filter(other => other.id !== item.id).map(other => other.id),
         evidence: (name, data) => input.evidence(multiple ? `${index}-${name}` : name, data) });
       const output = await readChatOutputDocument(api, item.id, marker);
@@ -248,7 +253,7 @@ export async function runChatCompletionUpdate(context: {
     }
   } finally {
     await writeFile(wait.gate, `Reference: ${reference}`);
-    if (replyWait) await writeFile(replyWait.gate, `REFERENCE${marker}`);
+    if (busy) await releaseDocumentGate(context.issue().id);
     if (completionWait) await writeFile(completionWait.gate, "The organizer is ready to receive the saved result.");
     await context.refreshIssue();
   }
