@@ -201,3 +201,9 @@ Earlier drafts listed two concurrency keys, `concurrentSyncAndExec` and
 read either key, so a declaration had no effect. The host removed both keys. The
 strict capability validator now rejects them as unknown keys. The host can
 reintroduce a concurrency capability when a runtime path enforces it.
+
+### Preserving an unexported workspace
+
+Native export recovery requires the separately discovered `environmentStopLease` RPC (`onEnvironmentStopLease`). It stops the exact allocation and preserves files regardless of its normal release policy. A failed or unconfirmed stop must throw and must never fall back to deletion. The host uses the recorded plugin ID and defers when that worker does not advertise the hook; a generic release method is insufficient evidence of stop-only support. Normal successful ephemeral release remains destructive after verified copyback.
+
+Daytona stop-only preservation disables provider auto-delete and refreshes the provider record to confirm the disabled policy before stopping. An unavailable or unconfirmed policy leaves cleanup pending; it never falls back to stop or delete. The original ephemeral destroy policy applies only after exact accepted-result copyback and commitment.

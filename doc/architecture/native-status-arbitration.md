@@ -214,7 +214,10 @@ commit, and retryable or terminal failure.
 
 Examples:
 
-- a workspace-finalization failure preserves the claim and records a retryable
+- an unsafe workspace archive triggers one automatic export of confined entries,
+  omitting unsafe links; if it remains unsafe, discard the export and settle the saved
+  result with an informational run-log entry and no task warning or repair action;
+- other workspace-finalization failures preserve the claim and record a retryable
   error rather than falsely completing the issue;
 - a failed provider run preserves partial evidence and schedules recovery;
 - a status-version race causes bounded reassessment against current issue

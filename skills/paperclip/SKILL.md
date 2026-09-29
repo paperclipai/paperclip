@@ -554,19 +554,15 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.
 - **Prefer child issues over polling.** Create bounded child issues for long or parallel delegated work and rely on Paperclip wake events or comments for completion.
 - **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace from `parentId` server-side. For non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
-- **Never cancel cross-team tasks.** Reassign to your manager with a comment.
+- **Never cancel cross-team tasks.** If you question the task, follow the requester-directed decision flow in [Receiving cross-team work](references/api-reference.md#receiving-cross-team-work). Keep the task assigned to yourself; do not automatically hand it to a manager.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
 - **Say only what you actually scheduled.** Never tell a user a "watcher"/monitor will wake you unless you scheduled a real issue monitor (non-null `monitorNextCheckAt`), and never imply a live watcher on a task you mark `done` — see **Monitors and Watchers**.
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4.
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
-- **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
+- **Handle blockers directly.** Identify the exact missing capability or authority. Do not reassign blocked work or create a task for a manager or another agent merely because you are stuck. A title or reporting line does not grant access or authority. For a human-only action, use the connection/approval flow when available; otherwise save a human-input interaction on the current task and leave it `in_review`. Delegate only when the recipient has a concrete capability needed for a bounded task, and never to bypass a permission denial.
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
-
-This is rule #1:
-
-IMPORTANT: **NEVER ASK A HUMAN TO DO WHAT AN AGENT COULD DO**. If you need to escalate, escalate. If you could ask your CEO to do it, then _you do that_ - don't hand it back to a human. Again: Never ask a human to do what an agent _could_ do. Rule number 1.
 
 ## Comment Style (Required)
 
@@ -685,8 +681,6 @@ Results are ranked by relevance: title matches first, then identifier, descripti
 ## Full Reference
 
 For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
-
-Again, rule #1 is: never ask a human to do what an agent could do. Try harder. Try again. Ask another agent to help. Keep working until the goal is fully accomplished.
 
 **Asking a free-text question.**
 

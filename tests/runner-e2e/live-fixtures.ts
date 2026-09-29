@@ -1,6 +1,7 @@
 import path from "node:path";
 import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
+import { stageGrokSubscriptionFixture } from "./grok-subscription-fixture.js";
 import type { RunnerApi } from "./api.js";
 import type {
   CredentialName,
@@ -150,6 +151,7 @@ export async function setupLiveFixtures(input: {
       const company = value<CompanyRecord>(resolved, "company");
       const refs: SecretReferenceMap = {};
       for (const credentialName of execution.requiredCredentials) {
+        if (credentialName === "GROK_AUTH_JSON") continue;
         const rawValue = input.credentials[credentialName];
         if (!rawValue) throw new Error(`Missing credential ${credentialName}`);
         const secret = await api.postSensitive<SecretRecord>(
@@ -171,11 +173,29 @@ export async function setupLiveFixtures(input: {
     },
   });
 
+  const grokSubscription = execution.profile.credential === "GROK_AUTH_JSON";
+  if (grokSubscription) {
+    registry.register<() => Promise<void>>({
+      id: "subscription-login",
+      dependencies: ["company"],
+      async setup(resolved) {
+        const raw = input.credentials.GROK_AUTH_JSON;
+        if (!raw) throw new Error("Missing credential GROK_AUTH_JSON");
+        return stageGrokSubscriptionFixture({
+          raw, companyId: value<CompanyRecord>(resolved, "company").id,
+          environment: process.env,
+        });
+      },
+      async teardown(remove) { await remove(); },
+    });
+  }
+
   registry.register<EnvironmentRecord>({
     id: "environment",
     dependencies: [
       "company",
       "secrets",
+      ...(grokSubscription ? ["subscription-login"] : []),
       ...(execution.environment.id === "daytona" ? ["sandbox-provider"] : []),
     ],
     async setup(resolved) {
@@ -252,6 +272,7 @@ export async function setupLiveFixtures(input: {
       "company",
       "secrets",
       "environment",
+      ...(grokSubscription ? ["subscription-login"] : []),
       ...(managedHiring ? ["ai-connection"] : []),
     ],
     async setup(resolved) {

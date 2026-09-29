@@ -231,6 +231,7 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_TIMEOUT_MS = 3_000;
 export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS =
   ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -6542,6 +6543,76 @@ async function countBlockedInboxIssues(
   }, 0);
 }
 
+export async function readIssueCommentRunLogText(run: {
+  runId?: string | null;
+  logStore: string | null;
+  logRef: string | null;
+  logBytes: number | null;
+}) {
+  if (run.logStore !== "local_file" || !run.logRef) return "";
+  // A timed-out finalization leaves size unknown even when earlier entries
+  // exist. Read those logs within the same byte budget as a known-size log.
+  if (run.logBytes !== null && (!Number.isFinite(run.logBytes) || run.logBytes <= 0)) return "";
+
+  const logRef = run.logRef;
+  const store = getRunLogStore();
+  let offset = 0;
+  let content = "";
+  let nextOffset: number | undefined = 0;
+  const controller = new AbortController();
+  let readTimer: NodeJS.Timeout | undefined;
+
+  const readChunks = async () => {
+    while (nextOffset !== undefined) {
+      controller.signal.throwIfAborted();
+      const remainingBytes =
+        ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES -
+        Buffer.byteLength(content, "utf8");
+      if (remainingBytes <= 0) break;
+      const chunk = await store.read(
+        { store: "local_file", logRef },
+        {
+          offset,
+          limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
+          signal: controller.signal,
+        },
+      );
+      controller.signal.throwIfAborted();
+      content += chunk.content;
+      nextOffset = chunk.nextOffset;
+      offset = chunk.nextOffset ?? 0;
+    }
+  };
+
+  try {
+    await Promise.race([
+      readChunks(),
+      new Promise<never>((_resolve, reject) => {
+        readTimer = setTimeout(() => {
+          const reason = new DOMException("Attribution log read timed out", "TimeoutError");
+          // Cancellation closes storage work where supported, but filesystem
+          // I/O can delay stream destruction. Keep the response deadline too.
+          reject(reason);
+          controller.abort(reason);
+        }, ISSUE_COMMENT_RUN_LOG_DERIVATION_TIMEOUT_MS);
+        readTimer.unref?.();
+      }),
+    ]);
+  } catch (err) {
+    // Attribution enriches already-authorized comments. Missing, failed, or
+    // stalled storage must not prevent listing them; keep any evidence read.
+    // Do not log raw provider errors, which can contain credentialed URLs.
+    logger.warn(
+      { runId: run.runId ?? undefined, logRef, status: err instanceof HttpError ? err.status : undefined },
+      "could not read heartbeat run log while deriving optional issue comment metadata",
+    );
+  } finally {
+    clearTimeout(readTimer);
+  }
+
+  return content;
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -6760,54 +6831,6 @@ export function issueService(db: Db) {
     };
   }
 
-  async function readRunLogText(run: {
-    runId?: string | null;
-    logStore: string | null;
-    logRef: string | null;
-    logBytes: number | null;
-  }) {
-    if (run.logStore !== "local_file" || !run.logRef) return "";
-    const logBytes = Number(run.logBytes ?? 0);
-    if (!Number.isFinite(logBytes) || logBytes <= 0) return "";
-
-    const store = getRunLogStore();
-    let offset = 0;
-    let content = "";
-    let nextOffset: number | undefined = 0;
-
-    try {
-      while (nextOffset !== undefined) {
-        const remainingBytes =
-          ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES -
-          Buffer.byteLength(content, "utf8");
-        if (remainingBytes <= 0) break;
-        const chunk = await store.read(
-          { store: "local_file", logRef: run.logRef },
-          {
-            offset,
-            limitBytes: Math.min(
-              ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES,
-              remainingBytes,
-            ),
-          },
-        );
-        content += chunk.content;
-        nextOffset = chunk.nextOffset;
-        offset = chunk.nextOffset ?? 0;
-      }
-    } catch (err) {
-      if (err instanceof HttpError && err.status === 404) {
-        logger.warn(
-          { err, runId: run.runId ?? undefined, logRef: run.logRef },
-          "missing heartbeat run log while deriving issue comment metadata",
-        );
-        return content;
-      }
-      throw err;
-    }
-
-    return content;
-  }
 
   // Persist a resolved attribution so subsequent reads stop re-scanning run
   // logs (and old "Board" threads stay fixed durably). Best-effort: a write
@@ -7027,7 +7050,7 @@ export function issueService(db: Db) {
           );
           await Promise.all(
             batch.map(async (run) => {
-              logByRunId.set(run.runId, await readRunLogText(run));
+              logByRunId.set(run.runId, await readIssueCommentRunLogText(run));
             }),
           );
         }
@@ -12116,14 +12139,15 @@ export function issueService(db: Db) {
           ? retryNativeChatReviewPresentation(append)
           : append();
       }
-      // Callers supplying a transaction still share the settlement fence.
-      if (actor.userId && dbOrTx !== db) {
-        await dbOrTx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
-      }
-      const issue = await dbOrTx
+      // The query below locks human comments on caller-owned transactions too,
+      // sharing the fence with both question creation and Slack settlement.
+      const issueQuery = dbOrTx
         .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
         .from(issues)
-        .where(eq(issues.id, issueId))
+        .where(eq(issues.id, issueId));
+      // Caller-owned transactions (including chat and review comments) must
+      // serialize with question creation before inserting the human comment.
+      const issue = await (actor.userId ? issueQuery.for("update") : issueQuery)
         .then((rows: Array<{ companyId: string; conversationAgentId: string | null }>) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
@@ -12164,6 +12188,16 @@ export function issueService(db: Db) {
         .nullable()
         .parse(options?.presentation ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      const validCreatedAt =
+        createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : null;
+      // Use one statement timestamp for both columns when the caller did not
+      // supply a valid historical timestamp. This keeps the comment's
+      // recency fields equal even when the surrounding transaction started
+      // earlier, while preserving imported timestamps and the normal default
+      // updatedAt behavior for those historical rows.
+      const currentInsertTimestamp = validCreatedAt
+        ? null
+        : sql`statement_timestamp()`;
       // Invalid/stale run ids must not 500 the insert — null out unknowns.
       const createdByRun = await resolveCommentCreatedByRun(
         dbOrTx,
@@ -12369,8 +12403,9 @@ export function issueService(db: Db) {
             presentation,
             metadata,
             sourceTrust: options?.sourceTrust ?? null,
-            ...(createdAt && !Number.isNaN(createdAt.getTime())
-              ? { createdAt }
+            createdAt: validCreatedAt ?? currentInsertTimestamp!,
+            ...(currentInsertTimestamp
+              ? { updatedAt: currentInsertTimestamp }
               : {}),
           })
           .returning();

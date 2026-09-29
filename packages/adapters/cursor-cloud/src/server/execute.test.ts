@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute } from "./execute.js";
 
 type MockRunOptions = {
@@ -166,6 +167,19 @@ describe("cursor_cloud execute", () => {
     expect(prompt).toContain(custom ? "Do the work for" : "Continue your Paperclip conversation");
     expect(prompt).not.toContain("Execution contract:");
     expect(prompt).not.toContain("Create child issues");
+  });
+
+  it("sends assignment context on an ordinary cloud task turn", async () => {
+    const sdkAgent = createMockSdkAgent();
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext({ context: createPromptContextFixture() });
+    delete ctx.config.promptTemplate;
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    const prompt = String(sdkAgent.send.mock.calls[0]?.[0]);
+    expect(prompt).toContain("## Owned assignment");
+    expect(prompt.indexOf("Append the same ledger entry.")).toBeLessThan(prompt.indexOf("Change the final scope to the launch checklist."));
+    expect(prompt.split("Append the same ledger entry.")).toHaveLength(3);
   });
 
   it("delivers a large wake through the SDK prompt without a configured JSON env copy", async () => {

@@ -26,6 +26,8 @@ export type CloudInstanceHealthStatus = {
 export type HealthStatus = {
   status: "ok";
   version?: string;
+  /** Commit of the running server; null when build metadata is unavailable. */
+  commit?: string | null;
   deploymentMode?: "local_trusted" | "authenticated";
   deploymentExposure?: "private" | "public";
   localAiLoginSupported?: boolean;

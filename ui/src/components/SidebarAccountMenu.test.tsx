@@ -19,6 +19,7 @@ const mockAuthApi = vi.hoisted(() => ({
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
+const mockHealthApi = vi.hoisted(() => ({ get: vi.fn() }));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
@@ -26,6 +27,8 @@ const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
+
+vi.mock("@/api/health", () => ({ healthApi: mockHealthApi }));
 
 vi.mock("@/lib/browserNavigation", () => ({
   navigateTopLevel: mockNavigateTopLevel,
@@ -100,6 +103,124 @@ describe("SidebarAccountMenu", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  describe.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("staging commit (%#)", (AccountMenu) => {
+    const commit = "8751e2de4626ff5e7355fe28b30509991cfff920";
+
+    it.each([
+      ["paperclip.staging.paperclip.app", true],
+      ["another.staging.paperclip.app", true],
+      ["paperclip.paperclip.app", false],
+      ["localhost", false],
+      ["paperclip.staging.paperclip.app.example.com", false],
+    ])("shows the running SHA only on staging: %s", async (hostname, visible) => {
+      vi.stubGlobal("location", new URL(`https://${hostname}`));
+      mockHealthApi.get.mockResolvedValue({ status: "ok", commit });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      // Production must stay hidden even if the shared cache contains a commit.
+      queryClient.setQueryData(queryKeys.health, { status: "ok", commit });
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <TooltipProvider><AccountMenu open /></TooltipProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+
+      const label = document.body.querySelector(`a[title="${commit}"]`);
+      expect(Boolean(label)).toBe(visible);
+      if (visible) {
+        expect(label?.textContent).toBe("SHA 8751e2d");
+        expect(label?.previousElementSibling?.textContent).toBe("jane@example.com");
+        expect(label?.getAttribute("href")).toBe(`https://github.com/paperclipai/paperclip/commit/${commit}`);
+        expect(label?.getAttribute("aria-label")).toBe(`View commit ${commit} on GitHub`);
+        expect(mockHealthApi.get).toHaveBeenCalledOnce();
+      } else {
+        expect(mockHealthApi.get).not.toHaveBeenCalled();
+      }
+      await act(() => root.unmount());
+      queryClient.clear();
+    });
+
+    it("refreshes the running SHA each time the staging menu opens", async () => {
+      vi.stubGlobal("location", new URL("https://paperclip.staging.paperclip.app"));
+      const nextCommit = "3447609d2247e75e55d91493dda91a608364f672";
+      mockHealthApi.get
+        .mockResolvedValueOnce({ status: "ok", commit })
+        .mockResolvedValueOnce({ status: "ok", commit: nextCommit });
+      const queryClient = new QueryClient();
+      const root = createRoot(container);
+      const renderMenu = async (open: boolean) => {
+        await act(() => {
+          root.render(
+            <QueryClientProvider client={queryClient}>
+              <TooltipProvider><AccountMenu open={open} /></TooltipProvider>
+            </QueryClientProvider>,
+          );
+        });
+        await flushReact();
+      };
+
+      await renderMenu(false);
+      expect(mockHealthApi.get).not.toHaveBeenCalled();
+      await renderMenu(true);
+      expect(document.body.textContent).toContain("SHA 8751e2d");
+      await renderMenu(false);
+      await renderMenu(true);
+      expect(document.body.textContent).toContain("SHA 3447609");
+      expect(document.body.textContent).not.toContain("SHA 8751e2d");
+      expect(mockHealthApi.get).toHaveBeenCalledTimes(2);
+      await act(() => root.unmount());
+      queryClient.clear();
+    });
+
+    it("does not change the board health state when a menu refresh fails", async () => {
+      vi.stubGlobal("location", new URL("https://paperclip.staging.paperclip.app"));
+      mockHealthApi.get.mockRejectedValueOnce(new Error("Deploy in progress"));
+      const queryClient = new QueryClient();
+      const boardHealth = { status: "ok", commit };
+      queryClient.setQueryData(queryKeys.health, boardHealth);
+      queryClient.setQueryData(queryKeys.stagingCommit, boardHealth);
+      const root = createRoot(container);
+      await act(() => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <TooltipProvider><AccountMenu open /></TooltipProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+
+      expect(mockHealthApi.get).toHaveBeenCalledOnce();
+      expect(queryClient.getQueryState(queryKeys.stagingCommit)?.status).toBe("error");
+      expect(queryClient.getQueryState(queryKeys.health)?.status).toBe("success");
+      expect(queryClient.getQueryData(queryKeys.health)).toEqual(boardHealth);
+      expect(document.body.textContent).not.toContain("SHA ");
+      await act(() => root.unmount());
+      queryClient.clear();
+    });
+
+    it.each([null, undefined])("omits unavailable commit metadata (%s)", async (commit) => {
+      vi.stubGlobal("location", new URL("https://paperclip.staging.paperclip.app"));
+      mockHealthApi.get.mockResolvedValue({ status: "ok", commit });
+      const queryClient = new QueryClient();
+      const root = createRoot(container);
+      await act(() => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <TooltipProvider><AccountMenu open /></TooltipProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      expect(document.body.textContent).not.toContain("SHA ");
+      await act(() => root.unmount());
+      queryClient.clear();
+    });
   });
 
   it("shares the nav background without separator borders", async () => {

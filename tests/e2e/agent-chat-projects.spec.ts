@@ -246,11 +246,8 @@ for (const mode of ["Ask", "Plan"])
     const f = await setup(request);
     try {
       await page.goto(f.route);
-      await page.getByTestId("task-chat-composer-mode").click();
-      await page
-        .getByTestId("task-chat-composer-mode-menu")
-        .getByText(`${mode} mode`, { exact: true })
-        .click();
+      await page.getByTestId("task-chat-composer-add").click();
+      await page.getByTestId(mode === "Plan" ? "composer-add-plan" : "composer-add-ask").click();
       await send(page, { action: "project", name: "Forbidden mutation" });
       await idle(request, f.chatPath);
       expect(
@@ -387,11 +384,8 @@ test("plan approval hands the preserved revision to an assigned project task", a
   const f = await setup(request);
   try {
     await page.goto(f.route);
-    await page.getByTestId("task-chat-composer-mode").click();
-    await page
-      .getByTestId("task-chat-composer-mode-menu")
-      .getByText("Plan mode", { exact: true })
-      .click();
+    await page.getByTestId("task-chat-composer-add").click();
+    await page.getByTestId("composer-add-plan").click();
     await send(page, {
       action: "plan",
       text: "# Approved welcome\nWrite two friendly sentences.",

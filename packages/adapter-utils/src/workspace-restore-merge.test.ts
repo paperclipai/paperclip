@@ -10,6 +10,7 @@ import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 import {
   captureDirectorySnapshot,
   directorySnapshotSha256,
+  disposeDirectorySnapshot,
   classifyWorkspaceRestoreFailure,
   describeWorkspaceRestoreFailure,
   mergeDirectoryWithBaseline,
@@ -41,6 +42,7 @@ describe("workspace restore merge", () => {
 
     const snapshot = await captureDirectorySnapshot(rootDir, { exclude: [] });
     const serialized = serializeDirectorySnapshot(snapshot);
+    if (serialized.version !== 1) throw new Error("Expected legacy in-memory snapshot");
     const restored = parseDirectorySnapshot(serialized);
 
     expect(serialized.entries.map(([relativePath]) => relativePath)).toEqual([
@@ -101,6 +103,24 @@ describe("workspace restore merge", () => {
     await expect(
       readFile(path.join(targetDir, "manual-qa", "environment-matrix", "ssh", "codex_local.md"), "utf8"),
     ).resolves.toBe("ssh codex\n");
+  });
+
+  it("preserves a host file replacing a deleted baseline directory and continues the restore", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-conflict-"));
+    cleanupDirs.push(rootDir);
+    const targetDir = path.join(rootDir, "target");
+    const sourceDir = path.join(rootDir, "source");
+    await mkdir(path.join(targetDir, "replaced", "nested"), { recursive: true });
+    await mkdir(sourceDir);
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [], diskBacked: true });
+    try {
+      await rm(path.join(targetDir, "replaced"), { recursive: true });
+      await writeFile(path.join(targetDir, "replaced"), "host change");
+      await writeFile(path.join(sourceDir, "other.txt"), "sandbox change");
+      await mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir });
+      expect(await readFile(path.join(targetDir, "replaced"), "utf8")).toBe("host change");
+      expect(await readFile(path.join(targetDir, "other.txt"), "utf8")).toBe("sandbox change");
+    } finally { await disposeDirectorySnapshot(baseline); }
   });
 
   it("ignores non-file entries when capturing snapshots", async () => {

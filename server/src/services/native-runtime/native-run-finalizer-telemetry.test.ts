@@ -7,10 +7,15 @@ import {
   completionContracts,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issues,
   nativeRunFinalizations,
   nativeRunResults,
   workAssessments,
+  issueRecoveryActions,
+  agentWakeupRequests,
+  workspaceOperations,
+  activityLog,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -47,6 +52,9 @@ function captureRunFailureCallsFrom(fromIndex: number) {
 }
 
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { restoreNativeWorkspaceBestEffort } from "./native-workspace-best-effort.js";
+import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
+import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { deliverExecutionStatuses } from "../execution-status-delivery.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
@@ -155,6 +163,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
   async function driveToCompleteResult(
     fixture: Awaited<ReturnType<typeof seedNativeRun>>,
     terminal: typeof CONTROL_PLANE_CONFORMANCE_TERMINAL = CONTROL_PLANE_CONFORMANCE_TERMINAL,
+    result = CONTROL_PLANE_CONFORMANCE_RESULT,
   ) {
     const port = newPort(fixture);
     await port.openRun({
@@ -169,7 +178,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       sourceInstanceId: fixture.runnerInstanceId,
     });
     await port.completeRun({
-      result: CONTROL_PLANE_CONFORMANCE_RESULT,
+      result,
       terminal,
       callerResultId: `${fixture.runId}:result`,
     });
@@ -508,6 +517,83 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(replayed).toEqual(repaired);
   });
 
+  it("retires this run's scheduled finalization retry after successful commit", async () => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture, CONTROL_PLANE_CONFORMANCE_TERMINAL);
+    await recordNativeFinalizationFailure({ db, runId: fixture.runId,
+      error: new Error("native_workspace_sync_out_failed"), failureScope: "workspace", projectRunStatus: true });
+    const [pending] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(pending).toMatchObject({ status: "active", evidence: { runId: fixture.runId } });
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, pending.id));
+    expect(settled.status).toBe("resolved");
+  });
+
+  it("repairs stale retry metadata on an already committed successful run", async () => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture, CONTROL_PLANE_CONFORMANCE_TERMINAL);
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    await db.update(heartbeatRuns).set({ resultJson: {
+      ...before.resultJson, finalizationPhase: "retryable_failure", failureCode: "native_finalization_invalid",
+      originalFailureCode: "native_finalization_invalid", nextAttemptAt: new Date().toISOString(),
+    } }).where(eq(heartbeatRuns.id, fixture.runId));
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(after).toMatchObject({ status: "succeeded", nativePhase: "committed", resultJson: {
+      finalizationPhase: "committed", failureCode: null, originalFailureCode: null, nextAttemptAt: null,
+    } });
+  });
+
+  it("ignores a stale workspace failure after the same run committed successfully", async () => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture, CONTROL_PLANE_CONFORMANCE_TERMINAL);
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    const late = await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
+      failureScope: "workspace", projectRunStatus: true,
+    });
+    expect(late.phase).toBe("committed");
+    const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(after).toEqual(before);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toEqual([]);
+  });
+
+  it("materializes recovery for an agent-owned invalid-result outcome", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId,
+      phase: "terminal_failure", failureCode: "native_finalization_invalid",
+      failureDetail: { recoveryOwner: { kind: "agent", agentId } },
+    });
+    const outcome = await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_finalization_invalid"),
+    });
+    expect(outcome.phase).toBe("retryable_failure");
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId)))
+      .toEqual([expect.objectContaining({ status: "active", ownerType: "agent", cause: "native_finalization_invalid" })]);
+  });
+
+  it.each(["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_unsafe_archive"])(
+    "does not reopen board-owned %s repair for a late failure", async (failureCode) => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "workspace_finalizing",
+    });
+    await recordNativeFinalizationFailure({ db, runId: fixture.runId,
+      error: new Error(failureCode), failureScope: "workspace", permanent: true });
+    const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const recoveryBefore = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    for (const failureScope of [undefined, "workspace"] as const) {
+      await recordNativeFinalizationFailure({ db, runId: fixture.runId,
+        error: new Error("native_workspace_sync_out_failed"), failureScope });
+    }
+    const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(after).toEqual(before);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toEqual(recoveryBefore);
+  });
+
   it("emits zero events when a retryable-failure write's conditional status spread is omitted", async () => {
     const fixture = await seedNativeRun();
     // recordNativeFinalizationFailure only needs the run and coordinator rows
@@ -624,6 +710,80 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
         .where(eq(issues.id, fixture.issueId))
         .then((rows) => rows[0]?.status),
     ).resolves.toBe("blocked");
+  });
+
+  it("commits the saved result when unsafe workspace export is omitted, with only a run log", async () => {
+    const fixture = await seedNativeRun();
+    await db.update(completionContracts).set({ risk: "low", completionAuthority: "agent_claim_policy" })
+      .where(eq(completionContracts.id, fixture.contractId));
+    await driveToCompleteResult(fixture, CONTROL_PLANE_CONFORMANCE_TERMINAL, {
+      ...CONTROL_PLANE_CONFORMANCE_RESULT,
+      completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim!, contractRevision: "telemetry-v1" },
+    });
+    const [original] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId));
+    const restore = vi.fn(async () => {
+      throw new Error("Daytona syncOut refusing tarball link whose target escapes the extraction dir: tools/pnpm -> /private/tool");
+    });
+    const assertOwnership = vi.fn(async () => {});
+    await restoreNativeWorkspaceBestEffort({ db, runId: fixture.runId, restore, assertOwnership });
+    const outcome = await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true, preserveProviderAttempt: true });
+    expect(outcome.phase).toBe("committed");
+    expect(restore).toHaveBeenCalledOnce();
+    expect(assertOwnership).toHaveBeenCalledOnce();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(run).toMatchObject({ status: "succeeded", error: null, errorCode: null });
+    expect(issue.status).toBe("done");
+    const results = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId));
+    expect(results).toEqual([original]);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(actions).toEqual([]);
+    const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, fixture.runId));
+    expect(events.filter(event => event.eventType === "workspace_export_omitted")).toMatchObject([
+      { level: "info", payload: { reason: "restore_unsafe_archive" } },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("/private/tool");
+  });
+
+  it.each(["active", "resolved", "missing"])("automatically completes a legacy unsafe result with a %s repair action and no sandbox", async actionState => {
+    const fixture = await seedNativeRun();
+    await db.update(completionContracts).set({ risk: "low", completionAuthority: "agent_claim_policy" }).where(eq(completionContracts.id, fixture.contractId));
+    await driveToCompleteResult(fixture, CONTROL_PLANE_CONFORMANCE_TERMINAL, {
+      ...CONTROL_PLANE_CONFORMANCE_RESULT,
+      completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim!, contractRevision: "telemetry-v1" },
+    });
+    const originalResults = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: "native_workspace_sync_out_unsafe_archive" }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await db.update(heartbeatRuns).set({ status: "failed", nativePhase: "terminal_failure", errorCode: "native_workspace_sync_out_unsafe_archive",
+      runnerProfileJson: { nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: "missing-old-sandbox", remoteCwd: "/work", resourceDisposition: "destroy" } },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, fixture.issueId));
+    if (actionState !== "missing") await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: fixture.issueId,
+      kind: "active_run_watchdog", ownerType: "board", cause: "native_workspace_sync_out_unsafe_archive", fingerprint: fixture.runId,
+      evidence: { runId: fixture.runId }, nextAction: "Repair the unsafe link manually", status: actionState,
+      ...(actionState === "resolved" ? { outcome: "restored", resolutionNote: "new_source_execution_path", resolvedAt: new Date() } : {}),
+    });
+    const priorWakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    const priorActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, fixture.issueId));
+    await recoverLegacyUnsafeWorkspaceExports(db, [fixture.runId]);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, fixture.issueId))).toEqual(priorActivity);
+    // No environment runtime is supplied: a stopped, deleted, or unavailable
+    // provider cannot prevent omission and accepted-result commitment.
+    await reconcileNativeFinalizations(db, [fixture.runId]);
+    await reconcileNativeFinalizations(db, [fixture.runId]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)))[0]).toMatchObject({ status: "succeeded", nativePhase: "committed", error: null, errorCode: null });
+    expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0].status).toBe("done");
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId))).toEqual(originalResults);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual(priorWakeups);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, fixture.issueId))).toHaveLength(1);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(actions.every(action => action.status === "resolved" && action.nextAction === "")).toBe(true);
+    expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, fixture.runId)))[0]).toMatchObject({ status: "succeeded", metadata: { workspaceSync: { omitted: true, legacy: true } } });
+    const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, fixture.runId));
+    expect(events.filter(event => event.eventType === "workspace_export_omitted")).toMatchObject([{ level: "info", payload: { reason: "restore_unsafe_archive", legacy: true } }]);
+    expect(events.filter(event => event.eventType === "workspace_export_omitted")).toHaveLength(1);
   });
 
   it("emits exactly one event for a cancel_continuations write (trap 2: :685/:518 overlap)", async () => {

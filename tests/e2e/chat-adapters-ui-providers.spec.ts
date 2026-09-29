@@ -75,7 +75,7 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
   await page.getByText("Connection health and controls", { exact: true }).click();
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   await page.getByRole("button", { name: "Resume", exact: true }).click();
-  expect(mock.lifecycleActions).toEqual(["pause", "resume"]);
+  await expect.poll(() => mock.lifecycleActions).toEqual(["pause", "resume"]);
   await page.getByRole("button", { name: "Replay failed delivery", exact: true }).click();
   await expect.poll(() => mock.replayedDelivery).toBe(true);
   mock.setStatus("attention");
@@ -651,7 +651,7 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(
         page.getByRole("button", { name: "Pause", exact: true }),
       ).toBeVisible();
-      expect(mock.lifecycleActions).toEqual(["pause", "resume"]);
+      await expect.poll(() => mock.lifecycleActions).toEqual(["pause", "resume"]);
 
       mock.setStatus("attention");
       await page.reload();
@@ -776,7 +776,7 @@ test.describe.serial("native chat adapter UI", () => {
         .click();
       await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`));
       await expect.poll(() => mock.removed).toBe(true);
-      expect(mock.lifecycleActions).toEqual(["pause", "resume", "remove"]);
+      await expect.poll(() => mock.lifecycleActions).toEqual(["pause", "resume", "remove"]);
     });
   }
 });

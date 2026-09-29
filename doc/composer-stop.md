@@ -110,8 +110,8 @@ Run from the worktree:
 pnpm --filter @paperclipai/ui exec storybook dev -p 6016 -c storybook/.storybook --no-open
 ```
 
-Open `http://localhost:6016/?path=/story/tasks-execution-controls--running-empty`.
-The `Tasks / Execution Controls` stories compose the production composer and
+Open `http://localhost:6016/?path=/story/composer-execution-controls--running-empty`.
+The `Composer / Execution controls` stories compose the production composer and
 menu/dialog controls together. They cover text switching, attachment-only,
 idle, stopping, paused, errors, cancellation preview/loading, and mobile/light
 presentations. The Storybook state transitions simulate requests; runner

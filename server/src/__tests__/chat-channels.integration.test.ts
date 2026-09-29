@@ -56157,9 +56157,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     "leased",
     "wrong_thread",
     "source_edited",
-  ])(
-    "retries only the original pre-provider Telegram request after exact cleanup: %s",
-    async (mode) => {
+    "different_error",
+  ].flatMap((mode) => [
+    "runner_state_identity_mismatch",
+    "runner_state_identity_mismatch: prior_owner_active",
+  ].map((errorMessage) => ({ mode, errorMessage }))))(
+    "retries only the original pre-provider Telegram request after exact cleanup: $mode ($errorMessage)",
+    async ({ mode, errorMessage }) => {
       const context = await committedChatResponseRecoveryFixture("telegram");
       const providerAccount =
         mode === "null_account"
@@ -56286,7 +56290,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           agentId: context.fixture.assignedAgentId,
           status: "failed",
           errorCode: "adapter_failed",
-          error: "runner_state_identity_mismatch",
+          error: mode === "different_error"
+            ? errorMessage.replace("runner_state_identity_mismatch", "runner_state_identity_mismatch_other")
+            : errorMessage,
           finishedAt: new Date(),
           wakeupRequestId: action.id,
           runtimeMode: "native",
@@ -69057,7 +69063,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     );
 
-    it("retries an unknown subscription mutation after restart using freshly observed options, not a recovered confirmation flag", async () => {
+    it("retries an unknown subscription mutation after restart using freshly observed options, not a recovered confirmation flag", async ({ onTestFailed }) => {
+      let phase = "create fixture";
+      onTestFailed(() => {
+        console.error(`Telegram subscription recovery failed during: ${phase}`);
+      });
       const lane = await draftFixture();
       try {
         await db
@@ -69074,6 +69084,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             throw new Error("Synthetic unknown subscription response");
           return undefined;
         });
+        phase = "first subscription attempt";
         await lane.processSubscriptionAttempt();
         const [action] = await db
           .select()
@@ -69089,17 +69100,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           status: "failed",
           result: { retryable: true, providerConfirmed: false },
         });
+        // Keep the retry pending until the explicit post-restart transition below.
+        // A busy runner can otherwise exhaust the real one-second backoff here.
+        await db
+          .update(chatActions)
+          .set({
+            result: { ...action!.result, retryAt: "2099-01-01T00:00:00.000Z" },
+          })
+          .where(eq(chatActions.id, action!.id));
+        phase = "ordinary publication before restart";
         expect((await lane.send("unknown-subscription"))?.state).toBe(
           "published",
         );
         expect(lane.requests).toHaveLength(1);
         expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
+        phase = "pending recovery before restart";
         await lane.context.service.processPendingDeliveries();
         expect(
           lane.maintenanceRequests.filter(
             ({ method }) => method === "setWebhook",
           ),
         ).toHaveLength(1);
+        phase = "restart";
         await lane.restart();
         lane.setSubscriptionInfo({
           allowed_updates: ["message", "chat_member"],
@@ -69115,10 +69137,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             },
           })
           .where(eq(chatActions.id, action!.id));
+        phase = "concurrent recovery after restart";
         await Promise.all([
           lane.context.service.processPendingDeliveries(),
           lane.context.service.processPendingDeliveries(),
         ]);
+        phase = "verify recovered subscription";
         const mutations = lane.maintenanceRequests.filter(
           ({ method }) => method === "setWebhook",
         );
@@ -69148,9 +69172,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               200,
             );
         });
+        phase = "publication after subscription recovery";
         expect((await lane.send("repaired-after-unknown"))?.state).toBe(
           "cancelled",
         );
+        phase = "close fixture";
       } finally {
         await lane.close();
       }

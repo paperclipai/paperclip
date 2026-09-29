@@ -202,6 +202,9 @@ export interface AdapterExecutionContext {
   /** Host-owned stop of this run's sandbox during setup or direct CLI execution. Resolves only after
    * provider termination is verified; never accepts an agent-selected lease. */
   stopRemoteStartup?: () => Promise<void>;
+  /** Host-owned collection after the final provider invocation is confirmed stopped,
+   * before remote workspace restore or disposal. Never call on an unverified timeout. */
+  onProviderStopped?: () => Promise<void>;
   /** Server-owned, actor-attributed snapshot also rendered by legacy wake prompts. */
   executionContinuation?: ExecutionContinuationEnvelope | null;
   runId: string;

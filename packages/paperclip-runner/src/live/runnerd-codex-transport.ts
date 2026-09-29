@@ -678,7 +678,7 @@ async function releaseRunnerProcessOwnership(input: {
   runnerSettled: boolean;
   checkpoint:
     ((settlement: "settled" | "unsettled") => Promise<void> | void) | null;
-  forceKill: () => void;
+  forceKill: () => Promise<void> | void;
   release: (() => Promise<void> | void) | null;
 }): Promise<void> {
   let releaseFailure: unknown;
@@ -701,7 +701,7 @@ async function releaseRunnerProcessOwnership(input: {
   } catch (error) {
     checkpointFailure = error;
   } finally {
-    input.forceKill();
+    await input.forceKill();
   }
   if (checkpointFailure !== undefined) throw checkpointFailure;
   if (releaseFailure !== undefined) throw releaseFailure;
@@ -1322,10 +1322,19 @@ export function unseenRunnerdCommittedEvents<
 export function expandRunnerdCanonicalNotifications(
   method: string,
   input: unknown,
+  eventType?: string,
 ): Array<{ method: string; params: Record<string, unknown> }> {
   const payload = record(input);
   if (!Array.isArray(payload.events)) return [{ method, params: payload }];
-  return payload.events.map((event) => ({ method, params: record(event) }));
+  return payload.events.map((event) => {
+    const params = record(event);
+    return {
+      method: eventType
+        ? runnerdCanonicalNotificationMethod(eventType, params) ?? method
+        : method,
+      params,
+    };
+  });
 }
 
 export function runnerdCanonicalNotificationMethod(
@@ -1337,6 +1346,14 @@ export function runnerdCanonicalNotificationMethod(
   // ahead of the first real turn notification.
   if (eventType === "session.goal.snapshot" && payload.goal === null) {
     return undefined;
+  }
+  // ACPX thoughts retain their reasoning kind through the notification facade.
+  // Treating them as assistant deltas exposes them in the task transcript and
+  // bypasses the existing reasoning redaction and progress handling.
+  if (eventType === "item.delta" && payload.kind === "reasoning") {
+    return payload.channel === "detail"
+      ? "item/reasoning/textDelta"
+      : "item/reasoning/summaryTextDelta";
   }
   return (
     {
@@ -2857,6 +2874,15 @@ function acpxProviderPackageAuthority(
   manifest: string;
 } {
   const cliDirectory = dirname(sidecarScript);
+  // Public server packages vendor runner dist directly, without a nested dist
+  // directory or a separately published runner package.
+  if (basename(sidecarScript) === "acpx-runtime-sidecar.cjs" &&
+      basename(cliDirectory) === "cli" && basename(dirname(cliDirectory)) === "paperclip-runner" &&
+      basename(resolve(cliDirectory, "../..")) === "vendor" &&
+      basename(resolve(cliDirectory, "../../..")) === "dist") {
+    const serverRoot = resolve(cliDirectory, "../../../..");
+    return { root: serverRoot, manifest: resolve(serverRoot, "package.json") };
+  }
   if (
     basename(sidecarScript) !== "acpx-runtime-sidecar.cjs" ||
     basename(cliDirectory) !== "cli" ||
@@ -3121,10 +3147,13 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
         input.options.environment,
         input.options.acpxAgent ?? "codex",
       ).env,
+      ...(input.options.acpxAgent === "grok" && input.options.environment?.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET
+        ? { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: input.options.environment.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET } : {}),
       ...commonIdentity,
       // The verified sidecar bundle cannot use import.meta.url while Node
       // executes it through /proc/self/fd. Anchor its closed provider package
       // lookups at the package that owns the already-authenticated bundle.
+      PAPERCLIP_ACPX_BUILTIN_ROOT: resolve(dirname(sidecarPath), "../providers"),
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: providerPackageAuthority.root,
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
         providerPackageAuthority.manifest,
@@ -3263,7 +3292,7 @@ export function createRunnerdCodexAppServerArgs(input: {
   );
 }
 
-function unwrapToolResponse(response: Record<string, unknown>): {
+export function unwrapToolResponse(response: Record<string, unknown>, preserveEnvelope = false): {
   readonly __paperclipSemanticToolOutcome: true;
   readonly result: unknown;
   readonly isError: boolean;
@@ -3274,7 +3303,7 @@ function unwrapToolResponse(response: Record<string, unknown>): {
   const value = record(items[0]).text;
   let result: unknown = response;
   try {
-    if (typeof value === "string") result = JSON.parse(value);
+    if (!preserveEnvelope && typeof value === "string") result = JSON.parse(value);
   } catch {
     result = response;
   }
@@ -4261,8 +4290,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           adoptedRunner && !this.#adoptedRunnerAuthenticated
             ? null
             : this.#controlPlaneCheckpoint,
-        forceKill: () => {
-          this.#handle?.child.kill("SIGKILL");
+        forceKill: async () => {
+          const handle = this.#handle;
+          if (!handle || this.#evidence.runnerExited) return;
+          handle.child.kill("SIGKILL");
+          // A remote kill dispatches an asynchronous, ownership-fenced RPC.
+          // Do not release the session for reuse until its process monitor has
+          // settled: the successor would otherwise overwrite that ownership
+          // marker while the previous runner still holds the fixed listener.
+          const result = await waitForProcess(handle, 15_000);
+          this.#evidence.runnerExited = true;
+          this.#evidence.runnerExitCode = result.code;
+          this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
         },
         release: this.#controlPlaneRelease,
       });
@@ -4626,6 +4665,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                     "paperclip-runner-workspace-read-only"
                       ? "plan"
                       : "default",
+                  ...(params.conversationMode === "prepared"
+                    ? { conversationMode: "prepared" }
+                    : {}),
                   includeCollaborationModeInstructions:
                     includeCodexCollaborationInstructions,
                   ...(provider === "codex"
@@ -4734,7 +4776,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                 : provider === "acpx"
                   ? acpxAgent === "pi"
                     ? "openrouter"
-                    : acpxAgent === "claude"
+                    : acpxAgent === "grok" ? "xai" : acpxAgent === "claude"
                       ? "anthropic"
                       : "openai"
                   : "openai",
@@ -5470,6 +5512,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             }
           : {}),
       }),
+      this.options.provider === "acpx" &&
+        (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block"),
     );
     if (call.operationId === "call_api") {
       const result = record(outcome.result);
@@ -5968,7 +6012,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           : event.eventType === "provider.event"
           ? unwrapRunnerdProviderNotifications(eventPayload)
           : canonicalMethod
-            ? expandRunnerdCanonicalNotifications(canonicalMethod, eventPayload)
+            ? expandRunnerdCanonicalNotifications(canonicalMethod, eventPayload, event.eventType)
             : [];
       for (const payload of notifications) {
         const method = payload.method;

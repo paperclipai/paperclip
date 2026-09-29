@@ -25,6 +25,66 @@ The launcher always sets `PAPERCLIP_ANNOUNCEMENTS_ENABLED=false` for its isolate
 instances so announcement panels do not obscure screenshot evidence. No shell
 or workflow configuration is needed, including for Daytona cells.
 
+## Provider-free browser bootstrap regression
+
+`pnpm test:e2e:runner:browser-support` includes a wide development-module graph
+loaded before and after the production service worker takes control. It keeps
+full traces and checks that Vite module loads do not create worker fetches or
+leave the page empty. This isolates browser loading; it does not create a
+Paperclip task, run an agent, or replace a Product E2E result.
+
+## Completion-update probes (explicit only)
+
+`--suite completion-updates` selects four local Product E2E cells: native Codex
+and native Claude, each with `interview-plan-accept` and
+`handoff-completion-idle`. This suite adds evidence and assertions only; it does
+not enable completion wakeups, change production prompts, or prescribe a
+system-generated notice. The onboarding cell reuses the real wizard and its
+existing pre-execution native runtime switch, retaining the production persona.
+
+The chat cell asks the agent to delegate one welcome note to a named worker and
+report its result without another user message. A bounded local file read in
+the managed project workspace delays completion until the source chat is positively
+observed idle, with a three-minute handoff setup budget and a four-minute worker
+wait limit. The brief is then released, the worker must save the output and
+reach Done. Its output must include the start time supplied only in that brief, allowing
+ordinary numeric and written forms. That check runs after completion observation
+so a content mismatch cannot suppress the communication evidence.
+The source thread is observed for 120 seconds. The probe retains a later
+correction even if an earlier reply already passes delivery and access. A later
+clarification does not erase an earlier accessible delivery.
+This proves the **after-idle** boundary, not completion during an active chat
+turn. The existing onboarding cell records its naturally occurring timing.
+
+The mechanical oracle requires a run-attributed source reply after durable
+completion, plus the actual saved output or a navigable task/output link.
+Browser verification checks that reply after reload, including the UI's automatic
+task-reference links. It opens the rendered result target, checks the task heading,
+and reads its saved output through the public API. Known request markers, identifiers without a rendered link,
+successful runs without Done, user-authored replies,
+and replies on the worker task do not satisfy it. Extra tasks and modified
+worker output are rejected by the chat story. Provider turns are bounded by
+the existing first-task limit (12) and chat limit (2–4).
+
+**Mechanical passage is not answer-quality qualification.** Inspect
+`completion-update.json`, its `latestResponse`, and all retained replies against the included semantic
+rubric: correct completion claim, useful result explanation, accessible output,
+and no invented verification or follow-up work. A stale promise with a valid
+link can pass delivery/access while failing this separate review. Do not
+replace this distinction with keyword matching for “done.”
+
+`completion-update-boundary.json`, worker output, source comments, per-run
+event evidence, and marked screenshots retain the chronology for diagnosis.
+Source SHA, suite digest, models, attempts, cleanup and partial billing remain
+in the normal result/report pipeline. A missing follow-up after a completed
+worker is a behavior failure; a failure before that boundary is not proof of
+the communication defect. Use the standard dashboard to compare the four cells.
+
+```sh
+pnpm test:e2e:runner -- --list --suite completion-updates
+pnpm test:e2e:runner -- --suite completion-updates
+```
+
 ## Credentials
 
 Copy `.env.runner-e2e.example` to `.env.runner-e2e.local` and fill only the
@@ -40,6 +100,9 @@ Shell variables take precedence over the local file. The recognized names are:
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `OPENROUTER_API_KEY`
+- `KIMI_MODEL_API_KEY` (local-only pending Kimi CLI/ACP profiles)
+- `XAI_API_KEY` (local Grok API-key profile)
+- `GROK_AUTH_JSON` (local native Grok subscription profile)
 - `DAYTONA_API_KEY`
 - `PAPERCLIP_E2E_DAYTONA_IMAGE` (Daytona only)
 
@@ -49,6 +112,12 @@ keys only to Playwright, which posts each value once to the company-secrets API.
 Paperclip receives secret references in agent/environment payloads. Provider
 keys, Daytona keys, `DATABASE_URL`, and `DATABASE_MIGRATION_URL` are removed
 from the Paperclip child process.
+
+Kimi keys are recognized for local catalog, schema, and isolation tests only.
+Its explicit context-integrity profiles are blocked before credential loading
+until runtime identity, authentication, skills, session, and billing
+qualification is complete. Grok profiles are explicit-only and require their
+matching API-key or subscription credential.
 
 Never put credentials in `catalog.ts`, screenshots, fixture metadata, workflow
 inputs, or a tracked env file.
@@ -83,11 +152,11 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains thirteen suites, including the explicit-only everyday and
+The catalog contains the explicit-only suites alongside the standard suites. It also includes the explicit-only everyday and
 [lifecycle baseline](LIFECYCLE-BASELINE.md) suites. The latter adds 46 real-provider
 cells pairing narrative variants and exercising durable lifecycle boundaries;
-it is excluded from `--all`. `core-compatibility` (**Core Runner
-Compatibility**) is seven major runner profiles × local/Daytona × three
+it is excluded from `--all`. `core-compatibility` (**Core Runner Compatibility**)
+is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
 - `message-marker`: one basic visible response and Done transition;
@@ -223,6 +292,26 @@ pnpm test:e2e:runner -- --list --suite agent-chat-hardening
 pnpm test:e2e:runner -- --id agent-chat-hardening.runner-codex.local.stop-startup-new-resume
 ```
 
+`context-integrity` is an explicit-only local suite with two bounded cases across
+ten listed legacy/native profiles (20 cells). Six cells are pending-prerequisite
+profiles and are listed for discovery but rejected before provider credentials are
+loaded: `legacy-kimi-cli`, `legacy-kimi-acp`, and `legacy-grok`, each with both
+cases. The seven previously qualified profiles remain unchanged. Pi is not listed
+because no qualified model source exists. `ordered-comment-continuation`
+sends three separate user comments through the public comments API, retaining an
+intentional repeated comment before a changed scope. `assigned-skill-explicit-invocation`
+creates and pins a task skill through public skill APIs, requires an explicit
+provider skill invocation, and keeps the output requirement in the skill body.
+The suite is excluded from `--all` and has no Daytona cells.
+Each cell applies a public API 1,000-cent company and agent budget hard stop
+before task creation and records both limits in its evidence. Unknown provider
+billing or a budget incident is not admitted as a pass.
+
+```sh
+pnpm test:e2e:runner -- --list --suite context-integrity
+pnpm test:e2e:runner -- --id context-integrity.runner-codex.local.ordered-comment-continuation
+```
+
 Each hardening oracle has positive and plausible-negative calibration tests.
 The review grader parses the worker's saved JSON and compares both source values
 and the consistency verdict. Hiring requires one identity, correct reporting
@@ -267,7 +356,11 @@ AND semantics. `--id` is exclusive with dimension selectors and `--all`.
 selector, an empty selection, or a run with no explicit selector exits before
 Paperclip starts. `--max-parallel <n>` controls the number of isolated
 profile/environment/case harnesses that can overlap (default 1, also configurable
-with `PAPERCLIP_E2E_MAX_PARALLEL`). Headed/UI/debug runs are forced to one worker.
+with `PAPERCLIP_E2E_MAX_PARALLEL`). `--max-automatic-retries <0|1>` controls the
+launcher retry budget (default 1). Set it to 0 for a single-attempt comparison;
+it suppresses both transient-infrastructure and provider-variance retries while
+preserving the original failure classification. Headed/UI/debug runs are forced
+to one worker.
 The Plan case is still sequential internally because its turns share one task;
 it runs in parallel with unrelated scenarios.
 
@@ -1027,6 +1120,22 @@ These fault-injection tests prove recovery from interrupted startup. They do not
 establish the cause of the historical intermittent Vite module-graph stall;
 ordinary 304 responses and successful reruns alone are not evidence of that cause.
 
+### Grok Build qualification
+
+`runner-acpx-grok` uses native ACPX with Grok Build 1.0.13 and `grok-4.7`.
+Set an explicit `XAI_API_KEY` for this API-key profile. The manual
+`grok-qualification` suite runs the core and restart workflows on local and
+Daytona runtimes. The separate manual `grok-subscription-qualification` suite
+uses `runner-acpx-grok-subscription` and explicit `GROK_AUTH_JSON`. Its fixture
+stages that login in a private, disposable company home; this is credential
+setup, not a test of interactive browser login. The server never inherits the
+JSON secret or an API key from the harness. See [FIXTURES.md](FIXTURES.md) and
+[SECURITY.md](SECURITY.md) for staging, cleanup, and redaction requirements.
+Missing subscription coverage remains a qualification blocker;
+an API-key pass must not be reported as subscription evidence. See
+[`doc/grok-native-runner.md`](../../doc/grok-native-runner.md) for installation,
+credential boundaries and repetition requirements.
+
 ### Grok branch qualification on EC2
 
 The trusted default-branch workflow can run the explicit `grok-qualification`
@@ -1042,3 +1151,15 @@ keys with low request limits. It can only lower the configured campaign limit.
 Keep subscription qualification separate from API-key results.
 
 The explicit-only eight-cell [continuation accounting baseline](CONTINUATION-ACCOUNTING.md) tests productive work, bounded repair, restart and late gates with real providers.
+
+### Bounded API response reading
+
+`api-response-reading` is an explicit-only, two-cell native Codex suite (local
+and Daytona). Each cell creates synthetic diagnostic evidence over 24 KiB via
+the public API, outside the agent assignment. The browser starts one ordinary
+task which must read the saved response in bounded text pages and persist the
+exact hidden evidence code. The oracle also requires completed API tool events;
+missing events or a narrative completion cannot pass. Existing run, copyback,
+screenshot, billing and environment cleanup checks apply. Use
+`--id api-response-reading.runner-codex.daytona.saved-text-pages` with an
+immutable Daytona image; no private hooks or fixture database writes are used.
