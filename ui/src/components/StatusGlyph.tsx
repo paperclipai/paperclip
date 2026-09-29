@@ -23,8 +23,9 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
  *
  * The in-progress animation represents task workflow status, independently of
- * run execution. It remains between runs until the task status changes; live
- * indicators and run details report whether an agent is currently executing.
+ * run execution. A live run on an `in_review` task additionally renders the
+ * working spinner (via the `live` prop) so motion tracks execution; live
+ * indicators and run details still report whether an agent is executing.
  *
  * Colour comes from the `--status-task-icon-*` CSS vars (AA-tuned, mode-aware;
  * see `index.css`). The glyph paints in `currentColor`, and the component
@@ -83,9 +84,13 @@ interface StatusGlyphProps {
 
 export function StatusGlyph({ status, size = "md", className, title, live = false }: StatusGlyphProps) {
   const px = SIZE_PX[size];
-  const Icon = STATUS_ICON[status] ?? STATUS_ICON_DEFAULT;
+  // A live run on an `in_review` task renders the open-arc working spinner
+  // (not a spinning CircleDot — a full circle looks identical at every
+  // angle, so rotation would be invisible). Colour stays on the review var.
+  const liveReview = live && status === "in_review";
+  const Icon = liveReview ? TaskProgressSpinner : (STATUS_ICON[status] ?? STATUS_ICON_DEFAULT);
   const cssVar = taskStatusIconVar[status] ?? taskStatusIconVarDefault;
-  const spin = status === "in_progress" || (live && status === "in_review");
+  const spin = status === "in_progress" || liveReview;
   const a11y = title
     ? ({ role: "img", "aria-label": title } as const)
     : ({ "aria-hidden": true } as const);

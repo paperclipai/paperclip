@@ -373,7 +373,7 @@ function BlockedInboxRow({
       showDivider={presentation === "legacy"}
       statusSlot={presentation === "task"
         ? showStatusColumn
-          ? <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} />
+          ? <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} live={liveIssueIds.has(row.issue.id)} />
           : <span className="inline-flex size-4" aria-hidden="true" />
         : undefined}
       showIdentifier={presentation === "task" ? showIdentifierColumn : undefined}
@@ -381,13 +381,14 @@ function BlockedInboxRow({
         <BlockedRowDesktopMeta
           row={row}
           blockerAttention={blockerAttention}
+          live={liveIssueIds.has(row.issue.id)}
           showStatusColumn={showStatusColumn}
           showIdentifierColumn={showIdentifierColumn}
         />
       ) : undefined}
       mobileLeading={
         <span className="flex shrink-0 items-center gap-1.5 pt-px">
-          <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} />
+          <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} live={liveIssueIds.has(row.issue.id)} />
         </span>
       }
       titleSuffix={
@@ -408,18 +409,20 @@ function BlockedInboxRow({
 function BlockedRowDesktopMeta({
   row,
   blockerAttention,
+  live,
   showStatusColumn,
   showIdentifierColumn,
 }: {
   row: BlockedInboxIssueRow;
   blockerAttention: Issue["blockerAttention"] | null;
+  live: boolean;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
 }) {
   const identifier = row.issue.identifier ?? row.issue.id.slice(0, 8);
   return (
     <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">
-      {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} /> : null}
+      {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} live={live} /> : null}
       {showIdentifierColumn ? <span className="font-mono text-xs text-muted-foreground">{identifier}</span> : null}
     </span>
   );
