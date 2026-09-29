@@ -75,8 +75,10 @@ import {
   isClaudeModelNotFoundError,
 } from "./parse.js";
 import {
+  materializeLocalManagedClaudeConfig,
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
+  resolveManagedClaudeAgentHomeDir,
   resolveManagedClaudeRuntimeStateDir,
   resolveSharedClaudeConfigDir,
   writePaperclipClaudeMcpConfig,
@@ -562,6 +564,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
+  // A local (non-remote, non-managed-connection) run gets its own
+  // `CLAUDE_CONFIG_DIR` under the agent's managed home, seeded from the host's
+  // shared config, so it never reads or writes the operator's personal
+  // `~/.claude` and never shares state with another agent's runs. An explicit
+  // operator-provided `CLAUDE_CONFIG_DIR` (config env) always wins.
+  const useManagedLocalClaudeConfig =
+    !executionTargetIsRemote && !hasExplicitClaudeConfigDir && !config.managedAiConnection;
+  const managedLocalClaudeConfigDir = useManagedLocalClaudeConfig
+    ? resolveManagedClaudeAgentHomeDir(process.env, agent.companyId, agent.id)
+    : null;
+  if (managedLocalClaudeConfigDir) {
+    await materializeLocalManagedClaudeConfig({
+      claudeConfigDir: managedLocalClaudeConfigDir,
+      hostClaudeConfigDir: sharedClaudeConfigDir,
+      companyId: agent.companyId,
+      onLog,
+    });
+    env.CLAUDE_CONFIG_DIR = managedLocalClaudeConfigDir;
+    loggedEnv.CLAUDE_CONFIG_DIR = managedLocalClaudeConfigDir;
+  }
+  const effectiveLocalClaudeConfigDir = managedLocalClaudeConfigDir ?? sharedClaudeConfigDir;
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -570,7 +593,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           workspaceDir: effectiveExecutionCwd,
           filesystemScope,
           managedPaths: [
-            { path: sharedClaudeConfigDir, access: "rw" },
+            { path: effectiveLocalClaudeConfigDir, access: "rw" },
             { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
             { path: promptBundle.addDir, access: "ro" },
             { path: localMcpConfigDir, access: "ro" },
@@ -587,7 +610,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       : null;
   if (localProcessSandbox) {
-    if (filesystemScope) env.CLAUDE_CONFIG_DIR = sharedClaudeConfigDir;
+    if (filesystemScope && !managedLocalClaudeConfigDir) env.CLAUDE_CONFIG_DIR = sharedClaudeConfigDir;
     const scopes = [filesystemScope ? "workspace filesystem" : null, networkScope ? `${networkScope} network` : null]
       .filter(Boolean)
       .join(" and ");
