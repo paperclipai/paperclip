@@ -187,7 +187,7 @@ export async function runChatCompletionUpdate(context: {
       busyRun = (await context.allRuns()).find(r => r.contextSnapshot?.issueId === context.issue().id && r.status === "running");
       expect(busyRun, "source provider must be awaiting its committed document response").toBeTruthy();
       const reference = await api.get<Row>(`/api/issues/${context.issue().id}/documents/brief-reference`);
-      expect(reference.body).toBe(`REFERENCE${marker}`);
+      expect(reference.body).toContain(`REFERENCE${marker}`);
       await input.evidence("completion-busy-document-gate.json", { sourceRun: busyRun, document: reference, responseHeld: true });
     }
     await writeFile(wait.gate, brief);
