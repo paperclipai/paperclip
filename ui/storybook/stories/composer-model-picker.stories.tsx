@@ -140,6 +140,14 @@ export const KimiAcpNoEffort: Story = {
     await expect(screen.queryByRole("slider")).toBeNull();
   },
 };
+export const KimiCliDefaultEffort: Story = {
+  name: "12c · Kimi CLI default model · effort",
+  args: { agentId: "kimi-cli-default", initialPanel: "settings" },
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
+  },
+};
 export const KimiModelDefault: Story = {
   name: "13 · Kimi highspeed · no effort override",
   args: { agentId: "kimi", initialModel: "kimi-code/kimi-for-coding-highspeed", initialPanel: "settings" },
@@ -171,6 +179,14 @@ export const GrokEffort: Story = {
     const screen = within(canvasElement.ownerDocument.body);
     await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
     await expect(screen.getByTestId("selected-effort")).toHaveTextContent("Extra High");
+  },
+};
+export const GrokDefaultEffort: Story = {
+  name: "17a · Grok default model · reasoning effort",
+  args: { agentId: "grok-default", initialPanel: "settings" },
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
   },
 };
 export const HermesManual: Story = {
@@ -310,6 +326,15 @@ export const ProductionGrokEffort: Story = {
   },
 };
 
+export const ProductionGrokDefaultEffort: Story = {
+  name: "23aba · App Grok default model effort",
+  render: () => <ComposerRunSettingsLiveStory agentId="grok-default" initialPanel="settings" />,
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
+  },
+};
+
 export const ProductionKimiAcpNoEffort: Story = {
   name: "23ac · App Kimi ACP without effort",
   render: () => <ComposerRunSettingsLiveStory agentId="kimi-acp" initialPanel="settings" />,
@@ -322,6 +347,15 @@ export const ProductionKimiAcpNoEffort: Story = {
 export const ProductionKimiCliEffort: Story = {
   name: "23ad · App Kimi CLI effort",
   render: () => <ComposerRunSettingsLiveStory agentId="kimi" initialPanel="settings" initialEffort="high" />,
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
+  },
+};
+
+export const ProductionKimiCliDefaultEffort: Story = {
+  name: "23ada · App Kimi CLI default model effort",
+  render: () => <ComposerRunSettingsLiveStory agentId="kimi-cli-default" initialPanel="settings" />,
   play: async ({ canvasElement }) => {
     const screen = within(canvasElement.ownerDocument.body);
     await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();

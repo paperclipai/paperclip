@@ -1,7 +1,7 @@
 import { codexLocalReasoningEffortsForModel, isCodexLocalFastModeSupported, isCodexLocalKnownModel } from "@paperclipai/adapter-codex-local";
 import { claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
-import { grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
-import { modelSupportsEffort, KIMI_SUPPORTED_EFFORTS } from "@paperclipai/adapter-kimi-local";
+import { DEFAULT_GROK_LOCAL_MODEL, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
+import { DEFAULT_KIMI_LOCAL_MODEL, modelSupportsEffort, KIMI_SUPPORTED_EFFORTS } from "@paperclipai/adapter-kimi-local";
 import { aiConnectionBindingSchema, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 
 export interface ComposerRunSettings {
@@ -36,15 +36,19 @@ export function composerCatalogProvider(agent: Agent | undefined): string | unde
 }
 
 export function composerEfforts(agent: Agent | undefined, model: string, catalogIds: readonly string[]): readonly string[] {
-  if (!agent || !model) return [];
+  if (!agent) return [];
+  const effectiveModel = model.trim() || (agent.adapterType === "grok_local" ? DEFAULT_GROK_LOCAL_MODEL
+    : agent.adapterType === "kimi_local" ? DEFAULT_KIMI_LOCAL_MODEL : "");
+  if (!effectiveModel) return [];
   if (agent.adapterType === "codex_local" || (agent.adapterType === "paperclip_runner" && composerCatalogProvider(agent) === "codex")) {
-    return isCodexLocalKnownModel(model) ? codexLocalReasoningEffortsForModel(model) : [];
+    return isCodexLocalKnownModel(effectiveModel) ? codexLocalReasoningEffortsForModel(effectiveModel) : [];
   }
-  if (!catalogIds.includes(model)) return [];
-  if (agent.adapterType === "claude_local") return claudeLocalReasoningEffortsForModel(model);
-  if (agent.adapterType === "grok_local") return grokLocalReasoningEffortsForModel(model);
+  if (!catalogIds.includes(effectiveModel)) return [];
+  if (agent.adapterType === "claude_local") return claudeLocalReasoningEffortsForModel(effectiveModel);
+  if (agent.adapterType === "grok_local") return grokLocalReasoningEffortsForModel(effectiveModel);
   if (agent.adapterType === "pi_local") return ["off", "minimal", "low", "medium", "high", "xhigh"];
-  if (agent.adapterType === "kimi_local" && agent.adapterConfig.engine === "cli" && modelSupportsEffort(model)) return KIMI_SUPPORTED_EFFORTS;
+  if (agent.adapterType === "kimi_local" && typeof agent.adapterConfig.engine === "string"
+    && agent.adapterConfig.engine.trim().toLowerCase() === "cli" && modelSupportsEffort(effectiveModel)) return KIMI_SUPPORTED_EFFORTS;
   return [];
 }
 
