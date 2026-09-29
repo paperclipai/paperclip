@@ -82,17 +82,30 @@ export function isChatClarificationReply(body: string): boolean {
   const listRequest = body.match(/\b(?:I|we)(?:'ll|\s+will)?\s+need\s*:\s*([\s\S]*)/i);
   if (listRequest) {
     const items: string[] = [];
+    let paragraphBoundary = false;
     // Only the directly introduced list belongs to this request. A later
     // paragraph can introduce a separate plan without invalidating it.
     for (const line of listRequest[1].split(/\r?\n/)) {
-      if (!line.trim()) continue;
+      if (!line.trim()) {
+        paragraphBoundary = true;
+        continue;
+      }
       const item = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/);
-      if (!item) break;
+      if (!item) {
+        // Markdown permits soft-wrapped item text without indentation. A
+        // separate paragraph or heading ends the introduced information list.
+        if (items.length && !paragraphBoundary && !/^\s*#|:\s*$/.test(line)) {
+          items[items.length - 1] += ` ${line.trim()}`;
+          continue;
+        }
+        break;
+      }
       items.push(item[1].replace(/^\[[ xX]\]\s*/, "").replace(/^[*_`]+/, ""));
+      paragraphBoundary = false;
     }
     // Positively identify questions or brief fields. Unknown bullets are not
     // evidence of clarification merely because their verbs are unlisted.
-    const information = /^(?:(?:who|what|where|when|whether|how)\b|(?:(?:any|the|your|preferred|intended|required|target|desired|existing|delivery|must-include)\s+){0,3}(?:(?:club|company|project|team|event|organization)\s+name|audience|readers|recipients|tone|voice|format|length|deadline|date|purpose|context|details|requirements|constraints|examples|links|name)\b)/i;
+    const information = /^(?:(?:who|what|where|when|whether|how)\b|(?:(?:any|the|your|preferred|intended|required|target|desired|existing|delivery|must-include)\s+){0,3}(?:(?:club|company|project|team|event|organization)\s+name|audience|readers|recipients|tone|voice|format|length|deadline|date|purpose|context|details|requirements|constraints|examples|links|name|budget|location|venue|schedule|timezone|language|accessibility|contact|scope|goals|background|references|assets|brand|style)\b)/i;
     if (items.length >= 2 && items.every(item => information.test(item))) return true;
   }
   const request = body.match(

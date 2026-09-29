@@ -112,6 +112,12 @@ If you only have the club name, audience, and tone, that is enough to begin; I c
     expect(isChatClarificationReply("I need:\n- **Audience**: intended readers\n\n- [ ] Preferred format\n- When this is due")).toBe(true);
   });
 
+  it("accepts logistical brief fields and wrapped information items", () => {
+    expect(isChatClarificationReply("I need:\n- Budget\n- Location")).toBe(true);
+    expect(isChatClarificationReply("I need:\n- Audience, including age range\nand whether these are new or existing members\n- Tone\n\nOnce you answer, I can:\n- Draft the note\n- Publish it")).toBe(true);
+    expect(isChatClarificationReply("I need:\n- Audience, including age range\n  and whether these are new or existing members\n- Tone")).toBe(true);
+  });
+
   it("rejects superseded plan requirements in executed output, independently of plan history", () => {
     expect(() => assertChatExecutionOutput("Welcome CHAT123.", "CHAT123", "DRAFT123")).not.toThrow();
     expect(() => assertChatExecutionOutput("Welcome DRAFT123 and CHAT123.", "CHAT123", "DRAFT123")).toThrow();
