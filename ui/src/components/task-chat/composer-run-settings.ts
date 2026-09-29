@@ -55,7 +55,11 @@ export function composerDaybreakAvailable(agent: Agent | undefined): boolean {
   return agent?.adapterType === "codex_local";
 }
 
-export function readComposerRunSettings(overrides: IssueAssigneeAdapterOverrides | null | undefined, adapterType: string | undefined): ComposerRunSettings {
+export function readComposerRunSettings(
+  overrides: IssueAssigneeAdapterOverrides | null | undefined,
+  adapterType: string | undefined,
+  agentAdapterConfig?: Readonly<Record<string, unknown>>,
+): ComposerRunSettings {
   const config = overrides?.adapterConfig ?? {};
   const effortKey = composerEffortKey(adapterType);
   const effortValue = effortKey && (config[effortKey]
@@ -64,7 +68,10 @@ export function readComposerRunSettings(overrides: IssueAssigneeAdapterOverrides
     model: typeof config.model === "string" ? config.model : null,
     effort: typeof effortValue === "string" ? effortValue : null,
     fast: adapterType === "codex_local" && config.fastMode === true,
-    daybreak: adapterType === "codex_local" && config.daybreakEnabled === true,
+    daybreak: adapterType === "codex_local" && (
+      config.daybreakEnabled === true
+      || config.daybreakEnabled === undefined && agentAdapterConfig?.daybreakEnabled === true
+    ),
   };
 }
 
@@ -81,6 +88,7 @@ export function mergeComposerRunSettings(
   adapterType: string | undefined,
   settings: ComposerRunSettings,
   reassigned = false,
+  agentAdapterConfig?: Readonly<Record<string, unknown>>,
 ): IssueAssigneeAdapterOverrides | null {
   const config = { ...(reassigned ? {} : previous?.adapterConfig) };
   delete config.model;
@@ -95,7 +103,10 @@ export function mergeComposerRunSettings(
   const effortKey = composerEffortKey(adapterType);
   if (settings.effort && effortKey) config[effortKey] = settings.effort;
   if (settings.fast && adapterType === "codex_local") config.fastMode = true;
-  if (settings.daybreak && adapterType === "codex_local") config.daybreakEnabled = true;
+  if (adapterType === "codex_local") {
+    if (settings.daybreak) config.daybreakEnabled = true;
+    else if (agentAdapterConfig?.daybreakEnabled === true) config.daybreakEnabled = false;
+  }
   const useProjectWorkspace = reassigned ? undefined : previous?.useProjectWorkspace;
   return Object.keys(config).length || useProjectWorkspace !== undefined
     ? { ...(Object.keys(config).length ? { adapterConfig: config } : {}), ...(useProjectWorkspace !== undefined ? { useProjectWorkspace } : {}) }

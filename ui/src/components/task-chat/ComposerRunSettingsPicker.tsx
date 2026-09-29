@@ -114,7 +114,7 @@ export function ComposerRunSettingsPicker({
     ?? fetchedModels;
   const catalogPending = modelsPending && !modelOptionsOverride;
   const base = assigneeValue === currentAssigneeValue
-    ? readComposerRunSettings(overrides, agent?.adapterType)
+    ? readComposerRunSettings(overrides, agent?.adapterType, agent?.adapterConfig)
     : DEFAULT_COMPOSER_RUN_SETTINGS;
   const selected = settings ?? base;
   const configuredModel = typeof agent?.adapterConfig.model === "string" ? agent.adapterConfig.model : "";

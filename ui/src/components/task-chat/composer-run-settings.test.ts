@@ -33,7 +33,11 @@ describe("composer run settings", () => {
     expect(readComposerRunSettings(reset, "claude_local")).toEqual({ model: null, effort: null, fast: false, daybreak: false });
     expect(readComposerRunSettings({ adapterConfig: { reasoningEffort: "xhigh" } }, "codex_local").effort).toBe("xhigh");
     expect(readComposerRunSettings({ adapterConfig: { daybreakEnabled: true } }, "codex_local").daybreak).toBe(true);
+    expect(readComposerRunSettings(null, "codex_local", { daybreakEnabled: true }).daybreak).toBe(true);
+    expect(readComposerRunSettings({ adapterConfig: { daybreakEnabled: false } }, "codex_local", { daybreakEnabled: true }).daybreak).toBe(false);
     expect(mergeComposerRunSettings(previous, "codex_local", { model: "gpt-6-astra", effort: "ultra", fast: true, daybreak: true }, true))
       .toEqual({ adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "ultra", fastMode: true, daybreakEnabled: true } });
+    expect(mergeComposerRunSettings(null, "codex_local", { model: null, effort: null, fast: false, daybreak: false }, false, { daybreakEnabled: true }))
+      .toEqual({ adapterConfig: { daybreakEnabled: false } });
   });
 });
