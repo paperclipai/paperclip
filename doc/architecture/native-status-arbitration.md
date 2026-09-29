@@ -142,6 +142,7 @@ conditions before model disposition:
 | Runner reports a task-wide blocker | `blocked` | Persist blocker owner and unblock action |
 | Runner reports a current-track blocker | `in_progress` | Enqueue another productive track |
 | Runner reports `yielded` with a valid continuation | `in_progress` | Enqueue the declared continuation |
+| Ordinary task reports `response_wake` and blocking remaining work, without a real wait | `in_progress` | Use the bounded incomplete-work continuation, then a visible recovery error if repair was already used |
 | Completion evidence is incomplete and continuation is forbidden | Preserve | Record a finalization error and named next action |
 | Completion evidence is otherwise incomplete | `in_progress` | Enqueue a bounded, idempotent continuation |
 
@@ -154,6 +155,21 @@ The output is a `NativeStatusDecision` containing:
 - declarative side effects.
 
 The pure arbiter performs no database or network writes.
+
+A response to a Board comment does not by itself justify parking unfinished
+work. When a `yielded` / `response_wake` result contains
+`remainingWork[].blocksCompletion: true`, `paperclip_finish` rejects the report
+unless a real wait owns the next action. The agent can correct it in the same
+turn. Finalization also checks accepted reports and uses the existing
+`native-completion-incomplete` one-follow-up budget. Model-selected retry keys
+cannot reset that budget. Pending interactions, approvals, dependencies, pause
+holds, and conversation lifecycles retain their authority.
+
+The current Board source is rechecked in the status transaction before a repair
+is queued. Edited, deleted, or superseded comments do not authorize replay of an
+old response. Recovery no longer treats an old committed passive wait as healthy
+when its report admits blocking work and its Board source is still current.
+Existing recovery gates continue to protect pauses, budgets, and ownership.
 
 ## Transactional decision commit
 

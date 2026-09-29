@@ -928,6 +928,12 @@ Questions must be created as durable interactions before the agent claims to be
 waiting. A direct Board comment reopening completed work has the same passive
 response-wait semantics as a comment on an open task, subject to the same source,
 identity, and governance checks. An automatic continuation is not a user reply.
+For ordinary tasks, a response wait cannot park reported blocking remaining
+work without a recorded wait condition. The finish tool rejects this combination;
+finalization routes already-accepted reports through one bounded corrective
+continuation and then a visible recovery error. Real questions, approvals,
+dependencies, pauses, and conversation lifecycles keep their existing behavior.
+A superseded Board comment never grants permission to replay the old response.
 
 A run must receive queued human direction before it creates a new task question.
 When the saved run context contains an explicit delivered-comment list, the

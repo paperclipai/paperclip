@@ -542,6 +542,12 @@ V1 non-terminal liveness rule:
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
+For native ordinary tasks, answering a Board comment does not authorize an
+indefinite response wait when the structured result reports blocking remaining
+work. Without a recorded wait condition, reject the finish report or use the
+bounded incomplete-work recovery path. Preserve real governance and pause gates,
+conversation lifecycles, and protection against replaying superseded requests.
+
 ## 8.3 Approval Status
 
 - `pending -> approved | rejected | cancelled`
