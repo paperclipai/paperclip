@@ -255,6 +255,12 @@ import {
   type NativeSessionBackend,
 } from "../vendor/paperclip-runner/index.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
+import {
+  MAX_GATEWAY_DELIVERY_HOLD_MS,
+  TRANSIENT_GATEWAY_DELIVERY_ERROR_CODES,
+  readRetryAfterDeltaSeconds,
+  resolveGatewayDeliveryDeferral,
+} from "./gateway-delivery-deferral.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import {
   providerTraceStore,
@@ -1071,12 +1077,8 @@ function resolveCodexTransientFallbackMode(
 // `scheduledRetryAt: null` - 50 runs over three minutes, one per second. These
 // codes belong in the same bounded-transient lane as the codex/claude upstream
 // codes below, so the retry ladder (and any later Retry-After hint) applies.
-const TRANSIENT_GATEWAY_DELIVERY_ERROR_CODES = new Set<string>([
-  "hermes_gateway_rate_limited",
-  "hermes_gateway_upstream_error",
-  "hermes_gateway_connect_failed",
-]);
-
+// The codes themselves, the window cap and the deferred-until math live in
+// `gateway-delivery-deferral.ts`, which is unit-testable without the service.
 function readHeartbeatRunErrorFamily(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
@@ -1137,16 +1139,6 @@ function readTransientRetryNotBeforeFromRun(
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function readRetryAfterDeltaSeconds(value: string | number | Date): number | null {
-  if (value instanceof Date) return null;
-  const raw = typeof value === "number" ? value : value.trim();
-  if (typeof raw === "number" && !Number.isSafeInteger(raw)) return null;
-  if (typeof raw === "string" && !/^\d+$/.test(raw)) return null;
-  const seconds = Number(raw);
-  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 3_600) return null;
-  return seconds;
-}
-
 function readTransientRecoveryContractFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson" | "createdAt">,
 ) {
@@ -1166,9 +1158,8 @@ function readTransientRecoveryContractFromRun(
 // run only produces another refused wake, so new wakes for that agent are
 // parked on a `scheduled_retry` run instead of being dispatched. A gateway that
 // answers with an implausibly large hint must not park an agent's work for
-// hours, so the window is capped and the bounded retry ladder still governs
-// every attempt after it.
-const MAX_GATEWAY_DELIVERY_HOLD_MS = 15 * 60 * 1000;
+// hours, so the window is capped (`MAX_GATEWAY_DELIVERY_HOLD_MS`) and the
+// bounded retry ladder still governs every attempt after it.
 // Enough history to find the newest open delivery hint without scanning the
 // whole run ledger of a busy agent.
 const GATEWAY_DELIVERY_HOLD_LEDGER_SCAN_LIMIT = 20;
@@ -24969,6 +24960,20 @@ export function heartbeatService(
                   "adapter_failed")
                 : null;
 
+        // A wake the gateway refused with a readable window is deferred, not
+        // killed: the run settles as a wait (with the refusal recorded on it)
+        // and the bounded transient lane below re-queues the wake.
+        const gatewayDeliveryDeferral =
+          outcome === "failed"
+            ? resolveGatewayDeliveryDeferral({
+                errorCode: runErrorCode,
+                executionRecovery: adapterResult.executionRecovery,
+                retryNotBefore: adapterResult.retryNotBefore,
+                runCreatedAt: run.createdAt ?? null,
+                now: new Date(),
+              })
+            : null;
+
         let logSummary: {
           bytes: number;
           sha256?: string;
@@ -25002,7 +25007,9 @@ export function heartbeatService(
               ? "cancelled"
               : outcome === "timed_out"
                 ? "timed_out"
-                : "failed";
+                : gatewayDeliveryDeferral
+                  ? "cancelled"
+                  : "failed";
 
         const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
         const usageJson =
@@ -25073,6 +25080,16 @@ export function heartbeatService(
                 ...parseObject(adapterResult.resultJson),
                 ...(adapterResult.executionRecovery
                   ? { executionRecovery: adapterResult.executionRecovery }
+                  : {}),
+                ...(gatewayDeliveryDeferral
+                  ? {
+                      gatewayDeliveryDeferral: {
+                        errorCode: gatewayDeliveryDeferral.errorCode,
+                        until: gatewayDeliveryDeferral.until.toISOString(),
+                        retryNotBefore: gatewayDeliveryDeferral.retryNotBefore,
+                        deferredAt: new Date().toISOString(),
+                      },
+                    }
                   : {}),
                 configFreshness: configFreshnessResultMetadata,
               },
@@ -25174,11 +25191,25 @@ export function heartbeatService(
           await appendRunEvent(finalizedRun, {
             eventType: "lifecycle",
             stream: "system",
-            level: outcome === "succeeded" ? "info" : "error",
-            message: `run ${outcome}`,
+            level:
+              outcome === "succeeded"
+                ? "info"
+                : gatewayDeliveryDeferral
+                  ? "warn"
+                  : "error",
+            message: gatewayDeliveryDeferral
+              ? `run deferred: gateway delivery refused (${gatewayDeliveryDeferral.errorCode}), retrying after ${gatewayDeliveryDeferral.until.toISOString()}`
+              : `run ${outcome}`,
             payload: {
               status,
               exitCode: adapterResult.exitCode,
+              ...(gatewayDeliveryDeferral
+                ? { gatewayDeliveryDeferral: {
+                    errorCode: gatewayDeliveryDeferral.errorCode,
+                    until: gatewayDeliveryDeferral.until.toISOString(),
+                    retryNotBefore: gatewayDeliveryDeferral.retryNotBefore,
+                  } }
+                : {}),
             },
           });
           try {
@@ -25511,15 +25542,21 @@ export function heartbeatService(
             }
           }
         }
-        await finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
-          keepIdleOnFailure:
-            outcome === "failed" &&
-            ((finalizedRun
-              ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
-              : runErrorCode === "provider_quota") ||
-              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
-          wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-        });
+        await finalizeAgentStatus(
+          agent.id,
+          gatewayDeliveryDeferral ? "cancelled" : outcome,
+          runErrorMessage,
+          {
+            keepIdleOnFailure:
+              outcome === "failed" &&
+              !gatewayDeliveryDeferral &&
+              ((finalizedRun
+                ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
+                : runErrorCode === "provider_quota") ||
+                isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+            wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+          },
+        );
       } catch (err) {
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
