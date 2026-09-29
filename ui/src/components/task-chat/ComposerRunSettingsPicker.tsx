@@ -126,7 +126,7 @@ export function ComposerRunSettingsPicker({
   const effortLabel = effort ? EFFORT_LABELS[effort] ?? effort : "Default";
   const fastAvailable = composerFastAvailable(agent, model);
   const daybreakAvailable = composerDaybreakAvailable(agent);
-  const changed = Boolean(selected.model || selected.effort || selected.fast || selected.daybreak);
+  const changed = Boolean(selected.model || selected.effort || selected.fast || selected.daybreakOverride !== "inherit");
   const assigneeOptions = [{ id: "", label: "No assignee", searchText: "Unassigned" }, ...options.filter((item) => item.id !== "")];
   const filteredAgents = assigneeOptions.filter((item) => {
     const optionAgent = agents.get(item.id.startsWith("agent:") ? item.id.slice(6) : "");
@@ -154,7 +154,10 @@ export function ComposerRunSettingsPicker({
   const chooseAssignee = (value: string) => {
     if (value !== assigneeValue) {
       onAssigneeChange(value);
-      onSettingsChange(DEFAULT_COMPOSER_RUN_SETTINGS);
+      const nextAgent = value.startsWith("agent:") ? agents.get(value.slice(6)) : undefined;
+      onSettingsChange(nextAgent
+        ? readComposerRunSettings(null, nextAgent.adapterType, nextAgent.adapterConfig)
+        : DEFAULT_COMPOSER_RUN_SETTINGS);
     }
     setView("settings");
     setAssigneeSearch("");
@@ -170,7 +173,7 @@ export function ComposerRunSettingsPicker({
     setView("settings");
     setModelSearch("");
   };
-  const reset = () => onSettingsChange(DEFAULT_COMPOSER_RUN_SETTINGS);
+  const reset = () => onSettingsChange(readComposerRunSettings(null, agent?.adapterType, agent?.adapterConfig));
   const closeButton = mobile ? <DialogClose asChild><button type="button" aria-label="Close picker" className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-accent"><X className="size-4" /></button></DialogClose> : null;
   const trigger = <button ref={triggerRef} type="button" disabled={disabled} aria-label="Select assignee, model and effort" data-testid="task-chat-composer-assignee"
     className="flex h-8 min-w-0 max-w-64 items-center gap-1.5 rounded-full bg-muted px-2.5 text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
