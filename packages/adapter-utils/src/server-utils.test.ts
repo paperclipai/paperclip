@@ -971,6 +971,46 @@ describe("renderPaperclipWakePrompt", () => {
     fallbackFetchNeeded: false,
   };
 
+  it("normalizes and renders the lifecycle-guard orphanedSessions wake field (SON-4117)", () => {
+    const payload = {
+      ...ordinaryExternalChatWake,
+      checkedOutByHarness: false,
+      orphanedSessions: [
+        {
+          childSessionKey: "agent:a:subagent:9",
+          parentRunId: "run-9",
+          stampedParentRunId: "run-9",
+          orphanReason: "parentEnded",
+          anchorAt: "2026-09-28T09:00:00Z",
+          detectedAt: "2026-09-28T09:05:00Z",
+          orphanWindowSeconds: 300,
+          writes: [
+            { ts: "2026-09-28T08:59:00Z", toolName: "exec", target: "src/x.ts" },
+          ],
+        },
+      ],
+      orphanedSessionsTruncated: true,
+    };
+    const normalized = JSON.parse(
+      stringifyPaperclipWakePayload(payload) ?? "{}",
+    );
+    expect(normalized.orphanedSessions).toHaveLength(1);
+    expect(normalized.orphanedSessions[0]).toMatchObject({
+      childSessionKey: "agent:a:subagent:9",
+      orphanReason: "parentEnded",
+      writes: [{ toolName: "exec", target: "src/x.ts" }],
+    });
+    expect(normalized.orphanedSessionsTruncated).toBe(true);
+    const bare = JSON.parse(
+      stringifyPaperclipWakePayload({
+        reason: "external nudge",
+        orphanedSessions: payload.orphanedSessions,
+        orphanedSessionsTruncated: false,
+      }) ?? "{}",
+    );
+    expect(bare.orphanedSessions).toHaveLength(1);
+  });
+
   it("recognizes only normalized, harness-checked-out ordinary external-chat wakes", () => {
     expect(isPaperclipExternalChatTurn(ordinaryExternalChatWake)).toBe(true);
     const normalized = JSON.parse(

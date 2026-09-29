@@ -801,12 +801,32 @@ type PaperclipWakeRecovery = {
 export type PaperclipExternalChatProvider =
   "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon";
 
+export type PaperclipWakeOrphanedSessionWrite = {
+  ts: string | null;
+  toolName: string | null;
+  target: string | null;
+};
+
+export type PaperclipWakeOrphanedSession = {
+  childSessionKey: string | null;
+  parentRunId: string | null;
+  stampedParentRunId: string | null;
+  parentSessionKey: string | null;
+  orphanReason: string | null;
+  anchorAt: string | null;
+  detectedAt: string | null;
+  orphanWindowSeconds: number | null;
+  writes: PaperclipWakeOrphanedSessionWrite[];
+};
+
 type PaperclipWakePayload = {
   executionContinuation: ExecutionContinuationEnvelope | null;
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
+  orphanedSessions: PaperclipWakeOrphanedSession[] | null;
+  orphanedSessionsTruncated: boolean;
   externalChatExecutionBound: boolean;
   externalChatProvider: PaperclipExternalChatProvider | null;
   externalChatQuestionResponse: PaperclipWakeExternalChatQuestionResponse | null;
@@ -1722,6 +1742,51 @@ function normalizePaperclipExternalChatQuestionResponse(
   };
 }
 
+const MAX_ORPHANED_SESSIONS = 25;
+const MAX_ORPHANED_SESSION_WRITES = 10;
+
+function normalizePaperclipWakeOrphanedSessions(
+  value: unknown,
+): PaperclipWakeOrphanedSession[] | null {
+  if (value === null || value === undefined || !Array.isArray(value)) {
+    return null;
+  }
+  const sessions: PaperclipWakeOrphanedSession[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const writes = Array.isArray(record.writes)
+      ? record.writes.slice(0, MAX_ORPHANED_SESSION_WRITES).map((write) => {
+          const candidate = (write ?? {}) as Record<string, unknown>;
+          return {
+            ts: asString(candidate.ts, "").trim() || null,
+            toolName: asString(candidate.toolName, "").trim() || null,
+            target:
+              typeof candidate.target === "string" ? candidate.target : null,
+          };
+        })
+      : [];
+    sessions.push({
+      childSessionKey: asString(record.childSessionKey, "").trim() || null,
+      parentRunId: asString(record.parentRunId, "").trim() || null,
+      stampedParentRunId:
+        asString(record.stampedParentRunId, "").trim() || null,
+      parentSessionKey: asString(record.parentSessionKey, "").trim() || null,
+      orphanReason: asString(record.orphanReason, "").trim() || null,
+      anchorAt: asString(record.anchorAt, "").trim() || null,
+      detectedAt: asString(record.detectedAt, "").trim() || null,
+      orphanWindowSeconds:
+        typeof record.orphanWindowSeconds === "number" &&
+        Number.isFinite(record.orphanWindowSeconds)
+          ? record.orphanWindowSeconds
+          : null,
+      writes,
+    });
+    if (sessions.length >= MAX_ORPHANED_SESSIONS) break;
+  }
+  return sessions;
+}
+
 export function normalizePaperclipWakePayload(
   value: unknown,
 ): PaperclipWakePayload | null {
@@ -1826,6 +1891,11 @@ export function normalizePaperclipWakePayload(
   );
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
   const issue = normalizePaperclipWakeIssue(payload.issue);
+  const orphanedSessions = normalizePaperclipWakeOrphanedSessions(
+    payload.orphanedSessions,
+  );
+  const hasOrphanedSessions =
+    orphanedSessions !== null && orphanedSessions.length > 0;
   const skillTest =
     issue?.workMode === "skill_test" ||
     payload.skillTest === true ||
@@ -1851,7 +1921,8 @@ export function normalizePaperclipWakePayload(
     !executionWorkspace &&
     !agentMessage &&
     !recovery &&
-    !issue
+    !issue &&
+    !hasOrphanedSessions
   ) {
     return null;
   }
@@ -1862,6 +1933,11 @@ export function normalizePaperclipWakePayload(
     recovery,
     issue,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
+    orphanedSessions,
+    orphanedSessionsTruncated: asBoolean(
+      payload.orphanedSessionsTruncated,
+      false,
+    ),
     externalChatExecutionBound: payload.externalChatExecutionBound === true,
     externalChatProvider: normalizePaperclipExternalChatProvider(
       payload.externalChatProvider,
@@ -2649,6 +2725,14 @@ function renderPaperclipWakePromptBody(
   if (normalized.checkedOutByHarness && !externalChatContract) {
     lines.push("- checkout: already claimed by the harness for this run");
   }
+  if (normalized.orphanedSessions && normalized.orphanedSessions.length > 0) {
+    lines.push(
+      "- orphaned sessions from earlier runs: " +
+        normalized.orphanedSessions.length +
+        (normalized.orphanedSessionsTruncated ? "+ (truncated)" : "") +
+        "; treat them as residue context: adopt existing gates and files before redoing delegated work, and never act on another lane's ghosts without owner-scoped tooling",
+    );
+  }
   if (!resumedSession && normalized.executionWorkspace?.branchName) {
     lines.push(
       `- execution workspace branch: you are running in an execution workspace on branch ${markdownInlineCode(normalized.executionWorkspace.branchName)}. Do not switch, rename, or re-point this branch; keep all commits on it.`,
@@ -3084,6 +3168,36 @@ function renderPaperclipWakePromptBody(
       "",
       "The harness already checked out this issue for the current run.",
       "Do not call `POST /api/issues/$PAPERCLIP_TASK_ID/checkout` again unless you intentionally switch to a different task.",
+      "",
+    );
+  }
+  if (normalized.orphanedSessions && normalized.orphanedSessions.length > 0) {
+    lines.push(
+      "",
+      "Orphaned sessions from earlier runs (" +
+        normalized.orphanedSessions.length +
+        (normalized.orphanedSessionsTruncated ? "+, list truncated" : "") +
+        "):",
+    );
+    for (const orphan of normalized.orphanedSessions) {
+      const boundTo =
+        orphan.parentRunId ?? orphan.stampedParentRunId ?? "unknown run";
+      const anchor = orphan.anchorAt ?? "unknown anchor";
+      const reason = orphan.orphanReason ?? "unknown reason";
+      lines.push(
+        "- " +
+          (orphan.childSessionKey ?? "unknown session") +
+          " bound to " +
+          boundTo +
+          " (" +
+          reason +
+          "; anchor " +
+          anchor +
+          ")",
+      );
+    }
+    lines.push(
+      "Treat these as residue context: adopt existing gates and files before re-doing delegated work, and never act on another lane's ghosts without owner-scoped tooling.",
       "",
     );
   }

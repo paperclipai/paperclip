@@ -607,6 +607,10 @@ import {
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 import {
+  appendLifecycleGuardRunEnd,
+  readLifecycleGuardWakeField,
+} from "./lifecycle-guard-wake-field.js";
+import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
   readProcessStartedAt,
@@ -8189,6 +8193,13 @@ export async function buildPaperclipWakePayload(input: {
       Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
     checkedOutByHarness:
       input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
+    ...(() => {
+      const lifecycleGuardWakeField = readLifecycleGuardWakeField();
+      return {
+        orphanedSessions: lifecycleGuardWakeField.orphanedSessions,
+        orphanedSessionsTruncated: lifecycleGuardWakeField.orphanedSessionsTruncated,
+      };
+    })(),
     externalChatExecutionBound:
       input.contextSnapshot[PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY] ===
       true,
@@ -12756,6 +12767,13 @@ export function heartbeatService(
     clearHeartbeatRunRuntimeStatus(updated.id);
     void emitAgentTaskRun(db, updated);
     void reportRunFailure(db, updated);
+    // SON-4117: record the exact Paperclip run boundary in the lifecycle-guard
+    // binding store so the 120s grace anchors on the true run end instead of the
+    // gateway-local agent_end approximation. Best-effort: never throws.
+    appendLifecycleGuardRunEnd({
+      parentRunId: updated.id,
+      endedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    });
   }
 
   async function setRunStatus(
