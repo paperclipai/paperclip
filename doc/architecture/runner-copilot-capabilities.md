@@ -1,15 +1,25 @@
 # Copilot 1.0.88 rich ACP capability audit
 
-Audited 2026-09-28 against repository base `c65fc9e3c81c41aafe421aa90a00514b84343285`.
-Status: **candidate, not qualified**. Authenticated model discovery and exact model
-selection now pass. One canonical local protocol case and the local Product hello,
-file-edit, semantic plan and controller-restart cases passed through the real runner.
-A separate local question delivered and resumed, but failed its exact terminal-marker
-requirement. Daytona and the remaining qualification matrix remain pending. Two
-narrow real-service permission and detached-command probes also passed.
-Real executable offline probes cost $0; the live token receipt has no verified USD charge. The allocated live budget remains $25, subject to
-the shared $100 hard stop and verifiable spend. Do not expose this profile as
-supported until the required local and Daytona qualification passes.
+Initially audited 2026-09-28 against repository base `c65fc9e3c81c41aafe421aa90a00514b84343285`;
+updated 2026-09-29. Status remains **candidate, not qualified**. On frozen source
+`bd4cc29c3017ed5e1484423e842fd48e3b2f49f3`, profile v4 local hello, question/answer,
+semantic plan, controller restart and file-edit cases passed. Daytona hello passed
+one native `gpt-5.6-luna` run with six matchers on immutable image
+`sha256:bff4c3f291087a0eeae37e4c20dd51857b92833eaf73ba3aca4157f37de1e109`.
+Earlier question-marker, recovery, startup-timeout and PostgreSQL failures remain
+retained; later success does not establish causes for unresolved earlier failures.
+The new native-protection Product cases below have not run on the new source.
+
+Daytona sandbox-specific analytics stabilized across three reads at a provisional
+$0.0039682144 for the closed attempt interval; invoice finality and native per-run
+Copilot USD remain unknown. The Product list-price estimate was $0.0040321867.
+One exact owned sandbox was absent after the full 360-second cleanup observation;
+45 local PIDs retired and semaphore counts returned 255→266→255. The conditional
+720-second infrastructure bound was $0.053496. These are distinct accounting claims,
+not a zero-cost assertion. The allocated provider budget remains $25 within the
+shared $100 ceiling; no new paid attempt follows automatically from registration.
+Mac x64, the remaining Daytona workflows, broader permissions/background variants
+and complete rich-field projection remain unqualified.
 
 ## Connection policy audit, 2026-09-29
 
@@ -741,3 +751,33 @@ preflight still rejects. Two earlier operator invocations used the wrong image
 repository or Node path and failed before provider launch; both are retained.
 This is Linux packaging evidence, not an authenticated Daytona Product run or
 model qualification. The profile remains pending.
+
+### Bounded native tool observations and protection evaluations
+
+The sidecar and direct TypeScript driver share one projector under `drivers/acpx`,
+which projects an allowlist of active-turn ACP tool/permission fields into
+existing `provider.notice.recorded` details and provenance: validated relative target,
+request/tool identities, command SHA-256, explicit mode/detach, and linked shell
+start/completion with provider-reported exit code. Session passthrough notifications
+remain uncorrelated and cannot supply this evidence. Native ACP exposes an execution
+kind, not a trustworthy `bash` name in the title. Strings use semantic redaction;
+ambiguous identities, exhausted bounds or failed projection make evidence incomplete.
+Projection cannot change permission delivery or terminal authority. This is an additive
+observation change: Copilot profile v4 is unchanged, while source/pack provenance
+changes. Older sessions lacking these notices cannot pass the new evidence oracles.
+
+The manual local `copilot-protection` Product suite registers an exact browser-denial
+case with explicit cancellation and a finite attached-command settlement case. Both
+remain unqualified until separately built and run. The denial case expects an unfinished
+task/cancelled run; full restrictive workflow completion is still a gap because later
+MCP permissions must not be auto-approved from provider-controlled titles.
+
+A separate credential-free real-binary fixture on 2026-09-29 exercised Copilot1.0.88
+(executable SHA-256 `a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3`)
+against a loopback synthetic model. It started an eight-second attached async command;
+the model immediately returned terminal text while the process was still live. The
+binary itself issued a read-shell update, and process absence plus the marker were
+observed before the ACP prompt result. The model never called `read_bash`. The private
+`copilot-v4-protection-preparation/adversarial-attached-v2` receipt retains monotonic
+ordering and process identity. This verifies one pinned finite attached scenario and
+is distinct from detached-policy rejection or comprehensive background qualification.

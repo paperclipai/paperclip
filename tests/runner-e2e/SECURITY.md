@@ -292,3 +292,11 @@ Cursor, Copilot, GitHub and GH environment variables are stripped from the
 server environment. GitHub PAT shapes are included in retained-evidence scans.
 Candidates have no automatic infrastructure retries; spending must be reconciled
 before a deliberate repeat.
+
+Copilot protection fixtures use production browser/public API permission and
+cancellation paths. Their local one-shot socket accepts a nonce/PID only and owns
+one fixed bounded child; it cannot select commands, arguments, or paths. The exact
+native client command is supplied by the fixture, while production notices retain
+only its SHA-256. The fixture keeps private process identities local, closes its
+owned socket/child in cleanup, and never signals API-reported PIDs. Directory
+watch loss makes the denial oracle incomplete; it must not become a no-effect pass.

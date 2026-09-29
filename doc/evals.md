@@ -362,3 +362,8 @@ Copilot and Pi ACP profiles on local and Daytona. See the
 [fixture admission, credentials and budget contract](../tests/runner-e2e/README.md#extended-acp-harnesses-explicit-only).
 The private Runner Evals campaign of the same name provides complementary
 semantic protocol cases; catalog membership is not live qualification.
+
+The explicit local [Copilot protection fixtures](../tests/runner-e2e/FIXTURES.md#copilot-native-protection)
+exercise native permission denial with operator cancellation and bounded attached
+command settlement. Their registration remains separate from paid qualification;
+source/pack provenance and complete persisted evidence are required.

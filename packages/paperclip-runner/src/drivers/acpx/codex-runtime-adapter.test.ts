@@ -81,6 +81,32 @@ describe("Codex ACPX runtime adapter", () => {
     expect(runtime.startTurn).not.toHaveBeenCalled();
     expect(runtime.close).toHaveBeenCalled();
   });
+  it.each(["valid", "missing", "unsupported"])("cold Cursor adapter admission requires %s load/config and renews only on success", async mode => {
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand()); options.profile = { ...options.profile, agent: "cursor" };
+    options.refreshConsumedCommand = vi.fn(async () => undefined);
+    let created!: AcpRuntimeOptions;
+    vi.mocked(runtime.setConfigOption).mockImplementation(async () => {
+      const guard = created.protocolGuardFactory!();
+      const binding = cursorInstructionBinding(options.systemInstructions);
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: mode === "missing" ? {} : { _meta: { paperclipCursorInstructions: {
+        schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength,
+      } } } });
+      if (mode === "unsupported") throw new Error("Exact model unsupported");
+    });
+    const opening = openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    if (mode === "valid") {
+      const port = await opening; expect(options.refreshConsumedCommand).toHaveBeenCalledOnce(); await port.close({ reason: "fixture cleanup" });
+    } else {
+      await expect(opening).rejects.toThrow(mode === "missing" ? /Cursor instruction admission failed/ : /Exact model unsupported/);
+      expect(options.refreshConsumedCommand).not.toHaveBeenCalled(); expect(runtime.close).toHaveBeenCalled();
+    }
+    expect(runtime.setConfigOption).toHaveBeenCalledExactlyOnceWith({ handle: HANDLE, key: "model", value: options.profile.reportedModelId });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+  });
   it("routes only profile-allowed extensions to the owning turn and expires late responses", async () => {
     const runtime = fakeRuntime();
     const first = pendingExtensionTurn("turn-1");

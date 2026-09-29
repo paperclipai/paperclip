@@ -31,7 +31,7 @@ import type { AcpxModelStatus } from "./model-verification.js";
 import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 import { assertCopilotPromptPolicy, createCopilotProtocolGuard } from "./copilot-policy.js";
-import { createCursorInstructionAdmission } from "./cursor-instructions.js";
+import { admitCursorInstructions, createCursorInstructionAdmission } from "./cursor-instructions.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
@@ -448,7 +448,8 @@ export async function openQualifiedAcpxRuntime(
     runtimeCloseTimeoutMs,
   );
 
-  const handshake = Promise.resolve()
+  let handle: AcpRuntimeHandle | null = null;
+  const ensuredSession = Promise.resolve()
     .then(() =>
       runtime.ensureSession({
         sessionKey: options.providerSessionKey,
@@ -464,11 +465,37 @@ export async function openQualifiedAcpxRuntime(
             : {}),
         },
       }),
-    )
+    );
+  const handshake = (cursorInstructions
+    ? ensuredSession.then(async (ensuredHandle) => {
+        handle = ensuredHandle;
+        options.signal?.throwIfAborted();
+        await admitCursorInstructions(cursorInstructions, {
+          providerSpawned: commandLaunches.count > 0,
+          load: async () => {
+            // A fresh ACPX manager may reuse a saved record without spawning.
+            // Its supported exact-model control forces session/load and the
+            // current instruction acknowledgement before host admission.
+            if (!runtime.setConfigOption) {
+              throw new Error("Cursor cold admission requires exact model configuration");
+            }
+            await runtime.setConfigOption({
+              handle: ensuredHandle, key: "model", value: options.profile.reportedModelId,
+            });
+            // Match runtimePort.setModel: settle ownership of the temporary
+            // control connection before retiring its consumed command lease.
+            await children.verifyLifetimeOwnership();
+          },
+          refreshCommand: async () => {
+            options.signal?.throwIfAborted();
+            await commandLaunches.refreshConsumedCommand?.();
+          },
+        });
+        return ensuredHandle;
+      }) : ensuredSession)
     .catch((error: unknown) => {
       throw classifySessionEnsureFailure(error);
     });
-  let handle: AcpRuntimeHandle | null = null;
   let lateCleanup: Promise<void> | null = null;
   try {
     const boundedHandshake = boundedSessionHandshake(

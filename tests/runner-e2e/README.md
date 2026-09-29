@@ -1298,3 +1298,9 @@ file persistence uses two fresh task runs and independent byte checks; restricti
 denial uses one run and requires both a failed tool receipt and no file effect.
 See [the fixture contract](FIXTURES.md#pi-native-boundaries) for the exact oracles
 and the limits of reconnect evidence.
+
+The manual `copilot-protection` suite selects only two local Copilot candidate
+cells. Discover them with `pnpm test:e2e:runner -- --list --suite copilot-protection`.
+See [Copilot native protection](./FIXTURES.md#copilot-native-protection) for the
+expected cancelled negative test, finite attached-process oracle, evidence limits,
+and required rebuilt runtime. Registration is not a qualification claim.

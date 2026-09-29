@@ -61,6 +61,7 @@ import {
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
+import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
 import {
   persistedAcpxTurnUsage,
   acpxUsageEstimateNotice,
@@ -136,6 +137,7 @@ interface PendingPermission {
   turnId: string;
   responseDelivery: Promise<void>;
   normalized: NormalizedAcpxPermission;
+  deliveredEvidence?: (outcome: string) => void;
   settle(response: AcpPermissionDecision): void;
   cleanup(): void;
 }
@@ -366,6 +368,13 @@ async function dispatch(
       waitForInput: (input, context) => waitForExtensionInput(currentTurnId, input, context),
       emit: event => emit("runtime.rich_event", { ...event }, currentTurnId),
     });
+    const toolEvidence = openParams!.agent === "copilot" ? createCopilotToolEvidence({
+      sessionId: activeHost.identity().backendSessionId, turnId: currentTurnId,
+      workingDirectory: openParams!.workingDirectory,
+      active: () => turnId === currentTurnId && host === activeHost,
+      emit: event => { validateAcpxRichEvent(event); emit("runtime.rich_event", { ...event }, currentTurnId); },
+      unavailable: () => diagnostic("copilot_evidence_unavailable", "Copilot tool evidence is incomplete; permission and terminal outcomes are unchanged."),
+    }) : undefined;
     let usageBefore: unknown;
     try {
       usageBefore = await readSidecarHostStatusWithin(activeHost);
@@ -377,13 +386,13 @@ async function dispatch(
         onElicitation: (providerRequest, context) =>
           waitForInput(currentTurnId, providerRequest, context),
         onPermissionRequest: (providerRequest, context) =>
-          waitForPermission(currentTurnId, providerRequest, context),
+          waitForPermission(currentTurnId, providerRequest, context, toolEvidence),
       });
     } catch (error) {
       turnId = null;
       throw error;
     }
-    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain);
+    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, toolEvidence);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
     await runtimeTurn.promptStarted;
@@ -427,7 +436,9 @@ async function dispatch(
     const decision = pending.normalized.resolve(resolution);
     if (!permissions.delete(requestId)) throw new Error("permission request lost its settlement race");
     pending.cleanup();
-    return await deliverAcpxResponse(pending.responseDelivery, () => pending.settle(decision));
+    const receipt = await deliverAcpxResponse(pending.responseDelivery, () => pending.settle(decision));
+    pending.deliveredEvidence?.(decision.outcome);
+    return receipt;
   }
   if (request.command === "input.resolve") {
     const requestId = boundedIdentity(request.params.requestId, "requestId");
@@ -589,6 +600,7 @@ async function pumpTurn(
   activeHost: AcpxRuntimeHost,
   usageBefore: unknown,
   drainExtensions: () => Promise<void>,
+  toolEvidence?: CopilotToolEvidence,
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
@@ -599,6 +611,7 @@ async function pumpTurn(
     const normalizeMessage = initializedAgent === "grok"
       ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
     for await (const event of runtimeTurn.events) {
+      toolEvidence?.tool(event);
       emit(
         "runtime.event",
         sanitizeRuntimeEvent(
@@ -740,6 +753,7 @@ async function waitForPermission(
   activeTurnId: string,
   request: AcpPermissionRequest,
   context: { signal: AbortSignal; responseDelivery?: Promise<void> },
+  toolEvidence?: CopilotToolEvidence,
 ): Promise<AcpPermissionDecision> {
   const { signal } = context;
   if (turnId !== activeTurnId || signal.aborted || permissions.size >= MAX_PENDING_INPUTS) {
@@ -756,6 +770,7 @@ async function waitForPermission(
     };
     permissions.set(requestId, {
       turnId: activeTurnId, normalized, settle, responseDelivery,
+      deliveredEvidence: toolEvidence?.permission(request, requestId, normalized.choices.map(choice => choice.key)),
       cleanup: () => signal.removeEventListener("abort", abort),
     });
     signal.addEventListener("abort", abort, { once: true });

@@ -22,7 +22,15 @@ v7 has paid Product hello passes on local source `807feaecf` and Daytona source
 The [qualification checkpoint](runner-rich-acp-qualification-2026-09-29.json)
 retains exact profile, runtime, image and billing identities. Remaining Product
 journeys, native interactions and platform coverage are still unqualified; the
-prepared `bd4cc29c3` local campaign has not launched. The canonical
+`bd4cc29c3` local campaign passed hello and stopped at native questions: all
+15 behavioral checks passed, but the required API evidence snapshot was absent.
+The failed result is retained and the six later cells did not launch. A committed
+harness-only fix captures the complete final API evidence; its paid retry passed
+all 15 native-question checks. The following question-continuation case reached
+Done but failed the exact final-message assertion: earlier pre-tool narration
+was aggregated into the final item. Three runs settled across these two cells,
+all owned processes exited, and five later cells did not launch. The native
+message attribution defect remains open. The canonical
 [v7 declaration](../../packages/paperclip-runner/test-fixtures/pi-acp/profile-v7-identity.json)
 binds the exact wrapper, helper, extension and three target closures.
 
@@ -611,8 +619,10 @@ same pinned PostgreSQL binary: `semget(..., 17, 03600)` fails with `No space lef
 on device` when only 16 semaphores are free. It exits in 0.557 seconds, removes
 its temporary directory, leaves no child process, and leaves IPC totals unchanged.
 The original Product bootstrap stderr remains unavailable. No unrelated database
-or IPC object was changed. Further paid
-qualification is held until a supported database resource path is available.
+or IPC object was changed during that diagnosis. The later user-approved
+fixed-snapshot host cleanup removed 4,892 stale semaphore sets and skipped 11
+whose recorded creator PID was present. Startup and graceful shutdown now pass;
+the current checkpoint above supersedes this historical qualification hold.
 
 
 The [sanitized attempt ledger](../../packages/paperclip-runner/test-fixtures/pi-acp/paid-qualification-progress.darwin-arm64.json)

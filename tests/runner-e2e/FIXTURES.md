@@ -276,3 +276,39 @@ file under `deny-all`. All runs count toward spend and teardown. Browser reload
 is reconnect evidence only; these cases do not establish provider-death recovery.
 They use public product APIs, real browser answers, and ordinary isolated files;
 no database writes, private hooks, or fabricated provider results are allowed.
+
+## Copilot native protection
+
+The explicit-only `copilot-protection` suite has two local, one-run cells (120s
+provider timeout, 300s attempt budget). `native-permission-deny-write` denies one
+exact native edit through its browser card, waits for the delivered rejection and
+failed tool, then cancels through the public run API. Its expected outcome is a
+cancelled run and an unfinished task, not successful task completion. It rejects
+extra native operations/runs and observes the absent target through process
+retirement. Filesystem event loss or an unexplained parent-directory timestamp
+change makes no-effect coverage incomplete; stat polling alone cannot pass.
+
+`attached-async-settlement` starts a fixed finite command with explicit async mode
+and `detach:false`, then asks the model to attempt immediate completion. A one-shot
+private local socket accepts only the fixture nonce, never an executable or command;
+the test owns/reaps a predeclared child and records its actual exit before releasing
+the provider-launched client. The independent marker, client retirement, native shell
+linkage and actual durable turn terminal must agree. Fixture resources close in a
+finally block. This establishes the tested finite attached-command behavior, not all
+background modes or detached-process settlement.
+
+Both cells consume bounded, origin-correlated `copilot_tool_evidence_v1` notices
+persisted through the ordinary run-event API. Missing, redacted, ambiguous or
+explicitly incomplete notices fail qualification. Old runtime artifacts therefore
+cannot qualify these cases. No prompt/title substitutes for native input, no raw
+command or arbitrary tool input is added to production event payloads, and no private
+runner hook or database write is used. The cases are registered but require a newly
+built source/pack and separately authorized paid execution before claiming Product
+qualification. Full restrictive-workflow completion remains separate: the negative
+case never auto-approves an uncorrelated later MCP permission.
+
+The Copilot protection cells explicitly select `per_turn` lifecycle. Their read-only
+process journal accepts the API runner PID only after checking its OS start time,
+process group, exact run ID argument and `per_turn` argument; it never treats a
+retained warm daemon as a leaked per-run process or signals an API-provided PID.
+Directory-watch coverage also rejects parent device/inode replacement or removal.

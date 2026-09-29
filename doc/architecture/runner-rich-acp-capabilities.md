@@ -17,13 +17,15 @@ bound MCP names to provider-safe aliases, and rejects malformed native UI
 requests explicitly. Its four native question forms use an owned tool.
 
 Credential-free tests cover the new policy boundaries, real pinned native
-processes, clean runtime builds and Product E2E assertions. Pi v7 has passed its
-paid local hello case. Copilot v4 has passed local hello, question continuation,
-plan approval and controller-restart recovery on the integrated `bd4cc29c3`
-runtime; file-edit qualification failed during session startup. Pi's corrected Daytona hello also passed. Its first Daytona attempt created and
-retired one sandbox but failed before inference because the launcher omitted the
-build-owned remote artifact paths. Remaining
-authenticated cases, platform coverage and Daytona Product E2E are still required.
+processes, clean runtime builds and Product E2E assertions. On integrated source
+`bd4cc29c3`, Cursor v4 has passed local hello, and Copilot v4 has passed all five
+basic local journeys: hello, semantic questions, semantic plans, controller
+restart and file edit/validation. Pi v7 has passed local hello on `807feaecf` and
+Daytona hello on `bd4cc29c3`. Copilot also passed Daytona hello. Pi’s repaired
+native-question evidence case passed 15/15; the following continuation case
+exposed final-message aggregation of earlier narration.
+These passes retain earlier failures and do not qualify native interactions,
+all required platforms or the remaining remote journeys.
 
 The [harness priorities report](https://pages.paperclip.ing/2026-09-25-harness-priorities/)
 recommends Cursor and Copilot, followed by Pi, using the existing qualified ACPX
@@ -46,10 +48,10 @@ candidate scorecards from historical runtime policies.
 
 | Current candidate | Latest observed result | Remaining work |
 | --- | --- | --- |
-| Cursor v4, source `2e0b0fec0` | All three closures verify. Native instruction acknowledgement is enforced on new/load and automatic reload. Bounded todo projection preserves all IDs/statuses and marks shortened details. Exact-head Apex reports 5/5 | Authenticated current-profile Product tests, remaining platform and Daytona proof; paid tests await the account spend-limit decision |
-| Copilot v4, source `2042ca14c` | Fresh/load model-request capture proves native instructions reach the executable. Lifetime ownership prevents instruction-write races. Native session notices preserve bounded fields without inventing originating-turn attribution. Exact-head Apex reports 5/5 | The continuation fix is paid-tested on `bd4cc29c3`: hello, semantic question/answer, plan approval and controller restart passed (six matchers each). File editing failed during `session.open`; diagnose before retrying. Remote and remaining platform qualification are open |
-| Pi v7, sources `807feaecf` and `bd4cc29c3` | Local hello on `807feaecf` and Daytona hello on `bd4cc29c3` each passed all six matchers with one provider run, zero retries and complete owned cleanup. Delayed local billing was $0.000646464; remote model plus sandbox analytics stabilized at $0.0053185282. Apex reports 5/5 on the reviewed provider head | The eight-case local `bd4cc29c3` campaign remains held at the host database blocker. Remaining remote, native-interaction and platform cases plus final-source checks are required. Historical receipts retain their original retry policies; new supervisors explicitly enforce zero retries |
-| All three, Linux/Daytona | The immutable `bd4cc29c3` image and actual server artifact admission pass. Pi hello attempt 02 passed all six matchers, followed by complete owned cleanup and stable delayed billing; failed attempt 01 remains retained | Resolve host database startup pressure, then qualify the remaining remote cases; Copilot's first remote attempt never reached fixture creation |
+| Cursor v4, source `2e0b0fec0`; paid runtime `bd4cc29c3` | All three closures verify; native instructions and bounded todos are implemented. Exact-head Apex reports 5/5. Current-profile local hello passed six matchers with one authenticated run, complete process cleanup and unchanged semaphore count | The question-resume case failed reopening its provider session; the following three cases were not launched. A rebuilt `627451ecf` admission fix is being paid-tested. Native callbacks, restrictive permissions, other platforms and Daytona remain unqualified. The approved account on-demand cap is $25 |
+| Copilot v4, source `2042ca14c`; paid runtime `bd4cc29c3` | Native instruction delivery and lifetime ownership have deterministic proof. Exact-head Apex reports 5/5. All five basic local journeys passed; file edit/validation passed seven matchers in one run with complete cleanup | Daytona hello also passed six matchers with complete cleanup. Native permissions, attached background-command settlement, remaining remote workflows and other platforms remain open. The original session startup timeout is retained without a proven root cause |
+| Pi v7, sources `807feaecf` and `bd4cc29c3` | Local hello on `807feaecf` and Daytona hello on `bd4cc29c3` passed six matchers each with zero retries and complete owned cleanup. Remote model plus sandbox analytics stabilized at $0.0053185282. Apex reports 5/5 on the reviewed provider head | The `bd4cc29c3` campaign passed hello, then failed packaging native-question evidence despite 15 passing behavioral checks. The harness-only repair subsequently passed all 15 native checks. The next continuation case failed final-message aggregation; five later cells did not launch. Remote/platform evidence remains incomplete |
+| All three, Linux/Daytona | The immutable `bd4cc29c3` image and actual server artifact admission pass. Pi hello attempt 02 passed; failed attempt 01 remains retained | The host database resource blocker is repaired. Copilot’s retry passed six matchers and its exact sandbox remained absent for the full 360-second observation. Remaining remote cases are unqualified |
 
 Cursor and Copilot ignore generic ACP `_meta.systemPrompt`; setting `AGENT_HOME`
 in the process environment does not make it part of model instructions. The v4
@@ -150,14 +152,60 @@ was absent throughout the full cleanup window and all owned processes retired.
 Three delayed reads stabilized at $0.000630644 OpenRouter usage plus $0.0046878842
 sandbox analytics ($0.0053185282 combined, provisional provider accounting).
 
-Further live tests are paused because a credential-free reproduction confirmed
-host semaphore exhaustion during embedded PostgreSQL bootstrap (`semget` returned
-`ENOSPC`). Copilot's diagnostic local and first Daytona attempts failed before
-provider execution. The Daytona invocation never reached fixture creation or a
-cloud-write path; its machine cleanup flag remains `unresolved_scope_not_captured`
-and is retained separately from that source-order assessment. This host failure
-does not explain the earlier Copilot provider-session startup timeout. The
-remaining Pi local/native campaign is prepared but has not launched.
+Host semaphore exhaustion was confirmed by a credential-free PostgreSQL
+bootstrap reproduction (`semget` returned `ENOSPC`). With the user's approval,
+a fixed-snapshot cleanup removed 4,892 stale sets (83,164 semaphores) and skipped
+11 whose recorded creator PID was present. Startup and graceful shutdown now
+pass. Private qualification supervisors were also repaired to let the owned
+server shut down PostgreSQL before terminating launcher wrappers. Paid Cursor
+hello and Copilot file runs each returned to the 255-set baseline without a
+forced PostgreSQL kill; no provider runtime bytes changed.
+
+Cursor hello attempt 01 stopped in the private supervisor before provider
+launch. A process-inspection race was reproduced and repaired; attempt 02 passed
+six matchers with one run. Its matching account usage row is labeled Free (24K
+tokens), while native token and dollar receipts remain unavailable. Copilot's
+new file diagnostic passed seven matchers, exact file bytes and validation in
+one run; its included-credit counter moved from 11 to 12 with additional usage
+disabled. An initial workspace-only citation was rejected, then the model
+registered its deliverable and completed in the same run. This is not a retry.
+
+Earlier Copilot local and first Daytona failures remain preserved. The remote
+invocation never reached fixture creation or a cloud-write path; its machine
+cleanup flag remains `unresolved_scope_not_captured`, separately from that
+source-order assessment. Host exhaustion does not explain the earlier provider
+session timeout. The Pi local/native campaign stopped at its second cell: hello passed, and all
+15 native-question behavioral checks passed, but a required API snapshot was
+missing. The failed Product result remains retained; the six later cells did
+not launch. A minimal harness-only snapshot repair and seven focused regressions
+are committed. The two calls cost $0.004005496 by delayed exclusive-key delta.
+Cursor’s subsequent question-resume test also stopped its batch on a provider
+reopen failure; all 56 owned processes exited and semaphore counts returned to
+baseline. Its matching account row is Free (24.7K tokens). A credential-free reproduction shows that a fresh ACPX manager can return a
+saved Cursor record without loading the native provider. The committed repair
+forces an exact-model control to load that session and acknowledge current
+instructions within the existing admission deadline, then renews the consumed
+launch lease. Missing or incorrect acknowledgements still block prompting.
+The original private sidecar stack is unavailable; this is corroborating
+reproduction evidence. The fix passed 93 focused tests and package typecheck;
+the rebuilt `627451ecf` runtime is now in a bounded paid continuation batch.
+Later cases from the failed batch were not launched.
+
+Copilot Daytona hello attempt 02 passed six matchers with one run. All 45 owned
+processes retired and the exact owned sandbox remained absent throughout the
+360-second cleanup observation. Three delayed sandbox analytics reads stabilized
+at $0.0039682144; this remains provisional infrastructure accounting, separate
+from unavailable native per-run dollars and the account’s unchanged included-credit
+counter. Additional Copilot usage remains disabled.
+
+Pi’s native-question retry on unchanged `bd4cc29c3` runtime and separate
+`43c99f044` eval source passed 15/15 with complete required evidence. The next
+question continuation reached Done with two succeeded runs, but failed one of
+six matchers because the final item included earlier pre-tool narration. Retained
+post-tool text deltas alone match the expected final marker. Both cells fully
+settled, all 96 owned process identities retired across the two cells, and delayed
+exclusive-key charges totaled $0.005707808. Five later cells did not launch;
+the final-message defect remains under investigation.
 
 GitHub billing coverage was also audited: public standard-runner and self-hosted
 GitHub minute charges do not add a per-minute charge, but external fleet costs

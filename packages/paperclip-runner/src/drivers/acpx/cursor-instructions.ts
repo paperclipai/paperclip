@@ -69,3 +69,19 @@ export function createCursorInstructionAdmission(content: string) {
     },
   };
 }
+
+/** Cold ACPX ensureSession can return only a disk record. Establish a real load
+ * before admitting that handle; every later connection still gets its own guard.
+ */
+export async function admitCursorInstructions(
+  admission: ReturnType<typeof createCursorInstructionAdmission>,
+  input: { providerSpawned: boolean; load: () => Promise<void>; refreshCommand: () => Promise<void> },
+): Promise<void> {
+  if (!input.providerSpawned) {
+    await input.load();
+    admission.assertReady();
+    // ACPX control calls close their temporary native connection. A subsequent
+    // prompt needs a fresh verified command lease, never a consumed snapshot.
+    await input.refreshCommand();
+  } else admission.assertReady();
+}

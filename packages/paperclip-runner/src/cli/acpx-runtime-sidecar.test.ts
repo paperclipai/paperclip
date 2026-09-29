@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { deliverAcpxResponse } from "../drivers/acpx/response-delivery.js";
 import { normalizeAcpxPermission } from "../drivers/acpx/acp-permission-adapter.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
@@ -44,7 +45,7 @@ describe("qualified ACPX runtime sidecar", () => {
     const wait = new Function("permissions", "openParams", "normalizeAcpxPermission", "emit",
       `let turnId = "turn-1", requestSequence = 0; const MAX_PENDING_INPUTS = 512;
        const stableRequestId = () => "request-1"; const requireAcpxResponseDelivery = c => c.responseDelivery;
-       return async function(activeTurnId, request, context) { ${source.slice(start, end)}`)(
+       return async function(activeTurnId, request, context, toolEvidence) { ${source.slice(start, end)}`)(
       permissions, { agent }, normalizeAcpxPermission, (_event: string, payload: { choices: Array<{ key: string }> }) => emitted.push(payload),
     );
     const abort = new AbortController();
@@ -56,6 +57,26 @@ describe("qualified ACPX runtime sidecar", () => {
     abort.abort();
     await expect(pending).resolves.toEqual({ outcome: "cancel" });
     expect(permissions.size).toBe(0);
+  });
+  it("emits permission delivery evidence only after the actual response write settles", async () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf('    const requestId = boundedIdentity', source.indexOf('if (request.command === "permission.resolve")'));
+    const end = source.indexOf('\n  if (request.command === "input.resolve")', start);
+    const execute = new Function("permissions", "deliverAcpxResponse", "parseHarnessRuntimeRequestResolution", `
+      const turnId = "turn"; const boundedIdentity = x => x;
+      return async function(request) { ${source.slice(start, end)}
+    `);
+    for (const reject of [false, true]) {
+      let resolve!: () => void, fail!: (error: Error) => void;
+      const delivery = new Promise<void>((r, j) => { resolve = r; fail = j; });
+      const deliveredEvidence = vi.fn(), settle = vi.fn();
+      const permissions = new Map([["request", { turnId: "turn", normalized: { resolve: () => ({ outcome: "reject_once" }) }, cleanup() {}, settle, responseDelivery: delivery, deliveredEvidence }]]);
+      const run = execute(permissions, deliverAcpxResponse, () => ({ action: "decline" }))({ params: { requestId: "request", turnId: "turn" } });
+      expect(settle).toHaveBeenCalledWith({ outcome: "reject_once" });
+      expect(deliveredEvidence).not.toHaveBeenCalled();
+      if (reject) { fail(new Error("write failed")); await expect(run).rejects.toThrow("write failed"); expect(deliveredEvidence).not.toHaveBeenCalled(); }
+      else { resolve(); await expect(run).resolves.toEqual({ resolved: true }); expect(deliveredEvidence).toHaveBeenCalledExactlyOnceWith("reject_once"); }
+    }
   });
   it("preserves ACP input presence through the bounded sidecar handoff", () => {
     const source = readFileSync(

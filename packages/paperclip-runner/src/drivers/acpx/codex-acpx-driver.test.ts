@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AcpRuntimeEvent } from "acpx/runtime";
@@ -1543,10 +1544,11 @@ describe("Codex ACPX harness driver", () => {
     const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
     const receipt = deferred<void>();
     const providerResponse = callback({ inferredKind: "execute", raw: {
-      sessionId: "agent-session-1", toolCall: { toolCallId: "receipt-tool", title: "Run validation" },
+      sessionId: "backend-1", toolCall: { toolCallId: "receipt-tool", title: "Run validation", kind: "execute", rawInput: { command: "printf safe", mode: "async", detach: false } },
       options: [{ optionId: "session", kind: "allow_always", name: "Allow for session" }],
     } } as Parameters<typeof callback>[0], { signal: new AbortController().signal, responseDelivery: receipt.promise });
-    await created;
+    const requested = await created;
+    expect(requested.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "copilot_tool_evidence_v1").map(event => Object.fromEntries((event.payload.details as Array<{ name: string; value: string }>).map(x => [x.name, x.value])))).toEqual([expect.objectContaining({ stage: "permission_requested", toolCallId: "receipt-tool", mode: "async", detach: "false" })]);
     const request = session.pendingRuntimeRequests!()[0]!;
     expect(request.details).toMatchObject({ choices: [{ key: "accept_for_session" }, { key: "cancel" }] });
     let acknowledged = false;
@@ -1561,11 +1563,34 @@ describe("Codex ACPX harness driver", () => {
       receipt.reject(new Error("pipe failed")); await rejected;
     }
     const events = await emitted;
+    const evidence = events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "copilot_tool_evidence_v1" && (event.payload.details as Array<{ name: string; value: string }>).some(x => x.name === "stage" && x.value === "permission_delivered"));
+    expect(evidence).toHaveLength(outcome === "written" ? 1 : 0);
+    if (outcome === "written") expect(evidence[0]!.payload.details).toEqual(expect.arrayContaining([{ name: "stage", value: "permission_delivered" }, { name: "outcome", value: "allow_always" }]));
     expect(events.filter(event => event.eventType === "runtime_request.resolved")).toHaveLength(outcome === "written" ? 1 : 0);
     if (outcome === "failed") expect(events.at(-1)?.payload).toMatchObject({ replayAllowed: false, reason: "response_delivery_failed" });
     expect(session.pendingRuntimeRequests!()).toHaveLength(0);
     if (outcome === "written") fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
     await session.close({ reason: "receipt checked" });
+  });
+
+  it.each(["copilot", "codex"] as const)("preserves pinned attached-shell evidence only on the Copilot direct driver: %s", async agent => {
+    const wire = JSON.parse(readFileSync(new URL("./fixtures/copilot-tool-evidence.json", import.meta.url), "utf8"))["attached-shell"];
+    const runtimeEvents = wire.filter((frame: any) => frame.method === "session/update").map((frame: any) => ({ ...frame.params.update, type: "tool_call", tag: frame.params.update.sessionUpdate })) as AcpRuntimeEvent[];
+    const fixture = driverFixture({ agent, providerPolicy: { readOnly: false } }, { runtimeEvents });
+    const session = await fixture.driver.openSession({ runId: "run-attached", normalizedSessionId: "session-1", workingDirectory: "/fixture/workspace" });
+    const completed = collectUntil(session.events(), "turn.completed");
+    const { turnId } = await session.startTurn({ message: { text: "Start attached work." } });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    const events = await completed;
+    const evidence = events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "copilot_tool_evidence_v1");
+    if (agent === "copilot") {
+      expect(evidence.length).toBeGreaterThan(2);
+      expect(evidence.every(event => event.turnId === turnId && event.runId === "run-attached")).toBe(true);
+      const fields = evidence.map(event => Object.fromEntries((event.payload.details as Array<{ name: string; value: string }>).map(x => [x.name, x.value])));
+      expect(fields).toEqual(expect.arrayContaining([expect.objectContaining({ operation: "execute", mode: "async", detach: "false", commandSha256: expect.stringMatching(/^sha256:/u) }), expect.objectContaining({ shellState: "started", shellId: "0" }), expect.objectContaining({ shellState: "completed", shellId: "0", exitCode: "0", commandToolCallId: expect.any(String) })]));
+      expect(JSON.stringify(evidence)).not.toContain("sleep 2");
+    } else expect(evidence).toEqual([]);
+    await session.close({ reason: "projection verified" });
   });
 
   it("round-trips a provider-neutral ACP form through the runtime request boundary", async () => {

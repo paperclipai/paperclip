@@ -1,3 +1,4 @@
+import { copilotProtectionTasks } from "./copilot-protection-tasks.js";
 import { piNativeTasks } from "./pi-native-cases.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
@@ -1037,6 +1038,13 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion },
   },
   {
+    id: "copilot-protection", label: "Copilot native protection", manualOnly: true,
+    description: "Exact native denial with explicit operator cancellation, and attached command settlement with independent process evidence.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "copilot"),
+    environments: [localEnvironment], tasks: copilotProtectionTasks, expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", evidence: "copilot_tool_evidence_v1", profileVersion: QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion, denialTerminal: "explicit-public-cancellation", settlement: "attached-finite-command-only" },
+  },
+  {
     id: "extended-harnesses", label: "Extended ACP harnesses", manualOnly: true,
     description: "Explicit candidate qualification through real Paperclip tools, browser interactions, file edits and restart recovery.",
     groups: ["native"], profiles: extendedHarnessProfiles, environments: runnerEnvironments,
@@ -1374,6 +1382,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
   const allProfiles = [...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
     ...piNativeTasks,
+    ...copilotProtectionTasks,
     extendedHarnessFileTask,
     ...contextIntegrityTasks,
     ...accountingTasks,

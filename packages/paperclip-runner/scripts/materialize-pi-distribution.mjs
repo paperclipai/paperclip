@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "../src/drivers/acpx/pi-closure-pins.ts";
 import { PI_NODE_DISTRIBUTIONS, PI_NODE_VERSION } from "../src/drivers/acpx/pi-node-pins.ts";
+import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 import { QUALIFIED_ACPX_PROFILES } from "../src/drivers/acpx/qualified-profiles.ts";
 import { inventoryPiRuntimeFiles, verifyPiRuntimeManifest } from "../src/drivers/acpx/pi-verified-runtime.ts";
 
@@ -208,9 +209,9 @@ export async function materializePiDistribution({ outputRoot, nodeExecutable, np
       node = join(nodeRoot, "node");
     }
     if (hash(await readFile(node)) !== nodePin.executableSha256 || (await lstat(node)).size !== nodePin.executableSize) throw new Error("Pi Node executable does not match its target release pin");
-    const version = (await run(node, ["--version"], { env: {}, timeout: 10_000 })).stdout.trim();
+    const version = (await run(node, ["--version"], { env: {}, timeout: buildNodeStartupTimeout() })).stdout.trim();
     if (version !== `v${PI_NODE_VERSION}`) throw new Error("Pi distribution requires exact pinned Node version");
-    if ((await run(node, ["-p", "process.versions.undici"], { env: {}, timeout: 10_000 })).stdout.trim() !== PI_DISTRIBUTION_PINS.nodeBundledUndici) throw new Error("Pi Node bundled Undici differs from its reviewed security pin");
+    if ((await run(node, ["-p", "process.versions.undici"], { env: {}, timeout: buildNodeStartupTimeout() })).stdout.trim() !== PI_DISTRIBUTION_PINS.nodeBundledUndici) throw new Error("Pi Node bundled Undici differs from its reviewed security pin");
     await mkdir(runtimeRoot);
     await Promise.all(["package.json", "package-lock.json"].map((name) => copyFile(join(lockDirectory, name), join(runtimeRoot, name))));
     await writeFile(join(runtimeRoot, ".npmrc"), "registry=https://registry.npmjs.org/\nignore-scripts=true\naudit=false\nfund=false\n");
@@ -244,7 +245,7 @@ export async function materializePiDistribution({ outputRoot, nodeExecutable, np
       ? (await run("/usr/bin/otool", ["-L", copiedNode], { env: {}, timeout: 10_000 })).stdout
       : (await run("ldd", [copiedNode], { env: { PATH: "/usr/bin:/bin" }, timeout: 10_000 })).stdout;
     assertPiNodeSystemDependencies(dependencyListing, process.platform);
-    if ((await run(copiedNode, ["--version"], { env: {}, timeout: 10_000 })).stdout.trim() !== version) throw new Error("Copied Pi Node cannot execute after relocation");
+    if ((await run(copiedNode, ["--version"], { env: {}, timeout: buildNodeStartupTimeout() })).stdout.trim() !== version) throw new Error("Copied Pi Node cannot execute after relocation");
     await rm(buildHome, { recursive: true });
     // npm-generated .bin links and hidden lock metadata are not package payload
     // files. No launch uses PATH; excluding them makes the closure regular-only.

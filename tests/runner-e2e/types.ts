@@ -29,7 +29,8 @@ export type RunnerTaskFlow =
   | "plan_approval_completion"
   | "warm_three_turn"
   | "instruction_persistence"
-  | "pi_native";
+  | "pi_native"
+  | "copilot_protection";
 
 export interface SecretReference {
   type: "secret_ref";

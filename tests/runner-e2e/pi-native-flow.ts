@@ -113,6 +113,14 @@ export async function runPiNativeFlow(input: {
       check("restrictive-native-denial", await absent(deniedPath) && hasFailedPiWrite(runEvents, "pi-denied.txt"), "A correlated failed native edit and independent absent file prove restrictive denial");
       await input.evidence("pi-restrictive-denial.json", { permissionMode: "deny-all", fileAbsent: true, run: runs[0], events: runEvents });
     } else throw new Error(`Unknown Pi native flow ${execution.task.id}`);
+    // The specialized flow bypasses the standard task collector. Retain its
+    // required terminal API snapshot before declaring the fixture complete.
+    const final = await load();
+    const comments = await api.get<Row[]>(`/api/issues/${issue.id}/comments`);
+    const runEventsByRun = await Promise.all(runs.map(async run => ({ runId: run.id, events: await events(run.id) })));
+    await input.evidence("api-state.json", {
+      ...final, run: runs.at(-1), comments, checks, runEventsByRun,
+    });
     await input.capture("final-state", "Pi native fixture verified", "final-state.png");
     return { issue, runs, checks };
   } finally { await input.evidence("pi-native-checks.json", { issue, runs, checks }); }
