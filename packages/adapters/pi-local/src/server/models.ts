@@ -100,6 +100,14 @@ function pruneExpiredDiscoveryCache(now: number) {
   }
 }
 
+function assertLocalModelDiscoveryAllowed(env: Record<string, string>): void {
+  // Discovery runs directly under the service UID, outside the agent's
+  // execution target. A private credential file is still readable there.
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE?.trim() || env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+    throw new Error("Pi model discovery requires an isolated environment with file-backed database credentials.");
+  }
+}
+
 export async function discoverPiModels(input: {
   command?: unknown;
   cwd?: unknown;
@@ -108,6 +116,7 @@ export async function discoverPiModels(input: {
   const command = resolvePiCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
+  assertLocalModelDiscoveryAllowed(env);
   const runtimeEnv = normalizeEnv({ ...process.env, ...env });
 
   const result = await runChildProcess(
@@ -155,6 +164,7 @@ export async function discoverPiModelsCached(input: {
   const command = resolvePiCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
+  assertLocalModelDiscoveryAllowed(env);
   const key = discoveryCacheKey(command, cwd, env);
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);

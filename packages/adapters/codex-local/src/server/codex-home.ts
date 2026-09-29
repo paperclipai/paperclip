@@ -3,7 +3,19 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
-import { isCodexAuthCachePath, readSubscriptionAccountId } from "./codex-auth-cache.js";
+import { isCodexAuthCachePath, readSubscriptionAccountId, resolveCodexAuthCacheDir } from "./codex-auth-cache.js";
+import {
+  type SafeHandle,
+  lstatChild,
+  listPinnedDirectory,
+  openChildNoFollow,
+  openDirectoryNoFollow,
+  openPathNoFollow,
+  readChildLink,
+  readRegularFileNoFollow,
+  removeFileNoFollow,
+  replaceRegularFileNoFollow,
+} from "./safe-home-files.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -163,6 +175,42 @@ export function isManagedCodexHomePath(
   return resolved === companyRoot || resolved.startsWith(companyRoot + path.sep);
 }
 
+/** A connector run may only seed auth from a server-selected home when the
+ * service itself holds file-backed database credentials. The digest and the
+ * agent's CODEX_HOME are not proof that a path is a credential source. */
+export async function assertTrustedConnectorAuthSourceHome(input: {
+  env: NodeJS.ProcessEnv;
+  companyId: string;
+  agentId: string;
+  sourceHome: string | null;
+  managedAiConnection: boolean;
+}): Promise<void> {
+  const { env, companyId, agentId, sourceHome, managedAiConnection } = input;
+  if (!env.PAPERCLIP_DATABASE_URL_FILE?.trim() || sourceHome === null) return;
+  const source = path.resolve(sourceHome);
+  const companyHome = resolveManagedCodexHomeDir(env, companyId);
+  const agentHome = path.join(path.dirname(companyHome), "agents", agentId, "codex-home");
+  const cacheRoot = resolveCodexAuthCacheDir(env, companyId);
+  const isCacheEntry = path.dirname(source) === cacheRoot && path.basename(source) !== ".";
+  if ([resolveSharedCodexHomeDir(env), companyHome, agentHome].some((home) => source === path.resolve(home)) || isCacheEntry) {
+    return;
+  }
+  // A managed AI connection gets a short-lived credential home created by the
+  // server. Its private root is owned by this service, not by the local agent.
+  if (managedAiConnection && path.basename(source) === "provider") {
+    const sessionHome = path.dirname(source);
+    const serviceUid = process.getuid?.();
+    if (serviceUid !== undefined && path.dirname(sessionHome) === path.resolve(os.tmpdir())
+      && path.basename(sessionHome).startsWith(`paperclip-ai-${companyId}-`)) {
+      const [rootStat, sourceStat] = await Promise.all([fs.lstat(sessionHome), fs.lstat(source)]);
+      if (rootStat.isDirectory() && sourceStat.isDirectory()
+        && rootStat.uid === serviceUid && sourceStat.uid === serviceUid
+        && (rootStat.mode & 0o077) === 0 && (sourceStat.mode & 0o077) === 0) return;
+    }
+  }
+  throw new Error("Connector CODEX_HOME is not a trusted auth source in file-backed database mode");
+}
+
 /**
  * True when the Codex home has a usable `auth.json`. Uses `fs.access` (follows
  * symlinks), so a dangling auth symlink whose source has been removed counts as
@@ -250,9 +298,14 @@ export async function ensureSymlink(target: string, source: string): Promise<voi
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
-  if (existing) return;
+  if (existing?.isFile()) return;
+  if (existing && !existing.isSymbolicLink()) {
+    throw new Error("Managed Codex home copy target is not a regular file");
+  }
+  const bytes = await readRegularFileNoFollow(source);
+  if (!bytes) throw new Error("Managed Codex home copy source is missing or linked");
   await ensureParentDir(target);
-  await fs.copyFile(source, target);
+  await replaceRegularFileNoFollow(target, bytes);
 }
 
 function tomlString(value: string): string {
@@ -330,10 +383,7 @@ export async function writeManagedCodexMcpConfig(input: {
 }): Promise<{ configPath: string; warnings: string[] }> {
   const configPath = path.join(input.codexHome, "config.toml");
   await fs.mkdir(input.codexHome, { recursive: true });
-  const existing = await fs.readFile(configPath, "utf8").catch((error) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  });
+  const existing = (await readRegularFileNoFollow(configPath))?.toString("utf8") ?? "";
   const unmanagedConfig = stripManagedMcpBlock(existing);
   const { block, warnings } = buildManagedMcpBlock({
     gateways: input.gateways,
@@ -343,8 +393,7 @@ export async function writeManagedCodexMcpConfig(input: {
   const next = input.gateways.length > 0
     ? `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n`
     : `${unmanagedConfig}${unmanagedConfig ? "\n" : ""}`;
-  await fs.writeFile(configPath, next, { mode: 0o600 });
-  await fs.chmod(configPath, 0o600);
+  await replaceRegularFileNoFollow(configPath, next);
   return { configPath, warnings };
 }
 
@@ -357,196 +406,148 @@ export async function writeManagedCodexMcpConfig(input: {
 export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise<void> {
   await fs.mkdir(home, { recursive: true });
   const target = path.join(home, "auth.json");
-  await fs.rm(target, { force: true });
-  await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+  await replaceRegularFileNoFollow(target, JSON.stringify({ OPENAI_API_KEY: apiKey }));
 }
 
 export interface StageCodexHomeForSyncOptions {
   /** Run id, used only to make the staged temp-dir name traceable in logs. */
   runId?: string;
+  /** Exact trusted chain for a managed auth.json symlink, ending at a regular file. */
+  authSourcePaths?: readonly string[];
+  /** Selected, server-resolved skill sources. Unlisted home entries are never staged. */
+  skillSources?: readonly { name: string; source: string }[];
 }
 
-/**
- * True when `candidate` is `root` itself or a descendant of it. Both arguments
- * must be absolute, already-resolved (symlink-free) paths — callers pass
- * `fs.realpath` output — so `path.relative` is a reliable containment test that
- * is not fooled by `..` segments or a trailing-separator prefix collision
- * (`/a/skills` vs `/a/skills-evil`).
- */
-function isResolvedPathInside(candidate: string, root: string): boolean {
-  if (candidate === root) return true;
-  const rel = path.relative(root, candidate);
-  return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
-}
-
-/**
- * Recursively copies one skill subtree — rooted at its real directory
- * `containmentRoot` — into `targetDir`, dereferencing symlinks to bytes (so the
- * sandbox receives real file content, not host-relative links) and normalizing
- * every copied regular file to mode `0600`. Created directories get mode `0700`.
- *
- * Two containment guards protect the staged upload:
- *
- * - **Allowlist escape (finding 2).** After dereferencing, a symlink whose real
- *   target falls *outside* `containmentRoot` is skipped. A malformed or
- *   compromised skill could otherwise smuggle host files that are not in
- *   `CODEX_SYNC_ALLOWLIST` (e.g. `~/.ssh/id_rsa`) into the upload by pointing a
- *   nested link at them. The skill's own top-level link into the shared skill
- *   store is still honoured — it is what establishes `containmentRoot` in
- *   {@link stageDirectorySecure}; only links that escape *that* root are cut.
- * - **Directory cycles (finding 1).** A directory symlink such as `back -> .` or
- *   `back -> ..` resolves to an ancestor directory instead of raising `ELOOP`;
- *   recursing into it would traverse the same tree forever until disk/memory is
- *   exhausted. A resolved directory already on the active traversal path
- *   (`activePath`) is therefore skipped.
- *
- * Dangling symlinks (`ENOENT`) and self-referential links that do trip `ELOOP`
- * are silently skipped, as are non-file/dir entries (sockets, devices).
- */
-async function stageContainedSubtree(
-  sourceDir: string,
-  targetDir: string,
-  containmentRoot: string,
-  activePath: Set<string>,
-): Promise<void> {
-  await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
-  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const entrySource = path.join(sourceDir, entry.name);
-    const entryTarget = path.join(targetDir, entry.name);
-    // Resolve the real path; dangling or self-referential (`ELOOP`) links skip.
-    const resolved = await fs.realpath(entrySource).catch((error) => {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ELOOP") return null;
-      throw error;
-    });
-    if (!resolved) continue;
-    // Allowlist containment: never dereference a link that escapes this skill's
-    // real root (host files outside CODEX_SYNC_ALLOWLIST) into the upload.
-    if (!isResolvedPathInside(resolved, containmentRoot)) continue;
-    const entryStat = await fs.stat(resolved).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    });
-    if (!entryStat) continue;
-    if (entryStat.isDirectory()) {
-      // Cycle guard: a directory already open on the active path (reached via a
-      // `back -> .`-style link) would otherwise recurse forever.
-      if (activePath.has(resolved)) continue;
-      activePath.add(resolved);
-      await stageContainedSubtree(resolved, entryTarget, containmentRoot, activePath);
-      activePath.delete(resolved);
-    } else if (entryStat.isFile()) {
-      const bytes = await fs.readFile(resolved);
-      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
-      await fs.chmod(entryTarget, 0o600);
+/** Copy bytes from an already-open inode. An agent replacing its path cannot
+ * redirect the service read after this point. */
+async function stagePinnedEntry(source: SafeHandle, target: string): Promise<void> {
+  const stat = await source.stat();
+  if (stat.isDirectory()) {
+    await fs.mkdir(target, { recursive: true, mode: 0o700 });
+    for (const name of await listPinnedDirectory(source)) {
+      const child = await openChildNoFollow(source, name);
+      if (!child) continue; // Never follow nested links, including directory aliases.
+      try {
+        await stagePinnedEntry(child, path.join(target, name));
+      } finally {
+        await child.close();
+      }
     }
-    // Other types (sockets, devices) are silently skipped.
+  } else if (stat.isFile()) {
+    await fs.writeFile(target, await source.readFile(), { mode: 0o600 });
+    await fs.chmod(target, 0o600);
   }
+  // Sockets, devices and nonblocking FIFOs are not staging inputs.
 }
 
-/**
- * Recursively copies `sourceDir` (a directory allowlist entry — currently only
- * `skills/`) into `targetDir`, dereferencing symlinks to bytes and normalizing
- * every copied regular file to mode `0600`. Created directories get mode `0700`.
- *
- * This replaces `fs.cp({ dereference: true })` which preserves source file modes,
- * leaving `0644` documents and `0755` scripts group/other-readable in the staged
- * asset; here all regular files are normalized to `0600` regardless of source mode.
- *
- * `sourceDir`'s *direct* children are the Paperclip-injected skill symlinks that
- * intentionally point into a shared skill store *outside* `CODEX_HOME/skills/`,
- * so each child is allowed to resolve anywhere — and when it resolves to a
- * directory it becomes the containment root for its own subtree. Everything
- * *below* that root is copied via {@link stageContainedSubtree}, which refuses to
- * follow a nested symlink out of the skill (finding 2) and detects directory
- * cycles (finding 1). A direct child that resolves to `sourceDir` itself or to
- * an ancestor of it (a degenerate `-> .` / `-> ..` link at the top level) is
- * skipped rather than used as a root, so it can never drag the wider home into
- * the staged skills asset. The `0700` staged directory and per-file `0600` mode
- * together ensure even externally-sourced skill content is not group/world-readable.
- */
-async function stageDirectorySecure(
-  sourceDir: string,
-  targetDir: string,
-): Promise<void> {
-  await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
-  const realSourceDir = await fs.realpath(sourceDir);
-  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const entrySource = path.join(sourceDir, entry.name);
-    const entryTarget = path.join(targetDir, entry.name);
-    // Resolve the real path; dangling or self-referential (`ELOOP`) links skip.
-    const resolved = await fs.realpath(entrySource).catch((error) => {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ELOOP") return null;
-      throw error;
-    });
-    if (!resolved) continue;
-    // A top-level child that resolves to the skills dir itself or an ancestor
-    // of it (`back -> .` / `back -> ..`) is degenerate: using it as a root would
-    // re-stage the whole home under `skills/`. Skip it.
-    if (isResolvedPathInside(realSourceDir, resolved)) continue;
-    const entryStat = await fs.stat(resolved).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    });
-    if (!entryStat) continue;
-    if (entryStat.isDirectory()) {
-      // This child skill establishes its own containment root: nested links may
-      // not escape it, and the root seeds the cycle-detection active path.
-      await stageContainedSubtree(resolved, entryTarget, resolved, new Set([resolved]));
-    } else if (entryStat.isFile()) {
-      const bytes = await fs.readFile(resolved);
-      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
-      await fs.chmod(entryTarget, 0o600);
-    }
-    // Other types (sockets, devices) are silently skipped.
-  }
-}
-
-/**
- * Copies a single allowlist entry from the managed home into the staged dir,
- * dereferencing symlinks to bytes. Missing entries are skipped (keyring mode has
- * no `auth.json`; some homes have no `config.json`). Every staged regular file is
- * written `0600` (least privilege). Any non-`ENOENT` error propagates to the caller.
- */
-async function stageCodexHomeEntry(
-  sourceHome: string,
-  stagedHome: string,
-  entry: string,
-): Promise<void> {
-  const source = path.join(sourceHome, entry);
-  // `fs.stat` follows symlinks, so a dangling link (e.g. a removed auth source)
-  // reports ENOENT and is skipped exactly like a genuinely absent file.
-  const stat = await fs.stat(source).catch((error) => {
+async function readBoundAuthSource(sources: readonly string[], index = 0): Promise<Buffer | null> {
+  const source = sources[index];
+  if (!source) throw new Error("Unbound Codex auth symlink");
+  const dir = await openDirectoryNoFollow(path.dirname(source)).catch((error) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   });
-  if (!stat) return;
+  if (!dir) return null;
+  try {
+    const name = path.basename(source);
+    const stat = await lstatChild(dir, name);
+    if (!stat) return null;
+    if (stat.isSymbolicLink()) {
+      const next = sources[index + 1];
+      const linked = await readChildLink(dir, name);
+      if (!next || !linked || path.resolve(path.dirname(source), linked) !== path.resolve(next)) {
+        throw new Error("Codex auth symlink escaped its expected source");
+      }
+      return readBoundAuthSource(sources, index + 1);
+    }
+    if (!stat.isFile()) throw new Error("Codex auth source is not a regular file");
+    const handle = await openChildNoFollow(dir, name);
+    if (!handle) throw new Error("Codex auth source changed during staging");
+    try {
+      if (!(await handle.stat()).isFile()) throw new Error("Codex auth source changed type");
+      return await handle.readFile();
+    } finally {
+      await handle.close();
+    }
+  } finally {
+    await dir.close();
+  }
+}
 
+async function stageCodexHomeEntry(
+  sourceHome: SafeHandle,
+  sourceHomePath: string,
+  stagedHome: string,
+  entry: (typeof CODEX_SYNC_ALLOWLIST)[number],
+  options: StageCodexHomeForSyncOptions,
+): Promise<void> {
+  const stat = await lstatChild(sourceHome, entry);
+  if (!stat) return;
   const target = path.join(stagedHome, entry);
-  if (stat.isDirectory()) {
-    // Recursively copy with mode normalization — nested regular files land
-    // `0600` and dangling/circular symlinks are skipped.
-    await stageDirectorySecure(source, target);
+
+  if (entry === "skills") {
+    if (!stat.isDirectory()) throw new Error("Codex skills entry is not a directory");
+    const skills = await openChildNoFollow(sourceHome, entry);
+    if (!skills) throw new Error("Codex skills directory changed during staging");
+    try {
+      if (!(await skills.stat()).isDirectory()) throw new Error("Codex skills entry changed type");
+      await fs.mkdir(target, { recursive: true, mode: 0o700 });
+      if (options.skillSources) {
+        const seen = new Set<string>();
+        for (const skill of options.skillSources) {
+          if (skill.name === "." || skill.name === ".." || path.basename(skill.name) !== skill.name || seen.has(skill.name)) {
+            throw new Error("Invalid selected Codex skill name");
+          }
+          seen.add(skill.name);
+          const source = await openPathNoFollow(skill.source);
+          if (!source) throw new Error("Selected Codex skill source is missing or linked");
+          try {
+            await stagePinnedEntry(source, path.join(target, skill.name));
+          } finally {
+            await source.close();
+          }
+        }
+      } else {
+        // Standalone staging callers can carry regular files/dirs; links are
+        // always skipped. Production callers provide the exact selected set.
+        for (const name of await listPinnedDirectory(skills)) {
+          const source = await openChildNoFollow(skills, name);
+          if (!source) continue;
+          try {
+            await stagePinnedEntry(source, path.join(target, name));
+          } finally {
+            await source.close();
+          }
+        }
+      }
+    } finally {
+      await skills.close();
+    }
     return;
   }
 
-  // `fs.readFile` follows the symlink into the shared source and returns the
-  // resolved bytes (the live single-use auth token), which we write as a plain
-  // regular file so copy-back and in-sandbox auth read real bytes.
-  const bytes = await fs.readFile(source);
-  // Stage every regular file `0600`, not just `auth.json`. The staged dir is a
-  // 0700 mkdtemp and each file is read back only by the owner (Codex in-sandbox +
-  // copy-back), so nothing needs group/other read. This is least privilege and,
-  // critically, keeps secret-bearing entries protected: `config.toml` embeds the
-  // managed MCP `Authorization = "Bearer …"` header (and the source writer
-  // persists it 0600), so a per-file credential allowlist would silently
-  // downgrade it to 0644 in a world-readable tmpdir.
-  await fs.writeFile(target, bytes, { mode: 0o600 });
-  // Explicit chmod so the mode is 0600 regardless of the process umask.
-  await fs.chmod(target, 0o600);
+  if (entry === "auth.json" && stat.isSymbolicLink()) {
+    const expected = options.authSourcePaths?.[0];
+    const linked = await readChildLink(sourceHome, entry);
+    if (!expected || !linked || path.resolve(sourceHomePath, linked) !== path.resolve(expected)) {
+      throw new Error("Codex auth symlink escaped its expected source");
+    }
+    const bytes = await readBoundAuthSource(options.authSourcePaths ?? []);
+    if (bytes) {
+      await fs.writeFile(target, bytes, { mode: 0o600 });
+      await fs.chmod(target, 0o600);
+    }
+    return;
+  }
+  if (!stat.isFile()) throw new Error("Codex home allowlist entry is not a regular file");
+  const source = await openChildNoFollow(sourceHome, entry);
+  if (!source) throw new Error("Codex home entry changed during staging");
+  try {
+    if (!(await source.stat()).isFile()) throw new Error("Codex home entry changed type");
+    await stagePinnedEntry(source, target);
+  } finally {
+    await source.close();
+  }
 }
 
 /**
@@ -556,9 +557,9 @@ async function stageCodexHomeEntry(
  * only the files Codex actually needs are uploaded, so oversized runtime state
  * (`sessions/`, `*.sqlite`, `plugins/`, …) never reaches the sandbox.
  *
- * - **Symlinks are dereferenced to bytes** — the single-use `auth.json`
- *   credential (a symlink into the shared source home) and each `skills/` entry
- *   land as real files, never dangling links.
+ * - **Only bound symlinks are read** — managed `auth.json` is read from its
+ *   expected source chain and selected skills from server-resolved sources.
+ *   Agent-controlled links and directory aliases are never followed.
  * - **Missing-but-optional entries are skipped** — no `auth.json` in
  *   keyring-credential mode, or no `config.json`, is not an error.
  * - **`mkdtemp` guarantees the staged dir is `0700`** on POSIX, and every staged
@@ -579,8 +580,13 @@ export async function stageCodexHomeForSync(
     path.join(os.tmpdir(), `paperclip-codex-home-sync-${runIdPart ? `${runIdPart}-` : ""}`),
   );
   try {
-    for (const entry of CODEX_SYNC_ALLOWLIST) {
-      await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry);
+    const sourceHome = await openDirectoryNoFollow(effectiveCodexHome);
+    try {
+      for (const entry of CODEX_SYNC_ALLOWLIST) {
+        await stageCodexHomeEntry(sourceHome, effectiveCodexHome, stagedHome, entry, options);
+      }
+    } finally {
+      await sourceHome.close();
     }
     return stagedHome;
   } catch (error) {
@@ -660,7 +666,7 @@ export async function seedManagedCodexHome(
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
-      const targetBytes = await fs.readFile(authPath).catch(() => null);
+      const targetBytes = await readRegularFileNoFollow(authPath).catch(() => null);
       const targetIdentity = targetBytes ? readSubscriptionAccountId(targetBytes) : null;
       if (targetIdentity) {
         // Any source read failure — absent or unreadable — keeps the usable
@@ -677,8 +683,7 @@ export async function seedManagedCodexHome(
         // credential is irreversible. The #5028 heal therefore applies
         // exactly when the source is readable and the identities match.
         let sourceReadErrorCode: string | null = null;
-        const sourceBytes = await fs
-          .readFile(path.join(sourceHome, "auth.json"))
+        const sourceBytes = await readRegularFileNoFollow(path.join(sourceHome, "auth.json"))
           .catch((error: NodeJS.ErrnoException) => {
             if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
               sourceReadErrorCode = error.code ?? "unknown";
@@ -716,7 +721,7 @@ export async function seedManagedCodexHome(
           `[paperclip] Keeping the promoted subscription auth.json in Codex home "${targetHome}".\n`,
         );
       } else {
-        await fs.rm(authPath, { force: true });
+        await removeFileNoFollow(authPath);
       }
     }
   }

@@ -86,6 +86,20 @@ export async function testEnvironment(
   const command = asString(config.command, "pi");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  if (!targetIsRemote && (process.env.PAPERCLIP_DATABASE_URL_FILE?.trim() ||
+    asString(parseObject(config.env).PAPERCLIP_DATABASE_URL_FILE, "").trim())) {
+    return {
+      adapterType: ctx.adapterType,
+      status: "fail",
+      checks: [{
+        code: "pi_local_requires_isolation",
+        level: "error",
+        message: "Pi local environment test cannot run with file-backed database credentials.",
+        hint: "Select an isolated remote environment before testing Pi.",
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)

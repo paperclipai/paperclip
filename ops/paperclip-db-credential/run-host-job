@@ -1,0 +1,24 @@
+#!/bin/sh
+# Installed root-owned, mode 0755. No arguments or environment values are logged.
+set -eu
+set +x
+job=${1-}
+case "$job" in
+  daily) script=/usr/local/libexec/paperclip/jobs/daily-report.py; interpreter=/usr/bin/python3 ;;
+  fleet) script=/usr/local/libexec/paperclip/jobs/fleet-hourly-watch.py; interpreter=/usr/bin/python3 ;;
+  watchdog) script=/usr/local/libexec/paperclip/jobs/agent-watchdog.py; interpreter=/usr/bin/python3 ;;
+  testgc) script=/usr/local/libexec/paperclip/jobs/testdb-gc.sh; interpreter=/bin/sh ;;
+  wipcap) script=/usr/local/libexec/paperclip/jobs/hela3909-deploy-wip-cap.sh; interpreter=/bin/sh ;;
+  disk) script=/usr/local/libexec/paperclip/jobs/disk-alert.sh; interpreter=/bin/sh ;;
+  *) exit 64 ;;
+esac
+
+: "${CREDENTIALS_DIRECTORY:?systemd credential directory is required}"
+credential=$CREDENTIALS_DIRECTORY/database-url
+[ -r "$credential" ] || exit 65
+[ -f "$script" ] || exit 66
+IFS= read -r DATABASE_URL < "$credential" || [ -n "${DATABASE_URL-}" ]
+[ -n "${DATABASE_URL-}" ] || exit 67
+export DATABASE_URL
+unset DATABASE_MIGRATION_URL PGPASSWORD PGPASSFILE PGSERVICEFILE
+exec "$interpreter" "$script"

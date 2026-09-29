@@ -68,6 +68,7 @@ import {
   isCodexUnknownSessionError,
 } from "./parse.js";
 import {
+  assertTrustedConnectorAuthSourceHome,
   codexHomeHasUsableAuth,
   evaluateCodexCredentialReadiness,
   isManagedCodexHomePath,
@@ -643,6 +644,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
     && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
   if (connectorSkillDigest) {
+    await assertTrustedConnectorAuthSourceHome({
+      env: process.env,
+      companyId: agent.companyId,
+      agentId: agent.id,
+      sourceHome: connectorSourceHome,
+      managedAiConnection: Boolean(config.managedAiConnection),
+    });
     // Never mount assignment-specific skills into the shared company/user home.
     // A different skill revision gets a new home, so revoked/changed resources
     // cannot survive as stale symlinks or bleed into another agent's session.
@@ -805,11 +813,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // ship THAT as the `home` asset, instead of the whole managed
           // CODEX_HOME + a name denylist. Staged AFTER the config.toml rewrites
           // (provider merge + MCP block splice above) and skills injection, so the
-          // staged config.toml/skills reflect their final state. Symlinks (incl.
-          // the single-use `auth.json`) are dereferenced to bytes. This drops the
+          // staged config.toml/skills reflect their final state. Only the known
+          // shared auth source and selected skill sources may be dereferenced.
+          // This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
-          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
+          const authSeedHome = connectorSkillDigest
+            ? connectorSourceHome ?? defaultCodexHome
+            : resolveSharedCodexHomeDir(process.env);
+          const sharedAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+          const selectedSkills = new Set(desiredSkillNames);
+          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, {
+            runId,
+            authSourcePaths: [
+              path.join(authSeedHome, "auth.json"),
+              ...(authSeedHome === resolveSharedCodexHomeDir(process.env) ? [] : [sharedAuthPath]),
+            ],
+            skillSources: codexSkillEntries
+              .filter((entry) => selectedSkills.has(entry.key))
+              .map((entry) => ({ name: entry.runtimeName, source: entry.source })),
+          });
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,

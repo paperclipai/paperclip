@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Run a libpq client without putting the database URL in process arguments."""
+
+import os
+import sys
+from urllib.parse import parse_qsl, unquote, urlsplit
+
+
+CLIENTS = {"psql", "pg_dump", "pg_restore", "createdb", "dropdb", "pg_isready"}
+PARAMETERS = {
+    "sslmode": "PGSSLMODE",
+    "sslrootcert": "PGSSLROOTCERT",
+    "sslcert": "PGSSLCERT",
+    "sslkey": "PGSSLKEY",
+    "target_session_attrs": "PGTARGETSESSIONATTRS",
+    "connect_timeout": "PGCONNECT_TIMEOUT",
+    "application_name": "PGAPPNAME",
+}
+
+
+def fail() -> None:
+    print("Invalid job database credential or client invocation", file=sys.stderr)
+    raise SystemExit(64)
+
+
+def main() -> None:
+    if len(sys.argv) < 2 or sys.argv[1] not in CLIENTS:
+        fail()
+    client = sys.argv[1]
+    raw = os.environ.get("DATABASE_URL", "")
+    try:
+        url = urlsplit(raw)
+        if url.scheme not in {"postgres", "postgresql"} or url.fragment:
+            fail()
+        if not url.hostname or not url.username or url.password is None:
+            fail()
+        database = unquote(url.path.lstrip("/"))
+        if not database or "/" in database:
+            fail()
+        port = url.port or 5432
+        params = parse_qsl(url.query, keep_blank_values=True, strict_parsing=True)
+        if len(params) != len({key for key, _ in params}):
+            fail()
+        if any(key not in PARAMETERS or not value for key, value in params):
+            fail()
+    except (ValueError, TypeError):
+        fail()
+
+    # A job inherits no ambient libpq credentials or service DB URL. The
+    # password stays in the different-UID process environment, never argv.
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "DATABASE_URL" and not key.startswith("PG")
+    }
+    env.update(
+        PGHOST=unquote(url.hostname),
+        PGPORT=str(port),
+        PGUSER=unquote(url.username),
+        PGPASSWORD=unquote(url.password),
+        PGDATABASE=database,
+    )
+    env.update({PARAMETERS[key]: value for key, value in params})
+    os.execve(f"/usr/bin/{client}", [client, *sys.argv[2:]], env)
+
+
+if __name__ == "__main__":
+    main()

@@ -83,6 +83,20 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     vi.clearAllMocks();
   });
 
+  it("rejects file-backed service credentials before Hermes can start", async () => {
+    const previous = process.env.PAPERCLIP_DATABASE_URL_FILE;
+    process.env.PAPERCLIP_DATABASE_URL_FILE = "/synthetic/service/credential";
+    try {
+      const { ctx } = makeCtx({ command: "/synthetic/unsafe-hermes" });
+      await expect(execute(ctx as any)).rejects.toThrow("Hermes local adapter cannot run with file-backed database credentials");
+      expect(serverUtils.runChildProcess).not.toHaveBeenCalled();
+      expect(ctx.onMeta).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_DATABASE_URL_FILE;
+      else process.env.PAPERCLIP_DATABASE_URL_FILE = previous;
+    }
+  });
+
   it("forwards ctx.onSpawn to runChildProcess", async () => {
     const { ctx, onSpawn } = makeCtx();
 

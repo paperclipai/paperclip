@@ -1,5 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  readRegularFileNoFollow,
+  removeFileNoFollow,
+  replaceRegularFileNoFollow,
+} from "./safe-home-files.js";
 
 type PreparedCodexRuntimeConfig = {
   notes: string[];
@@ -301,7 +306,7 @@ function buildMergedConfigToml(base: string, parsed: ParsedCodexProvidersConfig)
 }
 
 async function readFileOrNull(filePath: string): Promise<string | null> {
-  return fs.readFile(filePath, "utf8").catch(() => null);
+  return (await readRegularFileNoFollow(filePath))?.toString("utf8") ?? null;
 }
 
 // Pre-run backup of the original config.toml, written before the merged file.
@@ -355,8 +360,8 @@ export async function prepareCodexRuntimeConfig(input: {
       if (backup !== null) {
         // Full-fidelity restore: the backup is the pre-run original, including
         // any user provider sections the crashed run's merge excised.
-        await fs.writeFile(configTomlPath, backup, "utf8");
-        await fs.rm(backupPath, { force: true });
+        await replaceRegularFileNoFollow(configTomlPath, backup);
+        await removeFileNoFollow(backupPath);
         return {
           notes: [
             ...notes,
@@ -370,7 +375,7 @@ export async function prepareCodexRuntimeConfig(input: {
       if (existing !== null) {
         const stripped = stripManagedCodexProviderBlocks(existing);
         if (stripped !== existing) {
-          await fs.writeFile(configTomlPath, stripped, "utf8");
+          await replaceRegularFileNoFollow(configTomlPath, stripped);
           return {
             notes: [
               ...notes,
@@ -408,8 +413,8 @@ export async function prepareCodexRuntimeConfig(input: {
   await fs.mkdir(input.codexHome, { recursive: true });
   // Persist the original BEFORE writing the merged file so a run that never
   // reaches cleanup() can be restored by the next prepare.
-  await fs.writeFile(backupPath, original ?? "", "utf8");
-  await fs.writeFile(configTomlPath, buildMergedConfigToml(base, parsed), "utf8");
+  await replaceRegularFileNoFollow(backupPath, original ?? "");
+  await replaceRegularFileNoFollow(configTomlPath, buildMergedConfigToml(base, parsed));
 
   return {
     notes: [
@@ -420,11 +425,11 @@ export async function prepareCodexRuntimeConfig(input: {
     ],
     cleanup: async () => {
       if (original === null) {
-        await fs.rm(configTomlPath, { force: true });
+        await removeFileNoFollow(configTomlPath);
       } else {
-        await fs.writeFile(configTomlPath, original, "utf8");
+        await replaceRegularFileNoFollow(configTomlPath, original);
       }
-      await fs.rm(backupPath, { force: true });
+      await removeFileNoFollow(backupPath);
     },
   };
 }

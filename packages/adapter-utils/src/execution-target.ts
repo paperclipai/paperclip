@@ -855,6 +855,28 @@ function applyRunDispositionSeam(
   };
 }
 
+export function assertFileBackedDbAgentExecutionAllowed(
+  target: AdapterExecutionTarget | null | undefined,
+  localProcessSandbox: LocalProcessSandboxOptions | null | undefined,
+  engine: "cli" | "acpx",
+  agentEnv: Record<string, string> = {},
+): void {
+  if (!process.env.PAPERCLIP_DATABASE_URL_FILE?.trim()) return;
+  if (Object.keys(agentEnv).some((key) =>
+    key === "DATABASE_URL" || key === "DATABASE_MIGRATION_URL" ||
+    key === "PAPERCLIP_DATABASE_URL_FILE" || key === "PAPERCLIP_AGENT_JWT_SECRET" ||
+    /^PG[A-Z0-9_]+$/.test(key))) {
+    throw new Error("Agent environment must not contain control-plane database or signing credentials.");
+  }
+  if (target?.kind === "remote") return;
+  if (engine === "acpx") {
+    throw new Error("File-backed database credentials require ACPX to run in an isolated remote environment.");
+  }
+  if (localProcessSandbox?.filesystemScope !== "workspace") {
+    throw new Error("File-backed database credentials require a workspace filesystem sandbox for local agents.");
+  }
+}
+
 export async function runAdapterExecutionTargetProcess(
   runId: string,
   target: AdapterExecutionTarget | null | undefined,
@@ -862,6 +884,7 @@ export async function runAdapterExecutionTargetProcess(
   args: string[],
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
+  assertFileBackedDbAgentExecutionAllowed(target, options.localProcessSandbox, "cli", options.env);
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);

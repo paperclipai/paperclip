@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveDatabaseConnectionString } from "@paperclipai/db";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
@@ -12,8 +13,27 @@ function isInsideOsTmpDir(targetPath: string): boolean {
 }
 
 export async function databaseCheck(config: PaperclipConfig, configPath?: string): Promise<CheckResult> {
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE && config.database.mode !== "postgres") {
+    return {
+      name: "Database",
+      status: "fail",
+      message: "PAPERCLIP_DATABASE_URL_FILE requires PostgreSQL mode",
+      canRepair: false,
+    };
+  }
   if (config.database.mode === "postgres") {
-    if (!config.database.connectionString) {
+    let connectionString: string | undefined;
+    try {
+      connectionString = resolveDatabaseConnectionString({ configConnectionString: config.database.connectionString });
+    } catch (err) {
+      return {
+        name: "Database",
+        status: "fail",
+        message: err instanceof Error ? err.message : "Invalid PostgreSQL credential source",
+        canRepair: false,
+      };
+    }
+    if (!connectionString) {
       return {
         name: "Database",
         status: "fail",
@@ -25,7 +45,7 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
 
     try {
       const { createDb } = await import("@paperclipai/db");
-      const db = createDb(config.database.connectionString);
+      const db = createDb(connectionString);
       await db.execute("SELECT 1");
       return {
         name: "Database",
@@ -36,7 +56,9 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
       return {
         name: "Database",
         status: "fail",
-        message: `Cannot connect to PostgreSQL: ${err instanceof Error ? err.message : String(err)}`,
+        message: process.env.PAPERCLIP_DATABASE_URL_FILE
+          ? "Cannot connect to PostgreSQL using file-backed credential"
+          : `Cannot connect to PostgreSQL: ${err instanceof Error ? err.message : String(err)}`,
         canRepair: false,
         repairHint: "Check your connection string and ensure PostgreSQL is running",
       };

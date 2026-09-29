@@ -328,6 +328,19 @@ async function checkProviderConsistency(
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+    return {
+      adapterType: ADAPTER_TYPE,
+      status: "fail",
+      checks: [{
+        code: "hermes_local_requires_isolation",
+        level: "error",
+        message: "Hermes local adapter cannot run with file-backed database credentials.",
+        hint: "Select an isolated adapter before enabling the file-backed database source.",
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   const config = (ctx.config ?? {}) as Record<string, unknown>;
   const command = resolveHermesCommand(config);
   const checks: AdapterEnvironmentCheck[] = [];

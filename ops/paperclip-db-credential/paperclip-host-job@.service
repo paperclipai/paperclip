@@ -1,0 +1,15 @@
+# TEMPLATE: schedule this unit from root-owned timers or cron after migration.
+[Unit]
+Description=Paperclip host job %i
+
+[Service]
+Type=oneshot
+User=pcjob-%i
+Group=pcjob-%i
+LoadCredential=database-url:/etc/paperclip/credentials/jobs/%i.url
+ExecStart=/usr/local/libexec/paperclip/run-host-job %i
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=-/var/lib/paperclip/job-state/%i

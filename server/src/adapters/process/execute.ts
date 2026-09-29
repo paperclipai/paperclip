@@ -15,6 +15,11 @@ import {
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  // This legacy adapter launches an arbitrary command as the server UID. It
+  // cannot confine the command away from the service's file-backed DB secret.
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+    throw new Error("Process adapter cannot run with file-backed database credentials; use an isolated adapter.");
+  }
   const { runId, agent, config, onLog, onMeta, authToken } = ctx;
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");

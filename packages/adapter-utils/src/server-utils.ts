@@ -96,6 +96,7 @@ interface SpawnTarget {
   args: string[];
   cwd?: string;
   env?: Record<string, string | undefined>;
+  inheritedFds?: number[];
   cleanup?: () => Promise<void>;
 }
 
@@ -160,14 +161,13 @@ export function isPaperclipRuntimeEnvKey(key: string): boolean {
   return key.startsWith("PAPERCLIP_");
 }
 
-// PAPERCLIP_API_KEY is never accepted from adapter/user config env: the
-// harness-minted run token is the only source of Paperclip API identity.
-// PAPERCLIP_WAKE_PAYLOAD_JSON is retired: wake context travels in the prompt,
-// and a configured copy can exceed OS process-launch limits.
+// The run token and service DB file path are never accepted from
+// adapter/user config env. Wake JSON is retired: wake context travels in the
+// prompt, and a configured copy can exceed OS process-launch limits.
 // Other PAPERCLIP_*-named config keys are allowed as long as Paperclip has
 // not assigned the same key for the run (runtime vars always win).
 export function isForbiddenConfigEnvKey(key: string): boolean {
-  return key === "PAPERCLIP_API_KEY" || key === "PAPERCLIP_WAKE_PAYLOAD_JSON";
+  return key === "PAPERCLIP_API_KEY" || key === "PAPERCLIP_DATABASE_URL_FILE" || key === "PAPERCLIP_WAKE_PAYLOAD_JSON";
 }
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -3514,7 +3514,15 @@ export function sanitizeInheritedPaperclipEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
+  // The service may carry database credentials for its own connection. An
+  // agent receives only its run-scoped API token, never the service DB identity.
+  delete env.DATABASE_URL;
+  delete env.DATABASE_MIGRATION_URL;
   for (const key of Object.keys(env)) {
+    if (/^PG[A-Z0-9_]+$/.test(key)) {
+      delete env[key];
+      continue;
+    }
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
@@ -3616,6 +3624,42 @@ function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
   return path.join(fallbackRoot, "System32", "cmd.exe");
 }
 
+const FILE_BACKED_BWRAP_PATH = "/usr/bin/bwrap";
+const FILE_BACKED_SSH_PATH = "/usr/bin/ssh";
+
+async function resolveTrustedFileBackedLauncher(executablePath: string): Promise<string> {
+  if (process.platform !== "linux") {
+    throw new Error("File-backed database credentials require Linux host launchers.");
+  }
+  for (const candidate of ["/", "/usr", "/usr/bin", executablePath]) {
+    const stat = await fs.lstat(candidate).catch(() => null);
+    if (!stat || stat.uid !== 0 || (stat.mode & 0o022) !== 0 || stat.isSymbolicLink() ||
+        (candidate === executablePath ? !stat.isFile() : !stat.isDirectory())) {
+      throw new Error(`File-backed database credentials require a root-owned, non-writable ${executablePath} launcher and path.`);
+    }
+  }
+  await fs.access(executablePath, fsConstants.X_OK);
+  return executablePath;
+}
+
+async function resolveFileBackedBubblewrap(requestedCommand: string): Promise<string> {
+  if (requestedCommand !== "bwrap" && requestedCommand !== FILE_BACKED_BWRAP_PATH) {
+    throw new Error("File-backed database credentials require the trusted /usr/bin/bwrap launcher; custom filesystemSandboxCommand is not allowed.");
+  }
+  return resolveTrustedFileBackedLauncher(FILE_BACKED_BWRAP_PATH);
+}
+
+function untrustedLoaderEnvOverrides(env: NodeJS.ProcessEnv): Record<string, undefined> {
+  const overrides: Record<string, undefined> = {};
+  for (const key of Object.keys(env)) {
+    if (/^(?:LD_|DYLD_)/.test(key) ||
+        ["GCONV_PATH", "LOCPATH", "NLSPATH", "GLIBC_TUNABLES"].includes(key)) {
+      overrides[key] = undefined;
+    }
+  }
+  return overrides;
+}
+
 async function resolveSpawnTarget(
   command: string,
   args: string[],
@@ -3627,9 +3671,12 @@ async function resolveSpawnTarget(
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   } = {},
 ): Promise<SpawnTarget> {
+  const fileBackedDb = Boolean(process.env.PAPERCLIP_DATABASE_URL_FILE?.trim());
   const remote = options.remoteExecution ?? null;
   if (remote) {
-    const sshResolved = await resolveCommandPath("ssh", process.cwd(), env);
+    const sshResolved = fileBackedDb
+      ? await resolveTrustedFileBackedLauncher(FILE_BACKED_SSH_PATH)
+      : await resolveCommandPath("ssh", process.cwd(), env);
     if (!sshResolved) {
       throw new Error('Command not found in PATH: "ssh"');
     }
@@ -3647,6 +3694,7 @@ async function resolveSpawnTarget(
       command: sshResolved,
       args: spawnTarget.args,
       cwd: process.cwd(),
+      ...(fileBackedDb ? { env: untrustedLoaderEnvOverrides(env) } : {}),
       cleanup: spawnTarget.cleanup,
     };
   }
@@ -3660,11 +3708,9 @@ async function resolveSpawnTarget(
     }
     const requestedSandboxCommand =
       options.localProcessSandbox.command?.trim() || "bwrap";
-    const sandboxCommand = await resolveCommandPath(
-      requestedSandboxCommand,
-      cwd,
-      env,
-    );
+    const sandboxCommand = fileBackedDb
+      ? await resolveFileBackedBubblewrap(requestedSandboxCommand)
+      : await resolveCommandPath(requestedSandboxCommand, cwd, env);
     if (!sandboxCommand) {
       throw new Error(
         `Local process confinement requires Bubblewrap, but "${requestedSandboxCommand}" was not found in PATH. Install bwrap or configure filesystemSandboxCommand.`,
@@ -3676,7 +3722,13 @@ async function resolveSpawnTarget(
       cwd,
       options: options.localProcessSandbox,
     });
-    return { ...sandboxTarget, command: sandboxCommand };
+    return {
+      ...sandboxTarget,
+      command: sandboxCommand,
+      ...(fileBackedDb ? {
+        env: { ...sandboxTarget.env, ...untrustedLoaderEnvOverrides(env) },
+      } : {}),
+    };
   }
 
   if (process.platform !== "win32") {
@@ -4661,6 +4713,10 @@ export async function ensureCommandResolvable(
   } = {},
 ) {
   if (options.remoteExecution) {
+    if (process.env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+      await resolveTrustedFileBackedLauncher(FILE_BACKED_SSH_PATH);
+      return;
+    }
     const resolvedSsh = await resolveCommandPath("ssh", process.cwd(), env);
     if (resolvedSsh) return;
     throw new Error('Command not found in PATH: "ssh"');
@@ -4738,13 +4794,19 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
-        const child = spawn(target.command, target.args, {
-          cwd: target.cwd ?? opts.cwd,
-          env: childEnv,
-          detached: process.platform !== "win32",
-          shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
-        }) as ChildProcessWithEvents;
+        let child: ChildProcessWithEvents;
+        try {
+          child = spawn(target.command, target.args, {
+            cwd: target.cwd ?? opts.cwd,
+            env: childEnv,
+            detached: process.platform !== "win32",
+            shell: false,
+            stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe", ...(target.inheritedFds ?? [])],
+          }) as ChildProcessWithEvents;
+        } catch (error) {
+          void target.cleanup?.();
+          throw error;
+        }
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 

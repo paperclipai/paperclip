@@ -41,6 +41,24 @@ const BIFROST_PROVIDERS = {
 };
 
 describe("prepareCodexRuntimeConfig", () => {
+  it("never reads or writes through a config.toml link to a service file", async () => {
+    const home = await makeCodexHome();
+    const serviceFile = path.join(path.dirname(home), `${path.basename(home)}-service-only`);
+    cleanupPaths.add(serviceFile);
+    const marker = "SYNTHETIC_SERVICE_CREDENTIAL";
+    await fs.writeFile(serviceFile, marker, { mode: 0o600 });
+    await fs.symlink(serviceFile, path.join(home, "config.toml"));
+
+    const prepared = await prepareCodexRuntimeConfig({
+      env: { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) },
+      codexHome: home,
+    });
+    expect(await fs.readFile(serviceFile, "utf8")).toBe(marker);
+    expect(await readConfigToml(home)).not.toContain(marker);
+    await prepared.cleanup();
+    expect(await fs.readFile(serviceFile, "utf8")).toBe(marker);
+  });
+
   it("is a no-op when PAPERCLIP_CODEX_PROVIDERS is unset", async () => {
     const home = await makeCodexHome("model = \"gpt-5.1-codex\"\n");
     const prepared = await prepareCodexRuntimeConfig({ env: { FOO: "bar" }, codexHome: home });

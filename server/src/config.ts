@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
+import { resolveDatabaseConnectionString } from "@paperclipai/db";
 import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import { shouldLoadWorkingDirectoryEnv } from "./env-file-policy.js";
@@ -127,6 +128,9 @@ export function loadConfig(): Config {
     fileDatabaseMode === "postgres"
       ? fileConfig?.database.connectionString
       : undefined;
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE && fileDatabaseMode !== "postgres") {
+    throw new Error("PAPERCLIP_DATABASE_URL_FILE requires database.mode=postgres");
+  }
   const fileDatabaseBackup = fileConfig?.database.backup;
   const fileSecrets = fileConfig?.secrets;
   const fileStorage = fileConfig?.storage;
@@ -329,7 +333,7 @@ export function loadConfig(): Config {
     ),
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
-    databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
+    databaseUrl: resolveDatabaseConnectionString({ configConnectionString: fileDbUrl }),
     databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
     embeddedPostgresDataDir: resolveHomeAwarePath(
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),

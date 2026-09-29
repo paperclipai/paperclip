@@ -171,7 +171,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
   });
 
-  it("drops PAPERCLIP_API_KEY bindings but forwards other PAPERCLIP_-named env to resolution", async () => {
+  it("drops control-plane credential bindings but forwards other PAPERCLIP_-named env", async () => {
     const resolveAdapterConfigForRuntime = vi.fn(async (_companyId, config: Record<string, unknown>) => ({
       config: {
         ...config,
@@ -195,12 +195,14 @@ describe("resolveExecutionRunAdapterConfig", () => {
       environmentEnv: {
         PAPERCLIP_API_KEY: "environment-api-key",
         PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled",
+        PAPERCLIP_DATABASE_URL_FILE: "/private/database-url",
         PAPERCLIP_CLOUD_PROVIDER_TOKEN_ENV: "environment-cloud",
         ENV_ONLY: "environment-only",
       },
       executionRunConfig: {
         env: {
           PAPERCLIP_API_KEY: { type: "secret_ref", secretId: "secret-api-key", version: "latest" },
+          PAPERCLIP_DATABASE_URL_FILE: "/private/database-url",
           PAPERCLIP_CLOUD_PROVIDER_TOKEN_AGENT: "agent-cloud",
           AGENT_ONLY: "agent-only",
         },

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
+import { resolveDatabaseConnectionString } from "./credential-source.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -75,6 +76,110 @@ describe("createBufferedTextFileWriter", () => {
 });
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  it("keeps a file-backed database URL out of pg_dump and psql argv and errors", async () => {
+    const initialConnectionString = await createTempDatabase();
+    const adminSql = postgres(initialConnectionString, { max: 1 });
+    try {
+      await adminSql.unsafe("ALTER ROLE paperclip PASSWORD 'synthetic_backup_password_7e1c'");
+    } finally {
+      await adminSql.end();
+    }
+    const connectionUrl = new URL(initialConnectionString);
+    connectionUrl.password = "synthetic_backup_password_7e1c";
+    const connectionString = connectionUrl.toString();
+    const tempDir = createTempDir("paperclip-db-backup-cli-argv-");
+    const credentialFile = path.join(tempDir, "database-url");
+    const argvFile = path.join(tempDir, "argv");
+    const servicePathFile = path.join(tempDir, "service-path");
+    fs.writeFileSync(credentialFile, `${connectionString}\n`, { mode: 0o600 });
+    const resolved = resolveDatabaseConnectionString({
+      env: { PAPERCLIP_DATABASE_URL_FILE: credentialFile },
+    });
+    expect(resolved).toBe(connectionString);
+
+    const wrapper = `#!/bin/sh
+printf '%s\\n' "$@" > "$PAPERCLIP_ARGV_CAPTURE"
+printf '%s\\n' "$PGSERVICEFILE" > "$PAPERCLIP_SERVICE_CAPTURE"
+test "$PGSERVICE" = paperclip && test -r "$PGSERVICEFILE" || exit 40
+if [ "$PAPERCLIP_FORCE_CLI_FAILURE" = 1 ]; then
+  case "$0" in *psql) exec 0<&-; sleep 1 ;; esac
+  cat "$PGSERVICEFILE" >&2
+  printf '%s\\n' 'FATAL: password authentication failed for user synthetic' >&2
+  exit 41
+fi
+case "$0" in
+  *pg_dump) printf 'SELECT 1;\\n' ;;
+  *) cat >/dev/null ;;
+esac
+`;
+    const pgDump = path.join(tempDir, "pg_dump");
+    const psql = path.join(tempDir, "psql");
+    fs.writeFileSync(pgDump, wrapper, { mode: 0o700 });
+    fs.writeFileSync(psql, wrapper, { mode: 0o700 });
+    const previous = {
+      PAPERCLIP_PG_DUMP_PATH: process.env.PAPERCLIP_PG_DUMP_PATH,
+      PAPERCLIP_PSQL_PATH: process.env.PAPERCLIP_PSQL_PATH,
+      PAPERCLIP_ARGV_CAPTURE: process.env.PAPERCLIP_ARGV_CAPTURE,
+      PAPERCLIP_SERVICE_CAPTURE: process.env.PAPERCLIP_SERVICE_CAPTURE,
+      PAPERCLIP_FORCE_CLI_FAILURE: process.env.PAPERCLIP_FORCE_CLI_FAILURE,
+    };
+    process.env.PAPERCLIP_PG_DUMP_PATH = pgDump;
+    process.env.PAPERCLIP_PSQL_PATH = psql;
+    process.env.PAPERCLIP_ARGV_CAPTURE = argvFile;
+    process.env.PAPERCLIP_SERVICE_CAPTURE = servicePathFile;
+    try {
+      const opts = {
+        connectionString: resolved!,
+        backupDir: tempDir,
+        retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+        backupEngine: "pg_dump" as const,
+      };
+      const backup = await runDatabaseBackup(opts);
+      const assertNoArgvSecret = () => {
+        const argv = fs.readFileSync(argvFile, "utf8");
+        expect(argv).not.toContain(connectionString);
+        expect(argv).not.toContain(new URL(connectionString).password);
+        expect(argv).not.toContain("--dbname=");
+        expect(fs.existsSync(fs.readFileSync(servicePathFile, "utf8").trim())).toBe(false);
+      };
+      assertNoArgvSecret();
+      await runDatabaseRestore({ connectionString: resolved!, backupFile: backup.backupFile });
+      assertNoArgvSecret();
+
+      process.env.PAPERCLIP_FORCE_CLI_FAILURE = "1";
+      const backupFailure = await runDatabaseBackup({ ...opts, filenamePrefix: "failure" })
+        .then(() => null, (error: unknown) => error);
+      expect(backupFailure).toBeInstanceOf(Error);
+      expect(String(backupFailure)).toContain("failed with exit code 41");
+      expect(String(backupFailure)).toContain("authentication failed");
+      expect(String(backupFailure)).not.toContain(connectionString);
+      expect(String(backupFailure)).not.toContain(new URL(connectionString).password);
+      assertNoArgvSecret();
+      const restoreFailure = await runDatabaseRestore({ connectionString: resolved!, backupFile: backup.backupFile })
+        .then(() => null, (error: unknown) => error);
+      expect(restoreFailure).toBeInstanceOf(Error);
+      expect(String(restoreFailure)).toContain("authentication failed");
+      expect(String(restoreFailure)).not.toContain(connectionString);
+      expect(String(restoreFailure)).not.toContain(new URL(connectionString).password);
+      assertNoArgvSecret();
+
+      const largeBackupFile = path.join(tempDir, "synthetic-large-restore.sql");
+      fs.writeFileSync(largeBackupFile, "SELECT 1;\n".repeat(131_072), { mode: 0o600 });
+      const largeRestoreFailure = await runDatabaseRestore({ connectionString: resolved!, backupFile: largeBackupFile })
+        .then(() => null, (error: unknown) => error);
+      expect(largeRestoreFailure).toBeInstanceOf(Error);
+      expect(String(largeRestoreFailure)).toContain("authentication failed");
+      expect(String(largeRestoreFailure)).not.toContain(connectionString);
+      expect(String(largeRestoreFailure)).not.toContain(new URL(connectionString).password);
+      assertNoArgvSecret();
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }, 30_000);
+
   it(
     "keeps the newest backup for each retained calendar month",
     async () => {
