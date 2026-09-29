@@ -146,9 +146,9 @@ export function registerTokenCommands(program: Command): void {
       .description("Create a named board API key")
       .option("-C, --company-id <id>", "Company ID used for audit context")
       .option("--name <name>", "API key label", "cli-board")
-      .option("--expires-at <iso8601>", "Expiration timestamp")
-      .option("--ttl-days <days>", "Expiration in days from now")
-      .option("--never-expires", "Create a non-expiring key")
+      .option("--expires-at <iso8601>", "Expiration timestamp (ISO 8601); mutually exclusive with --ttl-days and --never-expires")
+      .option("--ttl-days <days>", "Expiration in days from now; mutually exclusive with --expires-at and --never-expires")
+      .option("--never-expires", "Create a non-expiring key; mutually exclusive with --expires-at and --ttl-days")
       .action(async (opts: BoardTokenOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
