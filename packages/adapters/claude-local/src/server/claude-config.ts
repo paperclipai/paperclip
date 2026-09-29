@@ -175,6 +175,27 @@ export function resolveManagedClaudeAgentHomeDir(
 }
 
 /**
+ * Managed per-agent `$HOME` for a local run whose `CLAUDE_CONFIG_DIR` is
+ * already isolated to `resolveManagedClaudeAgentHomeDir`. The Claude CLI
+ * reads its top-level `~/.claude.json` (auth/onboarding state) from the
+ * *process* `$HOME`, independent of `CLAUDE_CONFIG_DIR` — so a sandboxed run
+ * still needs its own `$HOME` and its own `.claude.json` here, or it falls
+ * through to the operator's real home and real `~/.claude.json`.
+ */
+export function resolveManagedClaudeHomeRootDir(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  agentId: string,
+): string {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "claude-home-root");
+}
+
+/**
  * True when `configPath` lives under the Paperclip-managed company tree
  * (`<instanceRoot>/companies/<companyId>/...`), mirroring the Codex
  * `isManagedCodexHomePath` check. A path outside that tree is a genuine
@@ -229,6 +250,35 @@ export async function materializeLocalManagedClaudeConfig(input: {
   await input.onLog(
     "stdout",
     `[paperclip] Prepared managed Claude config "${input.claudeConfigDir}" (${seedFiles.length} seed file(s)${copiedCredentials ? ", login copied in" : ""}).\n`,
+  );
+}
+
+/**
+ * Materializes the managed `$HOME` used to sandbox a local run (see
+ * `resolveManagedClaudeHomeRootDir`): copies the host's top-level
+ * `~/.claude.json` into it only when the managed home does not already have
+ * one, so a per-agent onboarding/auth state, once established, is never
+ * clobbered by the host source. Never touches the source file.
+ */
+export async function materializeLocalManagedClaudeHomeRoot(input: {
+  homeRootDir: string;
+  hostHomeDir: string;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  await fs.mkdir(input.homeRootDir, { recursive: true });
+  const targetPath = path.join(input.homeRootDir, ".claude.json");
+  let copied = false;
+  if (!(await pathExists(targetPath))) {
+    const sourcePath = path.join(input.hostHomeDir, ".claude.json");
+    if (await pathExists(sourcePath)) {
+      await fs.copyFile(sourcePath, targetPath);
+      await fs.chmod(targetPath, 0o600).catch(() => undefined);
+      copied = true;
+    }
+  }
+  await input.onLog(
+    "stdout",
+    `[paperclip] Prepared managed Claude home "${input.homeRootDir}"${copied ? " (.claude.json copied in)" : ""}.\n`,
   );
 }
 

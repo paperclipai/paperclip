@@ -25,9 +25,11 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 import {
   isManagedClaudeConfigPath,
   materializeLocalManagedClaudeConfig,
+  materializeLocalManagedClaudeHomeRoot,
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
   resolveManagedClaudeAgentHomeDir,
+  resolveManagedClaudeHomeRootDir,
 } from "./claude-config.js";
 
 describe("prepareClaudeConfigSeed", () => {
@@ -288,5 +290,69 @@ describe("materializeLocalManagedClaudeConfig", () => {
       onLog,
     });
     await expect(fs.readFile(path.join(managedDir, "credentials.json"), "utf8")).resolves.toContain("agent-own-secret");
+  });
+});
+
+describe("resolveManagedClaudeHomeRootDir", () => {
+  it("scopes a per-agent home root distinct from the config dir and from other agents", () => {
+    const env: NodeJS.ProcessEnv = {
+      PAPERCLIP_HOME: "/paperclip-home",
+      PAPERCLIP_INSTANCE_ID: "test-instance",
+    };
+    const homeRootA = resolveManagedClaudeHomeRootDir(env, "company-1", "agent-a");
+    const homeRootB = resolveManagedClaudeHomeRootDir(env, "company-1", "agent-b");
+    const configDirA = resolveManagedClaudeAgentHomeDir(env, "company-1", "agent-a");
+
+    expect(homeRootA).not.toBe(homeRootB);
+    expect(homeRootA).not.toBe(configDirA);
+    expect(homeRootA).toContain(path.join("companies", "company-1", "agents", "agent-a", "claude-home-root"));
+    expect(isManagedClaudeConfigPath(env, "company-1", homeRootA)).toBe(true);
+  });
+});
+
+describe("materializeLocalManagedClaudeHomeRoot", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("copies the host's top-level .claude.json without clobbering an existing one", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-local-home-root-"));
+    cleanupDirs.push(root);
+    const hostHomeDir = path.join(root, "host-home");
+    const homeRootDir = path.join(root, "agent-claude-home-root");
+    await fs.mkdir(hostHomeDir, { recursive: true });
+    await fs.writeFile(path.join(hostHomeDir, ".claude.json"), JSON.stringify({ oauthAccount: "host-secret" }), "utf8");
+
+    const onLog = vi.fn(async (_stream: "stdout" | "stderr", _chunk: string) => {});
+    await materializeLocalManagedClaudeHomeRoot({ homeRootDir, hostHomeDir, onLog });
+
+    await expect(fs.readFile(path.join(homeRootDir, ".claude.json"), "utf8")).resolves.toContain("host-secret");
+    expect(onLog.mock.calls[0]?.[1]).toContain(".claude.json copied in");
+
+    // Once the managed home root has its own .claude.json, a later host
+    // rotation must never clobber it.
+    await fs.writeFile(path.join(homeRootDir, ".claude.json"), JSON.stringify({ oauthAccount: "agent-own-secret" }), "utf8");
+    await fs.writeFile(path.join(hostHomeDir, ".claude.json"), JSON.stringify({ oauthAccount: "host-secret-rotated" }), "utf8");
+    await materializeLocalManagedClaudeHomeRoot({ homeRootDir, hostHomeDir, onLog });
+    await expect(fs.readFile(path.join(homeRootDir, ".claude.json"), "utf8")).resolves.toContain("agent-own-secret");
+  });
+
+  it("never touches the host's .claude.json", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-local-home-root-"));
+    cleanupDirs.push(root);
+    const hostHomeDir = path.join(root, "host-home");
+    const homeRootDir = path.join(root, "agent-claude-home-root");
+    await fs.mkdir(hostHomeDir, { recursive: true });
+    await fs.writeFile(path.join(hostHomeDir, ".claude.json"), JSON.stringify({ oauthAccount: "host-secret" }), "utf8");
+
+    await materializeLocalManagedClaudeHomeRoot({ homeRootDir, hostHomeDir, onLog: async () => {} });
+
+    await expect(fs.readFile(path.join(hostHomeDir, ".claude.json"), "utf8")).resolves.toContain("host-secret");
   });
 });
