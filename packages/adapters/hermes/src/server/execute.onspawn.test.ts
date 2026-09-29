@@ -213,4 +213,14 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
     }
   });
+
+  it("passes an explicit named custom provider through to --provider", async () => {
+    const { ctx } = makeCtx({ model: "spark2.5", provider: "custom:spark-local" });
+    await execute(ctx as any);
+
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    const providerIdx = args.indexOf("--provider");
+    expect(providerIdx).toBeGreaterThan(-1);
+    expect(args[providerIdx + 1]).toBe("custom:spark-local");
+  });
 });
