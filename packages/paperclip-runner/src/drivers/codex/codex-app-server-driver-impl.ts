@@ -79,10 +79,22 @@ function bootstrapCancellation(
   transport: CodexAppServerTransport,
   signal: AbortSignal | undefined,
 ): BootstrapCancellation {
-  let closePromise: Promise<void> | null = null;
+  // Memoized only while a close is in flight, so concurrent bootstrap branches
+  // share one close. It is dropped once that close settles: a settled memo
+  // would hand every later branch the first branch's rejection object, blaming
+  // it for a teardown it never performed. The transport's own close is
+  // idempotent and owns what a repeat close reports.
+  let closing: Promise<void> | null = null;
   const close = (): Promise<void> => {
-    closePromise ??= transport.close();
-    return closePromise;
+    if (closing !== null) return closing;
+    const attempt = transport.close();
+    closing = attempt;
+    const forget = (): void => {
+      if (closing === attempt) closing = null;
+    };
+    // Also keeps the close handled when its caller swallows the rejection.
+    void attempt.then(forget, forget);
+    return attempt;
   };
   let rejectAborted!: (reason: unknown) => void;
   const aborted = new Promise<never>((_resolve, reject) => {

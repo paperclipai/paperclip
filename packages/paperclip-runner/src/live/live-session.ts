@@ -2463,7 +2463,15 @@ export class CapabilityLiveSession {
   async #disconnect(reason: string): Promise<void> {
     const transport = this.#transport;
     this.#transport = null;
-    if (transport !== null) await transport.close();
+    // A failing close still ended this transport's ownership. Retire the pump
+    // and record the teardown before re-raising, so the close failure costs
+    // the caller its error and not the evidence trail that explains it.
+    let closeFailure: unknown = null;
+    if (transport !== null) {
+      await transport.close().catch((error: unknown) => {
+        closeFailure = error;
+      });
+    }
     if (this.#pump !== null) await this.#pump.catch(() => undefined);
     this.#pump = null;
     this.#appendEvidence("process", null, {
@@ -2476,6 +2484,7 @@ export class CapabilityLiveSession {
       sidecarPid: this.#processEvidence?.sidecarPid ?? null,
       agentPid: this.#processEvidence?.agentPid ?? null,
     });
+    if (closeFailure !== null) throw closeFailure;
   }
 
   async #abortConnect(reason: string): Promise<void> {

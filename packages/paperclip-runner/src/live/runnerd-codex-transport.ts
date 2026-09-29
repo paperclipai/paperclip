@@ -85,6 +85,14 @@ const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const MAX_NOTIFICATION_COUNT = 2_048;
 const MAX_NOTIFICATION_BYTES = 4 * 1024 * 1024;
 const RUNNER_CLIENT_VERSION = "0.3.0";
+// `session.open` starts the provider, so this deadline supervises the
+// provider's own startup budget and must outlast it. The slowest qualified
+// bring-up is OpenCode's: three health attempts of 10s each plus 100ms*attempt
+// backoff, so ~30.3s. Supervising for less than that guarantees the generic
+// "session.open timed out" replaces the provider's own diagnostic -- the
+// provider's stderr tail and exit signal are then unrecoverable, which is how
+// this transport's hosted failures became unreadable.
+const SESSION_OPEN_COMMAND_TIMEOUT_MS = 45_000;
 const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
 const RUNNERD_MAX_OUTBOX_BYTES = 16 * 1024 * 1024;
 const RUNNERD_P0_RESERVE_BYTES = 1024 * 1024;
@@ -3314,6 +3322,22 @@ export function unwrapToolResponse(response: Record<string, unknown>, preserveEn
   };
 }
 
+/**
+ * Report an already-observed close failure to a later caller. The class is
+ * preserved because it is what selects the runtime's cleanup disposition;
+ * only the stack and the `cause` chain change, so the report names the caller
+ * that is failing now and still points at the close that first found the fault.
+ */
+function replayedRunnerCloseFailure(failure: unknown): Error {
+  if (failure instanceof NativeSessionCloseUnrecoverableError) {
+    return new NativeSessionCloseUnrecoverableError({ cause: failure });
+  }
+  return new Error(
+    `runner transport close already failed: ${String(failure)}`,
+    { cause: failure },
+  );
+}
+
 class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #root: string;
   readonly #ownsRoot: boolean;
@@ -3368,7 +3392,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #authorizedTools: Record<string, unknown> | null = null;
   #runAttachTemplate: Record<string, unknown> | null = null;
   #closed = false;
-  #closePromise: Promise<void> | null = null;
+  // Non-null once `#closeOnce` has started. It always fulfils — it records how
+  // that single close settled rather than reporting it — so every repeat
+  // caller can be answered with an error it owns. See `close()`.
+  #closeCompletion: Promise<void> | null = null;
+  #closeFailure: unknown = null;
   #controllerDetachedForRestart = false;
   #failure: Error | null = null;
   readonly #failureSignal: Promise<never>;
@@ -4105,8 +4133,34 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         `runner transport close requested: ${reason.replaceAll(/[\r\n]/g, " ").slice(0, 1_000)}`,
       );
     }
-    this.#closePromise ??= this.#closeOnce();
-    return this.#closePromise;
+    // Close runs at most once, and only the caller that performed it owns the
+    // rejection that close produced. A repeat caller must still learn the
+    // transport is unsafe — suspension was never proven, so the runtime must
+    // still quarantine the session — but handing it the first caller's
+    // rejected promise reports a teardown it never performed, with a stack
+    // captured minutes earlier during unrelated work. Replay the failure as an
+    // error of the same class, raised here, with the original as `cause`.
+    const completion = this.#closeCompletion;
+    if (completion !== null) {
+      return completion.then(() => {
+        const failure = this.#closeFailure;
+        if (failure === null) return;
+        this.#diagnostic(
+          "runner transport close replayed an earlier close failure",
+        );
+        throw replayedRunnerCloseFailure(failure);
+      });
+    }
+    const closing = this.#closeOnce();
+    // Recording the outcome also keeps the single close handled when its
+    // performing caller swallows the rejection.
+    this.#closeCompletion = closing.then(
+      () => undefined,
+      (error: unknown) => {
+        this.#closeFailure = error ?? new Error("runner transport close failed");
+      },
+    );
+    return closing;
   }
 
   async detachControllerForRestart(): Promise<void> {
@@ -4748,7 +4802,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#publish();
     this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
     await this.#waitCommand("run.prepare");
-    await this.#waitCommand("session.open");
+    await this.#waitCommand(
+      "session.open",
+      undefined,
+      Date.now() + SESSION_OPEN_COMMAND_TIMEOUT_MS,
+    );
     await this.#waitForProviderIdentity();
     this.#startupComplete = true;
     this.#diagnostic("runnerd authenticated to the durable PRP control plane");

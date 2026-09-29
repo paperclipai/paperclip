@@ -97,9 +97,17 @@ export interface NativeSessionSnapshotOptions {
 export class NativeSessionCloseUnrecoverableError extends Error {
   readonly code = "native_session_close_unrecoverable";
 
-  constructor() {
+  /**
+   * `cause` marks a report that replays an earlier close failure rather than
+   * one captured by the close it describes. A repeat caller must still learn
+   * the transport is unsafe, but its report carries its own stack so the
+   * diagnostic names the caller that is failing now, not the teardown that
+   * first observed the fault.
+   */
+  constructor(options?: { readonly cause?: unknown }) {
     super(
       "provider_transport_failed: runner did not durably suspend before checkpoint",
+      options,
     );
     this.name = "NativeSessionCloseUnrecoverableError";
   }
