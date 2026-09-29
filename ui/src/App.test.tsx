@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { queryKeys } from "./lib/queryKeys";
 import appSource from "./App.tsx?raw";
 
 const mockHealthApi = vi.hoisted(() => ({
@@ -19,6 +20,11 @@ const mockAuthApi = vi.hoisted(() => ({
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
   claimBootstrapAdmin: vi.fn(),
+}));
+const beginCloudSignInMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/cloud-sign-in", () => ({
+  beginCloudSignIn: (url: string) => beginCloudSignInMock(url),
+  clearCloudSignInAttempt: vi.fn(),
 }));
 
 vi.mock("./api/health", () => ({
@@ -57,9 +63,9 @@ async function waitForText(container: HTMLElement, text: string) {
   await vi.waitFor(() => expect(container.textContent).toContain(text));
 }
 
-function renderGate(container: HTMLElement, allowMembershipRequest = false) {
+function renderGate(container: HTMLElement, allowMembershipRequest = false, client?: QueryClient) {
   const root = createRoot(container);
-  const queryClient = new QueryClient({
+  const queryClient = client ?? new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
@@ -98,6 +104,41 @@ describe("CloudAccessGate", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("renews a missing Cloud instance session without opening local auth", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated", cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: "https://my-staging.paperclip.app", stackSlug: "team" } });
+    mockAuthApi.getSession.mockResolvedValue(null);
+    beginCloudSignInMock.mockReturnValue(true);
+    const root = renderGate(container);
+    await vi.waitFor(() => expect(beginCloudSignInMock).toHaveBeenCalledTimes(1));
+    expect(beginCloudSignInMock).toHaveBeenCalledWith("https://my-staging.paperclip.app/v1/stacks/team/entry-redirect?returnTo=%2Finstance%2Fsettings%2Fgeneral");
+    expect(container.textContent).not.toContain("Navigate:/auth");
+    expect(container.textContent).not.toContain("Outlet content");
+    unmountRoot(root);
+  });
+
+  it("does not mistake a session service failure for a signed-out user", async () => {
+    mockAuthApi.getSession.mockRejectedValue(new Error("Session service unavailable"));
+    const root = renderGate(container);
+    await waitForText(container, "Session service unavailable");
+    expect(container.textContent).not.toContain("Navigate:/auth");
+    expect(beginCloudSignInMock).not.toHaveBeenCalled();
+    unmountRoot(root);
+  });
+
+  it.each([undefined, { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: "https://my.paperclip.app", stackSlug: "team" }])(
+    "does not require a session in local trusted mode, including with Cloud metadata %j", async (cloud) => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "local_trusted", cloud });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await client.fetchQuery({
+      queryKey: queryKeys.auth.session,
+      queryFn: () => Promise.reject(new Error("Session service unavailable")),
+    }).catch(() => {});
+    const root = renderGate(container, false, client);
+    await waitForText(container, "Outlet content");
+    expect(beginCloudSignInMock).not.toHaveBeenCalled();
+    unmountRoot(root);
   });
 
   it("shows a no-access message for signed-in users without org access", async () => {

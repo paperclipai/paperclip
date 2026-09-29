@@ -34,6 +34,15 @@ credential material are never written to the run log.
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
+## Omitted Unsafe Workspace Export
+
+`workspace_export_omitted` is an informational system event in the local run log.
+Its payload is `{ "reason": "restore_unsafe_archive" }`, with `"legacy": true`
+when recovering an unsafe failure from an older controller. It records that native
+finalization discarded an unsafe export and continued with the accepted result.
+It contains no archive names, link targets, or raw error details. It does not
+create a task warning, recovery action, Telemetry event, or OpenTelemetry export.
+
 ## Native Restart Recovery Run-Log Event
 
 Paperclip writes a `native.recovery.transition` event for every native restart
@@ -158,6 +167,15 @@ section in the Observability contract.
 Provider identity diagnostics remain in the local run log. They record the notification method, expected and received thread/turn identifiers, and the classification (root, verified descendant, stale, unrelated informational, or invalid authoritative). They omit the original provider payload and credentials. Repeated informational notices are bounded.
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
+
+If execution-continuation setup finds that a task no longer exists, is closed,
+or its owner changed, the existing cancellation settlement records
+`continuation_task_ownership_changed`. The run and wake request become cancelled
+before adapter dispatch, with the run-log message
+`stale execution continuation cancelled before dispatch`. Immediate recovery is
+suppressed. Missing source context, authorization failures, and other setup
+errors retain their failure classification. An untyped error with the same
+message is also still a failure; cancellation requires the typed ownership guard.
 
 Bounded retry exhaustion writes one lifecycle receipt per run, retry reason,
 scheduled attempt, and retry limit. Repeated or concurrent recovery checks reuse

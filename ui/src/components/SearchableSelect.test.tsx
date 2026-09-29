@@ -131,6 +131,8 @@ describe("SearchableSelect", () => {
     expect(container.querySelector("[data-option-key='recent:alpha']")).not.toBeNull();
     expect(container.querySelector("[data-option-key='all:alpha']")).not.toBeNull();
     expect(container.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
+    expect(container.querySelector("[data-mobile-entity-picker-header]")?.textContent).toContain("Pick one");
+    expect(container.querySelector('button[aria-label="Close selector"]')).not.toBeNull();
   });
 
   it("filters options and returns the selected option object", async () => {

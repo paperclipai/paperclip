@@ -96,14 +96,12 @@ type VisualViewportLayout = {
 
 type NewIssueDialogViewportStyle = CSSProperties & {
   "--new-issue-visual-viewport-height"?: string;
-  "--new-issue-visual-viewport-offset-top"?: string;
   "--new-issue-dialog-top"?: string;
   "--new-issue-dialog-height"?: string;
 };
 
 type MobileEntityPickerViewportStyle = CSSProperties & {
   "--mobile-entity-picker-visual-viewport-height"?: string;
-  "--mobile-entity-picker-visual-viewport-bottom"?: string;
 };
 
 function readVisualViewportLayout(): VisualViewportLayout | null {
@@ -1327,8 +1325,10 @@ export function NewIssueDialog() {
   const CurrentWorkModeIcon = currentWorkMode.icon;
   const dialogViewportStyle = useMemo<NewIssueDialogViewportStyle>(() => {
     const dialogGeometry = {
-      "--new-issue-dialog-top":
-        "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+      // Fixed-position coordinates are relative to Safari's visual viewport.
+      // Adding visualViewport.offsetTop here places the dialog below that
+      // viewport after the software keyboard pans the page.
+      "--new-issue-dialog-top": "var(--new-issue-dialog-top-gap)",
       "--new-issue-dialog-height":
         "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
     };
@@ -1336,7 +1336,6 @@ export function NewIssueDialog() {
     return {
       ...dialogGeometry,
       "--new-issue-visual-viewport-height": `${visualViewportLayout.height}px`,
-      "--new-issue-visual-viewport-offset-top": `${visualViewportLayout.offsetTop}px`,
       ...(visualViewportLayout.constrained
         ? {
             top: "var(--new-issue-dialog-top)",
@@ -1350,7 +1349,6 @@ export function NewIssueDialog() {
     if (!visualViewportLayout) return {};
     return {
       "--mobile-entity-picker-visual-viewport-height": `${visualViewportLayout.height}px`,
-      "--mobile-entity-picker-visual-viewport-bottom": `${visualViewportLayout.offsetTop + visualViewportLayout.height}px`,
     };
   }, [visualViewportLayout]);
 
@@ -1515,6 +1513,7 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Assignee"
+                mobileTitle="Select assignee"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
                 contentStyle={entityPickerViewportStyle}
@@ -1576,6 +1575,7 @@ export function NewIssueDialog() {
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
                 placeholder="Project"
+                mobileTitle="Select project"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
                 contentStyle={entityPickerViewportStyle}

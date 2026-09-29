@@ -847,7 +847,7 @@ describe("sandbox managed runtime", () => {
     await git(sourceRepoDir, ["checkout", "-b", "main"]);
     await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
     await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
-    await writeFile(path.join(sourceRepoDir, ".gitignore"), "node_modules/\n", "utf8");
+    await writeFile(path.join(sourceRepoDir, ".gitignore"), "node_modules/\n*.secret\n", "utf8");
     await writeFile(path.join(sourceRepoDir, "tracked.txt"), "base\n", "utf8");
     await writeFile(path.join(sourceRepoDir, "clean.txt"), "from git\n", "utf8");
     await writeFile(path.join(sourceRepoDir, "deleted.txt"), "delete me\n", "utf8");
@@ -859,6 +859,9 @@ describe("sandbox managed runtime", () => {
     await mkdir(path.join(localWorkspaceDir, "node_modules"), { recursive: true });
     await writeFile(path.join(localWorkspaceDir, "tracked.txt"), "dirty local\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, "untracked.txt"), "from local\n", "utf8");
+    await mkdir(path.join(localWorkspaceDir, "drafts"));
+    await writeFile(path.join(localWorkspaceDir, "drafts", "report.md"), "draft\n");
+    await symlink("report.md", path.join(localWorkspaceDir, "drafts", "report-link.md"));
     await writeFile(path.join(localWorkspaceDir, "node_modules", "cache.bin"), "do not upload\n", "utf8");
     await rm(path.join(localWorkspaceDir, "deleted.txt"));
 
@@ -914,6 +917,11 @@ describe("sandbox managed runtime", () => {
       workspaceLocalDir: localWorkspaceDir,
       onRuntimeProgress: async (status) => {
         runtimeStatuses.push({ phase: status.phase, message: status.message });
+        if (status.phase === "config_sync") {
+          // These files appear after the Git snapshot, before the overlay copy.
+          await writeFile(path.join(localWorkspaceDir, "drafts", "late.secret"), "private\n");
+          await writeFile(path.join(localWorkspaceDir, "drafts", "late.txt"), "later work\n");
+        }
       },
     });
 
@@ -936,6 +944,10 @@ describe("sandbox managed runtime", () => {
     expect(workspaceMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
     expect(workspaceMembers).toContain("tracked.txt");
     expect(workspaceMembers).toContain("untracked.txt");
+    expect(workspaceMembers).toContain("drafts/report.md");
+    expect(await readlink(path.join(remoteWorkspaceDir, "drafts", "report-link.md"))).toBe("report.md");
+    expect(workspaceMembers).not.toContain("drafts/late.secret");
+    expect(workspaceMembers).not.toContain("drafts/late.txt");
     expect(workspaceMembers).not.toContain("clean.txt");
     expect(workspaceMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
 
@@ -1197,6 +1209,104 @@ describe("sandbox managed runtime", () => {
     expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry.includes("/node_modules/") || entry.endsWith("/node_modules"))).toBe(false);
+  });
+
+  it.each(["symlink", "root_symlink", "root_alias", "root_alias_retarget", "case_alias", "EACCES", "EIO", "ENOENT"])("handles an overlay source changed after the snapshot: %s", async (change) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-overlay-source-"));
+    cleanupDirs.push(rootDir);
+    const workspaceLocalDir = path.join(rootDir, "workspace");
+    await initGitRepo(workspaceLocalDir);
+    const draftsDir = path.join(workspaceLocalDir, "drafts");
+    const selectedPath = path.join(change === "root_symlink" ? workspaceLocalDir : draftsDir, "report.md");
+    await mkdir(draftsDir);
+    await writeFile(selectedPath, "selected work\n");
+    const workspaceInputDir = change.startsWith("root_alias") ? path.join(rootDir, "workspace-alias") : workspaceLocalDir;
+    if (change.startsWith("root_alias")) await symlink(workspaceLocalDir, workspaceInputDir);
+    const outsideDir = path.join(rootDir, "outside");
+    await mkdir(outsideDir);
+    await writeFile(path.join(outsideDir, "report.md"), "private outside content\n");
+    await mkdir(path.join(outsideDir, "drafts"));
+    await writeFile(path.join(outsideDir, "drafts", "report.md"), "private outside content\n");
+    const syncIn = vi.fn(async (operations: SandboxSyncOperation[]) => {
+      if (change.startsWith("root_alias")) {
+        const overlay = operations.flatMap((operation) => operation.files)
+          .find((file) => path.basename(file.targetPath) === "workspace-upload.tar");
+        expect(overlay).toBeDefined();
+        const contents = await execFile("tar", ["-xOf", overlay!.sourcePath, "drafts/report.md"]);
+        expect(contents.stdout).toBe("selected work\n");
+      }
+      return { operations: [] };
+    });
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async () => {},
+      writeFile: async () => {},
+      readFile: async () => new ArrayBuffer(0),
+      listFiles: async () => [],
+      remove: async () => {},
+      run: async () => {},
+      syncIn,
+    };
+    const realLstat = fsPromises.lstat.bind(fsPromises);
+    const realRealpath = fsPromises.realpath.bind(fsPromises);
+    const failure = Object.assign(new Error(`Cannot inspect overlay: ${change}`), { code: change });
+    let statSpy: ReturnType<typeof vi.spyOn> | undefined;
+    let realpathSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const preparing = prepareSandboxManagedRuntime({
+        spec: {
+          transport: "sandbox",
+          provider: "test",
+          sandboxId: "sandbox-1",
+          remoteCwd: path.join(rootDir, "remote"),
+          timeoutMs: 30_000,
+          apiKey: null,
+        },
+        adapterKey: "test-adapter",
+        client,
+        workspaceLocalDir: workspaceInputDir,
+        onRuntimeProgress: async (status) => {
+          if (status.phase !== "config_sync") return;
+          if (change === "root_alias") return;
+          if (change === "root_alias_retarget") {
+            await rm(workspaceInputDir);
+            await symlink(outsideDir, workspaceInputDir);
+            return;
+          }
+          if (change === "symlink") {
+            await rm(draftsDir, { recursive: true });
+            await symlink(outsideDir, draftsDir);
+          } else if (change === "ENOENT") {
+            await rm(selectedPath);
+          } else if (change === "case_alias") {
+            // Model a case-insensitive filesystem: Git's indexed spelling
+            // still resolves, while realpath reports the directory's new case.
+            realpathSpy = vi.spyOn(fsPromises, "realpath").mockImplementation((async (...args: Parameters<typeof fsPromises.realpath>) => {
+              if (args[0] === draftsDir) return path.join(workspaceLocalDir, "Drafts");
+              return realRealpath(...args);
+            }) as typeof fsPromises.realpath);
+          } else if (change === "root_symlink") {
+            // The root was captured with the snapshot, before config_sync.
+            await fsPromises.rename(workspaceLocalDir, path.join(rootDir, "original-workspace"));
+            await symlink(outsideDir, workspaceLocalDir);
+          } else {
+            statSpy = vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => {
+              if (args[0] === selectedPath) throw failure;
+              return realLstat(...args);
+            }) as typeof fsPromises.lstat);
+          }
+        },
+      });
+      if (change === "ENOENT" || change === "case_alias" || change.startsWith("root_alias")) {
+        await preparing;
+        expect(syncIn).toHaveBeenCalledOnce();
+      } else {
+        await expect(preparing).rejects.toThrow(change.endsWith("symlink") ? /overlay.*directory/i : failure.message);
+        expect(syncIn).not.toHaveBeenCalled();
+      }
+    } finally {
+      statSpy?.mockRestore();
+      realpathSpy?.mockRestore();
+    }
   });
 
   it("excludes an anchor-workspace ignored file whose name has leading and trailing whitespace from the staged tree", async () => {
@@ -1563,7 +1673,7 @@ describe("sandbox managed runtime", () => {
     expect(downloadedTars).toHaveLength(1);
     const members = await listTarMembers(rootDir, "empty-workspace-download.tar", downloadedTars[0]!.bytes);
     expect(members).toEqual([]);
-    const emptyArchiveCommand = runCommands.find((command) => command.includes("dd if=/dev/zero"));
+    const emptyArchiveCommand = runCommands.find((command) => command.includes("--null -T"));
     expect(emptyArchiveCommand).toBeDefined();
     expect(emptyArchiveCommand).not.toContain("/dev/null");
   });

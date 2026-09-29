@@ -414,7 +414,7 @@ Operational policy:
   - `provider` enum/text (`local_disk | s3`)
   - `object_key` text not null
   - `content_type` text not null
-  - `byte_size` int not null
+  - `byte_size` bigint not null (safe integer byte count in the API)
   - `sha256` text not null
   - `original_filename` text null
   - `created_by_agent_id` uuid fk null
@@ -697,6 +697,11 @@ administrator remediation rather than promising a nonexistent approval step.
 Issue-thread interactions are coordination records, not grants of authority. Every
 interaction kind defaults to resolver policy `anyone` when the create request omits
 `resolverPolicy`. Restrictions are opt-in.
+
+Question, confirmation, checkbox confirmation, and item verdict cards stay pending
+when a user sends an ordinary task comment. Their `supersedeOnUserComment` flag
+defaults to `false`. A creator may set it to `true` when a comment should replace
+the pending request, as the opening onboarding question does.
 
 Canonical resolver policies are:
 
@@ -995,7 +1000,16 @@ On a Paperclip Cloud-managed instance, `POST /companies` returns `403` with
 code `cloud_managed`; the trusted-header provisioning path and company import
 routes remain the only company-creation paths there.
 
-## 10.1.1 Cloud Stack Portfolio
+## 10.1.1 Organization navigation and Cloud invitations
+
+Core's built-in organization switcher lists this instance's companies. An
+installed plugin can replace it through the generic `organizationSwitcher`
+slot. The built-in menu remains available when no unique usable contribution
+exists. Core does not fetch or render Cloud portfolios in its switcher. Managed
+hosts do not expose local company creation in that built-in menu; their extension
+owns the creation action.
+
+The Cloud Members-page invitation action still uses the following route:
 
 - `GET /cloud/stacks`
 
@@ -1339,7 +1353,8 @@ Board can at any time:
 
 Ask-first connection calls use a server-owned tool-action confirmation linked to
 the authoritative action request. The task feed retains a stable record; dismissal
-only hides the composer takeover. Task and Connections decisions share one
+only hides the pending card above the composer. The ordinary composer remains
+available while the card is open. Task and Connections decisions share one
 transaction. Approval runs stored, signed arguments once; decline runs nothing.
 The human decision remains distinct from provider execution success or failure.
 
@@ -1693,3 +1708,31 @@ instance-level registry retains validated publication IDs, allowing offline
 dismissal retries after withdrawal while rejecting caller-invented IDs. It
 stores no announcement content, account data or interaction events.
 See [Announcements](ANNOUNCEMENTS.md) for API and publishing details.
+
+### Personal keyboard shortcut preference
+
+Keyboard shortcuts are off by default and are enabled in Settings → Profile.
+The preference is stored on the signed-in user, applies across companies and
+devices, and does not require instance administrator access. The local trusted
+board user has the same preference. `GET /api/auth/preferences` returns only the
+current board user's preference. `PATCH /api/auth/preferences` updates only that
+user and requires an accessible `companyId` for the activity log, including viewer
+memberships. The preference and audit record commit in one transaction. Both
+requests require `expectedUserId` (GET query parameter or PATCH body) matching
+the authenticated actor, so a cookie change cannot mix accounts in the cache.
+Agents cannot
+read or change these preferences. The legacy instance general setting is retained
+for API compatibility but no longer controls shortcut behavior in the app;
+users opt in individually after the upgrade.
+
+### Unsafe native workspace exports
+
+An unsafe workspace link does not fail an accepted native task result. Retry
+export automatically with confined entries only and keep archive confinement in
+place. If the export remains unsafe, omit it and finish the saved result under
+normal completion rules. Record diagnostics only in run logs; do not add a task
+warning or manual repair action. This also applies to historical unsafe failures:
+omit the already-rejected export, clear stale repair notices, and finalize the
+accepted result without another provider turn, even when its old sandbox is
+unavailable. Preserve current ownership and newer-work fences. See
+`native-workspace-finalization-recovery.md`.

@@ -15,6 +15,123 @@ function fixture(tools: ToolGatewayDescriptor[]) {
 }
 
 describe("assigned MCP runner tools", () => {
+  const searchName = "paperclip_search_assigned_tools";
+  const callName = "paperclip_call_assigned_tool";
+
+  it("pages through an oversized catalog and calls every tool through the original gateway", async () => {
+    const f = fixture(Array.from({ length: 224 }, (_, i) => descriptor(`app.action_${i}`)));
+    const assigned = await createAssignedMcpTools(f);
+    const direct = assigned.definitions();
+    const compact = assigned.definitions(tools => tools.length <= 200);
+    expect(compact.map(tool => tool.name)).toEqual([searchName, callName]);
+    expect(assigned.definitions(tools => tools.length <= 224)).toEqual(direct);
+    expect(() => assigned.definitions(() => false)).toThrow("assigned_mcp_tool_catalog_capacity_exceeded");
+    const seen: string[] = [];
+    let offset: number | null = 0;
+    do {
+      const page = await assigned.execute({ tool: searchName, arguments: { query: "", offset, limit: 20 } }) as {
+        tools: Array<{ name: string; inputSchema: unknown }>; nextOffset: number | null;
+      };
+      expect(page.tools.length).toBeLessThanOrEqual(20);
+      for (const tool of page.tools) {
+        seen.push(tool.name);
+        expect(tool.inputSchema).toEqual(descriptor("any").parametersSchema);
+        await assigned.execute({ tool: callName, arguments: { name: tool.name, arguments: { query: "fixture" } } });
+      }
+      offset = page.nextOffset;
+    } while (offset !== null);
+    expect(seen).toEqual(direct.map(tool => tool.name).sort());
+    expect(f.executeTool).toHaveBeenCalledTimes(224);
+    expect(new Set(f.executeTool.mock.calls.map(([call]) => call.tool)).size).toBe(224);
+    for (const [call] of f.executeTool.mock.calls) {
+      expect(call).toMatchObject({ gatewayPublicId: f.gatewayPublicId, sessionToken: f.bearerToken, parameters: { query: "fixture" } });
+      expect(call).not.toHaveProperty("approvedActionRequestId");
+    }
+  });
+
+  it("searches only pinned tools still granted by fresh discovery without projecting metadata", async () => {
+    const f = fixture([descriptor("calendar.search"), descriptor("mail.search"), descriptor("calendar.remove", "write")]);
+    const assigned = await createAssignedMcpTools(f);
+    f.listToolsForNamedGateway.mockResolvedValue([
+      { ...descriptor("calendar.search"), providerMetadata: { token: "secret-provider-token" } },
+      descriptor("calendar.remove", "write"), descriptor("calendar.new_grant"),
+    ]);
+    const result = await assigned.execute({ tool: searchName, arguments: { query: "calendar" } }, "planning");
+    expect(result).toEqual({ tools: [assigned.definitions()[0]], nextOffset: null });
+    expect(JSON.stringify(result)).not.toMatch(/private-|secret-provider|gateway-fixture|new_grant/);
+    f.listToolsForNamedGateway.mockRejectedValue(new Error("gateway_token_revoked"));
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "" } })).rejects.toThrow("gateway_token_revoked");
+  });
+
+  it.each(["planning", "ask"] as const)("preserves pinned and fresh %s restrictions through the call wrapper", async mode => {
+    const f = fixture([descriptor("read"), descriptor("write", "write")]);
+    const assigned = await createAssignedMcpTools(f);
+    const restricted = await createAssignedMcpTools({ ...f, workMode: mode });
+    const call = { tool: callName, arguments: { name: assigned.definitions()[1]!.name, arguments: {} } };
+    await expect(assigned.execute(call, mode)).rejects.toThrow("paperclip_runner_tool_mode_denied");
+    await expect(restricted.execute(call, "standard")).rejects.toThrow("paperclip_runner_tool_mode_denied");
+    expect(f.executeTool).not.toHaveBeenCalled();
+    const discovery = await restricted.execute({ tool: searchName, arguments: { query: "" } }, "standard");
+    expect(discovery).toEqual({ tools: [assigned.definitions()[0]], nextOffset: null });
+  });
+
+  it.each(["approval_required", "connection_revoked", "tool_error"])("preserves %s through the call wrapper", async reason => {
+    const f = fixture([descriptor("write", "write")]);
+    const assigned = await createAssignedMcpTools(f);
+    const error = new ToolGatewayHttpError(403, "Denied", reason);
+    f.executeTool.mockRejectedValue(error);
+    await expect(assigned.execute({ tool: callName, arguments: { name: assigned.definitions()[0]!.name, arguments: {} } })).rejects.toBe(error);
+  });
+
+  it("bounds search pages by bytes and rejects invalid wrapper arguments and unassigned targets", async () => {
+    const f = fixture(Array.from({ length: 4 }, (_, i) => ({
+      ...descriptor(`large_${i}`),
+      parametersSchema: { type: "object", description: "x".repeat(250 * 1024) },
+    })));
+    const assigned = await createAssignedMcpTools(f);
+    const page = await assigned.execute({ tool: searchName, arguments: { query: "", limit: 20 } }) as { tools: unknown[]; nextOffset: number };
+    expect(page.tools).toHaveLength(2);
+    expect(page.nextOffset).toBe(2);
+    for (const args of [null, [], { query: "x".repeat(201) }, { query: "", offset: -1 }, { query: "", limit: 21 }, { query: "", offset: 0.5 }]) {
+      await expect(assigned.execute({ tool: searchName, arguments: args })).rejects.toThrow("assigned_mcp_tool_invalid_arguments");
+    }
+    for (const name of ["unassigned", searchName, callName]) {
+      await expect(assigned.execute({ tool: callName, arguments: { name, arguments: {} } })).rejects.toThrow("assigned_mcp_tool_unknown");
+    }
+    await expect(assigned.execute({ tool: callName, arguments: { name: "unassigned", arguments: [] } })).rejects.toThrow("assigned_mcp_tool_invalid_arguments");
+    expect(f.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("keeps individually oversized schemas and later tools discoverable with bounded schema chunks", async () => {
+    const schema = { type: "object", description: "\u0000🙂".repeat(150_000), properties: {} };
+    const f = fixture([{ ...descriptor("a_large"), parametersSchema: schema }, descriptor("z_small")]);
+    const assigned = await createAssignedMcpTools(f);
+    const large = assigned.definitions()[0]!.name as string;
+    const page = await assigned.execute({ tool: searchName, arguments: { query: "", limit: 1 } }) as {
+      tools: Array<Record<string, unknown>>; nextOffset: number;
+    };
+    expect(page.tools).toEqual([{ name: large, description: "a_large: Use a_large", inputSchemaRef: large }]);
+    expect(page.nextOffset).toBe(1);
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "", offset: page.nextOffset } }))
+      .resolves.toEqual({ tools: [assigned.definitions()[1]], nextOffset: null });
+    let schemaOffset: number | null = 0;
+    let serialized = "";
+    do {
+      const chunk = await assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: large, schemaOffset } }) as {
+        schemaJson: string; nextSchemaOffset: number | null;
+      };
+      expect(Buffer.byteLength(JSON.stringify(chunk))).toBeLessThan(640 * 1024);
+      serialized += chunk.schemaJson;
+      schemaOffset = chunk.nextSchemaOffset;
+    } while (schemaOffset !== null);
+    expect(JSON.parse(serialized)).toEqual(schema);
+    await assigned.execute({ tool: callName, arguments: { name: large, arguments: {} } });
+    expect(f.executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ tool: "a_large" }));
+    f.listToolsForNamedGateway.mockResolvedValue([descriptor("z_small")]);
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: large } })).rejects.toThrow("assigned_mcp_tool_unknown");
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaOffset: 1 } })).rejects.toThrow("assigned_mcp_tool_invalid_arguments");
+  });
+
   it("requires a configured gateway registered for the exact database instance", () => {
     const firstDb = {} as Db;
     const secondDb = {} as Db;

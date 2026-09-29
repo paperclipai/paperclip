@@ -1,3 +1,4 @@
+import { useUserPreferences } from "../hooks/useUserPreferences";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import {
@@ -47,7 +48,6 @@ import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import {
   resolveArchivedCompanyBounce,
   shouldSyncCompanySelectionFromRoute,
@@ -63,6 +63,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
 import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import { cn } from "../lib/utils";
+import { classifyShellRoute } from "../lib/shell-navigation";
 import { NotFoundPage } from "../pages/NotFound";
 import {
   PluginSlotMount,
@@ -145,6 +146,7 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
+  const isTaskDetailRoute = classifyShellRoute(location.pathname, companyPrefix).isTaskDetail;
   const isCompanySettingsRoute = [
     "/company/settings",
     "/company/export",
@@ -252,11 +254,7 @@ export function Layout() {
     },
     refetchIntervalInBackground: false,
   });
-  const keyboardShortcutsEnabled =
-    useQuery({
-      queryKey: queryKeys.instance.generalSettings,
-      queryFn: () => instanceSettingsApi.getGeneral(),
-    }).data?.keyboardShortcuts === true;
+  const keyboardShortcutsEnabled = useUserPreferences().data?.keyboardShortcuts === true;
 
   // A secondary sidebar always collapses the app sidebar to its rail (still
   // peek-able) — a hard invariant that overrides the user pin while the route
@@ -742,8 +740,8 @@ export function Layout() {
                 style={
                   isMobile
                     ? ({
-                        "--tc-composer-bottom": mobileNavVisible
-                          ? "var(--sz-calc-14)"
+                      "--tc-composer-bottom": mobileNavVisible
+                          ? "var(--tc-composer-visible-nav-offset)"
                           : "var(--sz-calc-8)",
                       } as CSSProperties)
                     : undefined
@@ -754,7 +752,9 @@ export function Layout() {
                   // changes (e.g. switching skill-detail tabs) don't widen/shift
                   // when the vertical scrollbar appears or disappears (PAP-10907).
                   isMobile
-                    ? "overflow-visible pb-(--sz-calc-14)"
+                    ? isTaskDetailRoute && mobileNavVisible
+                      ? "overflow-visible pb-(--tc-composer-visible-nav-offset)"
+                      : "overflow-visible pb-(--sz-calc-14)"
                     : "overflow-auto [scrollbar-gutter:stable]",
                 )}
               >

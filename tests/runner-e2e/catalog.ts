@@ -1,18 +1,23 @@
+import { apiResponseReadingTask } from "./api-response-reading.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks } from "./continuation-cases.js";
+import { contextIntegrityTasks } from "./context-integrity-cases.js";
 import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-live-cases.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
-import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks } from "./chat-cases.js";
+import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "../../packages/adapters/codex-local/src/index.js";
 import { models as claudeModels } from "../../packages/adapters/claude-local/src/index.js";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "../../packages/adapters/kimi-local/src/index.js";
+import { DEFAULT_GROK_LOCAL_MODEL } from "../../packages/adapters/grok-local/src/index.js";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 import { QUALIFIED_OPENCODE_MODEL } from "../../packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.js";
 import { CREDENTIAL_NAMES } from "./types.js";
+import { PENDING_PROFILE_PREREQUISITES } from "./prerequisites.js";
 import {
   openRouterProfileId,
   openRouterRankingSnapshot,
@@ -39,6 +44,7 @@ const SELECTABLE_GROUPS = [
   "breadth",
   "chat",
   "onboarding",
+  "context-integrity",
 ] as const;
 const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -99,7 +105,7 @@ function commonAgent(
 function legacyProfile(input: {
   id: string;
   label: string;
-  adapterType: "codex_local" | "claude_local" | "opencode_local";
+  adapterType: "codex_local" | "claude_local" | "opencode_local" | "kimi_local" | "grok_local";
   provider: string;
   model: string;
   credential: RunnerProfileFixture["credential"];
@@ -144,7 +150,7 @@ function nativeProfile(input: {
   provider: "codex" | "opencode" | "acpx";
   model: string;
   credential: RunnerProfileFixture["credential"];
-  acpxAgent?: "claude" | "codex";
+  acpxAgent?: "claude" | "codex" | "grok";
   supportedEnvironments?: readonly (typeof ENVIRONMENT_IDS)[number][];
   modelQualification?: RunnerProfileFixture["modelQualification"];
   ranking?: RunnerProfileFixture["ranking"];
@@ -172,7 +178,9 @@ function nativeProfile(input: {
       provider: input.provider,
     },
     buildAgent(buildInput) {
-      const credentialRef = requiredSecret(buildInput, input.credential);
+      const credentialRef = input.credential === "GROK_AUTH_JSON"
+        ? null
+        : requiredSecret(buildInput, input.credential);
       const permissionConfig =
         input.provider === "codex"
           ? { codexPermissionMode: "never" }
@@ -186,7 +194,7 @@ function nativeProfile(input: {
         idleTimeoutMs: 300_000,
         ...permissionConfig,
         env: {
-          [input.credential]: credentialRef,
+          ...(credentialRef ? { [input.credential]: credentialRef } : {}),
           // Codex's supported automation credential is CODEX_API_KEY. Keep
           // OPENAI_API_KEY as the operator-facing fixture secret name and bind
           // the same encrypted reference to the runtime-specific alias.
@@ -284,6 +292,14 @@ export const runnerProfiles: readonly RunnerProfileFixture[] = [
     credential: "ANTHROPIC_API_KEY",
   }),
   nativeProfile({
+    id: "runner-acpx-grok",
+    label: "Runner Grok Build",
+    provider: "acpx",
+    acpxAgent: "grok",
+    model: QUALIFIED_ACPX_PROFILES.grok.qualificationModel,
+    credential: "XAI_API_KEY",
+  }),
+  nativeProfile({
     id: "runner-acpx-codex",
     label: "Runner ACPX Codex",
     provider: "acpx",
@@ -292,6 +308,64 @@ export const runnerProfiles: readonly RunnerProfileFixture[] = [
     credential: "OPENAI_API_KEY",
   }),
 ] as const;
+
+/** Narrow legacy ACP lanes used only by the explicit context-integrity matrix. */
+export const legacyAcpxProfiles: readonly RunnerProfileFixture[] = [
+  legacyProfile({
+    id: "legacy-acp-codex",
+    label: "Legacy ACP Codex",
+    adapterType: "codex_local",
+    provider: "codex",
+    model: DEFAULT_CODEX_LOCAL_MODEL,
+    credential: "OPENAI_API_KEY",
+    extraConfig: { engine: "acp", mode: "oneshot" },
+  }),
+  legacyProfile({
+    id: "legacy-acp-claude",
+    label: "Legacy ACP Claude",
+    adapterType: "claude_local",
+    provider: "claude",
+    model: claudeLegacyModel,
+    credential: "ANTHROPIC_API_KEY",
+    extraConfig: { engine: "acp", mode: "oneshot" },
+  }),
+] as const;
+
+/** Explicit-only context-integrity profiles; admission is blocked until qualification is complete. */
+export const pendingContextIntegrityProfiles: readonly RunnerProfileFixture[] = [
+  legacyProfile({
+    id: "legacy-kimi-cli",
+    label: "Legacy Kimi CLI (pending qualification)",
+    adapterType: "kimi_local",
+    provider: "kimi",
+    model: DEFAULT_KIMI_LOCAL_MODEL,
+    credential: "KIMI_MODEL_API_KEY",
+    extraConfig: { engine: "cli" },
+  }),
+  legacyProfile({
+    id: "legacy-kimi-acp",
+    label: "Legacy Kimi ACP (pending qualification)",
+    adapterType: "kimi_local",
+    provider: "kimi",
+    model: DEFAULT_KIMI_LOCAL_MODEL,
+    credential: "KIMI_MODEL_API_KEY",
+    extraConfig: { engine: "acp", mode: "oneshot" },
+  }),
+  legacyProfile({
+    id: "legacy-grok",
+    label: "Legacy Grok (pending qualification)",
+    adapterType: "grok_local",
+    provider: "grok",
+    model: DEFAULT_GROK_LOCAL_MODEL,
+    credential: "XAI_API_KEY",
+  }),
+] as const;
+
+export const contextIntegrityProfiles: readonly RunnerProfileFixture[] = [
+  ...runnerProfiles.filter((profile) => ["runner-codex", "runner-acpx-claude", "runner-opencode", "legacy-codex", "legacy-claude"].includes(profile.id)),
+  ...legacyAcpxProfiles,
+  ...pendingContextIntegrityProfiles,
+];
 
 export const openRouterBreadthExcludedModelIds = ["xiaomi/mimo-v2.5"] as const;
 export const openRouterBreadthExcludedExecutionIds = [
@@ -912,6 +986,45 @@ const everydayProfiles = [
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
+    id: "grok-subscription-qualification", label: "Grok Build Subscription Qualification", manualOnly: true,
+    description: "Explicit company subscription login across Grok browser workflows in local and Daytona environments.",
+    groups: ["native"],
+    profiles: [nativeProfile({
+      id: "runner-acpx-grok-subscription", label: "Grok Build Subscription",
+      provider: "acpx", acpxAgent: "grok",
+      model: QUALIFIED_ACPX_PROFILES.grok.qualificationModel,
+      credential: "GROK_AUTH_JSON",
+    })],
+    environments: [localEnvironment, daytonaWarmEnvironment],
+    tasks: [
+      ...runnerTasks, ...localIntegrityTasks,
+      ...everydayTasks.filter(task => task.id === "build-revise"),
+      ...chatHardeningTasks.filter(task => ["stop-new-resume", "continuity-restart"].includes(task.id)),
+    ], expectedMatrixSize: 16,
+    definitionMetadata: { version: 1, authentication: "company-subscription", binary: "1.0.13", model: "grok-4.7", scheduling: "explicit-only", repetitionsRequired: 3, artifactOracle: "independent-python-contract", stopBoundary: "provider-turn-started" },
+  },
+  {
+    id: "grok-qualification", label: "Grok Build Qualification", manualOnly: true,
+    description: "Grok replies, planning approval, questions, downloadable artifacts, stop/resume and controller restart in local and Daytona environments.",
+    groups: ["native"],
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-acpx-grok"),
+    environments: [localEnvironment, daytonaWarmEnvironment],
+    tasks: [
+      ...runnerTasks, ...localIntegrityTasks,
+      ...everydayTasks.filter(task => task.id === "build-revise"),
+      ...chatHardeningTasks.filter(task => ["stop-new-resume", "continuity-restart"].includes(task.id)),
+    ], expectedMatrixSize: 16,
+    definitionMetadata: { version: 2, binary: "1.0.13", model: "grok-4.7", scheduling: "explicit-only", repetitionsRequired: 3, artifactOracle: "independent-python-contract", stopBoundary: "provider-turn-started" },
+  },
+  {
+    id: "api-response-reading", label: "Bounded API response reading", manualOnly: true,
+    description: "Retrieve evidence beyond a saved API preview through authorized bounded text windows.",
+    groups: [], environments: runnerEnvironments,
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [apiResponseReadingTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
+  },
+  {
     id: "continuation-accounting", label: "Continuation accounting baseline", manualOnly: true,
     description: "Structured productive steps, bounded repair, restart and late gates; comments cannot buy more attempts.",
     groups: ["local"], environments: [localEnvironment], profiles: codexContinuityProfiles.map(productionStoryProfile),
@@ -952,6 +1065,25 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       .filter(task => !["build-revise", "delegate-feedback", "recover-controller", "create-skill-studio"].includes(task.id))
       .map(task => `everyday-workflows.${profile.id}.daytona.${task.id}`))],
     definitionMetadata: { version: 3, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only" },
+  },
+  {
+    id: "context-integrity",
+    label: "Context Integrity",
+    manualOnly: true,
+    description: "Explicit-only proof that ordered user comments and assigned skills stay bound to the current task context.",
+    groups: ["context-integrity", "native", "legacy"],
+    profiles: contextIntegrityProfiles,
+    environments: [localEnvironment],
+    tasks: contextIntegrityTasks,
+    expectedMatrixSize: contextIntegrityProfiles.length * contextIntegrityTasks.length,
+    definitionMetadata: {
+      version: 1,
+      instructions: "production",
+      grading: "ordered-public-context-and-explicit-skill-invocation",
+      scheduling: "explicit-only",
+      paidCalls: "one provider run per skill case; two bounded turns per comment case",
+      prerequisiteGate: PENDING_PROFILE_PREREQUISITES,
+    },
   },
   {
     id: "first-task", label: "First-task onboarding",
@@ -999,6 +1131,17 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [localEnvironment], tasks: chatQualificationTasks, expectedMatrixSize: 6,
     definitionMetadata: { version: 9, permissions: "production-defaults", instructions: "production", crashBoundary: "verified-native-worker-pid-at-file-wait", recovery: "new-user-message-after-verified-cleanup", answerGrading: "exact-grounded-propositions-plus-separate-semantic-review", scheduling: "explicit-only" },
   },
+  {
+    id: "completion-updates", label: "Delegated Completion Updates", manualOnly: true,
+    description: "Observe completion delivery and result access in onboarding and idle Agent Chat; prose requires separate semantic review.",
+    groups: ["chat", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
+    environments: [localEnvironment],
+    tasks: [...firstTaskTasks.filter(task => task.id === "interview-plan-accept"), ...chatCompletionTasks],
+    expectedMatrixSize: 4,
+    definitionMetadata: { version: 6, instructions: "production", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
+  },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {
     id: "core-compatibility",
@@ -1009,7 +1152,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles,
     environments: runnerEnvironments,
     tasks: runnerTasks,
-    expectedMatrixSize: 42,
+    expectedMatrixSize: 48,
   },
   {
     id: "local-session-integrity",
@@ -1020,7 +1163,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles,
     environments: [localEnvironment],
     tasks: localIntegrityTasks,
-    expectedMatrixSize: 14,
+    expectedMatrixSize: 16,
   },
   {
     id: "openrouter-model-breadth",
@@ -1159,8 +1302,9 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 }
 
 export function validateRunnerCatalog(): MatrixExecution[] {
-  const allProfiles = [...runnerProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
+  const allProfiles = [...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    ...contextIntegrityTasks,
     ...accountingTasks,
     ...lifecycleLiveTasks,
     ...continuationTasks,
@@ -1202,12 +1346,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
   }
 
   const sampleRefs = Object.fromEntries(
-    [
-      "OPENAI_API_KEY",
-      "ANTHROPIC_API_KEY",
-      "OPENROUTER_API_KEY",
-      "DAYTONA_API_KEY",
-    ].map((name, index) => [
+    CREDENTIAL_NAMES.map((name, index) => [
       name,
       {
         type: "secret_ref" as const,

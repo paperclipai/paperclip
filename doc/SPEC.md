@@ -603,3 +603,31 @@ company search share lexical matching and ranking. Known identifiers and direct
 title matches lead; current conversation and document content supplies supporting
 evidence. See [Task search relevance](SEARCH.md) for the evaluation rubric,
 matching contract and reproducible quality tests.
+
+### Personal keyboard shortcut preference
+
+Keyboard shortcuts are off by default and are enabled in Settings → Profile.
+The preference is stored on the signed-in user, applies across companies and
+devices, and does not require instance administrator access. The local trusted
+board user has the same preference. `GET /api/auth/preferences` returns only the
+current board user's preference. `PATCH /api/auth/preferences` updates only that
+user and requires an accessible `companyId` for the activity log, including viewer
+memberships. The preference and audit record commit in one transaction. Both
+requests require `expectedUserId` (GET query parameter or PATCH body) matching
+the authenticated actor, so a cookie change cannot mix accounts in the cache.
+Agents cannot
+read or change these preferences. The legacy instance general setting is retained
+for API compatibility but no longer controls shortcut behavior in the app;
+users opt in individually after the upgrade.
+
+### Unsafe native workspace exports
+
+An unsafe workspace link does not fail an accepted native task result. Retry
+export automatically with confined entries only and keep archive confinement in
+place. If the export remains unsafe, omit it and finish the saved result under
+normal completion rules. Record diagnostics only in run logs; do not add a task
+warning or manual repair action. This also applies to historical unsafe failures:
+omit the already-rejected export, clear stale repair notices, and finalize the
+accepted result without another provider turn, even when its old sandbox is
+unavailable. Preserve current ownership and newer-work fences. See
+`native-workspace-finalization-recovery.md`.

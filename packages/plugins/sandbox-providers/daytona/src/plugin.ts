@@ -45,6 +45,7 @@ import type {
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
 import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js";
+import { DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS } from "./manifest.js";
 
 // The Claude `setup-token` login pseudo-terminal (PTY) session for this provider.
 // The session runs the login command on a real pseudo-terminal, streams the
@@ -181,6 +182,8 @@ interface DaytonaDriverConfig {
 type WorkspaceSentinelResult = {
   path: string;
   token: string | null;
+  runId?: string;
+  providerLeaseId?: string;
   result: "written" | "matched" | "missing" | "mismatch" | "skipped";
 };
 
@@ -275,7 +278,7 @@ function parseOptionalNumber(value: unknown): number | null {
 }
 
 function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
-  const timeoutMs = Number(raw.timeoutMs ?? 300_000);
+  const timeoutMs = Number(raw.timeoutMs ?? DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS);
   const livenessTimeoutMs = Number(raw.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS);
   return {
     apiKey: parseOptionalString(raw.apiKey),
@@ -284,7 +287,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     snapshot: parseOptionalString(raw.snapshot),
     image: parseOptionalString(raw.image),
     language: parseOptionalString(raw.language),
-    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 300_000,
+    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
     livenessTimeoutMs: Number.isFinite(livenessTimeoutMs) ? Math.trunc(livenessTimeoutMs) : DEFAULT_LIVENESS_TIMEOUT_MS,
     cpu: parseOptionalNumber(raw.cpu),
     memory: parseOptionalNumber(raw.memory),
@@ -483,7 +486,7 @@ async function drainSandboxBeforeTermination(sandbox: Sandbox, scope: SandboxSco
 }
 
 async function terminateAtProvider<T>(scope: SandboxScope, operation: string, action: () => Promise<T>) {
-  const timeoutMs = scope.config.timeoutMs > 0 ? scope.config.timeoutMs : 300_000;
+  const timeoutMs = scope.config.timeoutMs > 0 ? scope.config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
   return withLivenessTimeout(operation, timeoutMs + LIVENESS_START_TIMEOUT_MARGIN_MS, action);
 }
 
@@ -510,12 +513,12 @@ function hasMissingSandboxContainer(sandbox: Sandbox): boolean {
     `not found: failed to inspect sandbox container ${sandbox.id}: Error response from daemon: No such container: ${sandbox.id}`;
 }
 
-async function resolveSandboxWorkingDirectory(sandbox: Sandbox): Promise<string> {
+async function resolveSandboxWorkingDirectory(sandbox: Sandbox, create = true): Promise<string> {
   const root = (await sandbox.getWorkDir())?.trim()
     || (await sandbox.getUserHomeDir())?.trim()
     || "/home/daytona";
   const remoteCwd = path.posix.join(root, "paperclip-workspace");
-  await sandbox.fs.createFolder(remoteCwd, "755");
+  if (create) await sandbox.fs.createFolder(remoteCwd, "755");
   return remoteCwd;
 }
 
@@ -543,15 +546,17 @@ function parseProbeInteger(value: string | undefined | null): number | null {
 }
 
 function workspaceSentinelToken(input: {
-  params: Pick<PluginEnvironmentAcquireLeaseParams, "companyId" | "environmentId" | "agentId" | "executionWorkspaceId" | "issueId" | "adapterType">;
+  params: Pick<PluginEnvironmentAcquireLeaseParams, "companyId" | "environmentId" | "agentId" | "executionWorkspaceId" | "issueId" | "adapterType" | "runId">;
+  providerLeaseId: string;
   config: DaytonaDriverConfig;
 }): string | null {
-  if (!input.config.reuseLease || !input.params.agentId || (!input.params.executionWorkspaceId && !input.params.issueId)) {
+  if ((!input.config.reuseLease && !input.params.runId) || !input.params.agentId || (!input.params.executionWorkspaceId && !input.params.issueId)) {
     return null;
   }
   return createHash("sha256")
     .update(stableStringify({
       provider: "daytona",
+      ...(!input.config.reuseLease ? { ephemeralRunId: input.params.runId, ephemeralProviderLeaseId: input.providerLeaseId } : {}),
       companyId: input.params.companyId,
       environmentId: input.params.environmentId,
       agentId: input.params.agentId,
@@ -584,7 +589,7 @@ async function writeWorkspaceSentinel(input: {
   timeoutSeconds: number;
 }): Promise<WorkspaceSentinelResult> {
   const sentinelPath = workspaceSentinelPath(input.remoteCwd);
-  const token = workspaceSentinelToken({ params: input.params, config: input.config });
+  const token = workspaceSentinelToken({ params: input.params, config: input.config, providerLeaseId: input.sandbox.id });
   if (!token) {
     return { path: sentinelPath, token: null, result: "skipped" };
   }
@@ -605,7 +610,8 @@ async function writeWorkspaceSentinel(input: {
     sentinelPath,
     input.timeoutSeconds,
   );
-  return { path: sentinelPath, token, result: "written" };
+  return { path: sentinelPath, token, result: "written",
+    ...(!input.config.reuseLease ? { runId: input.params.runId!, providerLeaseId: input.sandbox.id } : {}) };
 }
 
 async function verifyWorkspaceSentinel(input: {
@@ -620,6 +626,8 @@ async function verifyWorkspaceSentinel(input: {
   const sentinelPath = typeof metadataSentinel?.path === "string"
     ? metadataSentinel.path
     : workspaceSentinelPath(input.remoteCwd);
+  const binding = typeof metadataSentinel?.runId === "string" && typeof metadataSentinel?.providerLeaseId === "string"
+    ? { runId: metadataSentinel.runId, providerLeaseId: metadataSentinel.providerLeaseId } : {};
   const expectedToken = typeof metadataSentinel?.token === "string" ? metadataSentinel.token : null;
   if (!expectedToken) {
     return { path: sentinelPath, token: null, result: "missing" };
@@ -640,6 +648,7 @@ async function verifyWorkspaceSentinel(input: {
     return {
       path: sentinelPath,
       token: expectedToken,
+      ...binding,
       result: actualToken === expectedToken ? "matched" : "mismatch",
     };
   } catch {
@@ -936,7 +945,10 @@ function resolveSyncRemoteDir(lease: { metadata?: Record<string, unknown> | null
 async function createSandbox(
   params: PluginEnvironmentAcquireLeaseParams | PluginEnvironmentProbeParams | PluginEnvironmentStartInteractiveSetupParams,
   config: DaytonaDriverConfig,
-  options: { purpose?: string } = {},
+  options: {
+    purpose?: string;
+    onCreateAttempt?: (cleanup: PluginEnvironmentCreationCleanup) => void;
+  } = {},
 ): Promise<Sandbox> {
   const resourceRequestError = validateRuntimeResourceRequest(config);
   if (resourceRequestError) {
@@ -958,16 +970,17 @@ async function createSandbox(
   // The SDK mutates params.labels (for example, code-toolbox-language).
   // Preserve our immutable ownership snapshot for validation and retry.
   const createParams = { ...buildCreateParams(config, { ...labels }), name };
+  const cleanup: PluginEnvironmentCreationCleanup = {
+    providerLeaseId: name, companyId: params.companyId, environmentId: params.environmentId,
+    ...("runId" in params ? { runId: params.runId } : {}),
+    attemptId, labels, accountFingerprint: sandboxAccountDiscriminator(config),
+  };
+  options.onCreateAttempt?.(cleanup);
   try {
     return await client.create(createParams, {
       timeout: toTimeoutSeconds(config.timeoutMs),
     });
   } catch (createError) {
-    const cleanup: PluginEnvironmentCreationCleanup = {
-      providerLeaseId: name, companyId: params.companyId, environmentId: params.environmentId,
-      ...("runId" in params ? { runId: params.runId } : {}),
-      attemptId, labels, accountFingerprint: sandboxAccountDiscriminator(config),
-    };
     try {
       // A not-found lookup after an uncertain create is not a deletion receipt:
       // the provider may still materialize the request. Keep the name in the
@@ -2223,60 +2236,118 @@ const plugin = definePlugin({
     params: PluginEnvironmentAcquireLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
-    const sandbox = await createSandbox(params, config);
-    try {
-      const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
-      const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
-      // Configure a provider-side destroy time at or before a caller deadline, so
-      // an abandoned sandbox self-destroys even if Paperclip is down. The lease
-      // carries the real provider expiry (or none) as evidence of the bound.
-      const expiresAt = await configureSandboxExpiry({
-        sandbox,
-        requestedExpiresAt: params.requestedExpiresAt,
-        nowMs: Date.now(),
+    // One budget covers creation, setup, and inline cleanup. The host leaves
+    // 30 seconds beyond this deadline to receive/journal the cleanup record.
+    const budgetMs = config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
+    const deadline = Date.now() + budgetMs;
+    let expired = false;
+    let phase = "create";
+    let cleanup: PluginEnvironmentCreationCleanup | undefined;
+    const timeoutFailure = () => {
+      expired = true;
+      const cause = new Error(`Daytona lease acquisition exceeded ${budgetMs} ms during ${phase}`);
+      return cleanup
+        ? new PluginEnvironmentCreationCleanupError([cause],
+            "Daytona lease acquisition timed out; allocation cleanup is pending",
+            { ...cleanup, labels: { ...cleanup.labels } })
+        : cause;
+    };
+    const assertActive = () => {
+      if (expired || Date.now() >= deadline) throw timeoutFailure();
+    };
+    const acquire = async (): Promise<PluginEnvironmentLease> => {
+      const sandbox = await createSandbox(params, config, {
+        onCreateAttempt: (attempt) => { cleanup = attempt; },
       });
-      const workspaceSentinel = await writeWorkspaceSentinel({
-        sandbox,
-        remoteCwd,
-        params,
-        config,
-        timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
-      });
-      sandboxHandleLeaseAdmissionStates.open({
-        driverKey: params.driverKey,
-        companyId: params.companyId,
-        environmentId: params.environmentId,
-        providerLeaseId: sandbox.id,
-        config,
-      });
-      // Seed the handle cache with the fresh handle under the exact scope that
-      // `onEnvironmentRealizeWorkspace` reads (providerLeaseId === sandbox.id).
-      // Realize then reuses this handle instead of paying a real `client.get`.
-      sandboxHandleCache.seed(
-        {
+      try {
+        assertActive();
+        if (cleanup) cleanup.observedProviderLeaseId = sandbox.id;
+        phase = "workspace";
+        const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+        assertActive();
+        phase = "shell";
+        const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(Math.max(1, deadline - Date.now())));
+        assertActive();
+        // Configure a provider-side destroy time at or before a caller deadline, so
+        // an abandoned sandbox self-destroys even if Paperclip is down. The lease
+        // carries the real provider expiry (or none) as evidence of the bound.
+        phase = "expiry";
+        const expiresAt = await configureSandboxExpiry({
+          sandbox,
+          requestedExpiresAt: params.requestedExpiresAt,
+          nowMs: Date.now(),
+        });
+        assertActive();
+        phase = "sentinel";
+        const workspaceSentinel = await writeWorkspaceSentinel({
+          sandbox,
+          remoteCwd,
+          params,
+          config,
+          timeoutSeconds: toTimeoutSeconds(Math.max(1, deadline - Date.now())),
+        });
+        assertActive();
+        sandboxHandleLeaseAdmissionStates.open({
           driverKey: params.driverKey,
           companyId: params.companyId,
           environmentId: params.environmentId,
           providerLeaseId: sandbox.id,
           config,
-        },
-        sandbox,
-      );
-      return {
-        providerLeaseId: sandbox.id,
-        expiresAt,
-        metadata: leaseMetadata({
-          config,
+        });
+        // Seed the handle cache with the fresh handle under the exact scope that
+        // `onEnvironmentRealizeWorkspace` reads (providerLeaseId === sandbox.id).
+        // Realize then reuses this handle instead of paying a real `client.get`.
+        sandboxHandleCache.seed(
+          {
+            driverKey: params.driverKey,
+            companyId: params.companyId,
+            environmentId: params.environmentId,
+            providerLeaseId: sandbox.id,
+            config,
+          },
           sandbox,
-          shellCommand,
-          remoteCwd,
-          resumedLease: false,
-          workspaceSentinel,
+        );
+        return {
+          providerLeaseId: sandbox.id,
+          expiresAt,
+          metadata: leaseMetadata({
+            config,
+            sandbox,
+            shellCommand,
+            remoteCwd,
+            resumedLease: false,
+            workspaceSentinel,
+          }),
+        };
+      } catch (error) {
+        // After timeout the host owns the durable cleanup record. A late SDK
+        // completion must not admit this lease or start another setup phase.
+        if (!expired) {
+          phase = "cleanup";
+          try {
+            await sandbox.delete(toTimeoutSeconds(Math.max(1, deadline - Date.now())));
+          } catch (cleanupError) {
+            if (cleanup) {
+              throw new PluginEnvironmentCreationCleanupError([error, cleanupError],
+                "Daytona lease setup failed; allocation cleanup is pending",
+                { ...cleanup, labels: { ...cleanup.labels } });
+            }
+            throw error;
+          }
+        }
+        throw error;
+      }
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        acquire(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(timeoutFailure()), budgetMs);
         }),
-      };
-    } catch (error) {
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
-      throw error;
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   },
 
@@ -2284,6 +2355,17 @@ const plugin = definePlugin({
     params: PluginEnvironmentResumeLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
+    if (params.leaseMetadata?.reuseLease === false) {
+      const sentinel = isRecord(params.leaseMetadata.workspaceSentinel) ? params.leaseMetadata.workspaceSentinel : null;
+      const intent = isRecord(params.leaseMetadata.nativeWorkspaceExportResume) ? params.leaseMetadata.nativeWorkspaceExportResume : null;
+      // Ephemeral recovery is bound at acquisition. Never mint proof during
+      // resume, accept a copied sentinel for a replacement, or waive legacy proof.
+      if (typeof sentinel?.token !== "string" || !sentinel.token || typeof sentinel.runId !== "string" || !sentinel.runId
+        || sentinel.providerLeaseId !== params.providerLeaseId || params.leaseMetadata.sandboxId !== params.providerLeaseId
+        || (intent && intent.runId !== sentinel.runId)) {
+        return { providerLeaseId: null, metadata: { expired: true, workspaceSentinel: { result: "mismatch" } } };
+      }
+    }
     const scope: SandboxScope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
@@ -2340,7 +2422,7 @@ const plugin = definePlugin({
         const resumedFromState = sandbox.state ?? null;
         await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
         try {
-          const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+          const remoteCwd = await resolveSandboxWorkingDirectory(sandbox, false);
           // C3: a resumed lease must clear the workspace sentinel before it is
           // trusted, even when the handle came from the cache. On any non-match we
           // evict the cached handle and expire the lease so a stale/foreign sandbox
@@ -2390,10 +2472,41 @@ const plugin = definePlugin({
     );
   },
 
+  async onEnvironmentStopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt> {
+    if (!params.providerLeaseId) throw new Error("Daytona stop requires an exact sandbox identity");
+    const config = parseDriverConfig(params.config);
+    const scope: SandboxScope = { driverKey: params.driverKey, companyId: params.companyId,
+      environmentId: params.environmentId, providerLeaseId: params.providerLeaseId, config };
+    const teardownGate = sandboxHandleTeardownGates.begin(scope);
+    sandboxHandleLeaseAdmissionStates.close(scope);
+    try {
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
+      if (!sandbox) throw new Error("Daytona retained sandbox is unavailable");
+      evictSandboxHandle(scope);
+      // Provider auto-delete can destroy a stopped sandbox without an explicit
+      // delete call. Confirm the provider disabled it before stopping saved work;
+      // the SDK setter also updates a local field, which is not sufficient proof.
+      const deadline = Math.min(config.livenessTimeoutMs, 30_000);
+      await withLivenessTimeout("sandbox.setAutoDeleteInterval", deadline, () => sandbox.setAutoDeleteInterval(-1));
+      await withLivenessTimeout("sandbox.refreshData", deadline, () => sandbox.refreshData());
+      if (sandbox.autoDeleteInterval !== -1) throw new Error("Daytona retention policy was not confirmed");
+      if (sandbox.state !== "stopped") {
+        await terminateAtProvider(scope, "sandbox.stop", () => sandbox.stop(Math.min(toTimeoutSeconds(config.timeoutMs), 30)));
+      }
+      sandboxHandleSessionStore.clear(scope);
+      await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+      return { providerLeaseId: params.providerLeaseId, state: "stopped" };
+    } finally {
+      sandboxHandleTeardownGates.end(scope, teardownGate);
+      evictSandboxHandle(scope);
+    }
+  },
+
   async onEnvironmentReleaseLease(
     params: PluginEnvironmentReleaseLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
+    if (params.resourceDisposition === "stop_and_retain") return plugin.definition.onEnvironmentStopLease!(params);
     const config = parseDriverConfig(params.config);
     const scope: SandboxScope = {
       driverKey: params.driverKey,
@@ -2998,6 +3111,7 @@ const plugin = definePlugin({
           operations: params.operations,
           remoteDir,
           timeoutSeconds,
+          onArchiveRecovery: () => pluginContext?.logger.info("Workspace export omitted unsafe links; retrying with confined entries."),
         });
         sandboxHandleCache.markFresh(scope);
         return result;

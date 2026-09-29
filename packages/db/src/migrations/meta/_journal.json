@@ -1975,6 +1975,27 @@
       "when": 1790018362070,
       "tag": "0283_jittery_psynapse",
       "breakpoints": true
+    },
+    {
+      "idx": 284,
+      "version": "7",
+      "when": 1790439010225,
+      "tag": "0284_petite_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 285,
+      "version": "7",
+      "when": 1790603883247,
+      "tag": "0285_heavy_oracle",
+      "breakpoints": true
+    },
+    {
+      "idx": 286,
+      "version": "7",
+      "when": 1790607525758,
+      "tag": "0286_complete_alice",
+      "breakpoints": true
     }
   ]
 }

@@ -91,7 +91,7 @@ describe("InlineEntitySelector", () => {
 
   it("focuses the search input when opened on coarse pointers", async () => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === "(pointer: coarse)",
+      matches: query === "(pointer: coarse)" || query === "(max-width: 40rem)",
       media: query,
       onchange: null,
       addEventListener: vi.fn(),
@@ -116,6 +116,7 @@ describe("InlineEntitySelector", () => {
           searchPlaceholder="Search responsible..."
           emptyMessage="No responsible found."
           onChange={vi.fn()}
+          disablePortal
         />,
       );
     });
@@ -131,7 +132,16 @@ describe("InlineEntitySelector", () => {
     expect(searchInput).not.toBeNull();
     expect(searchInput?.className).toContain("text-base");
     expect(document.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
+    expect(container.contains(document.querySelector("[data-mobile-entity-picker]"))).toBe(false);
+    expect(document.querySelector("[data-mobile-entity-picker-header]")?.textContent).toContain("Responsible");
+    expect(document.querySelector('button[aria-label="Close selector"]')).not.toBeNull();
     expect(document.activeElement).toBe(searchInput);
+
+    await act(async () => {
+      (document.querySelector('button[aria-label="Close selector"]') as HTMLButtonElement | null)?.click();
+      await Promise.resolve();
+    });
+    expect(document.querySelector("[data-mobile-entity-picker]")).toBeNull();
 
     act(() => {
       root.unmount();

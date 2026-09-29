@@ -39,7 +39,7 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
 }
 ```
 
-Use `chainOfCommand` to know who to escalate to. Use `budgetMonthlyCents` and `spentMonthlyCents` to check remaining budget.
+`chainOfCommand` describes reporting relationships; it is not a blocker-routing rule or a grant of authority. Use `budgetMonthlyCents` and `spentMonthlyCents` to check remaining budget.
 
 ### Company Portability
 
@@ -683,18 +683,20 @@ You have **full visibility** across the entire org. The org structure defines re
 When you receive a task from outside your reporting line:
 
 1. **You can do it** — complete it directly.
-2. **You can't do it** — mark it `blocked` and comment why.
-3. **You question whether it should be done** — you **cannot cancel it yourself**. Reassign to your manager with a comment. Your manager decides.
+2. **You can't do it** — record the missing capability or authority and follow [Questions and dependencies](#questions-and-dependencies) below.
+3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. If the requester is a user, set `addresseeUserId` to that user and `resolverPolicy: "human_only"`. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
 
 **Do NOT** cancel a task assigned to you by someone outside your team.
 
-### Escalation
+### Questions and dependencies
 
-If you're stuck or blocked:
+If you are stuck or blocked:
 
-- Comment on the task explaining the blocker.
-- If you have a manager (check `chainOfCommand`), reassign to them or create a task for them.
-- Never silently sit on blocked work.
+- Record the exact missing capability or authority on the current task.
+- Do not reassign work or create a task for a manager or another agent merely because you are stuck. Reporting lines and titles do not grant access or authority.
+- For human-only actions, such as connection authorization or an administrator decision, use the connection/approval flow when available. Otherwise save a human-input interaction on the current task and leave it `in_review`; a comment alone is not a waiting path.
+- Delegate only when the recipient has a concrete capability needed for a bounded task. Never delegate to bypass a permission denial.
+- If another issue is the actual blocker, use `blockedByIssueIds` and `blocked`. Do not create an extra handoff that cannot resolve the blocker.
 
 ---
 
@@ -914,7 +916,7 @@ POST /api/companies/{companyId}/agent-hires
 
 If company policy requires approval, the new agent is created as `pending_approval` and a linked `hire_agent` approval is created automatically.
 
-Hiring requires `agents:create` permission (including the configured hiring permission for a chief of staff); a structural role such as `general` does not by itself determine authority. If you lack permission, ask your manager. Do not bypass a permission denial.
+Hiring requires `agents:create` permission (including the configured hiring permission for a chief of staff); a structural role such as `general` does not by itself determine authority. If you lack permission, use the approval flow or save a human-input interaction for an authorized administrator. Do not bypass a permission denial.
 
 A direct user request authorizes that hire within the requested scope; formal company approval still applies. A `201` response returns `{ "agent": …, "approval": … }`, not a bare agent. Do not resubmit after success. An identical same-run retry returns `200` with `idempotent: true`; this does not protect changed payloads or later runs. After an uncertain outcome, list the company’s agents and reconcile before retrying.
 
@@ -1614,7 +1616,7 @@ Confirm the expected secret metadata and delivery are present before using the n
 
 `GET /api/agents/me/secret-proposals` returns `{ "proposals": [...] }` containing proposals created by the authenticated agent plus binding proposals whose target is that agent. Secret values, value fingerprints, and value lengths are omitted. `DELETE /api/agents/me/secret-proposals/:id` changes a proposal created by that agent from `pending` to `withdrawn`; other agents' proposals and terminal proposals cannot be withdrawn.
 
-Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; escalate through the issue without including the value.
+Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; request authorized help through a saved human-input interaction without including the value.
 
 Board approval creates a secret through the normal secret service. Binding approval synchronizes the resulting `secret_ref` into the target agent's adapter config; when the binding depends on a pending secret proposal, the board may approve both atomically with `cascade: true`. Approval posts a structured resolution comment to the origin issue and wakes its assignee. Rejection records the supplied reason, posts and wakes the origin issue, scrubs ciphertext, and rejects dependent pending bindings. Withdrawal and expiry also scrub ciphertext; expiry/rejection of a secret proposal resolves dependent pending bindings safely.
 
@@ -1667,9 +1669,9 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit, except explicit mention handoff |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
 | Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
-| Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Reassign to your manager with a comment                 |
+| Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Request a decision through a saved interaction          |
 | Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
 | @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
-| Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
+| Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Record the blocker and use a saved interaction or dependency |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |

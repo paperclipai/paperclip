@@ -1,4 +1,8 @@
-import { currentContinuationOrigins } from "./execution-continuation.js";
+import {
+  currentContinuationOrigins,
+  deliveredContinuationCommentIds,
+} from "./execution-continuation.js";
+import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { connectionIntentDeliveries } from "@paperclipai/db";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -6,6 +10,7 @@ import {
   asc,
   desc,
   eq,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -140,6 +145,14 @@ type InteractionActor = {
   suggestedTaskEffectsAuthorized?: boolean;
   resolutionDetails?: Record<string, unknown>;
 };
+
+async function assertInteractionRunWriteAllowed(tx: Db, issue: { id: string; companyId: string }, actor: InteractionActor) {
+  if (!actor.agentId || !actor.runId) return;
+  // Keep the same issue -> run lock order as task mutation and checkout.
+  await tx.select({ id: issues.id }).from(issues)
+    .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId))).for("update");
+  await assertAgentRunWriteAllowed(tx, issue.companyId, actor);
+}
 
 type CreateInteractionOptions = {
   /** Keep independently owned pending cards actionable. Internal runtime bridges use this. */
@@ -838,7 +851,7 @@ function normalizeCreateInteractionInput(
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? false,
         },
       };
     case "request_confirmation":
@@ -846,7 +859,7 @@ function normalizeCreateInteractionInput(
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? false,
         },
       };
     case "request_checkbox_confirmation":
@@ -854,7 +867,7 @@ function normalizeCreateInteractionInput(
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? false,
         },
       };
     case "request_item_verdicts":
@@ -862,7 +875,7 @@ function normalizeCreateInteractionInput(
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? false,
         },
       };
     default:
@@ -2103,6 +2116,7 @@ export function issueThreadInteractionService(
     const now = new Date();
     const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
+      await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor);
       await args.mutationOptions?.beforeResolveInTransaction?.(tx);
       // Policy mutations and review transitions use the same issue-row lock,
       // so the authoritative review policy and requester are stable through
@@ -2381,6 +2395,7 @@ export function issueThreadInteractionService(
 
     const now = new Date();
     const updated = await db.transaction(async (tx) => {
+      await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor);
       await args.mutationOptions?.beforeResolveInTransaction?.(tx);
       const issueContext = await tx
         .select({
@@ -3430,11 +3445,16 @@ export function issueThreadInteractionService(
 
       let originCommentIds: string[] = data.sourceCommentId ? [data.sourceCommentId] : [];
       let sourceIdentityContextId: string | null = null;
+      let sourceRunContext: Record<string, unknown> | null = null;
+      let sourceRunCreatedAt: Date | null = null;
       if (data.sourceRunId) {
         const sourceRun = await db
           .select({
             contextSnapshot: heartbeatRuns.contextSnapshot,
             companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+            nativeIssueId: heartbeatRuns.nativeIssueId,
+            createdAt: heartbeatRuns.createdAt,
             activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
           })
           .from(heartbeatRuns)
@@ -3443,6 +3463,22 @@ export function issueThreadInteractionService(
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
         }
+        if (data.kind === "ask_user_questions") {
+          if (actor.agentId && sourceRun.agentId !== actor.agentId) {
+            throw unprocessable("sourceRunId must belong to the creating agent");
+          }
+          const snapshot = sourceRun.contextSnapshot ?? {};
+          const boundIssueIds = [
+            sourceRun.nativeIssueId,
+            snapshot.issueId,
+            snapshot.taskId,
+          ].filter((value): value is string => typeof value === "string" && value.length > 0);
+          if (boundIssueIds.some((boundIssueId) => boundIssueId !== issue.id)) {
+            throw unprocessable("sourceRunId must belong to the same issue");
+          }
+        }
+        sourceRunContext = sourceRun.contextSnapshot;
+        sourceRunCreatedAt = sourceRun.createdAt;
         originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot)])];
         sourceIdentityContextId = actor.identityContextId ?? sourceRun.activeIdentityContextId;
         if (sourceIdentityContextId) {
@@ -3468,6 +3504,7 @@ export function issueThreadInteractionService(
         // Idempotent reuse above stays allowed so retries of a pre-close
         // create keep returning the (by now expired) original.
         const result = await db.transaction(async (tx) => {
+          await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
           const [issueRow] = await tx
             .select({ status: issues.status })
             .from(issues)
@@ -3480,6 +3517,42 @@ export function issueThreadInteractionService(
             .for("update");
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
+          }
+          if (
+            data.kind === "ask_user_questions" &&
+            sourceRunContext &&
+            sourceRunCreatedAt
+          ) {
+            const delivered = deliveredContinuationCommentIds(sourceRunContext);
+            if (delivered.known) {
+              const newerHumanComments = await tx
+                .select({ id: issueComments.id })
+                .from(issueComments)
+                .where(
+                  and(
+                    eq(issueComments.companyId, issue.companyId),
+                    eq(issueComments.issueId, issue.id),
+                    eq(issueComments.authorType, "user"),
+                    isNotNull(issueComments.authorUserId),
+                    ne(issueComments.authorUserId, "board-concierge"),
+                    isNull(issueComments.createdByRunId),
+                    isNull(issueComments.deletedAt),
+                    gte(issueComments.createdAt, sourceRunCreatedAt),
+                  ),
+                );
+              const undelivered = newerHumanComments.filter(
+                (comment) => !delivered.ids.has(comment.id),
+              );
+              if (undelivered.length > 0) {
+                throw conflict(
+                  "New user comments arrived after this run's context; continue after queued comments are delivered",
+                  {
+                    reason: "newer_comment_not_delivered",
+                    commentIds: undelivered.map((comment) => comment.id),
+                  },
+                );
+              }
+            }
           }
           // Validate the plan/document confirmation target inside the same
           // transaction (locking the document row) so the latest-revision check
@@ -3808,6 +3881,7 @@ export function issueThreadInteractionService(
       const createdWakeTargets: IssueWakeTarget[] = [];
 
       await db.transaction(async (tx) => {
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         const resolvedAt = new Date();
         const [claimed] = await tx
           .update(issueThreadInteractions)
@@ -3965,6 +4039,7 @@ export function issueThreadInteractionService(
       assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
       const submission = await db.transaction(async (tx) => {
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         const current = await tx
           .select()
           .from(issueThreadInteractions)
@@ -4102,8 +4177,9 @@ export function issueThreadInteractionService(
         throw interactionTerminalError(current);
       }
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
+      const [updated] = await db.transaction(async (tx) => {
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        return tx.update(issueThreadInteractions)
         .set({
           status: "rejected",
           result: {
@@ -4123,6 +4199,7 @@ export function issueThreadInteractionService(
           ),
         )
         .returning();
+      });
 
       if (!updated) {
         throw interactionAlreadyResolvedError();
@@ -4664,6 +4741,7 @@ export function issueThreadInteractionService(
       // review queue while the card is still pending, and an executable
       // request must not outlive a withdrawn card.
       const updated = await db.transaction(async (tx) => {
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],
@@ -4771,6 +4849,7 @@ export function issueThreadInteractionService(
       });
 
       const updated = await db.transaction(async (tx) => {
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         await mutationOptions.beforeResolveInTransaction?.(tx);
         const resolvedAt = new Date();
         const [row] = await tx
@@ -4846,6 +4925,7 @@ export function issueThreadInteractionService(
       const reason = data.reason?.trim() || null;
       const now = new Date();
       const updated = await db.transaction(async (tx) => {
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],
@@ -4942,6 +5022,7 @@ export function issueThreadInteractionService(
 
       const reason = data.reason?.trim() || null;
       const updated = await db.transaction(async (tx) => {
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         const resolvedAt = new Date();
         const [row] = await tx
           .update(issueThreadInteractions)

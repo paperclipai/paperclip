@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { runnerApiToolsEnabled } from "../../server/src/services/native-runtime/runner-api-rollout.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
@@ -131,8 +132,7 @@ export async function runEverydayFlow(input: Input) {
     caseId: execution.task.id,
     prompt: execution.task.buildPrompt(nonce),
     fixtureConfiguration: {
-      apiToolsEnabled:
-        process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED === "true",
+      apiToolsEnabled: runnerApiToolsEnabled(fixtures.company.id),
       aiConnection: fixtures.aiConnection,
     },
     checks: [],

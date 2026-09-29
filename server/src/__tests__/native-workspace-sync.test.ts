@@ -1,10 +1,12 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, mkdir, writeFile, readFile, appendFile, symlink, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   directorySnapshotSha256,
   serializeDirectorySnapshot,
+  captureDirectorySnapshot,
+  disposeDirectorySnapshot,
 } from "@paperclipai/adapter-utils/workspace-restore-merge";
 
 import {
@@ -13,6 +15,7 @@ import {
   readNativeWorkspaceSyncReference,
   resumeNativeWorkspaceSync,
   prepareNativeWorkspaceSync,
+  cleanupNativeWorkspaceSync,
 } from "../services/native-runtime/native-workspace-sync.js";
 
 const digest = "a".repeat(64);
@@ -147,6 +150,55 @@ describe("native workspace sync durable metadata", () => {
     expect(() =>
       nativeWorkspaceSyncInternals.descriptorPath("run-1", "../descriptor"),
     ).toThrow("native_workspace_sync_descriptor_digest_invalid");
+  });
+
+  it.each(["corrupt", "symlink", "foreign"] as const)("persists compact v2 manifests and rejects %s recovery storage", async (tamper) => {
+    const paperclipHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-manifest-"));
+    cleanupDirs.push(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "manifest-test";
+    const workspace = path.join(paperclipHome, "workspace");
+    await mkdir(workspace);
+    await writeFile(path.join(workspace, "private-filename-雪"), "baseline");
+    const baseline = await captureDirectorySnapshot(workspace, { diskBacked: true });
+    const initial = serializeDirectorySnapshot(baseline);
+    if (initial.version !== 2) throw new Error("Expected a disk baseline");
+    const scratch = initial.entries.filePath;
+    const runId = "manifest-run";
+    const stateDir = path.dirname(nativeWorkspaceSyncInternals.durableSeedPaths(runId).workspaceArchivePath);
+    await mkdir(stateDir, { recursive: true });
+    await nativeWorkspaceSyncInternals.persistSnapshotManifests(runId, { baseline, gitSnapshot: null });
+    await expect(stat(scratch)).rejects.toMatchObject({ code: "ENOENT" });
+    const serialized = serializeDirectorySnapshot(baseline);
+    if (serialized.version !== 2) throw new Error("Expected v2");
+    const descriptor = {
+      schema: "paperclip.native-workspace-sync/v2" as const,
+      binding: { runId, companyId: "company", workspaceId: "workspace", leaseId: "lease", providerLeaseId: "sandbox", localCwd: workspace, remoteCwd: "/workspace" },
+      state: "prepared" as const, baselineSha256: directorySnapshotSha256(baseline),
+      baseline: serialized, gitSnapshot: null, seed: null,
+      createdAt: new Date().toISOString(), finalizedAt: null, finalHostSha256: null, resourceDisposition: null,
+    };
+    let reference = await nativeWorkspaceSyncInternals.writeDescriptor(descriptor);
+    const raw = await readFile(nativeWorkspaceSyncInternals.descriptorPath(runId, reference.descriptorSha256), "utf8");
+    expect(raw.length).toBeLessThan(4096);
+    expect(raw).not.toContain("private-filename");
+    const recovered = await nativeWorkspaceSyncInternals.readDescriptor({ runId, reference });
+    expect(recovered.baseline.entries.get("private-filename-雪")).toMatchObject({ kind: "file" });
+    await disposeDirectorySnapshot(recovered.baseline);
+    if (tamper === "corrupt") {
+      await appendFile(serialized.entries.filePath, "corrupt");
+    } else if (tamper === "symlink") {
+      const copy = path.join(paperclipHome, "copied.sqlite");
+      await writeFile(copy, await readFile(serialized.entries.filePath));
+      await rm(serialized.entries.filePath);
+      await symlink(copy, serialized.entries.filePath);
+    } else {
+      descriptor.baseline.entries.filePath = path.join(paperclipHome, "foreign.sqlite");
+      reference = await nativeWorkspaceSyncInternals.writeDescriptor(descriptor);
+    }
+    await expect(nativeWorkspaceSyncInternals.readDescriptor({ runId, reference })).rejects.toThrow();
+    await cleanupNativeWorkspaceSync(runId);
+    await expect(stat(stateDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each([false, true])("writes one immutable descriptor when the same state is replayed (multiple repositories: %s)", async (multipleRepositories) => {

@@ -38,7 +38,7 @@
 // (`GlobalHandlers`), the two React error boundaries, deduplicates a repeat
 // event (`Dedupe`), and links a caused-by chain (`LinkedErrors`).
 
-import { buildBrowserErrorContext, type BrowserErrorDetails } from "./browser-error-context";
+import { buildBrowserErrorContext, readBrowserErrorState, type BrowserErrorDetails } from "./browser-error-context";
 
 let queue: Promise<void> = Promise.resolve();
 
@@ -175,6 +175,33 @@ export function buildBrowserSentryInitOptions(
         : undefined,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    beforeSend: (event, hint) => {
+      // Global handlers do not pass through our React boundaries. Give their
+      // reports the same bounded document state, without URLs or breadcrumbs.
+      // Preserve a boundary's earlier snapshot across the asynchronous queue.
+      try {
+        event.contexts = {
+          ...event.contexts,
+          browser_state: event.contexts?.browser_state ?? readBrowserErrorState(),
+        };
+        event.tags = {
+          ...event.tags,
+          browser_build_mode: import.meta.env.DEV ? "development" : "production",
+        };
+        if (event.exception?.values?.some((value) =>
+          value.mechanism?.type === "onunhandledrejection"
+          || value.mechanism?.type === "auto.browser.global_handlers.onunhandledrejection",
+        )) {
+          // The SDK supplies the rejected value directly. Classify without
+          // reading object properties, coercing strings, or copying its value.
+          const reason = hint.originalException;
+          event.tags.browser_rejection_kind = reason === null ? "null" : typeof reason;
+        }
+      } catch {
+        // Diagnostics must not replace or discard the original error.
+      }
+      return event;
+    },
     integrations: (defaults) =>
       defaults.filter(
         (integration) => integration.name !== "HttpContext" && integration.name !== "Breadcrumbs",

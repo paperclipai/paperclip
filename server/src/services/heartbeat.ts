@@ -1,3 +1,12 @@
+import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
+import { restoreNativeWorkspaceBestEffort } from "./native-runtime/native-workspace-best-effort.js";
+import {
+  withNativeWorkspaceFinalizationOwnership,
+  NativeWorkspaceFinalizationBusyError,
+  NativeWorkspaceFinalizationOwnershipLostError,
+  type NativeWorkspaceFinalizationOwnership,
+} from "./native-runtime/native-workspace-finalization-ownership.js";
+import { hasStopOnlyCleanup, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
@@ -37,11 +46,11 @@ import {
 import { executionFailureRetryCount, executionRetryAttemptCount, accountingForScheduledRetry } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
-import { buildExecutionContinuation } from "./execution-continuation.js";
+import { buildExecutionContinuation, StaleExecutionContinuationError } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
-import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
-import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { captureDirectorySnapshot, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { initializeRunIdentity, explicitOperatorRunIdentity } from "./run-identity.js";
 import {
   assertDurableChatWakeupReceipt,
@@ -221,7 +230,9 @@ import {
   isRunnerIngressAuthorized,
   materializeLegacyQuestionResponseWakeProjection,
   materializeNativeInteractionResponses,
-  nativeCompletionRequestsForComments,
+  nativeCompletionRequestsWithSources,
+  nativeCompletionSource,
+  nativeImmediateObjectiveSource,
   NativeCancellationPendingRecoveryError,
   NativeControllerDetachedForRestartError,
   nativeToolContractFingerprintForTarget,
@@ -2516,8 +2527,14 @@ async function materializeManagedProjectWorkspace(
     if (input.localSource) {
       const snapshot = await readGitWorkspaceSnapshot(input.localSource, false);
       if (!snapshot) throw new Error("Configured repository folder is not a Git checkout");
-      const baseline = await captureDirectorySnapshot(cloneTmpDir, { exclude: [".git", ".paperclip-runtime", PROJECT_REPOSITORIES_DIR, ...snapshot.ignoredPaths] });
-      await mergeDirectoryWithBaseline({ baseline, sourceDir: input.localSource, targetDir: cloneTmpDir });
+      let baseline;
+      try {
+        baseline = await captureDirectorySnapshot(cloneTmpDir, { exclude: [".git", ".paperclip-runtime", PROJECT_REPOSITORIES_DIR], ignoredPaths: snapshot.ignoredPaths, diskBacked: true });
+        await mergeDirectoryWithBaseline({ baseline, sourceDir: input.localSource, targetDir: cloneTmpDir });
+      } finally {
+        if (baseline) await disposeDirectorySnapshot(baseline);
+        await disposeGitWorkspaceSnapshot(snapshot);
+      }
       await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
     } else if (input.repoRef) {
       await execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS });
@@ -8578,6 +8595,9 @@ export function buildPaperclipTaskMarkdown(input: {
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
+  // Current wake events are rendered by the structured wake prompt on
+  // adapter lanes. Keep the legacy default for standalone callers.
+  includeWakeComments?: boolean;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
@@ -8603,6 +8623,7 @@ export function buildPaperclipTaskMarkdown(input: {
       : null);
   const effectiveWakeComments =
     wakeComments.length > 0 ? wakeComments : wakeComment ? [wakeComment] : [];
+  const renderWakeCommentBodies = input.includeWakeComments !== false;
   const rejectedPlan = input.planReview?.status === "rejected";
   const acceptedPlanContinuation =
     !rejectedPlan && !issue?.conversationAgentId && !wakeComment &&
@@ -8803,7 +8824,9 @@ export function buildPaperclipTaskMarkdown(input: {
       "Apply the latest wake comment to the current task. Later direction replaces conflicting scope; preserve other requirements and approval gates. Clarification is not approval. Reuse completed work rather than repeating it.",
       "",
       "Latest wake comment:",
-      fenceTaskText(effectiveWakeComments[0]!.body),
+      ...(renderWakeCommentBodies
+        ? [fenceTaskText(effectiveWakeComments[0]!.body)]
+        : []),
     );
     appendWakeAttachments(effectiveWakeComments[0]!);
   } else if (effectiveWakeComments.length > 1) {
@@ -8818,7 +8841,7 @@ export function buildPaperclipTaskMarkdown(input: {
       lines.push(
         "",
         `Wake comment ${index + 1} (${quoteTaskScalar(comment.id)}):`,
-        fenceTaskText(comment.body),
+        ...(renderWakeCommentBodies ? [fenceTaskText(comment.body)] : []),
       );
       appendWakeAttachments(comment);
     }
@@ -18576,7 +18599,7 @@ export function heartbeatService(
       // path uses the provider and configuration recorded on the lease first;
       // the environment is lifecycle context and only a legacy fallback.
       const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
-      const useRecordedTeardown = isOrphanEphemeralLease || !environment;
+      const useRecordedTeardown = isOrphanEphemeralLease || !environment || hasStopOnlyCleanup(lease);
 
       // Do not consume a finite cleanup attempt while the provider plugin is
       // briefly unavailable. A plugin worker restart, a plugin reload, or a
@@ -18645,7 +18668,9 @@ export function heartbeatService(
             environment,
             lease,
           });
-          const released = await environmentsSvc.releaseLease(lease.id, "expired", {
+          const released = hasStopOnlyCleanup(lease)
+            ? await settleStopOnlyCleanup(db, lease, { attemptId: claimed, receipt })
+            : await environmentsSvc.releaseLease(lease.id, "expired", {
             expectedPendingCleanupAttemptId: claimed,
             cleanupStatus: "success",
             failureReason: "pending_cleanup_retry",
@@ -18803,7 +18828,7 @@ export function heartbeatService(
       agentId: input.agentId,
       status: settledRun?.status,
       failureReason: settledRun?.error ?? undefined,
-      providerResourceDisposition: input.succeeded
+      providerResourceDisposition: input.succeeded && (!parseObject(settledRun?.resultJson).workspaceExportRetry || workspaceSyncReference?.resourceDisposition === "destroy")
         ? (workspaceSyncReference?.resourceDisposition ?? "stop_and_retain")
         : "stop_and_retain",
     });
@@ -20890,14 +20915,26 @@ export function heartbeatService(
           })
         : null;
       let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan });
+      let taskMarkdownAssignment = buildPaperclipTaskMarkdown({
+        ...taskMarkdownInput,
+        taskPlan,
+        includeWakeComments: false,
+      });
       if (isConversation(issueContext) && !taskSession && issueId) {
         const replay = await conversationReplay(db, agent.companyId, issueId, wakeCommentId);
         if (replay) taskMarkdown += `\n\nEarlier messages in this session (quoted user data):\n${replay}`;
+        if (replay) taskMarkdownAssignment += `\n\nEarlier messages in this session (quoted user data):\n${replay}`;
       }
       const taskMarkdownCompact = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
         includeDescription: false,
+      });
+      const taskMarkdownAssignmentCompact = buildPaperclipTaskMarkdown({
+        ...taskMarkdownInput,
+        taskPlan,
+        includeDescription: false,
+        includeWakeComments: false,
       });
       if (issueRef) {
         context.paperclipIssue = {
@@ -20920,10 +20957,20 @@ export function heartbeatService(
       } else {
         delete context.paperclipTaskMarkdown;
       }
+      if (taskMarkdownAssignment) {
+        context.paperclipTaskMarkdownAssignment = taskMarkdownAssignment;
+      } else {
+        delete context.paperclipTaskMarkdownAssignment;
+      }
       if (taskMarkdownCompact && taskMarkdownCompact !== taskMarkdown) {
         context.paperclipTaskMarkdownCompact = taskMarkdownCompact;
       } else {
         delete context.paperclipTaskMarkdownCompact;
+      }
+      if (taskMarkdownAssignmentCompact && taskMarkdownAssignmentCompact !== taskMarkdownAssignment) {
+        context.paperclipTaskMarkdownAssignmentCompact = taskMarkdownAssignmentCompact;
+      } else {
+        delete context.paperclipTaskMarkdownAssignmentCompact;
       }
       if (issueRef) {
         const redactedWakeContext = await createRunSecretRedactionRegistry(
@@ -20934,6 +20981,8 @@ export function heartbeatService(
           paperclipTaskCommunicationGuidance: context.paperclipTaskCommunicationGuidance,
           paperclipTaskMarkdown: context.paperclipTaskMarkdown,
           paperclipTaskMarkdownCompact: context.paperclipTaskMarkdownCompact,
+          paperclipTaskMarkdownAssignment: context.paperclipTaskMarkdownAssignment,
+          paperclipTaskMarkdownAssignmentCompact: context.paperclipTaskMarkdownAssignmentCompact,
         });
         context.paperclipIssue = redactedWakeContext.paperclipIssue;
         context.paperclipTaskCommunicationGuidance = redactedWakeContext.paperclipTaskCommunicationGuidance;
@@ -20949,6 +20998,42 @@ export function heartbeatService(
           context.paperclipTaskMarkdownCompact =
             redactedWakeContext.paperclipTaskMarkdownCompact;
         }
+        if (redactedWakeContext.paperclipTaskMarkdownAssignment) {
+          context.paperclipTaskMarkdownAssignment =
+            redactedWakeContext.paperclipTaskMarkdownAssignment;
+        }
+        if (redactedWakeContext.paperclipTaskMarkdownAssignmentCompact) {
+          context.paperclipTaskMarkdownAssignmentCompact =
+            redactedWakeContext.paperclipTaskMarkdownAssignmentCompact;
+        }
+      }
+      if (issueRef) {
+        const digest = (value: string | null | undefined) =>
+          value?.trim()
+            ? createHash("sha256")
+                .update(value.trim().replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ""))
+                .digest("hex")
+            : null;
+        const redactedIssue = parseObject(context.paperclipIssue);
+        context.paperclipTurnContext = {
+          version: 1,
+          assignment: {
+            owner: "task_markdown",
+            description: {
+              id: issueRef.id,
+              revision: digest(readNonEmptyString(redactedIssue.description)),
+            },
+          },
+          events: {
+            owner: "wake_prompt",
+            comments: safeWakeComments.map((comment) => ({
+              id: comment.id,
+              revision: digest(comment.body),
+            })),
+          },
+        } satisfies PaperclipTurnContext;
+      } else {
+        delete context.paperclipTurnContext;
       }
       // A native run's execution input is immutable once persisted. Recovery must therefore
       // restore the workspace bound to that input rather than consulting the issue's current
@@ -21202,10 +21287,19 @@ export function heartbeatService(
           context.paperclipTaskMarkdown = appendConcurrentWorkspaceNote(
             context.paperclipTaskMarkdown,
           );
+          context.paperclipTaskMarkdownAssignment = appendConcurrentWorkspaceNote(
+            context.paperclipTaskMarkdownAssignment,
+          );
           if (typeof context.paperclipTaskMarkdownCompact === "string") {
             context.paperclipTaskMarkdownCompact =
               appendConcurrentWorkspaceNote(
                 context.paperclipTaskMarkdownCompact,
+              );
+          }
+          if (typeof context.paperclipTaskMarkdownAssignmentCompact === "string") {
+            context.paperclipTaskMarkdownAssignmentCompact =
+              appendConcurrentWorkspaceNote(
+                context.paperclipTaskMarkdownAssignmentCompact,
               );
           }
           logger.info(
@@ -22136,6 +22230,8 @@ export function heartbeatService(
           selectedEnvironmentId,
           localEnvironmentId: localEnvironment.id,
           adapterType: agent.adapterType,
+          adapterConfig: parseObject(agent.adapterConfig),
+          admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
           issueId: issueId ?? null,
           heartbeatRunId: run.id,
           agentId: agent.id,
@@ -23112,6 +23208,50 @@ export function heartbeatService(
                 (response) => response.id === executionContinuation.trigger.interactionId,
               )?.id
             : undefined;
+          const immediateCompletion = (() => {
+            if (nativeReviewRequest) return { requests: [nativeReviewRequest], sources: [null] };
+            const { requests, sources } = nativeCompletionRequestsWithSources(
+              safeWakeComments.length > 0
+                ? safeWakeComments
+                : safeWakeCommentContext?.body
+                  ? [safeWakeCommentContext]
+                  : [],
+              {
+                requiredFullWakeCommentCount:
+                  paperclipWakePayload?.fallbackFetchNeeded === true &&
+                  CHAT_PROVIDERS.some(
+                    (provider) =>
+                      provider ===
+                      paperclipWakePayload.externalChatProvider,
+                  ) &&
+                  Array.isArray(paperclipWakePayload.commentIds)
+                    ? paperclipWakePayload.commentIds.length
+                    : undefined,
+              },
+            );
+            // Preserve every admitted pending chat request while also
+            // retaining newer user direction materialized by recovery.
+            // A file-only wake must not inherit an old task objective.
+            const latestComment =
+              executionContinuation?.messages.findLast(
+                (message) =>
+                  message.authorType === "user" &&
+                  !message.createdByRunId &&
+                  !message.deleted &&
+                  message.body.trim().length > 0,
+              );
+            const latestRequest = latestComment?.body;
+            if (
+              latestRequest &&
+              !requests.some(
+                (request) => request === latestRequest.trim(),
+              )
+            ) {
+              requests.push(latestRequest.trim());
+              sources.push(nativeCompletionSource("comment", latestComment!.id, latestRequest));
+            }
+            return { requests: requests.length > 0 ? requests : undefined, sources };
+          })();
           // Rebuilding a default contract is not a change in user direction.
           // In particular, an upgraded checkpoint may have an intentionally
           // authored contract and no continuation envelope yet.
@@ -23130,49 +23270,18 @@ export function heartbeatService(
                     nativeReviewRequest ?? (currentHumanResponseId
                       ? null
                       : executionContinuation?.objective ?? safeWakeCommentContext?.body ?? null),
+                  // The ordinary initial objective is selected by the server-owned
+                  // continuation envelope. Carry its explicit description source
+                  // through the singular-request compatibility path; do not infer
+                  // provenance for review requests, answers, or wake fallbacks.
+                  immediateRequestSource: nativeImmediateObjectiveSource({
+                    issueId: issueRef.id,
+                    objectiveSource: executionContinuation?.objectiveSource,
+                    excluded: Boolean(nativeReviewRequest || currentHumanResponseId),
+                  }),
                   humanResponseId: currentHumanResponseId,
-                  immediateRequests: (() => {
-                    if (nativeReviewRequest) return [nativeReviewRequest];
-                    const requests = nativeCompletionRequestsForComments(
-                      safeWakeComments.length > 0
-                        ? safeWakeComments
-                        : safeWakeCommentContext?.body
-                          ? [{ body: safeWakeCommentContext.body }]
-                          : [],
-                      {
-                        requiredFullWakeCommentCount:
-                          paperclipWakePayload?.fallbackFetchNeeded === true &&
-                          CHAT_PROVIDERS.some(
-                            (provider) =>
-                              provider ===
-                              paperclipWakePayload.externalChatProvider,
-                          ) &&
-                          Array.isArray(paperclipWakePayload.commentIds)
-                            ? paperclipWakePayload.commentIds.length
-                            : undefined,
-                      },
-                    );
-                    // Preserve every admitted pending chat request while also
-                    // retaining newer user direction materialized by recovery.
-                    // A file-only wake must not inherit an old task objective.
-                    const latestRequest =
-                      executionContinuation?.messages.findLast(
-                        (message) =>
-                          message.authorType === "user" &&
-                          !message.createdByRunId &&
-                          !message.deleted &&
-                          message.body.trim().length > 0,
-                      )?.body;
-                    if (
-                      latestRequest &&
-                      !requests.some(
-                        (request) => request === latestRequest.trim(),
-                      )
-                    ) {
-                      requests.push(latestRequest.trim());
-                    }
-                    return requests.length > 0 ? requests : undefined;
-                  })(),
+                  immediateRequests: immediateCompletion.requests,
+                  immediateRequestSources: immediateCompletion.sources,
                 });
           const taskNativeSessionId = !taskSessionCredentialCompatible ? null : readNonEmptyString(
             taskSessionDecodedParams?.sessionId,
@@ -23299,9 +23408,10 @@ export function heartbeatService(
           // Other managed harnesses still require per-turn credential cleanup.
           const supportsManagedWarmSession = agent.adapterType === "paperclip_runner" &&
             nativeRuntimeResolution.profile.backend === "codex_app_server";
-          const effectiveLifecyclePolicy = managedAiRuntime && !supportsManagedWarmSession
-            ? { mode: "per_turn" as const, idleTimeoutMs: null }
-            : environmentLifecyclePolicy ?? agentLifecyclePolicy;
+          const effectiveLifecyclePolicy = persistedNativeExecutionInput?.session.lifecyclePolicy ??
+            (managedAiRuntime && !supportsManagedWarmSession
+              ? { mode: "per_turn" as const, idleTimeoutMs: null }
+              : environmentLifecyclePolicy ?? agentLifecyclePolicy);
           if (
             effectiveLifecyclePolicy.mode === "warm" &&
             executionTarget?.kind === "remote" &&
@@ -23510,6 +23620,7 @@ export function heartbeatService(
                     ].filter(Boolean).join("\n\n"),
                     initialCommunicationGuidance: nativeReviewRequest ? null : readNonEmptyString(context.paperclipTaskCommunicationGuidance),
                     wakePayload: context.paperclipWake,
+                    turnContext: context.paperclipTurnContext,
                     resumedSession,
                     previousTurn: (() => {
                       if (!previousNativeRun || nativeReviewRequest) return null;
@@ -23576,6 +23687,7 @@ export function heartbeatService(
                       sha256: completionContract.row.canonicalSha256,
                       schemaVersion: completionContract.row.schemaVersion,
                       contract: completionContract.contract,
+                      sources: "sources" in completionContract ? completionContract.sources : undefined,
                     },
                     runtimeContext: nativeRuntimeContext,
                   }),
@@ -24437,44 +24549,78 @@ export function heartbeatService(
           // If recording the barrier itself fails, propagate as a run failure
           // rather than silently leaving dependents stranded behind a missing
           // finalize row.
-          if (nativeWorkspaceSync) {
-            await nativeWorkspaceSync.restoreWorkspace();
-          }
-          await db
-            .update(heartbeatRuns)
-            .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
-            .where(
-              and(
-                eq(heartbeatRuns.id, run.id),
-                eq(heartbeatRuns.status, "running"),
-              ),
-            );
-          const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
-          await recordWorkspaceFinalize(workspaceFinalizeStatus);
-          if (adapterResult.nativeFinalization) {
-            adapterResult.nativeFinalization.workspaceFinalizeStatus =
-              workspaceFinalizeStatus;
+          const completeWorkspace = async (ownership?: NativeWorkspaceFinalizationOwnership) => {
             try {
-              const finalized = await finalizeNativeRun({
-                db,
-                runId: run.id,
-                workspaceFinalizeStatus,
-                preserveProviderAttempt: Boolean(nativeWorkspaceSync),
-              });
-              await dispatchPendingNativeStatusWakeups({
-                companyId: run.companyId,
-              });
-              if (finalized.phase === "committed") {
-                await nativeWorkspaceSync?.cleanup();
+              if (nativeWorkspaceSync) {
+                const exported = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+                  eq(workspaceOperations.companyId, run.companyId),
+                  eq(workspaceOperations.heartbeatRunId, run.id),
+                  eq(workspaceOperations.phase, "workspace_finalize"),
+                  eq(workspaceOperations.status, "succeeded"),
+                )).limit(1);
+                if (exported.length) adapterFinalizeOutcome = "succeeded";
+                else await restoreNativeWorkspaceBestEffort({
+                  db, runId: run.id, assertOwnership: ownership?.assertHeld,
+                  restore: () => nativeWorkspaceSync!.restoreWorkspace(ownership?.assertHeld),
+                });
               }
-            } catch (finalizeErr) {
-              logger.warn(
-                { err: finalizeErr, runId: run.id },
-                "native result persisted but finalization did not apply; the reconciliation loop will retry",
-              );
+              await ownership?.assertHeld();
+              await db
+                .update(heartbeatRuns)
+                .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
+                .where(
+                  and(
+                    eq(heartbeatRuns.id, run.id),
+                    eq(heartbeatRuns.status, "running"),
+                  ),
+                );
+              const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
+              await recordWorkspaceFinalize(workspaceFinalizeStatus);
+              if (adapterResult.nativeFinalization) {
+                adapterResult.nativeFinalization.workspaceFinalizeStatus =
+                  workspaceFinalizeStatus;
+                try {
+                  const finalized = await finalizeNativeRun({
+                    db,
+                    runId: run.id,
+                    workspaceFinalizeStatus,
+                    preserveProviderAttempt: Boolean(nativeWorkspaceSync),
+                  });
+                  await dispatchPendingNativeStatusWakeups({
+                    companyId: run.companyId,
+                  });
+                  if (finalized.phase === "committed") {
+                    await nativeWorkspaceSync?.cleanup();
+                  }
+                } catch (finalizeErr) {
+                  logger.warn(
+                    { err: finalizeErr, runId: run.id },
+                    "native result persisted but finalization did not apply; the reconciliation loop will retry",
+                  );
+                }
+              }
+            } catch (error) {
+              if (ownership) {
+                await ownership.assertHeld();
+                await recordWorkspaceFinalize("failed");
+              }
+              throw error;
             }
+          };
+          if (nativeWorkspaceSync) {
+            const owned = await withNativeWorkspaceFinalizationOwnership({
+              db, companyId: run.companyId, runId: run.id,
+            }, completeWorkspace);
+            if (!owned.acquired) throw new NativeWorkspaceFinalizationBusyError();
+          } else {
+            await completeWorkspace();
           }
         } catch (adapterErr) {
+          if (adapterErr instanceof NativeWorkspaceFinalizationBusyError
+            || adapterErr instanceof NativeWorkspaceFinalizationOwnershipLostError) {
+            nativeWorkspaceFinalizeScheduled = true;
+            throw adapterErr;
+          }
           if (adapterErr instanceof NativeControllerDetachedForRestartError) {
             // Preserve the provider and its run for the new controller. This
             // also keeps generic teardown from terminalizing/releasing its lease.
@@ -24794,8 +24940,8 @@ export function heartbeatService(
                 : null;
 
         let logSummary: {
-          bytes: number;
-          sha256?: string;
+          bytes: number | null;
+          sha256?: string | null;
           compressed: boolean;
         } | null = null;
         if (handle) {
@@ -25414,6 +25560,14 @@ export function heartbeatService(
           }
           return;
         }
+        if (err instanceof NativeWorkspaceFinalizationBusyError
+          || err instanceof NativeWorkspaceFinalizationOwnershipLostError) {
+          // Another exact owner is finishing copyback, or this owner lost its
+          // lock connection. Preserve the accepted result and let reconciliation
+          // inspect durable ownership; neither case consumes an export retry.
+          logger.info({ runId: run.id, reason: err.message }, "native workspace finalization deferred to its durable owner");
+          return;
+        }
         if (err instanceof NativeWorkspaceFinalizeScheduledError) {
           const coordinator = await db
             .select({
@@ -25429,7 +25583,9 @@ export function heartbeatService(
             stream: "system",
             level: err.terminalFailure ? "error" : "warn",
             message: err.terminalFailure
-              ? "native result is durable, but the sandbox containing unexported workspace changes is unrecoverable"
+              ? err.reasonCode === "workspace_sync_out_failed"
+                  ? "native result is durable; automatic workspace copy-back retries stopped and saved work is retained for export repair"
+                  : "native result is durable, but the sandbox containing unexported workspace changes is unrecoverable"
               : "native result is durable; workspace copy-back will retry without another provider turn",
             payload: {
               attempt: coordinator?.attempt ?? null,
@@ -25441,13 +25597,13 @@ export function heartbeatService(
           if (err.terminalFailure) {
             // The durable coordinator already failed the run, blocked the
             // issue, and cleared its execution lock. Let ordinary teardown
-            // release the now-useless lease and return the agent to service.
+            // release the lease while retaining the sandbox and its unexported work.
             nativeWorkspaceFinalizeScheduled = false;
             providerResourceDispositionForRun = "stop_and_retain";
             await finalizeAgentStatus(
               run.agentId,
               "failed",
-              "native_workspace_sync_out_unrecoverable",
+              `native_${err.reasonCode}`,
               { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) },
             ).catch(() => undefined);
           }
@@ -25503,8 +25659,8 @@ export function heartbeatService(
         logger.error({ err, runId }, "heartbeat execution failed");
 
         let logSummary: {
-          bytes: number;
-          sha256?: string;
+          bytes: number | null;
+          sha256?: string | null;
           compressed: boolean;
         } | null = null;
         if (handle) {
@@ -25688,6 +25844,15 @@ export function heartbeatService(
                 ? outerErr.reason
                 : "adopted_runner_authentication_timeout",
           }).catch(() => undefined);
+      } else if (outerErr instanceof StaleExecutionContinuationError) {
+        // The queued continuation became obsolete before adapter dispatch.
+        // Use cancellation settlement so wakeup, issue ownership, agent state,
+        // and notifications agree; do not retry work for the previous owner.
+        await cancelRunInternal(run.id, outerErr.code, {
+          errorCode: outerErr.code,
+          eventMessage: "stale execution continuation cancelled before dispatch",
+          suppressImmediateRecovery: true,
+        });
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a
         // failure: park the run as a bounded scheduled retry and leave the

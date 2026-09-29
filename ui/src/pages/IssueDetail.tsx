@@ -1,5 +1,8 @@
+import { WorkspaceExportRecovery } from "../components/WorkspaceExportRecovery";
+import { useUserPreferences } from "../hooks/useUserPreferences";
 import { DispositionRecoveryProvider } from "../components/DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
+import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components/task-chat/composer-run-settings";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
@@ -1254,6 +1257,7 @@ type IssueDetailChatTabProps = {
   draftKey: string;
   reassignOptions: Array<{ id: string; label: string; searchText?: string }>;
   currentAssigneeValue: string;
+  assigneeAdapterOverrides?: Issue["assigneeAdapterOverrides"];
   suggestedAssigneeValue: string;
   mentions: MentionOption[];
   conversationMode?: boolean;
@@ -1272,6 +1276,7 @@ type IssueDetailChatTabProps = {
     reassignment?: CommentReassignment,
     attachmentIds?: string[],
     clientRequestId?: string,
+    runSettings?: ComposerRunSettings,
   ) => Promise<void>;
   onReviewConversation: () => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
@@ -1381,6 +1386,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   draftKey,
   reassignOptions,
   currentAssigneeValue,
+  assigneeAdapterOverrides,
   suggestedAssigneeValue,
   mentions,
   conversationMode,
@@ -2407,6 +2413,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             enableReassign={!conversationMode}
             reassignOptions={reassignOptions}
             currentAssigneeValue={currentAssigneeValue}
+            assigneeAdapterOverrides={assigneeAdapterOverrides}
             suggestedAssigneeValue={suggestedAssigneeValue}
             mentions={mentions}
             composerPause={composerPause}
@@ -3382,8 +3389,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     enabled: !!issueId,
     retry: false,
   });
-  const keyboardShortcutsEnabled =
-    instanceGeneralSettings?.keyboardShortcuts === true;
+  const keyboardShortcutsEnabled = useUserPreferences().data?.keyboardShortcuts === true;
   // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
   const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
   const feedbackDataSharingPreference =
@@ -3606,16 +3612,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     setPanelVisible(true);
     if (isMobile) setMobilePropsOpen(true);
   }, [isMobile, issue?.id, panelBeforePlanOverrideIssueId, setPanelVisible, suppressPanelUntilPlan]);
-  const revealNewArtifact = useCallback(() => {
+  const registerArtifactTab = useCallback(() => {
     if (!issue?.id) return;
-    setDocumentDeepLink(null);
     setArtifactsOpenRequest((previous) => ({
       issueId: issue.id,
       requestId: (previous?.requestId ?? 0) + 1,
     }));
-    if (isMobile) setMobilePropsOpen(true);
-    else openTaskSidePanel();
-  }, [issue?.id, isMobile, openTaskSidePanel]);
+  }, [issue?.id]);
   const handleArtifactsOpened = useCallback((requestId: number) => {
     setArtifactsOpenRequest((request) => request?.requestId === requestId
       ? { ...request, handled: true } : request);
@@ -3625,7 +3628,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     attachments,
     workProducts,
     documents: issue?.documentSummaries,
-    onArrival: revealNewArtifact,
+    onArrival: registerArtifactTab,
   });
   const toggleTaskSidePanel = useCallback(() => {
     if (!panelVisible || suppressPanelUntilPlan) {
@@ -4869,20 +4872,34 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       reassignment,
       attachmentIds,
       clientRequestId,
+      runSettings,
     }: {
       body: string;
       reopen?: boolean;
       interrupt?: boolean;
-      reassignment: CommentReassignment;
+      reassignment?: CommentReassignment;
       attachmentIds?: string[];
       clientRequestId?: string;
+      runSettings?: ComposerRunSettings;
     }) =>
       issuesApi.update(issueId!, {
         comment: body,
         commentClientRequestId: clientRequestId,
         ...(attachmentIds?.length ? { attachmentIds } : {}),
-        assigneeAgentId: reassignment.assigneeAgentId,
-        assigneeUserId: reassignment.assigneeUserId,
+        ...(reassignment ? {
+          assigneeAgentId: reassignment.assigneeAgentId,
+          assigneeUserId: reassignment.assigneeUserId,
+        } : {}),
+        ...(runSettings || reassignment ? {
+          assigneeAdapterOverrides: runSettings
+            ? mergeComposerRunSettings(
+                issue?.assigneeAdapterOverrides,
+                agentMap.get(reassignment?.assigneeAgentId ?? issue?.assigneeAgentId ?? "")?.adapterType,
+                runSettings,
+                Boolean(reassignment),
+              )
+            : null,
+        } : {}),
         ...(reopen ? { status: "todo" } : {}),
         ...(interrupt ? { interrupt } : {}),
       }),
@@ -6228,14 +6245,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       reassignment?: CommentReassignment,
       attachmentIds?: string[],
       clientRequestId?: string,
+      runSettings?: ComposerRunSettings,
     ) => {
-      if (reassignment) {
+      if (reassignment || runSettings) {
         await addCommentAndReassign.mutateAsync({
           body,
           reopen,
           reassignment,
           attachmentIds,
           clientRequestId,
+          runSettings,
         });
         return;
       }
@@ -7724,6 +7743,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   : undefined
               }
             >
+              <WorkspaceExportRecovery key={issue.activeRecoveryAction?.id ?? issue.id} issueId={issue.id}
+                action={issue.activeRecoveryAction ?? null} canManage={canManageBoardRuntime} onQueued={invalidateIssueDetail} />
               {issue.executionBlocker && (
                 <ExecutionBlockerNotice companyId={issue.companyId} issueId={issue.id} blocker={issue.executionBlocker} onRetried={invalidateIssueDetail} />
               )}
@@ -7786,6 +7807,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   projectId={issue.projectId ?? null}
                   issueStatus={issue.status}
                   issueAssigneeAgentId={issue.assigneeAgentId}
+                  assigneeAdapterOverrides={issue.assigneeAdapterOverrides}
                   issueWorkMode={issue.workMode ?? "standard"}
                   executionRunId={issue.executionRunId ?? null}
                   blockedBy={issue.blockedBy ?? []}

@@ -111,7 +111,9 @@ function Setup({
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
   const isRunner = adapterType === "paperclip_runner";
   const brandType = isRunner
-    ? runnerProvider === "claude"
+    ? runnerProvider === "grok"
+      ? "grok_local"
+      : runnerProvider === "claude"
       ? "claude_local"
       : runnerProvider === "opencode"
         ? "opencode_local"
@@ -340,8 +342,8 @@ function Setup({
       ...(isRunner
         ? {
             adapterSchemaValues: {
-              provider: runnerProvider === "claude" ? "acpx" : runnerProvider,
-              ...(runnerProvider === "claude" ? { acpxAgent: "claude" } : {}),
+              provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
+              ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
             },
           }
         : {}),
@@ -349,8 +351,8 @@ function Setup({
     const config = getUIAdapter(adapterType).buildAdapterConfig(values);
     if (isRunner)
       Object.assign(config, {
-        provider: runnerProvider === "claude" ? "acpx" : runnerProvider,
-        ...(runnerProvider === "claude" ? { acpxAgent: "claude" } : {}),
+        provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
+        ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
         ...(model ? { model } : {}),
       });
     if (!aiBinding && !nextConnection?.aiConnection && hasCredentialField && binding) {
@@ -716,6 +718,26 @@ function Setup({
                         lede={`Connect ${name} to ${connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : "OpenAI"}.`}
                         center
                       />
+                    </div>
+                    <div className="mb-5">
+                      <Field label="Environment">
+                        <select
+                          aria-label="Environment"
+                          className={controlClass}
+                          value={environmentOverride}
+                          disabled={busy || forced.forced}
+                          onChange={(event) => {
+                            setEnvironmentOverride(event.target.value);
+                            setConnection(null);
+                            resetTest();
+                          }}
+                        >
+                          <option value="">Default: {environmentLabel}</option>
+                          {(envs.data ?? []).filter((env) => env.status === "active" && (!managedOnly || env.driver !== "local")).map((env) => (
+                            <option key={env.id} value={env.id}>{environmentDisplayLabel(env)}</option>
+                          ))}
+                        </select>
+                      </Field>
                     </div>
                     <AgentProviderConnection
                       key={environmentId ?? "local"}
@@ -1106,7 +1128,7 @@ function Setup({
                             aria-label="Environment"
                             className={controlClass}
                             value={environmentOverride}
-                            disabled={forced.forced || managedOnly}
+                            disabled={forced.forced}
                             onChange={(event) => {
                               setEnvironmentOverride(event.target.value);
                               setConnection(null);
@@ -1118,7 +1140,7 @@ function Setup({
                               Default: {environmentLabel}
                             </option>
                             {(envs.data ?? [])
-                              .filter((env) => env.status === "active")
+                              .filter((env) => env.status === "active" && (!managedOnly || env.driver !== "local"))
                               .map((env) => (
                                 <option key={env.id} value={env.id}>
                                   {environmentDisplayLabel(env)}

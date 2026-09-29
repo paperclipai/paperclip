@@ -166,17 +166,16 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
  * Codex remote managed-home seed + auth copy-back for the runner-backed remote
  * sandbox ACP lane. Mirrors the codex CLI lane (`codex-local/execute.ts`): stage
  * the managed `CODEX_HOME` (auth.json + config.toml + skills) into the sandbox
- * as the `home` asset — carrying the inbound auth-merge `provision` and the
- * outbound `restore` copy-back seams — then repoint `CODEX_HOME` onto the
- * in-sandbox `assetDirs.home` path. The copy-back rides the asset `restore`,
- * which fires inside `restoreWorkspace()` at teardown.
+ * as the `home` asset, then repoint `CODEX_HOME` onto the in-sandbox
+ * `assetDirs.home` path. Subscription runs also use inbound auth merge and
+ * outbound copy-back through `restoreWorkspace()` at teardown.
  *
  * The engine already resolved+seeded the host managed Codex home and set
  * `env.CODEX_HOME` to it (a HOST path) before this seam runs, so `env.CODEX_HOME`
- * is exactly the home to stage. Seed inbound and copy-back outbound land together
- * (never seed-without-copy-back): Codex refresh tokens are single-use, so a
- * refreshed sandbox token that is never copied back would spend the host's token
- * and corrupt the host credential.
+ * is exactly the home to stage. Subscription auth merge and copy-back stay
+ * paired: Codex refresh tokens are single-use, so a refreshed sandbox token
+ * that is never copied back would spend the host's token. API-key runs skip
+ * both auth seams and never touch the shared subscription credential.
  */
 async function prepareCodexRemoteManagedHome(
   input: AcpxRemoteManagedHomeContext,
@@ -189,6 +188,12 @@ async function prepareCodexRemoteManagedHome(
     // workspace with no home asset, identical to the no-seam fallback.
     return { stagedRuntime: await input.stage([]) };
   }
+  // API-key runs do not rotate a subscription refresh token. Keep their
+  // sandbox auth out of the shared subscription copy-back path altogether.
+  const apiKeyAuth = Boolean(
+    env.OPENAI_API_KEY?.trim() || env.CODEX_API_KEY?.trim()
+    || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim(),
+  );
   // Curated allowlist temp dir (auth/config/skills only); caller owns cleanup.
   const stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
   let stagedRuntime;
@@ -198,14 +203,13 @@ async function prepareCodexRemoteManagedHome(
         key: "home",
         localDir: stagedCodexHomeDir,
         followSymlinks: true,
-        // Inbound (host→sandbox) auth-merge: keeps whichever credential is newer
-        // when the sandbox image already carries a Codex auth.json.
-        provision: buildCodexAuthInboundProvision(),
-        // Outbound (sandbox→host) copy-back at teardown, under the same
+        // Subscription-only inbound auth merge keeps the newer credential.
+        provision: apiKeyAuth ? undefined : buildCodexAuthInboundProvision(),
+        // Subscription-only outbound copy-back at teardown, under the same
         // direction-agnostic decision predicate + directory merge-lock +
         // atomic-rename + 0600 guard. Target is the SHARED host auth.json
         // (the symlink source managed homes point at), never an in-sandbox copy.
-        restore: async ({ assetDir, readFile }) =>
+        restore: apiKeyAuth ? undefined : async ({ assetDir, readFile }) =>
           void (await copyBackCodexAuth({
             readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
             hostAuthPath: path.join(input.config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
@@ -224,7 +228,7 @@ async function prepareCodexRemoteManagedHome(
 
   return {
     stagedRuntime,
-    // Per-run copy-back: fires on EVERY run's teardown (including a compatible
+    // Subscription copy-back fires on EVERY run's teardown (including a compatible
     // resume that reuses this staged runtime). It reads the sandbox auth.json /
     // workspace live and copies back to the host; it does NOT remove the staged
     // in-sandbox home, so re-running it across resumes can't leave a later run
@@ -238,7 +242,9 @@ async function prepareCodexRemoteManagedHome(
     teardown: createWorkspaceRestoreTeardown({
       stagedRuntime,
       onLog,
-      startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+      startMessage: apiKeyAuth
+        ? "[paperclip] Restoring workspace changes from the sandbox.\n"
+        : "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
       failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
     }),
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the

@@ -275,13 +275,14 @@ test.describe("Board send delivery refresh", () => {
                 "base64",
               ),
         };
+        if (!classic) {
+          await page.getByRole("button", { name: "Add to composer" }).click();
+        }
         const chooserPromise = page.waitForEvent("filechooser");
-        await page
-          .getByRole("button", {
-            name: classic ? "Upload attachment" : "Attach file",
-            exact: true,
-          })
-          .click();
+        await (classic
+          ? page.getByRole("button", { name: "Upload attachment", exact: true })
+          : page.getByRole("menuitem", { name: "Files and images", exact: true })
+        ).click();
         const responsePromise = page.waitForResponse(
           (response) =>
             response.request().method() === "POST" &&

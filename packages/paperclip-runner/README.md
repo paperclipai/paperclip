@@ -56,6 +56,19 @@ stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
 validates the exact model, session identity, tool catalog, structured input,
 and terminal settlement at the process boundary. Pi remains unavailable.
 
+Remote Codex sessions relay assigned app tools through the server's configured
+gateway. Small catalogs are sent directly. When a catalog would exceed the
+runner's 256-operation or 768 KiB contract limit, the server exposes
+`paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` instead.
+Search returns bounded pages of names, descriptions, and input schemas. Each
+page intersects the session's pinned assignments with current gateway grants.
+An individual schema that exceeds a page returns an `inputSchemaRef`. The same
+search tool retrieves that schema in chunks via `schemaTool` and
+`schemaOffset`; discovery can continue past the large tool.
+Calls retain task ownership, work-mode restrictions, gateway authorization,
+approvals, and audit. Core task tools and the runner's completion tools keep
+their reserved space; no assigned tools are silently removed to fit the limit.
+
 Native Claude skill assignments travel in the runtime-context snapshot through
 runnerd to the ACPX sidecar. After acquiring the provider lifetime lease, the
 host materializes the assigned bundles under the isolated Claude home's
@@ -82,6 +95,13 @@ do not change workspace isolation or grant credentials or connection access.
 `approve-paperclip` remains an optional narrower mode for assigned planning and
 task tools; `approve-reads` allows assigned reads; `deny-all` rejects requests.
 None of these restrictive modes is the default.
+
+Automatic Paperclip/read allowances currently require the Claude SDK dispatch
+boundary. Grok preserves these restricted settings, but its ACP requests lack
+independently bound tool authority. They therefore stop with
+`approval_required`, including Paperclip tool requests. Use an explicitly
+selected `approve-all` policy for unattended Grok work in an assigned sandbox;
+Paperclip authorization and governed approvals still apply.
 
 This runtime has no interactive permission handler. An operation that still
 requires approval stops the turn with `approval_required`. The server marks the

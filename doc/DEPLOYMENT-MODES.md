@@ -3,6 +3,27 @@
 Status: Canonical deployment and auth mode model  
 Date: 2026-02-23
 
+### Paperclip Cloud sign-in
+
+Cloud-managed instances use Cloud for human sign-in. The instance `/auth`
+route waits for deployment metadata before rendering; it never renders the
+email/password form when health identifies a Cloud-managed instance. A missing
+instance session returns through Cloud's `/v1/stacks/:slug/entry-redirect`.
+Cloud renews the tenant session from the existing Cloud session, or sends the
+user through its sign-in flow. The original tenant path, query, and fragment
+travel as `returnTo` so the user returns to the same task.
+
+Both the Cloud origin and stack slug come from the server's health metadata
+(`PAPERCLIP_CLOUD_API_ORIGIN` and `PAPERCLIP_STACK_SLUG`). Do not infer the
+environment from the browser hostname or hardcode staging/production domains.
+Missing configuration shows an unavailable state. An automatic recovery attempt
+is limited per browser tab until a session is verified, with a five-minute
+expiry and an explicit retry link if recovery fails. Network/server failures
+show an error rather than treating the user as signed out.
+
+Self-hosted authenticated instances retain their instance sign-in form, and
+`local_trusted` instances retain their normal access path.
+
 ## 1. Purpose
 
 Paperclip supports two runtime modes:

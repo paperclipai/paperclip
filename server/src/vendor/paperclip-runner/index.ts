@@ -31,6 +31,9 @@ export type {
   NativeCodexApprovalPolicy,
   NativeExecutionInput,
   NativeExecutionInputV4,
+  NativeExecutionInputV5,
+  NativeCompletionSource,
+  NativeCompletionSources,
   NativeInteractionResponseEnvelope,
   NativeOpenCodePermissionMode,
   NativePlanningContext,
@@ -68,6 +71,7 @@ const sourceUrl = new URL(
 const runner = (await import(sourceUrl.href)) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
+export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
 export const readRunnerdArtifactBinding = runner.readRunnerdArtifactBinding;
 export const NativeSessionCleanupQuarantinedError =

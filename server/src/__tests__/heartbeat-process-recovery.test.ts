@@ -1,3 +1,4 @@
+import * as executionContinuation from "../services/execution-continuation.js";
 import { legacyDispositionFingerprint, LEGACY_DISPOSITION_REPAIR_INSTRUCTION } from "../services/recovery/legacy-continuation.js";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -89,6 +90,8 @@ import {
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../services/native-runtime/native-runner-ownership.js";
+import { nativeCompletionSource } from "../services/native-runtime/completion-contracts.js";
+import { buildNativeModelEnvelope } from "@paperclipai/paperclip-runner";
 import {
   CHAT_CONTROL_RECOVERY_ADMISSION_KEY,
   CHAT_CONTROL_RECOVERY_STOP_CODE,
@@ -1528,6 +1531,62 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(missingCommentWakeups).toHaveLength(0);
   });
 
+  it.each([
+    "continuation_task_ownership_changed",
+  ] as const)("cancels obsolete continuation setup: %s", async (code) => {
+    const { agentId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const build = vi.spyOn(executionContinuation, "buildExecutionContinuation")
+      .mockRejectedValueOnce(new executionContinuation.StaleExecutionContinuationError(code));
+    try {
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      expect(build).toHaveBeenCalled();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: code });
+      const [wakeup] = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId));
+      expect(wakeup.status).toBe("cancelled");
+      const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      expect(agent.status).not.toBe("error");
+      expect(mockAdapterExecute.mock.calls.some(
+        ([input]) => (input as { runId?: string } | undefined)?.runId === runId,
+      )).toBe(false);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+    } finally {
+      build.mockRestore();
+    }
+  });
+
+  it.each([
+    "continuation_source_context_missing",
+    "continuation_user_authorization_missing",
+    "continuation_task_ownership_changed",
+  ])("retains untyped continuation setup failures: %s", async (message) => {
+    const { runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const build = vi.spyOn(executionContinuation, "buildExecutionContinuation")
+      .mockRejectedValueOnce(new Error(message));
+    try {
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      expect(build).toHaveBeenCalled();
+      expect(await heartbeat.getRun(runId)).toMatchObject({
+        status: "failed", errorCode: "setup_failed", error: message,
+      });
+      const [wakeup] = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId));
+      expect(wakeup.status).toBe("failed");
+      expect(mockAdapterExecute.mock.calls.some(
+        ([input]) => (input as { runId?: string } | undefined)?.runId === runId,
+      )).toBe(false);
+    } finally {
+      build.mockRestore();
+    }
+  });
+
   it("does not immediately continue a low-trust preflight setup failure", async () => {
     const { agentId, runId, issueId, companyId } =
       await seedQueuedIssueRunFixture();
@@ -2684,6 +2743,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         resolveDefaultAgentWorkspaceDir(agentId),
       );
       expect(mockAdapterExecute).not.toHaveBeenCalled();
+    });
+  });
+
+  it("carries the ordinary initial description provenance through native heartbeat assembly", async () => {
+    await withTempPaperclipHome(async () => {
+      const { agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+      await db.update(agents).set({
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-luna" },
+      }).where(eq(agents.id, agentId));
+      const nativeSessionBackendFactory = vi.fn(
+        (_execution: { workspace: { cwd: string } }) => {
+          throw new NativeRunnerOwnershipUnverifiedError();
+        },
+      );
+      const heartbeat = heartbeatService(db, { nativeSessionBackendFactory });
+      await heartbeat.resumeQueuedRuns();
+      await waitForValue(
+        async () => nativeSessionBackendFactory.mock.calls.length > 0 ||
+          Boolean((await heartbeat.getRun(runId))?.errorCode),
+        8_000,
+      );
+      await heartbeat.waitForRunExecutionDrain(runId);
+
+      expect(nativeSessionBackendFactory).toHaveBeenCalledTimes(1);
+      const input = nativeSessionBackendFactory.mock.calls[0]![0] as ReturnType<typeof buildNativeExecutionInput>;
+      const description = "Verify the successful-run handoff and choose an honest disposition.";
+      const source = nativeCompletionSource("description", issueId, description);
+      expect(input.completionContract.contract.criteria).toEqual([{
+        id: "objective",
+        requirement: description,
+      }]);
+      expect(input.completionSources).toMatchObject({
+        criteria: [{ id: "objective", source }],
+      });
+      expect(input.task.prompt).toContain(description);
+      expect(input.task.prompt.split(description)).toHaveLength(2);
+      const modelEnvelope = buildNativeModelEnvelope(input);
+      expect(modelEnvelope.schema).toBe("paperclip.native-model-envelope.v3");
+      expect(modelEnvelope.task).not.toHaveProperty("description");
+      expect(modelEnvelope.task.prompt.split(description)).toHaveLength(2);
+      expect(modelEnvelope.completionContract.criteria).toEqual([{
+        id: "objective",
+        source: { ...source, location: "task.prompt" },
+      }]);
     });
   });
 

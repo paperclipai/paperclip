@@ -1,3 +1,4 @@
+import { stageManagedGrokCredential } from "./grok-credentials.js";
 import { join } from "node:path";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
@@ -337,6 +338,7 @@ export class AcpxRuntimeHost {
     if (installation.commandDigest !== profile.commandDigest) {
       throw new Error("Verified ACPX installation does not match its profile");
     }
+    let admissionSucceeded = false;
     let command: VerifiedAcpxCommandLease | null = null;
     let credential: AcpxProviderLifetimeLease | null = null;
     let toolBridge: RunnerToolBridge | null = null;
@@ -404,6 +406,13 @@ export class AcpxRuntimeHost {
           reportFailure: (failure) =>
             dependencies.reportRetainedCleanupFailure(failure),
         });
+      } else if (options.agent === "grok") {
+        credential = await acquireAbortableAdmissionResource({
+          signal: options.signal,
+          acquire: () => stageManagedGrokCredential({ agentHomeDirectory: sandbox.agentHomeDirectory, environment: options.environment, retainRefresh: () => admissionSucceeded }),
+          resource: "credential", releaseLate: (lease) => lease.close(),
+          reportFailure: (failure) => dependencies.reportRetainedCleanupFailure(failure),
+        });
       } else {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
@@ -417,7 +426,7 @@ export class AcpxRuntimeHost {
             dependencies.reportRetainedCleanupFailure(failure),
         });
       }
-      if (options.agent === "claude") {
+      if (options.agent === "claude" || options.agent === "grok") {
         // The lifetime lease proves the previous provider has stopped. Refresh
         // the assigned snapshot before every launch, including durable resume;
         // Claude discovers user skills beneath its isolated CLAUDE_CONFIG_DIR.
@@ -542,6 +551,7 @@ export class AcpxRuntimeHost {
         verifyExpectedAcpxIdentity(options.expectedIdentity, binding, identity);
       }
       options.signal?.throwIfAborted();
+      admissionSucceeded = true;
       return new AcpxRuntimeHost({
         runtime,
         binding,

@@ -1313,9 +1313,8 @@ describe("NewIssueDialog", () => {
     });
 
     expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
-    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-offset-top")).toBe("24px");
     expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-top")).toBe(
-      "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+      "var(--new-issue-dialog-top-gap)",
     );
     expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-height")).toBe(
       "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
@@ -1372,7 +1371,6 @@ describe("NewIssueDialog", () => {
     });
 
     expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
-    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-offset-top")).toBe("24px");
     expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
     expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
 
