@@ -4784,7 +4784,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // Diagnostics are retained even when an adapter has no recovery
           // classifier. Redact before bounding so partial secrets cannot leak.
           onTerminalSessionFailure: (failure: AcpxTerminalSessionFailure) => {
-            terminalSessionFailure = sanitizeTerminalSessionFailure(failure, prepared.env, ctx.authToken);
+            terminalSessionFailure = sanitizeTerminalSessionFailure(
+              failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),
+            );
             terminalFailureClassification = deps.classifyTerminalSessionFailure?.(failure, new Date(now())) ?? null;
           },
         });

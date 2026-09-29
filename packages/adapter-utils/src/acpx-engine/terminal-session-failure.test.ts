@@ -53,6 +53,20 @@ describe("terminal session failure diagnostics", () => {
     expect(diagnostic.details!.length).toBeLessThan(24700);
   });
 
+  it("redacts configured values with arbitrary names and connection URL passwords", () => {
+    const databaseUrl = "postgres://user:database%20canary@db.test/database";
+    const opaque = "arbitrarily-named-secret";
+    const diagnostic = sanitizeTerminalSessionFailure({
+      category: "service",
+      details: `request_id=req_123 ${databaseUrl}\npassword echoed: database canary\n${opaque}`,
+    }, { DATABASE_URL: databaseUrl, PROVIDER_SETTING: opaque }, undefined, {
+      DATABASE_URL: databaseUrl, PROVIDER_SETTING: opaque,
+    });
+    expect(diagnostic.details).toBe(
+      "request_id=req_123 ***REDACTED***\npassword echoed: ***REDACTED***\n***REDACTED***",
+    );
+  });
+
   it("fits the persisted transcript chunk limit even with escaped provider text", () => {
     const diagnostic = sanitizeTerminalSessionFailure({
       category: "service",

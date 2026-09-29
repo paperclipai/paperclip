@@ -16,6 +16,12 @@ const fixturePath = path.join(
 );
 const tempRoots: string[] = [];
 
+async function writeFailureFile(root: string, title: string): Promise<string> {
+  const file = path.join(root, "failure.json");
+  await fs.writeFile(file, JSON.stringify({ title, category: "request" }));
+  return file;
+}
+
 afterEach(async () => {
   await Promise.all(
     tempRoots
@@ -80,7 +86,7 @@ it("retains a typed ACP failure as diagnostics without making it assistant outpu
       mode: "oneshot",
       stateDir: path.join(root, "state"),
       cwd: repoRoot,
-      env: { PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: providerText },
+      env: { PAPERCLIP_ACPX_TYPED_FAILURE_FILE: await writeFailureFile(root, providerText) },
     },
     context: {},
     onLog: async (_stream: string, text: string) => logs.push(text),
@@ -116,7 +122,7 @@ it("fails closed on a typed ACP session failure in persistent mode", async () =>
       warmHandleIdleMs: 0,
       stateDir: path.join(root, "state"),
       cwd: repoRoot,
-      env: { PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: providerText },
+      env: { PAPERCLIP_ACPX_TYPED_FAILURE_FILE: await writeFailureFile(root, providerText) },
     },
     context: {},
     onLog: async (_stream: string, text: string) => logs.push(text),

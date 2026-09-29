@@ -234,6 +234,14 @@ describeEmbeddedPostgres("heartbeat list", () => {
     const oversizedNestedPayload = Array.from({ length: 6_000 }, (_, index) =>
       `${index.toString(16).padStart(4, "0")}:${randomUUID()}`,
     ).join("|");
+    // Multibyte diagnostics can exceed the result byte budget while remaining
+    // within the adapter's character bounds. Other result fields can do so too.
+    const terminalSessionFailure = {
+      category: "service",
+      title: "HTTP 529: overloaded_error",
+      details: `${"診断".repeat(12_000)}\nrequest_id=req_retained`,
+      truncatedFields: ["title"],
+    };
 
     await db.insert(companies).values({
       id: companyId,
@@ -264,6 +272,10 @@ describeEmbeddedPostgres("heartbeat list", () => {
         summary: "completed",
         stdout: oversizedStdout,
         nestedHuge: { payload: oversizedNestedPayload },
+        terminalSessionFailure: {
+          ...terminalSessionFailure,
+          privateMetadata: oversizedNestedPayload,
+        },
         instructionSave: {
           state: "unavailable", contract: "agent_files", entryFile: "AGENTS.md",
           errorCode: "AGENT_FILES_LIMIT_EXCEEDED",
@@ -284,6 +296,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       truncated: true,
       truncationReason: "oversized_result_json",
       stdoutTruncated: true,
+      terminalSessionFailure,
       instructionSave: {
         state: "unavailable", contract: "agent_files", entryFile: "AGENTS.md",
         errorCode: "AGENT_FILES_LIMIT_EXCEEDED",
@@ -297,6 +310,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
     expect((result?.stdout as string).length).toBeLessThan(oversizedStdout.length);
     expect(result).not.toHaveProperty("nestedHuge");
     expect(result?.instructionSave).not.toHaveProperty("privateSyncMetadata");
+    expect(result?.terminalSessionFailure).not.toHaveProperty("privateMetadata");
   });
 });
 

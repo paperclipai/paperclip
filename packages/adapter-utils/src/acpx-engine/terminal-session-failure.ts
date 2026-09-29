@@ -21,11 +21,26 @@ export function sanitizeTerminalSessionFailure(
   failure: AcpxTerminalSessionFailure,
   env: Record<string, string>,
   authToken?: string,
+  configuredEnv: Record<string, unknown> = {},
 ): AcpxTerminalSessionFailureDiagnostic {
   const maskedEnv = redactEnvForLogs(env);
   const secrets = Object.entries(env)
     .filter(([key, value]) => value && maskedEnv[key] !== value)
     .map(([, value]) => value);
+  // Configured values can be resolved secret_refs under arbitrary names (for
+  // example DATABASE_URL). Key-name heuristics cannot establish they are public.
+  for (const value of Object.values(configuredEnv)) {
+    if (typeof value === "string" && value) secrets.push(value);
+  }
+  // A provider may echo just the password from a configured connection URL.
+  for (const value of Object.values(env)) {
+    try {
+      const url = new URL(value);
+      if (url.password) {
+        secrets.push(value, url.password, decodeURIComponent(url.password));
+      }
+    } catch { /* ordinary environment values are not URLs */ }
+  }
   if (authToken) secrets.push(authToken);
   const secretForms = [...new Set(secrets.flatMap((value) => {
     const forms = [value, JSON.stringify(value).slice(1, -1)];

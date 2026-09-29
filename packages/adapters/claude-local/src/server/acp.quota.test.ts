@@ -26,9 +26,12 @@ async function executeFailure(
   mode = "oneshot",
   createRuntime?: AcpxEngineExecutorOptions["createRuntime"],
   extraEnv: Record<string, string> = {},
+  details?: string,
 ) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-acp-quota-"));
   roots.push(root);
+  const failureFile = path.join(root, "failure.json");
+  await fs.writeFile(failureFile, JSON.stringify({ title, category, details }));
   const logs: string[] = [];
   const execute = createClaudeAcpExecutor({ now: () => now.getTime(), createRuntime });
   const result = await execute({
@@ -43,8 +46,7 @@ async function executeFailure(
       stateDir: path.join(root, "state"),
       env: {
         ...extraEnv,
-        PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: title,
-        PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY: category,
+        PAPERCLIP_ACPX_TYPED_FAILURE_FILE: failureFile,
       },
     },
     context: {},
@@ -92,7 +94,7 @@ it.each([
   const details = `${"provider context\n".repeat(300)}request_id=req_service_123\nCredential echoed: ${secret}\n    at prompt (agent.js:42:7)`;
   const { result, logs } = await executeFailure(
     title, "service", mode, version === "0.13.1" ? runnerAcpx.createAcpRuntime : undefined,
-    { PAPERCLIP_ACPX_TYPED_FAILURE_DETAILS: details, PROVIDER_API_KEY: secret },
+    { PROVIDER_SETTING: secret }, details,
   );
   expect(result).toMatchObject({
     exitCode: 1,
