@@ -30,7 +30,10 @@ type Props = {
 
 /** Connections hosts the same provider step as agent setup, with its own save intent. */
 export function AiConnectionCredentialStep(props: Props) {
-  if (props.provider === "openrouter") return <ApiKeyConnectionStep {...props} />;
+  // OpenRouter and self-hosted providers (GreenchClaw, Ollama) connect with a
+  // token/endpoint, not a vendor subscription sign-in.
+  if (props.provider === "openrouter" || props.provider === "greenchclaw" || props.provider === "ollama" || props.provider === "ollama_cloud")
+    return <ApiKeyConnectionStep {...props} />;
   return <SubscriptionConnectionStep {...props} />;
 }
 
@@ -99,15 +102,28 @@ function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initial
   const [name, setName] = useState(initialName);
   const [apiKey, setApiKey] = useState("");
   const client = useQueryClient();
+  // Self-hosted gateway providers (GreenchClaw) use the `gateway` method; the
+  // local-model server (Ollama) uses `local` and needs no credential.
+  const method: AiAuthMethod =
+    provider === "greenchclaw" ? "gateway" : provider === "ollama" ? "local" : "api_key";
+  const providerLabel =
+    provider === "greenchclaw" ? "GreenchClaw"
+    : provider === "ollama" ? "Ollama (local)"
+    : provider === "ollama_cloud" ? "Ollama Cloud"
+    : "OpenRouter";
   const save = useMutation({
-    mutationFn: () => aiConnectionsApi.create(companyId, { provider, method: "api_key", name, ownership, agentIds, allAgents, connectionId, apiKey }),
-    onSuccess: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete({ ...result, method: "api_key" }); },
+    mutationFn: () => aiConnectionsApi.create(companyId, { provider, method, name, ownership, agentIds, allAgents, connectionId, ...(method === "local" ? {} : { apiKey }) }),
+    onSuccess: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete({ ...result, method }); },
     onSettled: () => setApiKey(""),
   });
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-4">
     <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
     {save.error && <p role="alert" className="text-sm text-destructive">{save.error.message}</p>}
-    <ProviderApiKeyCard providerName="OpenRouter" value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder="Enter API key here" autoFocus />
-    <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><Button disabled={!name.trim() || !apiKey.trim() || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Connecting…" : "Connect"}</Button></div>
+    {method === "local" ? (
+      <p className="text-sm text-muted-foreground">Ollama runs locally — no credential needed. Make sure <code>adapterConfig.model</code> uses an <code>ollama/…</code> model id.</p>
+    ) : (
+      <ProviderApiKeyCard providerName={providerLabel} value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder={provider === "greenchclaw" ? "Paste the GreenchClaw gateway token" : provider === "ollama_cloud" ? "Paste your ollama.com API key" : "Enter API key here"} autoFocus />
+    )}
+    <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><Button disabled={!name.trim() || (method !== "local" && !apiKey.trim()) || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Connecting…" : "Connect"}</Button></div>
   </div>;
 }

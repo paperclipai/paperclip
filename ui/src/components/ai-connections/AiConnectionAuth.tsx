@@ -54,8 +54,7 @@ function AuthAttempt({
   const busy = state.phase === "starting" || state.phase === "submitting";
   const unsupported =
     state.phase === "unsupported" ||
-    (method === "subscription" && !info.subscriptionName);
-  const submit = () => {
+    (method === "subscription" && !info.subscriptionName);  const submit = () => {
     if (!value.trim() || busy) return;
     const submitted = value.trim();
     setValue("");
@@ -99,13 +98,17 @@ function AuthAttempt({
                   Sign-in cancelled. No connection was created.
                 </p>
               )}
-              {method === "api_key" ? (
+              {method === "api_key" || method === "gateway" ? (
                 <ProviderApiKeyCard
                   providerName={info.name}
                   value={value}
                   onChange={setValue}
                   onSubmit={submit}
-                  placeholder="Enter API key here"
+                  placeholder={
+                    method === "gateway"
+                      ? "Paste the GreenchClaw gateway token"
+                      : "Enter API key here"
+                  }
                   disabled={busy}
                   autoFocus
                 />
@@ -159,7 +162,7 @@ function AuthAttempt({
               Cancel
             </Button>
             {!unsupported &&
-              (method === "api_key" ? (
+              (method === "api_key" || method === "gateway" ? (
                 <Button disabled={busy || !value.trim()} onClick={submit}>
                   {busy ? "Connecting…" : "Connect"}
                 </Button>

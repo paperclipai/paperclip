@@ -2089,7 +2089,7 @@ function StandardConnectionSetupFlow({
   const aiMethod = reconnectAiMethod ?? entry?.methods.find(method => method.key === connectionMethodKey)?.ai
     ?? (!connectionMethodKey && entry?.methods.every(method => method.ai) ? entry.methods[0]?.ai : undefined);
   const credentialStep = entry ? renderCredentialStep?.({ app: entry, name: galleryName || entry.name, grantKind: effectiveGrantKind, agentIds: [...installAgentIds], allAgents: installChoice === "all", onBack: () => setAppStep("access") }) ?? (aiMethod && selectedCompanyId ? <><AiConnectionCredentialStep
-    companyId={selectedCompanyId} provider={aiMethod.provider} fixedMethod={Boolean(aiConnection && aiConnection.mode !== "responsible_user")} initialMethod={reconnectConnection?.connectionPurpose === "ai" ? (reconnectConnection.config?.ai as { method: "subscription" | "api_key" }).method : aiMethod.method}
+    companyId={selectedCompanyId} provider={aiMethod.provider} fixedMethod={Boolean(aiConnection && aiConnection.mode !== "responsible_user")} initialMethod={reconnectConnection?.connectionPurpose === "ai" ? (reconnectConnection.config?.ai as { method: "subscription" | "api_key" | "gateway" | "local" }).method : aiMethod.method}
     connectionId={reconnectConnection?.connectionPurpose === "ai" ? reconnectConnection.id : undefined}
     name={reconnectConnection?.connectionPurpose === "ai" ? reconnectConnection.name : galleryName || `My ${entry.name} ${aiMethod.method === "subscription" ? "subscription" : "API"}`}
     ownership={(reconnectConnection?.connectionPurpose === "ai" ? reconnectConnection.credentialPolicy === "shared" : effectiveGrantKind === "organization") ? "shared" : "personal"}

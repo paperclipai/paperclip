@@ -10,6 +10,12 @@ import { unprocessable } from "../errors.js";
 /** Read an owned login home, or an explicitly authorized local-operator import. */
 export async function readVerifiedLocalAiCredential(provider: AiProvider, loginHome?: string): Promise<string> {
   if (provider === "openrouter") throw unprocessable("OpenRouter requires an API key.");
+  // GreenchClaw (and any self-hosted gateway provider) authenticates with a
+  // gateway token the operator already owns; there is no vendor login to verify.
+  if (provider === "greenchclaw")
+    throw unprocessable("GreenchClaw connections use a gateway token, not a local subscription login.");
+  if (provider === "ollama")
+    throw unprocessable("Ollama connections use a local endpoint, not a subscription login.");
   if ((provider === "openai" || provider === "xai") && !loginHome)
     throw unprocessable("Start a separate local sign-in for this connection before connecting.");
   try {

@@ -15,8 +15,8 @@ export function ManagedAiConnectionRow({
 }) {
   const metadata = connection.config?.ai as
     | {
-        provider: "anthropic" | "openai" | "openrouter" | "xai";
-        method: "subscription" | "api_key";
+        provider: "anthropic" | "openai" | "openrouter" | "xai" | "greenchclaw" | "ollama" | "ollama_cloud";
+        method: "subscription" | "api_key" | "gateway" | "local";
       }
     | undefined;
   if (!metadata) return null;

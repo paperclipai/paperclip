@@ -23,6 +23,18 @@ export const AI_PROVIDERS: Record<
     subscriptionName: "Grok subscription",
     logo: "/brands/adapters/grok.svg",
   },
+  greenchclaw: {
+    name: "GreenchClaw",
+    logo: "/brands/adapters/openclaw.svg",
+  },
+  ollama: {
+    name: "Ollama (local)",
+    logo: "/brands/adapters/ollama.svg",
+  },
+  ollama_cloud: {
+    name: "Ollama Cloud",
+    logo: "/brands/adapters/ollama.svg",
+  },
 };
 
 export type AiConnectionSummary = Omit<AiManagedConnectionSummary, "isDefault"> & { isDefault?: boolean };
@@ -41,6 +53,8 @@ export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
 };
 
 export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
+  if (method === "gateway") return "Gateway token";
+  if (method === "local") return "Local endpoint";
   return method === "subscription"
     ? (AI_PROVIDERS[provider].subscriptionName ?? "Subscription unavailable")
     : "API key";
