@@ -69063,10 +69063,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     );
 
-    it("retries an unknown subscription mutation after restart using freshly observed options, not a recovered confirmation flag", async () => {
-      console.info("TRACE subscription start");
+    it("retries an unknown subscription mutation after restart using freshly observed options, not a recovered confirmation flag", async ({ onTestFailed }) => {
+      let phase = "create fixture";
+      onTestFailed(() => {
+        console.error(`Telegram subscription recovery failed during: ${phase}`);
+      });
       const lane = await draftFixture();
-      console.info("TRACE fixture ready");
       try {
         await db
           .delete(chatActions)
@@ -69082,9 +69084,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             throw new Error("Synthetic unknown subscription response");
           return undefined;
         });
-        console.info("TRACE before attempt");
+        phase = "first subscription attempt";
         await lane.processSubscriptionAttempt();
-        console.info("TRACE attempt complete");
         const [action] = await db
           .select()
           .from(chatActions)
@@ -69107,21 +69108,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             result: { ...action!.result, retryAt: "2099-01-01T00:00:00.000Z" },
           })
           .where(eq(chatActions.id, action!.id));
-        console.info("TRACE before send");
+        phase = "ordinary publication before restart";
         expect((await lane.send("unknown-subscription"))?.state).toBe(
           "published",
         );
-        console.info("TRACE send complete");
         expect(lane.requests).toHaveLength(1);
         expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
-        console.info("TRACE before pending");
+        phase = "pending recovery before restart";
         await lane.context.service.processPendingDeliveries();
         expect(
           lane.maintenanceRequests.filter(
             ({ method }) => method === "setWebhook",
           ),
         ).toHaveLength(1);
-        console.info("TRACE before restart");
+        phase = "restart";
         await lane.restart();
         lane.setSubscriptionInfo({
           allowed_updates: ["message", "chat_member"],
@@ -69137,12 +69137,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             },
           })
           .where(eq(chatActions.id, action!.id));
-        console.info("TRACE before concurrent");
+        phase = "concurrent recovery after restart";
         await Promise.all([
           lane.context.service.processPendingDeliveries(),
           lane.context.service.processPendingDeliveries(),
         ]);
-        console.info("TRACE concurrent complete");
+        phase = "verify recovered subscription";
         const mutations = lane.maintenanceRequests.filter(
           ({ method }) => method === "setWebhook",
         );
@@ -69172,13 +69172,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               200,
             );
         });
+        phase = "publication after subscription recovery";
         expect((await lane.send("repaired-after-unknown"))?.state).toBe(
           "cancelled",
         );
+        phase = "close fixture";
       } finally {
-        console.info("TRACE before close");
         await lane.close();
-        console.info("TRACE close complete");
       }
     });
 
