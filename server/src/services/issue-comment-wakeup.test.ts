@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldWakeAssigneeForIssueComment } from "./issue-comment-wakeup.js";
+import { isAgentAcknowledgementOnly, shouldWakeAssigneeForIssueComment } from "./issue-comment-wakeup.js";
 
 describe("shouldWakeAssigneeForIssueComment", () => {
   it("suppresses explicit resume from the run that currently owns the issue", () => {
@@ -60,5 +60,23 @@ describe("shouldWakeAssigneeForIssueComment", () => {
     expect(shouldWakeAssigneeForIssueComment({ ...base, reopened: true })).toBe(
       true,
     );
+  });
+});
+
+describe("isAgentAcknowledgementOnly", () => {
+  const base = { actorType: "agent", resumeRequested: false, reopened: false, hasAttachments: false };
+
+  it("suppresses only exact agent courtesy replies", () => {
+    expect(isAgentAcknowledgementOnly({ ...base, body: "Acknowledged." })).toBe(true);
+    expect(isAgentAcknowledgementOnly({ ...base, body: "Noted" })).toBe(true);
+    expect(isAgentAcknowledgementOnly({ ...base, body: "Noted: new drawing received" })).toBe(false);
+    expect(isAgentAcknowledgementOnly({ ...base, body: "[AI_TECH_INCIDENT]\n{}" })).toBe(false);
+  });
+
+  it("preserves human replies, explicit resumes, reopened issues and attachments", () => {
+    expect(isAgentAcknowledgementOnly({ ...base, body: "Thanks", actorType: "user" })).toBe(false);
+    expect(isAgentAcknowledgementOnly({ ...base, body: "Thanks", resumeRequested: true })).toBe(false);
+    expect(isAgentAcknowledgementOnly({ ...base, body: "Thanks", reopened: true })).toBe(false);
+    expect(isAgentAcknowledgementOnly({ ...base, body: "Thanks", hasAttachments: true })).toBe(false);
   });
 });

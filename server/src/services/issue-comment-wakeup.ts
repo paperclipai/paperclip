@@ -26,3 +26,18 @@ export function shouldWakeAssigneeForIssueComment(input: {
     (input.currentStatus !== "done" && input.currentStatus !== "cancelled")
   );
 }
+
+/** Agent-to-agent courtesy replies carry no instruction or changed evidence. */
+export function isAgentAcknowledgementOnly(input: {
+  body: string;
+  actorType: string;
+  resumeRequested: boolean;
+  reopened: boolean;
+  hasAttachments: boolean;
+}): boolean {
+  if (input.actorType !== "agent" || input.resumeRequested || input.reopened || input.hasAttachments) {
+    return false;
+  }
+  const body = input.body.trim().toLowerCase();
+  return /^(?:ack|acknowledged|noted|received|thanks|thank you|understood)[.!]?$/u.test(body);
+}
