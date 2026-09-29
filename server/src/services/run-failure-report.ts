@@ -1,10 +1,11 @@
 import { and, eq } from "drizzle-orm";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
-import { createRunSecretRedactionRegistry, redactRegisteredSecretValues } from "./run-secret-redaction.js";
+import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   collectRunFailureDiagnostics,
   collectRunFailureSecretValues,
+  redactRunFailureSecretValues,
   sanitizeRunFailureDiagnostics,
   sanitizeRunFailureText,
   type RunFailureReportOptions,
@@ -66,12 +67,12 @@ async function captureTerminalRunFailure(
   options: RunFailureReportOptions,
 ): Promise<void> {
   try {
-    const snapshot = redactRegisteredSecretValues({
+    const snapshot = redactRunFailureSecretValues({
       errorMessage: run.error ?? "",
       errorCode: run.errorCode ?? null,
       diagnostics: collectRunFailureDiagnostics(run, options),
     }, [...new Set([
-      ...collectRunFailureSecretValues(process.env),
+      ...collectRunFailureSecretValues(process.env, [], true),
       ...(options.secretValues ?? []),
     ])].sort((a, b) => b.length - a.length));
     const agent = await db

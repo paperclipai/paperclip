@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { heartbeatRuns } from "@paperclipai/db";
-import { collectRunFailureDiagnostics, collectRunFailureSecretValues, sanitizeRunFailureDiagnostics, sanitizeRunFailureText } from "../run-failure-diagnostics.js";
+import { collectRunFailureDiagnostics, collectRunFailureSecretValues, redactRunFailureSecretValues, sanitizeRunFailureDiagnostics, sanitizeRunFailureText } from "../run-failure-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides }) as Run;
@@ -10,7 +10,18 @@ describe("run failure diagnostics", () => {
   it("selects declared environment secrets under opaque names and common credential keys", () => {
     expect(collectRunFailureSecretValues({
       CUSTOM_BINDING: "bound-opaque-value", ACCESS_TOKEN: "plain-opaque-value", REGION: "us-east-1", EMPTY_KEY: "",
-    }, ["CUSTOM_BINDING"])).toEqual(["bound-opaque-value", "plain-opaque-value"]);
+    }, ["CUSTOM_BINDING"])).toEqual(["bound-opaque-value", "plain-opaque-value", "us-east-1"]);
+    expect(collectRunFailureSecretValues({ PATH: "/usr/bin", CUSTOM_BINDING: "opaque" }, [], true)).toEqual(["opaque"]);
+    expect(collectRunFailureSecretValues({ PATH: "secret-override" }, ["PATH"], true)).toEqual(["secret-override"]);
+  });
+
+  it("redacts encoded credentials and URL passwords without expanding replacement markers", () => {
+    const secret = 'opaque/"credential';
+    const values = collectRunFailureSecretValues({ DATABASE_URL: `postgres://user:${encodeURIComponent(secret)}@example/db` });
+    const result = redactRunFailureSecretValues({ text: `${secret} ${encodeURIComponent(secret)} ${JSON.stringify(secret)}`, status: 503 }, [...values, "REDACTED"]);
+    expect(result.text).not.toContain("opaque");
+    expect(result.status).toBe(503);
+    expect(result.text).not.toContain("***[REDACTED]");
   });
   it("preserves generic exceptions, numeric codes and nested network causes", () => {
     const root = Object.assign(new Error("network failed"), { code: "ECONNRESET", statusCode: 502, request_id: "req-123" });

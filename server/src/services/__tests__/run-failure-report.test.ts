@@ -212,7 +212,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     await seedCompanyAndAgent();
     const runtimeSecret = "opaque-runtime-value";
     const hostSecret = "opaque-host-value";
-    vi.stubEnv("FIXTURE_ACCESS_TOKEN", hostSecret);
+    vi.stubEnv("FIXTURE_CUSTOM_VALUE", hostSecret);
     const text = `connection failed: ${runtimeSecret} ${hostSecret}`;
     const run = buildRun({ error: text, contextSnapshot: null,
       resultJson: { terminalSessionFailure: { details: text } },
