@@ -1102,7 +1102,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       ...connectionReviewSuite.tasks],
     expectedMatrixSize: 46,
     excludedExecutionIds: ["neutral", "challenge"].map(variant => `lifecycle-baseline.runner-codex.local.lifecycle-repair-${variant}`),
-    definitionMetadata: { version: 1, narrativeDigest: lifecycleLiveDefinitionDigest, grading: "durable-state-and-attributed-narrative", scheduling: "explicit-only" },
+    definitionMetadata: { version: 2, clarificationGrading: "information-request-list", narrativeDigest: lifecycleLiveDefinitionDigest, grading: "durable-state-and-attributed-narrative", scheduling: "explicit-only" },
   },
   {
     id: "continuation", label: "Task continuation",
@@ -1151,7 +1151,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["onboarding"],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
     environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 52,
-    definitionMetadata: { version: 3, credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
+    definitionMetadata: { version: 4, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",
@@ -1160,7 +1160,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(defaultPermissionProfile),
     environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 28,
     excludedExecutionIds: ["legacy-codex", "legacy-claude"].flatMap(profile => ["reassign-task", "create-backlog"].map(task => `agent-chat.${profile}.local.${task}`)),
-    definitionMetadata: { version: 6, resetRunsCountedSeparately: true, permissions: "production-defaults", stopBoundary: "provider-turn-started", restartMemory: "required-after-restart" },
+    definitionMetadata: { version: 7, clarificationGrading: "information-request-list", resetRunsCountedSeparately: true, permissions: "production-defaults", stopBoundary: "provider-turn-started", restartMemory: "required-after-restart" },
   },
   {
     id: "agent-chat-hardening", label: "Agent Chat Recovery and Coordination", manualOnly: true,
@@ -1200,7 +1200,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [localEnvironment],
     tasks: [...firstTaskTasks.filter(task => task.id === "interview-plan-accept"), ...chatCompletionTasks],
     expectedMatrixSize: 4,
-    definitionMetadata: { version: 6, instructions: "production", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
+    definitionMetadata: { version: 7, runGrading: "evidenced-nonexecution-and-refusal", instructions: "production", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {

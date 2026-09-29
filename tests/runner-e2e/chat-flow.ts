@@ -77,6 +77,18 @@ export function assertChatBacklogCreation(input: {
 /** Clarification may request information imperatively rather than end in a question mark. */
 export function isChatClarificationReply(body: string): boolean {
   if (body.includes("?")) return true;
+  // A present-tense request can introduce the required information directly,
+  // without a noun such as "brief" or "details" before the list.
+  const listRequest = body.match(/\b(?:I|we)(?:'ll|\s+will)?\s+need\s*:\s*([\s\S]*)/i);
+  if (listRequest) {
+    const items = [...listRequest[1].matchAll(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/gm)];
+    // A work checklist ("Create the task; write the note") is not a request
+    // for information. Outcome/ownership assertions still run independently.
+    const action = /^(?:to\s|(?:create|write|start|execute|run|build|send|publish|deliver|finish|complete|assign)\b)/i;
+    if (items.length >= 2 && items.every(([, item]) =>
+      /[\p{L}\p{N}]/u.test(item) && !action.test(item.replace(/^[*_`]+/, "")),
+    )) return true;
+  }
   const request = body.match(
     /\b(?:please\s+(?:share|provide|clarify|confirm)|tell me|let me know)\b([\s\S]*)/i,
   ) ?? body.match(
