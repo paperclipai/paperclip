@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { companies, issueRecoveryActions } from "@paperclipai/db";
-import { activeRecoveryActionCompanyCondition } from "./active-recovery-scope.ts";
+import { activeRecoveryActionCompanyCondition } from "./active-recovery-scope.js";
 
 describe("active recovery action scope", () => {
   it("limits periodic reconciliation to active companies", () => {
