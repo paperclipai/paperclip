@@ -9860,6 +9860,10 @@ export function issueRoutes(
       keyParsed.data,
     );
     if (!doc) {
+      if (req.query.optional === "1") {
+        res.json(null);
+        return;
+      }
       res.status(404).json({ error: "Document not found" });
       return;
     }

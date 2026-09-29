@@ -241,6 +241,20 @@ describe("document annotation routes", () => {
     });
   });
 
+  it("returns null for an optional missing document and keeps the default 404", async () => {
+    mockDocumentService.getIssueDocumentByKey.mockResolvedValue(null);
+    const app = await createApp();
+
+    const optional = await request(app)
+      .get(`/api/issues/${issueId}/documents/plan?optional=1`)
+      .expect(200);
+    expect(optional.body).toBeNull();
+
+    await request(app)
+      .get(`/api/issues/${issueId}/documents/plan`)
+      .expect(404, { error: "Document not found" });
+  });
+
   it("includes annotation comment bodies on document reads only when explicitly requested", async () => {
     const res = await request(await createApp("agent"))
       .get(`/api/issues/${issueId}/documents/plan?includeAnnotationComments=true`)
@@ -360,8 +374,12 @@ describe("document annotation routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("rejects agent cross-company annotation reads with a uniform 404", async () => {
-    await request(await createApp("agent", otherCompanyId))
+  it("rejects agent cross-company document and annotation reads with a uniform 404", async () => {
+    const app = await createApp("agent", otherCompanyId);
+    await request(app)
+      .get(`/api/issues/${issueId}/documents/plan?optional=1`)
+      .expect(404);
+    await request(app)
       .get(`/api/issues/${issueId}/documents/plan/annotations`)
       .expect(404);
   });
