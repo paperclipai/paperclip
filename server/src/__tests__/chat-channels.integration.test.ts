@@ -1094,17 +1094,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(and(inArray(chatConversations.companyId, companyIds), inArray(chatConversations.state, ["active", "waiting"])));
   }
 
-  async function seedCompany() {
-    const companyId = randomUUID();
+  async function seedCompany(companyId: string = randomUUID()) {
     fixtureCompanies.add(companyId);
     const assignedAgentId = randomUUID();
     const replacementAgentId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: `Chat Test ${companyId.slice(0, 8)}`,
-      issuePrefix: `C${companyId.replaceAll("-", "").slice(0, 7).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
+    let prefixId = companyId;
+    // Truncating a UUID can collide across fixtures. Retry only that unique
+    // constraint, including when a caller reuses an external test database.
+    while (true) {
+      const inserted = await db.insert(companies).values({
+        id: companyId,
+        name: `Chat Test ${companyId.slice(0, 8)}`,
+        issuePrefix: `C${prefixId.replaceAll("-", "").slice(0, 7).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      }).onConflictDoNothing({ target: companies.issuePrefix }).returning({ id: companies.id });
+      if (inserted.length > 0) break;
+      prefixId = randomUUID();
+    }
     const now = new Date();
     await db
       .insert(authUsers)
@@ -1158,6 +1164,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
     return { companyId, assignedAgentId, replacementAgentId };
   }
+
+  it("seeds distinct companies when shortened UUID prefixes collide", async () => {
+    const firstId = randomUUID();
+    const secondId = `${firstId.slice(0, 7)}${firstId[7] === "0" ? "1" : "0"}${firstId.slice(8)}`;
+    await seedCompany(firstId);
+    await seedCompany(secondId);
+
+    const rows = await db.select({ issuePrefix: companies.issuePrefix })
+      .from(companies).where(inArray(companies.id, [firstId, secondId]));
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.issuePrefix)).size).toBe(2);
+    for (const row of rows) expect(row.issuePrefix).toMatch(/^C[A-F0-9]{7}$/);
+  });
 
   // A truthy return is not a durable scheduler receipt. These transport tests
   // record the same exact receipt identity; real scheduling/coalescing is
