@@ -17,6 +17,7 @@ const mockAgentService = vi.hoisted(() => ({
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
+  limit: async () => [],
   for: () => ({
     then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
       Promise.resolve([{
@@ -182,6 +183,7 @@ describe("issue telemetry routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
+      limit: async () => [],
       for: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
           Promise.resolve([{
