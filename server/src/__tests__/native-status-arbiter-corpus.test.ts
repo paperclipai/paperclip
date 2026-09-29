@@ -2077,6 +2077,32 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toEqual(decisions);
   }, 30_000);
 
+  it("does not retire the owner's automatic review when reconciling a mention response", async () => {
+    const seeded = await seedAutomaticReview();
+    const [sourceRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    const [sourceResult] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    const [sourceReview] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+    const mentionedAgentId = randomUUID(), runId = randomUUID(), resultId = randomUUID(), wakeupRequestId = randomUUID();
+    await db.insert(agents).values({ id: mentionedAgentId, companyId, name: "Mention responder", adapterType: "paperclip_runner", status: "active" });
+    await db.insert(agentWakeupRequests).values({ id: wakeupRequestId, companyId, agentId: mentionedAgentId,
+      source: "automation", reason: "issue_comment_mentioned", status: "claimed", runId, payload: { issueId: seeded.issueId } });
+    await db.insert(heartbeatRuns).values({ ...sourceRun!, id: runId, agentId: mentionedAgentId, wakeupRequestId,
+      status: "running", finishedAt: null, runnerProfileJson: { nativeMentionContext: {
+        version: 1, issueId: seeded.issueId, agentId: mentionedAgentId, wakeupRequestId,
+      } } });
+    await db.insert(nativeRunResults).values({ ...sourceResult!, id: resultId, runId,
+      serverFingerprint: randomUUID(), canonicalSha256: randomUUID() });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId: seeded.issueId,
+      phase: "workspace_finalizing", resultId });
+
+    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await reconcileNativeFinalizations(db, [runId]);
+
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, sourceReview!.id))).toEqual([sourceReview]);
+    expect(await db.select().from(issues).where(eq(issues.id, seeded.issueId))).toEqual([sourceIssue]);
+  }, 30_000);
+
   it("completes a new merge run after an old CI review and bounds repeated incomplete results", async () => {
     const seeded = await seedAutomaticReview();
     const [sourceRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));

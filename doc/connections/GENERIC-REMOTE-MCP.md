@@ -75,6 +75,10 @@ connected the app, the tool returns `user_authorization_required` and adds an
 inline connection request. Unrelated work can continue without using the app.
 Disabled or uninstalled apps remain unavailable.
 
+Optional assigned apps do not emit run-start connection warnings, including
+unavailable shared apps. Their health state and reconnect controls remain in
+Apps. An unrelated run does not need to act on that state.
+
 ### Slack app access
 
 If Slack reports that MCP access is disabled for the app, ask the Slack app

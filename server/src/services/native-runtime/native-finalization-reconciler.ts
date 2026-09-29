@@ -555,9 +555,21 @@ export async function reconcileNativeFinalizations(
     logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
   });
   if (runIds?.length) {
-    const scopes = await db.select({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations)
+    const scopes = await db.select({
+      issueId: nativeRunFinalizations.issueId,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      agentId: heartbeatRuns.agentId,
+      wakeupRequestId: heartbeatRuns.wakeupRequestId,
+    }).from(nativeRunFinalizations)
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
+        eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
       .where(inArray(nativeRunFinalizations.runId, runIds));
-    for (const scope of scopes) await dismissAutomaticCompletionReviews(db, scope.issueId);
+    // Targeted mention reconciliation cannot retire the source owner's review.
+    // The unscoped maintenance sweep below still retires obsolete policy cards.
+    for (const scope of scopes) {
+      if (!isNativeMentionContextRun(scope)) await dismissAutomaticCompletionReviews(db, scope.issueId);
+    }
   } else {
     await dismissAutomaticCompletionReviews(db);
   }
