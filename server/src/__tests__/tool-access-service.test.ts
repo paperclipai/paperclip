@@ -2661,6 +2661,79 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("returns cleanly for runtime_auth AI connections without stdio template validation", async () => {
+    // runtime_auth / connectionPurpose="ai" connections (Claude subscription, etc.) must never
+    // be subjected to stdioTemplateId() validation in checkConnectionHealth. They have no
+    // templateId and the check would spuriously set health_status=error. The fix is the early
+    // return guard `if (connection.connectionPurpose === "ai")` at the top of
+    // checkConnectionHealth, which bypasses all transport-specific checks.
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    // Insert a runtime_auth AI connection directly — createConnection does not accept this
+    // transport because it is handled by the AI account setup flow, not the tool connector flow.
+    const [application] = await db
+      .insert(toolApplications)
+      .values({
+        companyId: company.id,
+        applicationKey: `ai-subscription-${randomUUID()}`,
+        name: `AI subscription fixture ${randomUUID()}`,
+        type: "mcp_http",
+        status: "active",
+        metadata: {},
+      })
+      .returning();
+    const connectionId = randomUUID();
+    const [aiConnection] = await db
+      .insert(toolConnections)
+      .values({
+        id: connectionId,
+        companyId: company.id,
+        applicationId: application!.id,
+        name: "My Claude subscription",
+        uid: `ai-${connectionId}`,
+        connectionPurpose: "ai",
+        transport: "runtime_auth",
+        authKind: "oauth",
+        credentialPolicy: "shared",
+        status: "active",
+        enabled: true,
+        healthStatus: "ok",
+        config: {
+          sourceTemplateKey: "anthropic",
+          ai: { provider: "anthropic", method: "subscription" },
+        },
+        transportConfig: {},
+        credentialRefs: [],
+        credentialSecretRefs: [],
+      })
+      .returning();
+
+    // checkHealth must return the connection as-is with runtimeSlot=null.
+    // It must NOT attempt stdioTemplateId() and must NOT write an audit event.
+    const result = await service.checkHealth(aiConnection!.id);
+
+    expect(result.connection.connectionPurpose).toBe("ai");
+    expect(result.connection.transport).toBe("runtime_auth");
+    expect(result.runtimeSlot).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // healthStatus must remain "ok" — the early return preserves it unchanged.
+    const [saved] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, aiConnection!.id));
+    expect(saved!.healthStatus).toBe("ok");
+
+    // The early return fires before any audit write.
+    const auditEvents = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.connectionId, aiConnection!.id));
+    expect(auditEvents).toEqual([]);
+  });
+
   it("rejects the obsolete Anthropic REST setup before storing credentials", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
