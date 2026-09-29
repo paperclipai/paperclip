@@ -92,6 +92,7 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     enabled: isAuthenticatedMode,
     retry: false,
     refetchInterval: (query) => isTemporaryApiError(query.state.error) ? RECONNECT_INTERVAL_MS : false,
+    refetchIntervalInBackground: true,
   });
 
   useEffect(() => {
@@ -104,6 +105,7 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
     retry: false,
     refetchInterval: (query) => isTemporaryApiError(query.state.error) ? RECONNECT_INTERVAL_MS : false,
+    refetchIntervalInBackground: true,
   });
   const claimMutation = useMutation({
     mutationFn: () => accessApi.claimBootstrapAdmin(),

@@ -36,8 +36,18 @@ describe("API responses during a restart", () => {
     await expect(api.delete("/issues/example")).resolves.toBeUndefined();
   });
 
-  it("requires a healthy payload before opening the app", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ status: "starting" })));
+  it("preserves valid startup health metadata for sign-in and invitations", async () => {
+    const payload = {
+      status: "starting",
+      deploymentMode: "authenticated",
+      cloud: { managed: true, managedBy: "paperclip-cloud", stackSlug: "example", cloudBaseUrl: "https://example.com" },
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(payload)));
+    await expect(healthApi.get()).resolves.toEqual(payload);
+  });
+
+  it.each([null, {}, { status: "unhealthy" }])("rejects an unusable health payload: %j", async (payload) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(payload)));
     await expect(healthApi.get()).rejects.toBeInstanceOf(ApiUnavailableError);
   });
 

@@ -2,7 +2,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudAccessGate } from "./CloudAccessGate";
 import { queryKeys } from "@/lib/queryKeys";
@@ -59,6 +59,7 @@ describe("CloudAccessGate restart recovery", () => {
   afterEach(() => {
     flushSync(() => root.unmount());
     client.clear();
+    focusManager.setFocused(undefined);
     container.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -115,6 +116,27 @@ describe("CloudAccessGate restart recovery", () => {
     expect(container.querySelector("textarea")).toBe(editor);
     expect(editor.value).toBe("Keep my unsaved changes");
     expect(container.textContent).not.toContain("Reconnecting");
+  });
+
+  it.each(checks)("keeps retrying %s while the tab is hidden", async (path) => {
+    focusManager.setFocused(false);
+    failingPath = path;
+    await render();
+    expect(container.textContent).toContain("Reconnecting to Paperclip");
+    failingPath = null;
+    await vi.advanceTimersByTimeAsync(5_100);
+    await flushReact();
+    expect(container.querySelector("textarea")).not.toBeNull();
+  });
+
+  it("opens the board when valid startup health is followed by successful access checks", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({
+      status: "starting", deploymentMode: "authenticated", bootstrapStatus: "ready",
+    }));
+    await render();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.textContent).not.toContain("Reconnecting");
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual(checks.map(([path]) => path));
   });
 
   it("offers immediate retry while waiting for the next automatic check", async () => {

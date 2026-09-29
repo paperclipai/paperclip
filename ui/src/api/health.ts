@@ -26,7 +26,7 @@ export type CloudInstanceHealthStatus = {
 };
 
 export type HealthStatus = {
-  status: "ok";
+  status: "ok" | "starting";
   version?: string;
   /** Commit of the running server; null when build metadata is unavailable. */
   commit?: string | null;
@@ -62,7 +62,8 @@ export const healthApi = {
       if (recovery) return recovery;
       throw new ApiError(payload?.error ?? `Failed to load health (${res.status})`, res.status, payload);
     }
-    if (payload?.status !== "ok") throw new ApiUnavailableError(res.status);
+    // Startup recovery can still serve sign-in and deployment metadata.
+    if (payload?.status !== "ok" && payload?.status !== "starting") throw new ApiUnavailableError(res.status);
     return payload;
   },
   requestDevServerRestart: async (): Promise<void> => {
