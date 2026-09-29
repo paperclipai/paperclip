@@ -14,16 +14,20 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 describe("runner E2E Daytona image contract", () => {
   it("keeps the qualified native Grok binary separate from the legacy command", async () => {
-    const [dockerfile, packBuilder, nativePackage] = await Promise.all([
+    const [dockerfile, packBuilder, runnerPackage] = await Promise.all([
       readFile(path.join(repositoryRoot, "docker/daytona-runner/Dockerfile"), "utf8"),
       readFile(path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-provider-pack.mjs"), "utf8"),
-      readFile(path.join(repositoryRoot, "packages/grok-acp/package.json"), "utf8"),
+      readFile(path.join(repositoryRoot, "packages/paperclip-runner/package.json"), "utf8"),
     ]);
     expect(dockerfile).toMatch(/@xai-official\/grok@\d+\.\d+\.\d+/);
     expect(dockerfile).not.toMatch(/for cli in[^;]*\bgrok\b/);
     expect(packBuilder).not.toMatch(/writePortable\w+Shim\("grok"/);
-    expect(JSON.parse(nativePackage).bin).not.toHaveProperty("grok");
-    expect(packBuilder).toContain('path: "node_modules/@paperclipai/grok-acp/bin/grok"');
+    expect(JSON.parse(runnerPackage).dependencies).not.toHaveProperty("@paperclipai/grok-acp");
+    expect(packBuilder).toContain('path: "dist/providers/grok/launcher.cjs"');
+    expect(dockerfile).toContain("scripts/provision-grok.mjs");
+    expect(dockerfile).toContain("/opt/paperclip/providers/grok/1.0.13/grok");
+    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain("packages/paperclip-runner/scripts/provision-grok.mjs");
+    expect(DAYTONA_IMAGE_INPUT_PATHS).not.toContain("packages/grok-acp/package.json");
   });
 
   it("builds runnerd and the provider pack and verifies every required transport", async () => {

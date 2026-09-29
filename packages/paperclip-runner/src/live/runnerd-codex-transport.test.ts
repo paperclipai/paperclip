@@ -1371,6 +1371,15 @@ it("derives the ACPX package authority only from the verified dist/cli layout", 
   ).toThrow("ACPX sidecar must use the provider package dist/cli layout");
 });
 
+it("uses the public server npm package as the authority for vendored sidecars", () => {
+  expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+    "/clean/node_modules/@paperclipai/server/dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs",
+  )).toEqual({
+    root: "/clean/node_modules/@paperclipai/server",
+    manifest: "/clean/node_modules/@paperclipai/server/package.json",
+  });
+});
+
 it("keeps a self-rooted pnpm deployment inside its dependency authority", async () => {
   const deploymentRoot = await mkdtemp(
     join(tmpdir(), "paperclip-deployed-provider-root-"),
@@ -1723,6 +1732,7 @@ it.each([
         environment: {
           PATH: "/bin",
           ...credentialEnvironment,
+          PAPERCLIP_ACPX_BUILTIN_ROOT: "/attacker/builtin",
           PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/attacker/package-root",
           PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
             "/attacker/package-root/package.json",
@@ -1751,6 +1761,7 @@ it.each([
       PAPERCLIP_RUN_ID: "run-1",
       PAPERCLIP_NORMALIZED_SESSION_ID: "session-1",
       PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: "/isolated/runtime-context.json",
+      PAPERCLIP_ACPX_BUILTIN_ROOT: "/verified/provider-pack/dist/providers",
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/verified/provider-pack",
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
         "/verified/provider-pack/package.json",

@@ -1042,6 +1042,54 @@ describe("codex_local ACP lane", () => {
     expect(mode).toBe(0o600);
   });
 
+  it("does not copy an API-key run's sandbox auth into the shared subscription home", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-key-copyback-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const keyHome = path.join(root, "api-key-home");
+    const sharedHostHome = path.join(root, "shared-codex-home");
+    await Promise.all([localCwd, remoteCwd, keyHome, sharedHostHome].map((dir) => fs.mkdir(dir, { recursive: true })));
+    const sharedAuth = subscriptionAuthJson("acct-same", OLDER_REFRESH, "host-older");
+    await fs.writeFile(path.join(sharedHostHome, "auth.json"), sharedAuth, { mode: 0o600 });
+    // A subscription-shaped sandbox credential must never be considered for
+    // the shared home when this run explicitly authenticates with an API key.
+    await fs.writeFile(
+      path.join(keyHome, "auth.json"),
+      subscriptionAuthJson("acct-same", NEWER_REFRESH, "sandbox-newer"),
+      { mode: 0o600 },
+    );
+    process.env.CODEX_HOME = sharedHostHome;
+
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(buildContext(localCwd, {
+      config: {
+        engine: "acp",
+        cwd: localCwd,
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+        env: { CODEX_HOME: keyHome, OPENAI_API_KEY: "sk-test-key" },
+        promptTemplate: "Do the assigned work.",
+      },
+      context: {
+        issueId: "issue-1",
+        paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd,
+        runner: createLocalSandboxRunner(),
+      } as never,
+      authToken: "real-run-jwt",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(await fs.readFile(path.join(sharedHostHome, "auth.json"), "utf8")).toBe(sharedAuth);
+  });
+
   it("keeps the shared host Codex auth when the sandbox copy is not strictly newer", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-copyback-older-");
     const localCwd = path.join(root, "worktree");

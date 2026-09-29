@@ -5,7 +5,7 @@ import {
   type ChildProcess,
   type SpawnOptionsWithoutStdio,
 } from "node:child_process";
-import { constants, realpathSync } from "node:fs";
+import { constants, existsSync, realpathSync } from "node:fs";
 import {
   lstat,
   open,
@@ -15,6 +15,7 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import {
   basename,
   dirname,
@@ -342,13 +343,7 @@ export function createAcpxPackageJsonResolver(
     const packageJsonPath = realpathSync(
       resolvePackageJsonFromIssuer(packageName, canonicalIssuer),
     );
-    // The native Grok launcher is a source-owned workspace package. Admit
-    // only its exact source location when the issuer is the source Runner;
-    // installed packs still resolve exclusively below their node_modules.
-    const sourceGrokPackage = packageName === "@paperclipai/grok-acp" &&
-      canonicalManifest === resolve(canonicalRoot, "packages/paperclip-runner/package.json") &&
-      packageJsonPath === resolve(canonicalRoot, "packages/grok-acp/package.json");
-    if (!pathIsInside(canonicalNodeModules, packageJsonPath) && !sourceGrokPackage) {
+    if (!pathIsInside(canonicalNodeModules, packageJsonPath)) {
       throw new Error(
         `ACPX provider package ${packageName} resolves outside the selected provider root`,
       );
@@ -407,7 +402,7 @@ function pathIsInside(root: string, candidate: string): boolean {
 
 export interface VerifiedAcpxInstallation {
   readonly commandDigest: string;
-  readonly agentServerPackageJsonPath: string;
+  readonly agentServerPackageJsonPath: string | null;
   readonly agentRuntimePackageJsonPath: string | null;
   openCommand(): Promise<VerifiedAcpxCommandLease>;
 }
@@ -529,13 +524,14 @@ export async function verifyQualifiedAcpxInstallation(
   profile: QualifiedAcpxProfile,
   resolvePackageJson: AcpxPackageJsonResolver = defaultPackageJsonResolver,
 ): Promise<VerifiedAcpxInstallation> {
-  const serverPackageJsonPath = await realpath(
-    resolvePackageJson(profile.agentServerPackage),
-  );
-  const serverPackage = await readPackageJson(
-    serverPackageJsonPath,
-    profile.agentServerPackage,
-  );
+  const builtin = profile.agent === "grok";
+  if (builtin && (profile.agentServerPackage !== "builtin:grok-acp" || profile.agentServerVersion !== "1" || profile.agentRuntimePackage !== "native:grok" || profile.agentRuntimeVersion !== "1.0.13")) {
+    throw new Error("Grok builtin profile identity mismatch");
+  }
+  const serverPackageJsonPath = builtin ? null : await realpath(resolvePackageJson(profile.agentServerPackage));
+  const serverPackage: AcpxPackageMetadata = builtin
+    ? { version: "1", bin: "launcher.cjs", type: "commonjs" }
+    : await readPackageJson(serverPackageJsonPath!, profile.agentServerPackage);
   if (serverPackage.version !== profile.agentServerVersion) {
     throw new Error(
       `ACPX ${profile.agent} package version mismatch: expected ${profile.agentServerVersion}, received ${serverPackage.version ?? "unknown"}`,
@@ -548,7 +544,7 @@ export async function verifyQualifiedAcpxInstallation(
     profile.agent,
   );
   const serverPackageFormat = packageModuleFormat(serverPackage.type);
-  const packageDirectory = dirname(serverPackageJsonPath);
+  const packageDirectory = builtin ? await realpath(dirname(builtinGrokLauncherPath())) : dirname(serverPackageJsonPath!);
   const unresolvedCommandPath = resolve(packageDirectory, relativeCommand);
   if (!isInside(packageDirectory, unresolvedCommandPath)) {
     throw new Error(`ACPX ${profile.agent} executable escapes its package`);
@@ -577,12 +573,14 @@ export async function verifyQualifiedAcpxInstallation(
   let runtimePackageFormat: AcpxCommandFormat | null = null;
   let runtimePackage: AcpxPackageMetadata | null = null;
   let runtimeExecutable: VerifiedAcpxRuntimeExecutable | null = null;
-  if (profile.agentRuntimePackage !== null) {
+  if (builtin) {
+    runtimeExecutable = await verifyProvisionedGrokExecutable();
+  } else if (profile.agentRuntimePackage !== null) {
     if (profile.agentRuntimeVersion === null) {
       throw new Error("Qualified ACPX runtime package omitted its version");
     }
     runtimePackageJsonPath = await realpath(
-      resolvePackageJson(profile.agentRuntimePackage, serverPackageJsonPath),
+      resolvePackageJson(profile.agentRuntimePackage, serverPackageJsonPath!),
     );
     runtimePackage = await readPackageJson(
       runtimePackageJsonPath,
@@ -628,7 +626,7 @@ export async function verifyQualifiedAcpxInstallation(
         );
       }
       const dependencyPackageJsonPath = await realpath(
-        resolvePackageJson(expected.packageName, serverPackageJsonPath),
+        resolvePackageJson(expected.packageName, serverPackageJsonPath!),
       );
       const dependencyPackage = await readPackageJson(
         dependencyPackageJsonPath,
@@ -838,25 +836,44 @@ async function readPackageJson(
   return value as AcpxPackageMetadata;
 }
 
+// Same layout in source, compiled modules, bundled sidecar, and vendored npm output.
+export function builtinGrokLauncherPath(moduleUrl: string = import.meta.url): string {
+  // Only the controller supplies this path to the descriptor-loaded sidecar;
+  // createSanitizedAcpxSpawnInput excludes it from provider environments.
+  const root = process.env.PAPERCLIP_ACPX_BUILTIN_ROOT;
+  if (root !== undefined) {
+    if (!isAbsolute(root) || root.includes("\0") || resolve(root) !== root) throw new Error("Invalid builtin provider root");
+    return resolve(root, "grok/launcher.cjs");
+  }
+  for (const relativePath of ["../../providers/grok/launcher.cjs", "../providers/grok/launcher.cjs"]) {
+    const candidate = fileURLToPath(new URL(relativePath, moduleUrl));
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error("Grok builtin launcher is missing from the Paperclip installation");
+}
+
+export const GROK_PREREQUISITE_PATH = "/opt/paperclip/providers/grok/1.0.13/grok";
+
+export async function verifyProvisionedGrokExecutable(executablePath = GROK_PREREQUISITE_PATH): Promise<VerifiedAcpxRuntimeExecutable> {
+  const digests: Record<string, string> = {
+    "darwin-arm64": "8669e0fdadceec25b8c159c355f427ffbd82583525d774b6ab1522197ea83b80",
+    "linux-x64": "edf79521581bb5e6b95abef848491a6a742e860da3e237ebe86a280d30dce4c1",
+  };
+  const digest = digests[`${process.platform}-${process.arch}`];
+  if (!digest) throw new Error(`Grok prerequisite unavailable for ${process.platform}-${process.arch}`);
+  if (!existsSync(executablePath)) throw new Error(`Grok Build 1.0.13 prerequisite missing: provision ${GROK_PREREQUISITE_PATH} in the execution environment`);
+  const verified = await openVerifiedRuntimeExecutable(executablePath, `sha256:${digest}`, "grok");
+  await verified.handle.close();
+  return { path: executablePath, digest: `sha256:${digest}`, identity: verified.identity,
+    environmentVariable: "PAPERCLIP_GROK_VERIFIED_EXECUTABLE" };
+}
+
 async function verifyQualifiedRuntimeExecutable(input: {
   profile: QualifiedAcpxProfile;
   runtimePackage: AcpxPackageMetadata;
   runtimePackageJsonPath: string;
   resolvePackageJson: AcpxPackageJsonResolver;
 }): Promise<VerifiedAcpxRuntimeExecutable | null> {
-  if (input.profile.agent === "grok") {
-    const digests: Record<string, string> = {
-      "darwin-arm64": "8669e0fdadceec25b8c159c355f427ffbd82583525d774b6ab1522197ea83b80",
-      "linux-x64": "edf79521581bb5e6b95abef848491a6a742e860da3e237ebe86a280d30dce4c1",
-    };
-    const digest = digests[`${process.platform}-${process.arch}`];
-    if (!digest) throw new Error(`Grok verified runtime unavailable for ${process.platform}-${process.arch}`);
-    const executablePath = resolve(dirname(input.runtimePackageJsonPath), "bin/grok");
-    const verified = await openVerifiedRuntimeExecutable(executablePath, `sha256:${digest}`, "grok");
-    await verified.handle.close();
-    return { path: executablePath, digest: `sha256:${digest}`, identity: verified.identity,
-      environmentVariable: "PAPERCLIP_GROK_VERIFIED_EXECUTABLE" };
-  }
   const qualification =
     input.profile.agent === "claude"
       ? process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")

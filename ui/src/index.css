@@ -304,6 +304,7 @@
   --side-panel-tab-active-bg: color-mix(in oklab, var(--accent) 88%, var(--background));
   --side-panel-tab-hover-bg: color-mix(in oklab, var(--accent) 58%, transparent);
   --radius-task-composer: 16px;
+  --tc-interaction-card-max-h: 50dvh;
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
   --profile-popover-width: 248px;
@@ -353,13 +354,12 @@
   --sz-turn-status-island: min(100%, 42rem);
   --sz-turn-status-popover: min(32rem, calc(100vw - 2rem));
 
-  /* Mobile pinned-composer bottom offset (PAP-495). Default clears just the
-     safe-area inset (+20px); Layout raises it to the bottom-nav height
-     (--sz-calc-14) while the auto-hiding mobile nav is on screen, so the
-     composer's action row never hides behind the nav. Desktop and the classic
-     thread never override it and fall through to the safe-area default. */
+  /* Mobile pinned-composer bottom offset (PAP-495). The visible-nav offset
+     leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.
+     Desktop and the classic thread use the safe-area default. */
   --tc-composer-bottom: var(--sz-calc-8);
-  /* Together with the dock's pb-2, match the page's p-4 side gutters. */
+  --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
+  /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
 }
 

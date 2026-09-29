@@ -356,8 +356,8 @@ jobs:
 
       - name: Materialize the pinned Grok executable when the target includes it
         run: |
-          if [ -f packages/grok-acp/install.mjs ]; then
-            node packages/grok-acp/install.mjs
+          if [ -f packages/paperclip-runner/scripts/provision-grok.mjs ]; then
+            sudo node packages/paperclip-runner/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok
           fi
 
       - name: Build runner CLI, daemon, and canonical attempt viewer

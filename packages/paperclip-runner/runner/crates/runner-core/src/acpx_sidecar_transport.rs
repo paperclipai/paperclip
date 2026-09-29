@@ -124,6 +124,7 @@ impl AcpxSidecarTransport {
             // The qualified sidecar configures the runner-owned gateway. Keep
             // its credential with the name/URL; unrelated secrets stay excluded.
             "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "PAPERCLIP_ACPX_BUILTIN_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];

@@ -719,6 +719,26 @@ function Setup({
                         center
                       />
                     </div>
+                    <div className="mb-5">
+                      <Field label="Environment">
+                        <select
+                          aria-label="Environment"
+                          className={controlClass}
+                          value={environmentOverride}
+                          disabled={busy || forced.forced}
+                          onChange={(event) => {
+                            setEnvironmentOverride(event.target.value);
+                            setConnection(null);
+                            resetTest();
+                          }}
+                        >
+                          <option value="">Default: {environmentLabel}</option>
+                          {(envs.data ?? []).filter((env) => env.status === "active" && (!managedOnly || env.driver !== "local")).map((env) => (
+                            <option key={env.id} value={env.id}>{environmentDisplayLabel(env)}</option>
+                          ))}
+                        </select>
+                      </Field>
+                    </div>
                     <AgentProviderConnection
                       key={environmentId ?? "local"}
                       companyId={companyId}
@@ -1108,7 +1128,7 @@ function Setup({
                             aria-label="Environment"
                             className={controlClass}
                             value={environmentOverride}
-                            disabled={forced.forced || managedOnly}
+                            disabled={forced.forced}
                             onChange={(event) => {
                               setEnvironmentOverride(event.target.value);
                               setConnection(null);
@@ -1120,7 +1140,7 @@ function Setup({
                               Default: {environmentLabel}
                             </option>
                             {(envs.data ?? [])
-                              .filter((env) => env.status === "active")
+                              .filter((env) => env.status === "active" && (!managedOnly || env.driver !== "local"))
                               .map((env) => (
                                 <option key={env.id} value={env.id}>
                                   {environmentDisplayLabel(env)}
