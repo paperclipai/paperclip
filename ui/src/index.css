@@ -503,6 +503,22 @@
     transition: background-color 100000s ease-in-out 0s;
   }
 
+  /*
+    Native select option lists, in the app's own colours.
+
+    Several browser/OS pairs (Chrome on Windows, Firefox on Linux/GTK) draw a
+    native <select>'s option popup with their own light fill and ignore
+    `color-scheme: dark`, while the option text still inherits the select's
+    light foreground. In dark mode that is white text on a white list. Giving
+    the options explicit popover colours makes the list follow the theme; in
+    light mode these tokens match the browser default.
+  */
+  select option,
+  select optgroup {
+    background-color: var(--popover);
+    color: var(--popover-foreground);
+  }
+
   * {
     @apply border-border outline-ring/50;
   }
