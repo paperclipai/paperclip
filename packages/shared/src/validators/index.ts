@@ -485,6 +485,8 @@ export {
   cancelIssueThreadInteractionSchema,
   skipIssueThreadInteractionSchema,
   withdrawIssueThreadInteractionSchema,
+  updateIssueThreadInteractionPresentationSchema,
+  type UpdateIssueThreadInteractionPresentation,
   respondIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   linkIssueApprovalSchema,

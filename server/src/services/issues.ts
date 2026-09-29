@@ -2810,6 +2810,7 @@ const ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS = [
   "issue.thread_interaction_cancelled",
   "issue.thread_interaction_created",
   "issue.thread_interaction_item_verdicts_submitted",
+  "issue.thread_interaction_presentation_updated",
   "issue.thread_interaction_withdrawn",
   "issue.tree_cancel_status_updated",
   "issue.tree_hold_created",

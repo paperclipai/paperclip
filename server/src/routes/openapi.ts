@@ -173,6 +173,7 @@ import {
   respondIssueThreadInteractionSchema,
   skipIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
+  updateIssueThreadInteractionPresentationSchema,
   withdrawIssueThreadInteractionSchema,
   // Auth / profile
   updateCurrentUserProfileSchema,
@@ -7343,6 +7344,26 @@ registry.registerPath({
     body: jsonBody(createIssueThreadInteractionSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/issues/{id}/interactions/{interactionId}",
+  tags: ["issues"],
+  summary: "Update an issue thread interaction's title and summary",
+  description:
+    "Presentation-only. Rewrites the `title` and `summary` a reader sees and leaves the payload, status, and recorded result untouched, so a card that was already answered keeps the decision it recorded. The interaction creator, the current issue assignee, or a board user may call it, and it stays available on a closed issue, which is the only way to fix a card whose issue closed before anyone filled it in.",
+  request: {
+    params: z.object({ id: z.string(), interactionId: z.string() }),
+    body: jsonBody(updateIssueThreadInteractionPresentationSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 registry.registerPath({

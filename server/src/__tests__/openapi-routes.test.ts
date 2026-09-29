@@ -343,6 +343,36 @@ describe("openapi routes", () => {
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"]
         .post.summary,
     ).toBe("Withdraw a pending issue thread interaction");
+    // A PATCH on the interaction itself, and not on a per-kind subpath, is what
+    // lets a card that was created empty be corrected at all.
+    const patchInteraction = res.body.paths[
+      "/api/issues/{id}/interactions/{interactionId}"
+    ].patch;
+    expect(patchInteraction.summary).toBe(
+      "Update an issue thread interaction's title and summary",
+    );
+    // The service resolves the row before it writes, so the only failure the
+    // route can report is a missing card (404). There is no 409: the write is
+    // legal in every card status, which is what lets a closed issue's card be
+    // corrected.
+    expect(
+      Object.keys(
+        res.body.paths["/api/issues/{id}/interactions/{interactionId}"].patch
+          .responses,
+      ).sort(),
+    ).toEqual(["200", "400", "401", "403", "404"]);
+    // Neither field is in `required`, so both are optional and at least one is
+    // enforced by the validator's refine rather than by the JSON schema.
+    const patchSchema =
+      patchInteraction.requestBody.content["application/json"].schema;
+    expect(patchSchema.required).toBeUndefined();
+    expect(patchSchema).toMatchObject({
+      type: "object",
+      properties: {
+        title: { type: "string", maxLength: 240 },
+        summary: { type: "string", maxLength: 1000 },
+      },
+    });
     const createInteraction =
       res.body.paths["/api/issues/{id}/interactions"].post;
     expect(createInteraction.description).toContain(

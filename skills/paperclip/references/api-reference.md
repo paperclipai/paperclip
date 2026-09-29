@@ -1415,6 +1415,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/verdicts` | Submit partial item verdicts for `request_item_verdicts`                 |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/withdraw` | Withdraw any pending interaction; optional `{ "reason": string }`; creator agent, current assignee agent, or board user |
+| PATCH  | `/api/issues/:issueId/interactions/:interactionId` | Rewrite a card's `title` and/or `summary` (at least one required, either may be `null` to clear, an omitted field keeps its value). Presentation-only: the payload, the status, and the recorded result never change, so an already-answered card keeps its decision. Legal in any card status and on a closed issue. Creator agent, current assignee agent, or board user. |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |

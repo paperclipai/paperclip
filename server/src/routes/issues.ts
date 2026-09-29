@@ -65,6 +65,7 @@ import {
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
   skipIssueThreadInteractionSchema,
+  updateIssueThreadInteractionPresentationSchema,
   withdrawIssueThreadInteractionSchema,
   companySearchExtractQuerySchema,
   companySearchQuerySchema,
@@ -16612,6 +16613,70 @@ export function issueRoutes(
         });
       }
       res.json(interaction);
+    },
+  );
+
+  // Rewrites the card's title and summary. The write is allowed even when the
+  // issue is closed and when the card is already answered, because closing the
+  // issue is what strands a card created before the close with no way to
+  // correct its own wording, and because the payload, status, and result that
+  // record the decision are not touched here. Every other guard on the route
+  // still applies, including the containment and run-attribution checks the
+  // other interaction routes use.
+  router.patch(
+    "/issues/:id/interactions/:interactionId",
+    validate(updateIssueThreadInteractionPresentationSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(id),
+        "Issue not found",
+      );
+      if (!issue) return;
+
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      if (
+        !(await assertIssueThreadInteractionWithdrawalAllowed(
+          req,
+          res,
+          issue,
+          current,
+        ))
+      )
+        return;
+
+      const actor = getActorInfo(req);
+      const { before, after } = await interactionSvc.updatePresentation(
+        issue,
+        interactionId,
+        req.body,
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.thread_interaction_presentation_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: after.id,
+          interactionKind: after.kind,
+          previousTitle: before.title ?? null,
+          title: after.title ?? null,
+          previousSummary: before.summary ?? null,
+          summary: after.summary ?? null,
+        },
+      });
+
+      res.json(after);
     },
   );
 

@@ -42,6 +42,7 @@ const mockInteractionService = vi.hoisted(() => ({
   cancelQuestions: vi.fn(),
   skipInteraction: vi.fn(),
   withdrawInteraction: vi.fn(),
+  updatePresentation: vi.fn(),
   recordSecretProposalExecutionResult: vi.fn(),
 }));
 
@@ -360,6 +361,33 @@ describe.sequential("issue thread interaction routes", () => {
       status: "pending",
       payload: { version: 1, questions: [] },
     });
+    // Default shape for the presentation PATCH: an empty card is rewritten
+    // into one that carries both fields, which is the case the route exists to
+    // repair. Tests that care about the stored values override this.
+    mockInteractionService.updatePresentation.mockImplementation(
+      async (_issue, interactionId, input) => {
+        const before = {
+          id: interactionId,
+          companyId: "company-1",
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          kind: "request_confirmation",
+          createdByAgentId: CREATED_AGENT_ID,
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          title: null,
+          summary: null,
+          payload: { version: 1, prompt: "Proceed?" },
+        };
+        return {
+          before,
+          after: {
+            ...before,
+            title: input.title === undefined ? before.title : input.title,
+            summary: input.summary === undefined ? before.summary : input.summary,
+          },
+        };
+      },
+    );
     mockInteractionService.withdrawInteraction.mockImplementation((...args) => resolveMockInteraction(args, {
       id: "interaction-withdraw",
       companyId: "company-1",
@@ -1015,6 +1043,155 @@ describe.sequential("issue thread interaction routes", () => {
       .send({});
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.anything());
+  });
+
+  it("lets a board user fill in an empty card title and summary", async () => {
+    const res = await request(await createApp())
+      .patch(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw`)
+      .send({
+        title: "Approve the company plan",
+        summary: "Accepting hires the founding team and closes onboarding.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "interaction-withdraw",
+      title: "Approve the company plan",
+      summary: "Accepting hires the founding team and closes onboarding.",
+      // The response is the card after the write, and the decision payload is
+      // not part of what this route may change.
+      payload: { version: 1, prompt: "Proceed?" },
+    });
+    expect(mockInteractionService.updatePresentation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ISSUE_ID }),
+      "interaction-withdraw",
+      {
+        title: "Approve the company plan",
+        summary: "Accepting hires the founding team and closes onboarding.",
+      },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_presentation_updated",
+        details: expect.objectContaining({
+          interactionId: "interaction-withdraw",
+          previousTitle: null,
+          title: "Approve the company plan",
+          previousSummary: null,
+          summary: "Accepting hires the founding team and closes onboarding.",
+        }),
+      }),
+    );
+  });
+
+  it("rewrites a card on a closed issue, which is the case create cannot replace", async () => {
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "done" }));
+    const res = await request(await createApp())
+      .patch(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw`)
+      .send({ title: "Hire the founding team" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe("Hire the founding team");
+    expect(mockInteractionService.updatePresentation).toHaveBeenCalled();
+  });
+
+  it("rewrites a card that was already answered, which is the case this issue needed fixed", async () => {
+    // The two cards that motivated this route were `accepted` and `expired`
+    // cards on a closed issue. The route delegates the status rule to the
+    // service, so what this test proves is that the route does not reintroduce
+    // a pending-only guard of its own and does not reject a closed issue.
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "done" }));
+    mockInteractionService.updatePresentation.mockResolvedValue({
+      before: {
+        id: "interaction-answered", companyId: "company-1", issueId: ISSUE_ID,
+        kind: "request_confirmation", createdByAgentId: CREATED_AGENT_ID,
+        status: "accepted", continuationPolicy: "none",
+        title: null, summary: null, payload: { version: 1, prompt: "Proceed?" },
+        result: { version: 1, outcome: "accepted" },
+      },
+      after: {
+        id: "interaction-answered", companyId: "company-1", issueId: ISSUE_ID,
+        kind: "request_confirmation", createdByAgentId: CREATED_AGENT_ID,
+        status: "accepted", continuationPolicy: "none",
+        title: "Approve the founding team", summary: "Accepting hires the team.",
+        payload: { version: 1, prompt: "Proceed?" },
+        result: { version: 1, outcome: "accepted" },
+      },
+    });
+    const res = await request(await createApp())
+      .patch(`/api/issues/${ISSUE_ID}/interactions/interaction-answered`)
+      .send({ title: "Approve the founding team", summary: "Accepting hires the team." });
+
+    expect(res.status).toBe(200);
+    // The rewrite fixes the copy and leaves the recorded decision alone.
+    expect(res.body).toMatchObject({
+      title: "Approve the founding team",
+      summary: "Accepting hires the team.",
+      status: "accepted",
+      result: { version: 1, outcome: "accepted" },
+      payload: { version: 1, prompt: "Proceed?" },
+    });
+  });
+
+  it("rewrites a card for its creator agent and for the assignee agent", async () => {
+    // Status "todo" for the assignee half: an in_progress issue also demands a
+    // checkout-ownership check, which belongs to the withdraw path's fixture
+    // rather than to what this route authorizes.
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "todo" }));
+    for (const [agentId, runId] of [
+      [CREATED_AGENT_ID, RUN_1],
+      [ASSIGNEE_AGENT_ID, RUN_2],
+    ] as const) {
+      const res = await request(
+        await createApp({ type: "agent", agentId, companyId: "company-1", runId }),
+      )
+        .patch(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw`)
+        .send({ title: "Corrected" });
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("rejects a presentation rewrite by an unrelated agent", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: RUN_3,
+    });
+    const res = await request(app)
+      .patch(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw`)
+      .send({ title: "Rewrite" });
+
+    expect(res.status).toBe(403);
+    expect(mockInteractionService.updatePresentation).not.toHaveBeenCalled();
+  });
+
+  it("refuses an empty presentation body instead of silently changing nothing", async () => {
+    const res = await request(await createApp())
+      .patch(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw`)
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(mockInteractionService.updatePresentation).not.toHaveBeenCalled();
+  });
+
+  it("refuses a title past the same length limit create enforces", async () => {
+    const res = await request(await createApp())
+      .patch(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw`)
+      .send({ title: "x".repeat(241) });
+
+    expect(res.status).toBe(400);
+    expect(mockInteractionService.updatePresentation).not.toHaveBeenCalled();
+  });
+
+  it("rejects any field beyond title and summary", async () => {
+    const res = await request(await createApp())
+      .patch(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw`)
+      .send({ status: "accepted" });
+
+    expect(res.status).toBe(400);
+    expect(mockInteractionService.updatePresentation).not.toHaveBeenCalled();
   });
 
   it("allows the assignee agent to withdraw without waking itself", async () => {

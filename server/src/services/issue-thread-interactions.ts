@@ -88,6 +88,8 @@ import {
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
+  updateIssueThreadInteractionPresentationSchema,
+  type UpdateIssueThreadInteractionPresentation,
   withdrawIssueThreadInteractionSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
@@ -2543,6 +2545,41 @@ export function issueThreadInteractionService(
 
   return {
     getForIssue,
+    /**
+     * Rewrite the title and summary a reader sees on the card. The decision
+     * record is the payload, the status, and the stored result, and none of
+     * them are touched here, so the correction is safe on a card that was
+     * already answered. That is the case this exists for: a card raised before
+     * a rule required a title and a summary cannot be replaced once its issue
+     * closes, because closing the issue is what blocks a replacement card. The
+     * route logs the before and after values, so a late correction still shows
+     * in the audit trail.
+     */
+    updatePresentation: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: UpdateIssueThreadInteractionPresentation,
+    ) => {
+      const data = updateIssueThreadInteractionPresentationSchema.parse(input);
+      const current = await getForIssue(issue, interactionId);
+      const [row] = await db
+        .update(issueThreadInteractions)
+        .set({
+          title: data.title === undefined ? current.title : data.title,
+          summary: data.summary === undefined ? current.summary : data.summary,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          ),
+        )
+        .returning();
+      await touchIssue(db, issue.id);
+      return { before: current, after: hydrateInteraction(row) };
+    },
     createConnectionIntent: async (
       issue: { id: string; companyId: string },
       input: {

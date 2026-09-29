@@ -55,7 +55,13 @@ function createFakeDb(args: {
               toolActionRequestUpdates.push(values);
               return Promise.resolve(undefined);
             }
-            if ("status" in values || "result" in values || "resolvedAt" in values) {
+            if (
+              "status" in values ||
+              "result" in values ||
+              "resolvedAt" in values ||
+              "title" in values ||
+              "summary" in values
+            ) {
               interactionUpdates.push(values);
               interactionRow = { ...interactionRow, ...values };
               return {
@@ -286,6 +292,161 @@ describe("issueThreadInteractionService", () => {
         }),
       }),
     ]);
+  });
+
+  it("rewrites a pending card's title and summary and leaves the rest alone", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const interactionRow = {
+      id: "interaction-rewrite", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+      sourceCommentId: null, sourceRunId: null, title: null, summary: null,
+      createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: null,
+      payload: { version: 1, prompt: "Proceed?" }, result: null, resolvedAt: null,
+      createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
+    };
+    const state = createFakeDb({ interactionRow });
+    const svc = issueThreadInteractionService(state.db as never);
+    const { before, after } = await svc.updatePresentation(
+      { id: interactionRow.issueId, companyId: "company-1" },
+      interactionRow.id,
+      { title: "Hire the founding team", summary: "Accepting hires the first two agents." },
+    );
+    expect(before).toMatchObject({ title: null, summary: null });
+    expect(after).toMatchObject({
+      title: "Hire the founding team",
+      summary: "Accepting hires the first two agents.",
+      // The decision record is not part of what this write may change.
+      payload: { version: 1, prompt: "Proceed?" },
+      status: "pending",
+    });
+    expect(state.issueTouches).toHaveLength(1);
+  });
+
+  it("keeps the field a rewrite omits", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const interactionRow = {
+      id: "interaction-partial", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+      sourceCommentId: null, sourceRunId: null, title: "Old title", summary: "Old summary",
+      createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: null,
+      payload: { version: 1, prompt: "Proceed?" }, result: null, resolvedAt: null,
+      createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
+    };
+    const svc = issueThreadInteractionService(createFakeDb({ interactionRow }).db as never);
+    const { after } = await svc.updatePresentation(
+      { id: interactionRow.issueId, companyId: "company-1" },
+      interactionRow.id,
+      { title: "New title" },
+    );
+    expect(after).toMatchObject({ title: "New title", summary: "Old summary" });
+  });
+
+  it("clears a field when the rewrite sends null", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const interactionRow = {
+      id: "interaction-clear", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+      sourceCommentId: null, sourceRunId: null, title: "Old title", summary: "Old summary",
+      createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: null,
+      payload: { version: 1, prompt: "Proceed?" }, result: null, resolvedAt: null,
+      createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
+    };
+    const svc = issueThreadInteractionService(createFakeDb({ interactionRow }).db as never);
+    const { after } = await svc.updatePresentation(
+      { id: interactionRow.issueId, companyId: "company-1" },
+      interactionRow.id,
+      { title: null },
+    );
+    expect(after.title).toBeNull();
+    expect(after.summary).toBe("Old summary");
+  });
+
+  // The status column and the result outcome are independent: a withdrawn card
+  // is status "cancelled" with outcome "withdrawn", and a card whose issue
+  // closed is status "expired" with outcome "issue_closed". The pairs below
+  // are the shapes the service itself writes (see withdrawInteraction and
+  // expirePendingInteractionsForTerminalIssue), so this table exercises real
+  // rows rather than a status the writer never produces.
+  it.each([
+    ["accepted", "accepted"],
+    ["rejected", "rejected"],
+    ["answered", "accepted"],
+    ["cancelled", "withdrawn"],
+    ["expired", "issue_closed"],
+    ["skipped", "skipped"],
+  ] as const)(
+    "rewrites a %s card's copy, which is the only way to fix a card created before the rule existed",
+    async (status, outcome) => {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const state = createFakeDb({
+        interactionRow: {
+          id: "interaction-answered", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
+          kind: "request_confirmation", status, continuationPolicy: "wake_assignee",
+          sourceCommentId: null, sourceRunId: null, title: null, summary: null,
+          createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: null,
+          payload: { version: 1, prompt: "Proceed?" },
+          result: { version: 1, outcome },
+          resolvedAt: new Date("2026-07-25T11:00:00.000Z"),
+          createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
+        },
+      });
+      const svc = issueThreadInteractionService(state.db as never);
+      const { before, after } = await svc.updatePresentation(
+        { id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" },
+        "interaction-answered",
+        { title: "Rewritten after the fact" },
+      );
+      expect(after.title).toBe("Rewritten after the fact");
+      expect(before.title).toBeNull();
+      // The decision record is the payload, the status, and the result. This
+      // route corrects the copy a reader sees and leaves all three alone.
+      expect(after.status).toBe(status);
+      // `hydrateInteraction` runs the stored payload back through its schema, so
+      // a defaulted field appears. Assert the prompt survives the round trip.
+      expect(after.payload).toMatchObject({ prompt: "Proceed?" });
+      expect(after.result).toMatchObject({ version: 1, outcome });
+    },
+  );
+
+  it("will not rewrite a card that belongs to another issue or company", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const state = createFakeDb({
+      interactionRow: {
+        id: "interaction-elsewhere", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
+        kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+        sourceCommentId: null, sourceRunId: null, title: null, summary: null,
+        createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: null,
+        payload: { version: 1, prompt: "Proceed?" }, result: null, resolvedAt: null,
+        createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
+      },
+    });
+    const svc = issueThreadInteractionService(state.db as never);
+    await expect(svc.updatePresentation(
+      { id: "99999999-9999-4999-8999-999999999999", companyId: "company-1" },
+      "interaction-elsewhere",
+      { title: "Rewrite" },
+    )).rejects.toMatchObject({ status: 404 });
+    expect(state.interactionUpdates).toHaveLength(0);
+  });
+
+  it("refuses a body that names no field at all", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const interactionRow = {
+      id: "interaction-empty", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+      sourceCommentId: null, sourceRunId: null, title: null, summary: null,
+      createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: null,
+      payload: { version: 1, prompt: "Proceed?" }, result: null, resolvedAt: null,
+      createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
+    };
+    const state = createFakeDb({ interactionRow });
+    const svc = issueThreadInteractionService(state.db as never);
+    await expect(svc.updatePresentation(
+      { id: interactionRow.issueId, companyId: "company-1" },
+      interactionRow.id,
+      {},
+    )).rejects.toThrow();
+    expect(state.interactionUpdates).toHaveLength(0);
   });
 
   it("withdraws a pending interaction with attribution and rejects repeats", async () => {

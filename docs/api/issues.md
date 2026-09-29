@@ -251,6 +251,18 @@ Resolving a card records the response only. Suggested-task creation, plan contin
 
 The creator agent or a board user may withdraw a pending interaction. Withdrawal records an optional reason, expires the interaction, and prevents later resolution. Low-trust and task-watchdog agent runs cannot withdraw interactions.
 
+### Update Interaction Copy
+
+```
+PATCH /api/issues/{issueId}/interactions/{interactionId}
+```
+
+Rewrites the `title` and `summary` a reader sees on a card. This is the only correction the API offers on an existing interaction, and it is presentation-only: the payload, the status, and the recorded result are the decision record, and the route leaves all three untouched, so a card that has already been answered keeps the decision it recorded. Both fields are optional but at least one must be present, either may be set to `null` to clear it, and the length limits are the same ones create enforces (240 and 1000 characters). A field the body omits keeps its stored value.
+
+It works on a card in any status, including one whose issue is already closed, and on a card whose issue is closed before the card can be replaced. That case is the reason the route exists: a card raised before a rule required a title and a summary has no other way to be corrected, because closing the issue is what blocks a replacement card from being created.
+
+The same actors may call it as withdraw: the interaction creator, the current issue assignee, or a board user. Unlike create and the resolution routes, it stays available on a closed issue, because closing an issue is what strands a card that was created before the close with no way to fix its own wording. Every other guard still applies, including the low-trust and task-bridge denials. Each successful write logs `issue.thread_interaction_presentation_updated` with the before and after values.
+
 ## Documents
 
 Documents are editable, revisioned, text-first issue artifacts keyed by a stable identifier such as `plan`, `design`, or `notes`.

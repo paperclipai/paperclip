@@ -15,6 +15,7 @@ import {
   requestConfirmationResultSchema,
   requestItemVerdictsResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
+  updateIssueThreadInteractionPresentationSchema,
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
@@ -599,5 +600,46 @@ describe("issue thread interaction schemas", () => {
         { id: "api", verdict: "reject", reason: "Needs revision" },
       ],
     })).toThrow("verdict item ids must be unique");
+  });
+
+  describe("updateIssueThreadInteractionPresentationSchema", () => {
+    it("accepts either field alone, both together, and an explicit null", () => {
+      expect(
+        updateIssueThreadInteractionPresentationSchema.parse({ title: "Hire the team" }),
+      ).toEqual({ title: "Hire the team" });
+      expect(
+        updateIssueThreadInteractionPresentationSchema.parse({ summary: "Accepting hires two agents." }),
+      ).toEqual({ summary: "Accepting hires two agents." });
+      expect(
+        updateIssueThreadInteractionPresentationSchema.parse({ title: null, summary: null }),
+      ).toEqual({ title: null, summary: null });
+    });
+
+    it("refuses a body that would change nothing", () => {
+      expect(() => updateIssueThreadInteractionPresentationSchema.parse({})).toThrow(
+        "Provide at least one of title or summary",
+      );
+    });
+
+    it("refuses a title or summary past the same limit create enforces", () => {
+      // Create accepts up to 240 and 1000. A rewrite that accepted more would
+      // let a card hold a string create would have refused.
+      expect(() =>
+        updateIssueThreadInteractionPresentationSchema.parse({ title: "x".repeat(241) }),
+      ).toThrow();
+      expect(() =>
+        updateIssueThreadInteractionPresentationSchema.parse({ summary: "x".repeat(1001) }),
+      ).toThrow();
+    });
+
+    it("refuses any field that is not presentation copy", () => {
+      for (const body of [
+        { status: "accepted" },
+        { payload: { version: 1, prompt: "Proceed?" } },
+        { id: "11111111-1111-4111-8111-111111111111" },
+      ]) {
+        expect(() => updateIssueThreadInteractionPresentationSchema.parse(body)).toThrow();
+      }
+    });
   });
 });

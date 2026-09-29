@@ -2067,6 +2067,30 @@ export type WithdrawIssueThreadInteraction = z.infer<
   typeof withdrawIssueThreadInteractionSchema
 >;
 
+/**
+ * Presentation-only update for the copy a reader sees on the card. It
+ * deliberately carries no resolution fields: the status, the payload, and the
+ * stored result are the audit trail of a decision, and an answered card must
+ * keep the wording that was on the board when the responder read it. The
+ * limits match the create-time limits so a card can move between the two
+ * states without ever holding a string create would have refused.
+ *
+ * An empty body is refused rather than treated as a no-op, so a caller that
+ * meant to change the card and sent nothing is told instead of receiving a
+ * success that changed nothing.
+ */
+export const updateIssueThreadInteractionPresentationSchema = z
+  .object({
+    title: z.string().trim().max(240).nullable().optional(),
+    summary: z.string().trim().max(1000).nullable().optional(),
+  })
+  .refine((value) => value.title !== undefined || value.summary !== undefined, {
+    message: "Provide at least one of title or summary",
+  });
+export type UpdateIssueThreadInteractionPresentation = z.infer<
+  typeof updateIssueThreadInteractionPresentationSchema
+>;
+
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   summaryMarkdown: multilineTextSchema

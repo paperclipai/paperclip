@@ -88,6 +88,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.thread_interaction_skipped": "skipped the request on",
   "issue.thread_interaction_expired": "expired the request on",
   "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on",
+  "issue.thread_interaction_presentation_updated": "rewrote the request copy on",
   "issue.stalled_review_decided": "recorded a review verdict on",
   "project.created": "created",
   "project.updated": "updated",
@@ -182,6 +183,7 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.thread_interaction_skipped": "skipped the request",
   "issue.thread_interaction_expired": "expired the request",
   "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on the request",
+  "issue.thread_interaction_presentation_updated": "rewrote the request copy",
   "issue.stalled_review_decided": "recorded a review verdict",
 };
 
