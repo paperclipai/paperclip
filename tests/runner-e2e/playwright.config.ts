@@ -1,5 +1,6 @@
 import path from "node:path";
 import { defineConfig } from "@playwright/test";
+import { runnerExecutionById } from "./catalog.js";
 import {
   runnerE2EWebServerCommand,
   runnerE2EWebServerGracefulShutdown,
@@ -42,6 +43,8 @@ if (
   throw new Error("Paperclip server paths escape the isolated temporary root");
 }
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+const executionIds: string[] = JSON.parse(required("PAPERCLIP_RUNNER_E2E_EXECUTION_IDS"));
+const endurance = executionIds.some(id => runnerExecutionById(id).task.flow === "history_endurance");
 
 export default defineConfig({
   testDir: ".",
@@ -62,10 +65,12 @@ export default defineConfig({
     actionTimeout: 30_000,
     navigationTimeout: 30_000,
     screenshot: "only-on-failure",
-    trace: "retain-on-failure",
+    // Multi-day idle video/trace would grow with elapsed time. Per-round API
+    // evidence and reviewed screenshots remain the endurance oracle.
+    trace: endurance ? "off" : "retain-on-failure",
     // A developer-supplied system Chromium keeps the local smoke loop
     // installation-free; CI's managed browser retains failure video as usual.
-    video: chromiumExecutable ? "off" : "retain-on-failure",
+    video: chromiumExecutable || endurance ? "off" : "retain-on-failure",
   },
   webServer: {
     // Do not put an env object here: Playwright serializes webServer config in

@@ -83,7 +83,65 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains fourteen suites, including the explicit-only everyday and
+To exercise the experimental local Codex indexed persistence lane, use:
+
+```bash
+PAPERCLIP_NATIVE_INDEXED_STATE=1 pnpm test:e2e:runner -- --id continuation.runner-codex.local.completed-action-resume
+PAPERCLIP_NATIVE_INDEXED_STATE=1 pnpm test:e2e:runner -- --id indexed-history.runner-codex.local.large-output-resume
+```
+
+After the browser workflow, the launcher performs a read-only storage check
+before fixture cleanup. It requires Postgres controller locators, bound runner
+and provider SQLite current-state digests, positive generations, and durable
+receipts. Missing or legacy-only evidence fails the cell. The sanitized report
+`snapshots/indexed-storage.json` contains only counts, sizes, and generations;
+it does not contain payloads or credentials. This short workflow qualifies the
+local integration, not unlimited history or multi-day operation. See the
+[durability qualification status](../../doc/plans/2026-09-28-unbounded-runner-history.md#14-implementation-and-qualification-status-2026-09-28).
+
+The explicit `indexed-history` cell asks the real provider to emit known shell
+output using built-ins, downloads it through the run page, restarts Paperclip,
+answers the task's question, and downloads the same original output again after
+continuation. It compares every byte and the content digest; preview text alone
+cannot pass. Built-ins avoid host Python/Xcode startup diagnostics contaminating
+the exact output fixture. Public screenshots remain confined to the existing
+reviewed task routes; run-page interaction is retained in private browser traces.
+
+The history-endurance grader also records browser run-log HTTP errors. A failed
+old-log read fails the attempt even when the latest task and direct downloads
+succeed; this catches history-page fan-out and read-admission regressions.
+
+The explicit `history-endurance` suite uses the same real browser, production
+APIs, and Codex provider. Start with the three-turn local smoke cell:
+
+```bash
+PAPERCLIP_NATIVE_INDEXED_STATE=1 pnpm test:e2e:runner -- --id history-endurance.runner-codex.local.smoke
+```
+
+The `history-endurance.runner-codex.local.72h` cell performs 73 real turns at
+least one hour apart, restarting its isolated Paperclip controller before every
+sixth continuation, alternating graceful shutdown and a forced controller crash. Every turn prints a distinct diagnostic, updates the same
+task document, and completes. The oracle verifies provider-session continuity,
+the exact ordered document, both new and original browser downloads, and the exact independently retained
+command-output stream. The diagnostic assembles its fixed text and emits it
+in one shell write; this avoids relying on a provider retaining a burst of
+1,024 tiny writes. It requests a one-second shell yield and a three-second
+initial delay so ordinary rounds exercise asynchronous command-output streaming
+rather than completing entirely inside the initial shell response. The
+smoke cell uses the same flow with three turns, one graceful restart, and one forced crash.
+The `history-endurance.runner-codex.local.active-restart` cell forces a controller
+crash after an authenticated event shows the first diagnostic command running.
+The same execution must complete successfully after the crash, and a second
+turn must preserve the provider session and original output. Its fixed 45-second
+shell delay exposes that recovery boundary; it is not a product timeout.
+Each model turn has a ten-minute deadline. These paid cells never automatically
+retry and are excluded from `--all`; select the 72-hour ID explicitly. They use
+ordinary fixture cleanup and usage/cost reporting. Per-round sanitized evidence
+and reviewed task screenshots replace continuous video/trace recording during
+multi-day idle periods. This qualifies repeated work and controller restart;
+it is separate from the active-turn pressure and storage-growth qualifications.
+
+The catalog contains sixteen suites, including the explicit-only everyday and
 [lifecycle baseline](LIFECYCLE-BASELINE.md) suites. The latter adds 46 real-provider
 cells pairing narrative variants and exercising durable lifecycle boundaries;
 it is excluded from `--all`. `core-compatibility` (**Core Runner
@@ -916,6 +974,17 @@ together. This change applies to local cells; Daytona images remain separately p
 Continuation question flows also wait for the submitted interaction's durable
 `answered` state before considering the next checkpoint ready.
 
+Codex cells use the lockfile-pinned executable exposed by the production ACP
+dependency by default. For a one-off local attempt, set
+`PAPERCLIP_RUNNER_E2E_CODEX_COMMAND` to an absolute path to an already-installed
+executable. The harness validates and hashes that entrypoint but does not install
+or modify any global CLI or profile. Each attempt retains a private
+`provider-provenance.json` with the selected origin, resolved path, and streamed
+SHA-256 of the selected entrypoint. This is the wrapper/script hash; it is not a
+claim about the version of a native provider binary that the entrypoint may
+launch. The default dependency-pinned resolver remains in effect when the
+override is unset.
+
 ### Worker prerequisites
 
 The trusted default-branch workflow provisions the local Codex sandbox for both
@@ -1052,3 +1121,12 @@ keys with low request limits. It can only lower the configured campaign limit.
 Keep subscription qualification separate from API-key results.
 
 The explicit-only eight-cell [continuation accounting baseline](CONTINUATION-ACCOUNTING.md) tests productive work, bounded repair, restart and late gates with real providers.
+
+For an isolated PostgreSQL container (for example, when host IPC resources are
+exhausted), set `PAPERCLIP_RUNNER_E2E_DATABASE=docker`. This requires Docker and
+uses `postgres:17` on a randomly allocated loopback-only port. The fixture
+creates its own empty database; it never accepts an arbitrary database URL.
+The isolation oracle checks the container label, exact port and connection
+string, and final cleanup removes only that fixture's container and volumes.
+The database persists through server restarts within the campaign. Report this
+backend explicitly; it does not test the embedded PostgreSQL launcher.

@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONTINUATION_CASES,
   continuationScenario,
+  historyOutputText,
 } from "./continuation-cases.js";
 import {
   gradeContinuation,
@@ -55,6 +56,12 @@ function recording(id = "clarification-not-approval") {
       { id: "second", status: "succeeded", runtimeMode: "native" },
     ],
   };
+  if (id === "large-output-resume") {
+    const bytes = Buffer.from(historyOutputText(scenario.marker));
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    initial.historyDownload = { runId: "first", bodyId: digest, byteLength: bytes.length, sha256: digest, browserDownload: true };
+    final.historyDownload = { ...initial.historyDownload };
+  }
   return {
     ...scenario,
     runtimeMode: "native",
@@ -66,6 +73,16 @@ const failures = (r: ReturnType<typeof recording>) =>
     .filter((c) => !c.passed)
     .map((c) => c.id);
 describe("continuation behavioral evaluation", () => {
+  it("registers indexed output qualification as one explicit native Codex cell", () => {
+    const matrix = runnerMatrix.filter(c => c.suite.id === "indexed-history");
+    expect(matrix).toHaveLength(1);
+    expect(matrix[0]).toMatchObject({ suite: { manualOnly: true }, task: { id: "large-output-resume" }, profile: { id: "runner-codex" } });
+  });
+  it.each(["runId", "bodyId", "sha256", "byteLength", "browserDownload"] as const)("rejects changed history download %s after continuation", field => {
+    const r = recording("large-output-resume");
+    Object.assign(r.checkpoints.at(-1)!.historyDownload!, { [field]: field === "byteLength" ? 4096 : field === "browserDownload" ? false : "wrong" });
+    expect(failures(r)).toContain("retained-full-output");
+  });
   it("registers all five cases for both runtime generations and providers", () => {
     const matrix = runnerMatrix.filter((c) => c.suite.id === "continuation");
     expect(matrix).toHaveLength(23);

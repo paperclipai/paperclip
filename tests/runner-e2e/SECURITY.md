@@ -87,9 +87,25 @@ other suites retain the persisted-state scanner. The `first-task` suite omits
 private home/workspace credential-persistence scanning so its evaluation focuses
 on onboarding behavior. Artifact redaction and publication scanning remain in
 force for every suite.
+The local-only `PAPERCLIP_RUNNER_E2E_CODEX_COMMAND` override accepts an absolute
+executable path and is validated before launch. Its resolved path and entrypoint
+SHA-256 are retained in the access-controlled per-attempt artifact as
+`provider-provenance.json`; this hash identifies the selected wrapper/script,
+not necessarily the native provider version it invokes. The override is not
+published in campaign summaries or public bundles.
 The Paperclip server process also receives none; the browser posts each value
 once to the encrypted company secret API and agents/environments retain only
 secret references.
+
+The manual `history-endurance` suite is paid real Codex work: its smoke cell
+allows three turns, the active-tool crash cell allows two turns, and the
+explicit 72-hour cell allows 73 hourly turns. All disable automatic retries. They alternate graceful shutdown and SIGKILL of only
+the supervisor’s own isolated controller ChildProcess; requests cannot name a PID
+or arbitrary signal. They
+retain partial evidence and ordinary usage/cost reporting, and use normal
+fixture cleanup. Continuous browser video/trace is disabled to avoid recording
+days of idle time; per-round screenshots remain restricted to the exact
+reviewed fixture task route. Raw provider sessions and databases remain private.
 
 Create `runner-e2e-history`, also default-branch-only, for the OIDC publishing
 job. It contains no long-lived AWS key. Required reviewers may be added when a

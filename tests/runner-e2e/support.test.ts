@@ -747,6 +747,16 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it("does not relabel an authority deadlock as a retryable provider interruption", () => {
+    const failureClass = classifyFailure(new Error("Provider execution failed: native_session_interrupted: Durable authority commit is indeterminate (40P01); reload is required."));
+    expect(failureClass).toBe("candidate_failure");
+    expect(shouldRetryFailure(failureClass)).toBe(false);
+  });
+
+  it("does not retry a broken normalized delivery cursor as provider infrastructure", () => {
+    expect(classifyFailure(new Error("Provider execution failed: native_session_interrupted: invalid_authority: normalized delivery: raw cursor moved backwards (9:1 -> 8:1)"))).toBe("candidate_failure");
+  });
+
   it("classifies sandbox file-transfer RPC deadlines without hiding other RPC defects", () => {
     for (const method of ["environmentSyncIn", "environmentSyncOut"]) {
       expect(classifyFailure(new Error(
@@ -1076,6 +1086,23 @@ describe("runner E2E evidence redaction", () => {
     await expect(findSecretLeakInDirectory(root, [secret], {
       allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
     })).resolves.toEqual({ file: pidFile, reason: "exact secret value" });
+  });
+
+  it("tolerates a recycled WAL segment but still scans retained WAL bytes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-wal-race-"));
+    cleanupDirectories.push(root);
+    const wal = path.join(root, "instances", "test", "db", "pg_wal");
+    const recycled = path.join(wal, "000000010000000000000004");
+    const retained = path.join(wal, "000000010000000000000005");
+    await mkdir(wal, { recursive: true });
+    await writeFile(recycled, "old WAL");
+    await writeFile(retained, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: file => { if (file === recycled) unlinkSync(file); return false; },
+      allowDisappearedFile: file => isEphemeralPostgresScanFile(root, file),
+    })).resolves.toEqual({ file: retained, reason: "exact secret value" });
+    expect(isEphemeralPostgresScanFile(root, path.join(wal, "evidence.json"))).toBe(false);
+    expect(isEphemeralPostgresScanFile(root, path.join(root, "workspace", "pg_wal", "000000010000000000000004"))).toBe(false);
   });
 
   it("fails when required persisted state disappears during scanning", async () => {

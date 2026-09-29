@@ -1,3 +1,4 @@
+import { isolatedRestartSignal, parseIsolatedRestartRequest, type IsolatedRestartRequest } from "./restart-control.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 import { qualifyLegacyClaudeCli } from "./legacy-claude-cli.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -260,11 +261,8 @@ async function waitForHealthToStop() {
   );
 }
 
-interface RestartRequest {
-  requestId: string;
-}
 
-async function readRestartRequest(): Promise<RestartRequest | null> {
+async function readRestartRequest(): Promise<IsolatedRestartRequest | null> {
   let encoded: string;
   try {
     encoded = await readFile(restartRequestPath, "utf8");
@@ -279,21 +277,14 @@ async function readRestartRequest(): Promise<RestartRequest | null> {
     // The writer may not have completed its atomic replacement yet.
     return null;
   }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const requestId = (value as { requestId?: unknown }).requestId;
-  if (
-    typeof requestId !== "string" ||
-    !/^[A-Za-z0-9._:-]{1,200}$/.test(requestId)
-  ) {
-    return null;
-  }
-  return { requestId };
+  return parseIsolatedRestartRequest(value);
 }
 
 async function writeRestartAck(
   requestId: string,
   status: "ready" | "failed",
   message?: string,
+  mode?: IsolatedRestartRequest["mode"],
 ) {
   const temporaryAckPath = `${restartAckPath}.${process.pid}.tmp`;
   await writeFile(
@@ -301,6 +292,7 @@ async function writeRestartAck(
     `${JSON.stringify({
       requestId,
       status,
+      ...(mode ? { mode } : {}),
       completedAt: new Date().toISOString(),
       ...(message ? { message } : {}),
     })}\n`,
@@ -309,12 +301,12 @@ async function writeRestartAck(
   await rename(temporaryAckPath, restartAckPath);
 }
 
-async function restartServer(requestId: string) {
+async function restartServer({ requestId, mode }: IsolatedRestartRequest) {
   activeRestartRequestId = requestId;
-  appendLog(`\nRestart request ${requestId}: stopping Paperclip\n`);
+  appendLog(`\nRestart request ${requestId}: stopping Paperclip (${mode})\n`);
   const previous = child;
   if (!previous) throw new Error("No Paperclip server is available to restart");
-  await stopServer(previous);
+  await stopServer(previous, isolatedRestartSignal(mode));
   if (child === previous) child = null;
   // Do not mistake an orphaned old server for a healthy replacement. The port
   // must stop answering before the next launcher is allowed to start.
@@ -329,7 +321,7 @@ async function restartServer(requestId: string) {
   if (shutdownRequested()) {
     throw new Error("Wrapper shutdown interrupted the Paperclip restart");
   }
-  await writeRestartAck(requestId, "ready");
+  await writeRestartAck(requestId, "ready", undefined, mode);
   appendLog(`Restart request ${requestId}: Paperclip is healthy\n`);
   activeRestartRequestId = null;
 }
@@ -367,7 +359,7 @@ async function supervise() {
     const request = await readRestartRequest();
     if (request && request.requestId !== lastRestartRequestId) {
       lastRestartRequestId = request.requestId;
-      await restartServer(request.requestId);
+      await restartServer(request);
     }
     await delay(200);
   }

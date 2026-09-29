@@ -1,3 +1,5 @@
+import { cleanupDockerTestDatabase } from "./docker-database.js";
+import { inspectIndexedStorage } from "./indexed-storage-evidence.js";
 import { randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
 import { spawn } from "node:child_process";
@@ -15,7 +17,6 @@ import {
   readFile,
   readdir,
   rm,
-  symlink,
   writeFile,
 } from "node:fs/promises";
 import { isImmutableDaytonaImage, runnerMatrix } from "./catalog.js";
@@ -55,16 +56,21 @@ import {
 } from "./shared-memory.js";
 import { reserveRunnerE2EServerPort } from "./ports.js";
 import {
+  prepareProviderPath,
+  writeProviderPathProvenance,
+} from "./provider-path.js";
+import {
   createResultExitGuard,
   enforceResultProcessIntegrity,
 } from "./result-exit-guard.js";
 import {
   observeDescendantProcessTree,
+  OwnedProcessTree,
+  readProcessTable,
   refreshContinuouslyLiveProcessGroups,
   revalidateObservedProcessGroups,
   safeProcessGroupTerminationOrder,
   type ObservedProcessGroup,
-  type ProcessObservation,
 } from "./process-tree.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -74,19 +80,6 @@ const activeProcessGroups = new Set<number>();
 const activeProcessCleanup = new Map<number, Promise<string | null>>();
 const activeProcessTerminators = new Map<number, () => void>();
 const completedResultExitGraceMs = 120_000;
-const diagnosticProcessKinds = new Set([
-  "bash",
-  "chrome",
-  "codex",
-  "google-chrome",
-  "node",
-  "paperclip-runnerd",
-  "playwright",
-  "pnpm",
-  "postgres",
-  "sh",
-  "tsx",
-]);
 let cancelled = false;
 
 function cleanId(value: string) {
@@ -168,64 +161,6 @@ function observedGroupsSelectedForTermination(
   return groups.filter((group) => selected.has(group.processGroupId));
 }
 
-async function readProcessTable(): Promise<ProcessObservation[] | null> {
-  if (process.platform === "win32") {
-    return null;
-  }
-  return await new Promise<ProcessObservation[] | null>((resolve) => {
-    const inspector = spawn(
-      "ps",
-      ["-e", "-o", "pid=,ppid=,pgid=,lstart=,comm="],
-      {
-        env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-    );
-    let output = "";
-    let settled = false;
-    const finish = (value: ProcessObservation[] | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(inspectionTimeout);
-      resolve(value);
-    };
-    const inspectionTimeout = setTimeout(() => {
-      inspector.kill("SIGKILL");
-      finish(null);
-    }, 5_000);
-    inspectionTimeout.unref();
-    inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
-      output = `${output}${chunk}`.slice(-1024 * 1024);
-    });
-    inspector.once("error", () => finish(null));
-    inspector.once("close", () => {
-      const observations = output
-        .split(/\r?\n/)
-        .map((line) =>
-          /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+?)\s*$/.exec(
-            line,
-          ),
-        )
-        .filter((match): match is RegExpExecArray => match !== null)
-        .map((match): ProcessObservation => {
-          // A target process can choose its own argv and process name. Emit a
-          // fixed category instead of target-controlled text so diagnostics
-          // can never turn that metadata into a secret-exfiltration channel.
-          const command = path.basename(match[5]!);
-          const kind = diagnosticProcessKinds.has(command) ? command : "other";
-          return {
-            pid: Number(match[1]),
-            parentPid: Number(match[2]),
-            processGroupId: Number(match[3]),
-            started: match[4]!,
-            kind,
-          };
-        });
-      finish(observations);
-    });
-  }).catch(() => null);
-}
-
 async function processTreeDiagnostic(
   rootPid: number,
 ): Promise<ProcessTreeDiagnostic> {
@@ -297,12 +232,7 @@ async function loadLocalEnvironment(target: NodeJS.ProcessEnv) {
   }
 }
 
-async function prepareProviderPath(
-  temporaryRoot: string,
-  inheritedPath: string | undefined,
-) {
-  const toolBin = path.join(temporaryRoot, "provider-bin");
-  await mkdir(toolBin, { recursive: true });
+async function resolvePinnedCodexExecutable() {
   const runnerRequire = createRequire(
     path.join(repositoryRoot, "packages/paperclip-runner/package.json"),
   );
@@ -322,17 +252,7 @@ async function prepareProviderPath(
     throw new Error(
       "Production Codex ACP dependency does not expose its pinned Codex executable",
     );
-  await symlink(
-    path.resolve(path.dirname(codexPackage), codexBin),
-    path.join(toolBin, "codex"),
-  );
-  const packageBin = path.join(
-    repositoryRoot,
-    "packages/paperclip-runner/node_modules/.bin",
-  );
-  return [toolBin, packageBin, inheritedPath]
-    .filter(Boolean)
-    .join(path.delimiter);
+  return path.resolve(path.dirname(codexPackage), codexBin);
 }
 
 async function runProcess(
@@ -369,6 +289,22 @@ async function runProcess(
   let childSettled = false;
   let postResultStallError: string | null = null;
   let boundedCleanup: Promise<string | null> | undefined;
+  const ownedTree = new OwnedProcessTree(child.pid);
+  let treeInspection: Promise<void> | undefined;
+  const observeOwnedTree = () => (
+    treeInspection ??= readProcessTable()
+      .then((table) => {
+        if (table) ownedTree.observe(table, !childSettled);
+      })
+      .finally(() => { treeInspection = undefined; })
+  );
+  // Capture ancestry before a failed server exits and its detached runner or
+  // provider is reparented. Never overlap process-table inspections.
+  const treePoll = process.platform === "win32"
+    ? undefined
+    : setInterval(() => { void observeOwnedTree(); }, 250);
+  treePoll?.unref();
+  void observeOwnedTree();
   const forceStopDirectChild = () => {
     if (!childSettled && child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
@@ -378,14 +314,20 @@ async function runProcess(
     if (boundedCleanup) return;
     const rootProcessGroupId = child.pid!;
     boundedCleanup = (async () => {
-      const snapshot = diagnostic ?? (await processTreeDiagnostic(child.pid!));
+      await treeInspection;
+      const snapshot = diagnostic ?? (childSettled
+        ? { summary: "wrapper exited; using previously observed identities", groups: [] }
+        : await processTreeDiagnostic(child.pid!));
       const validationTable = await readProcessTable();
       const currentProcessGroupId = validationTable
         ? (validationTable.find((candidate) => candidate.pid === process.pid)
             ?.processGroupId ?? null)
         : null;
       const observedGroups = validationTable
-        ? revalidateObservedProcessGroups(snapshot.groups, validationTable)
+        ? revalidateObservedProcessGroups([
+            ...ownedTree.observe(validationTable, !childSettled),
+            ...snapshot.groups,
+          ], validationTable)
         : [];
       const terminationOrder = safeProcessGroupTerminationOrder({
         rootProcessGroupId,
@@ -397,6 +339,7 @@ async function runProcess(
         terminationOrder,
       );
       if (verifiedGroups.length === 0) {
+        if (validationTable && observedGroups.length === 0 && childSettled && ownedTree.observedRoot) return null;
         forceStopDirectChild();
         return "Could not revalidate an owned process group before cleanup";
       }
@@ -516,6 +459,11 @@ async function runProcess(
   });
   if (timer) clearTimeout(timer);
   if (completionPoll) clearInterval(completionPoll);
+  if (treePoll) clearInterval(treePoll);
+  await treeInspection;
+  // A normal wrapper exit does not imply that detached children exited. Run
+  // the same identity-checked cleanup on both success and failure paths.
+  if (process.platform !== "win32") stopChildTree();
   const processCleanupError = child.pid
     ? await (boundedCleanup ??
         activeProcessCleanup.get(child.pid) ??
@@ -581,6 +529,7 @@ async function readResult(resultPath: string, fallback: RunnerE2EResult) {
 
 async function copySharedEvidence(privateRoot: string, casePrivateDir: string) {
   for (const relative of [
+    "provider-provenance.json",
     "server.log",
     "playwright.log",
     "junit.xml",
@@ -643,9 +592,21 @@ async function runAttempt(input: {
       mkdir(workspace, { recursive: true }),
       mkdir(privateDir, { recursive: true }),
     ]);
-    const providerPath = await prepareProviderPath(
+    const providerSelection = await prepareProviderPath({
       temporaryRoot,
-      process.env.PATH,
+      inheritedPath: [
+        path.join(repositoryRoot, "packages/paperclip-runner/node_modules/.bin"),
+        process.env.PATH,
+      ]
+        .filter(Boolean)
+        .join(path.delimiter),
+      explicitOverride: process.env.PAPERCLIP_RUNNER_E2E_CODEX_COMMAND,
+      resolvePinnedExecutable: resolvePinnedCodexExecutable,
+    });
+    const providerPath = providerSelection.path;
+    await writeProviderPathProvenance(
+      path.join(privateDir, "provider-provenance.json"),
+      providerSelection.provenance,
     );
     if (requiresCodexCiSandbox(execution)) {
       await prepareCodexCiSandbox(repositoryRoot, temporaryRoot);
@@ -823,8 +784,17 @@ async function runAttempt(input: {
         persistedStateError = error;
       }
     }
+    let indexedStorageEvidence: Awaited<ReturnType<typeof inspectIndexedStorage>> | undefined;
+    let indexedStorageError: unknown;
+    if (childEnv.PAPERCLIP_NATIVE_INDEXED_STATE === "1") {
+      try { indexedStorageEvidence = await inspectIndexedStorage(path.dirname(configPath)); }
+      catch (error) { indexedStorageError = error; }
+    }
     for (const [index, candidate] of executions.entries()) {
       let result = results[index];
+      if (indexedStorageError && result.status === "passed") {
+        result = { ...result, status: "failed", failureClass: "candidate_failure", error: indexedStorageError instanceof Error ? indexedStorageError.message : "Indexed storage evidence unavailable" };
+      }
       if (
         isolationError &&
         result.failureClass !== "cleanup_failure" &&
@@ -891,6 +861,10 @@ async function runAttempt(input: {
       );
       await mkdir(casePrivateDir, { recursive: true });
       await copySharedEvidence(privateDir, casePrivateDir);
+      if (indexedStorageEvidence) {
+        await mkdir(path.join(casePrivateDir, "snapshots"), { recursive: true });
+        await writeFile(path.join(casePrivateDir, "snapshots", "indexed-storage.json"), JSON.stringify(indexedStorageEvidence, null, 2) + "\n");
+      }
       await writeFile(
         resultPath,
         `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
@@ -945,6 +919,7 @@ async function runAttempt(input: {
     ) {
       for (let cleanupAttempt = 1; cleanupAttempt <= 3; cleanupAttempt += 1) {
         try {
+          await cleanupDockerTestDatabase(temporaryRoot);
           await rm(temporaryRoot, { recursive: true, force: true });
           cleanupError = undefined;
           break;
@@ -1021,6 +996,7 @@ async function runExecutionWithRetry(input: {
   });
   if (!firstResult) throw new Error(`No result produced for ${execution.id}`);
   if (
+    execution.task.automaticRetry === false ||
     options.ui ||
     options.debug ||
     firstResult.status !== "failed" ||

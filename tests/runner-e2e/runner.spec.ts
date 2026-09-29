@@ -4,6 +4,7 @@ import { runAccountingFlow } from "./accounting-flow.js";
 import type { Issue } from "../../packages/shared/src/types/issue.js";
 import { lifecycleLiveCase, gradeLifecycleRepair } from "./lifecycle-live-cases.js";
 import { runContinuationFlow } from "./continuation-flow.js";
+import { runHistoryEnduranceFlow } from "./history-endurance-flow.js";
 import { runEverydayFlow } from "./everyday-flow.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 
@@ -208,6 +209,7 @@ async function restartIsolatedPaperclipServer(input: {
   api: RunnerApi;
   requestId: string;
   deadlineAt: number;
+  mode?: "graceful" | "hard";
 }): Promise<void> {
   const {
     controlDirectory,
@@ -218,7 +220,7 @@ async function restartIsolatedPaperclipServer(input: {
   const temporaryRequestPath = `${requestPath}.${process.pid}.${input.requestId}.tmp`;
   await writeFile(
     temporaryRequestPath,
-    JSON.stringify({ requestId: input.requestId }),
+    JSON.stringify({ requestId: input.requestId, mode: input.mode ?? "graceful" }),
     { encoding: "utf8", mode: 0o600 },
   );
   await rename(temporaryRequestPath, requestPath);
@@ -239,7 +241,7 @@ async function restartIsolatedPaperclipServer(input: {
     },
     accept: (acknowledgement) =>
       acknowledgement.requestId === input.requestId &&
-      acknowledgement.status === "ready",
+      acknowledgement.status === "ready" && acknowledgement.mode === (input.mode ?? "graceful"),
     reject: (acknowledgement) =>
       acknowledgement.requestId === input.requestId &&
       acknowledgement.status === "failed"
@@ -539,7 +541,7 @@ for (const execution of executions) {
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = ["continuation_accounting", "continuation", "agent_chat", "everyday_workflow", "first_task"].includes(execution.task.flow);
+    const companyRunFlow = ["continuation_accounting", "continuation", "history_endurance", "agent_chat", "everyday_workflow", "first_task"].includes(execution.task.flow);
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
     const pageLifecycleDiagnostics: Array<Record<string, unknown>> = [];
@@ -842,10 +844,11 @@ for (const execution of executions) {
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         });
         issue = accounting.issue as IssueRecord; selectedRuns = accounting.runs as RunRecord[];
-      } else if (execution.task.flow === "continuation") {
-        const continuation = await runContinuationFlow({
+      } else if (execution.task.flow === "continuation" || execution.task.flow === "history_endurance") {
+        let restartCount = 0;
+        const continuation = await (execution.task.flow === "history_endurance" ? runHistoryEnduranceFlow : runContinuationFlow)({
           page, api, fixtures, execution, nonce, secrets, workspacePath, deadlineAt: startedAtMs + deadlineMs - 60_000,
-          restart: () => restartIsolatedPaperclipServer({ api, requestId: `continuation-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          restart: mode => restartIsolatedPaperclipServer({ api, requestId: `continuation-${nonce}-${++restartCount}`, mode, deadlineAt: Math.min(startedAtMs + deadlineMs, Date.now() + 180_000) }),
           observe: (currentIssue, currentRuns, checks) => {
             issue = currentIssue; selectedRuns = currentRuns;
             matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const, path: `continuation.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));

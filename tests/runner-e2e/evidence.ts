@@ -36,6 +36,7 @@ const ALLOWED_DIRECTORIES = new Set([
 ]);
 const ALLOWED_ROOT_FILES = new Set([
   "result.json",
+  "provider-provenance.json",
   "final-state.png",
   "failure.png",
   "tool-review-pending.png",

@@ -1,11 +1,12 @@
 import { accountingTasks } from "./accounting-cases.js";
-import { continuationTasks } from "./continuation-cases.js";
+import { continuationTasks, indexedHistoryTasks } from "./continuation-cases.js";
 import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-live-cases.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
 import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
+import { historyEnduranceTasks } from "./history-endurance-cases.js";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "../../packages/adapters/codex-local/src/index.js";
@@ -957,6 +958,22 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 4, grading: "durable-state-and-approval-boundaries", instructions: "production" },
   },
   {
+    id: "indexed-history", label: "Indexed history continuation", manualOnly: true,
+    description: "Real provider output, a full browser download, server restart and continuation with retained indexed history.",
+    groups: ["local"], environments: [localEnvironment],
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex").map(productionStoryProfile),
+    tasks: indexedHistoryTasks, expectedMatrixSize: 1,
+    definitionMetadata: { version: 1, grading: "exact-output-download-and-restart", scheduling: "explicit-only", indexedStateRequired: true },
+  },
+  {
+    id: "history-endurance", label: "History endurance", manualOnly: true,
+    description: "Repeated real Codex tool work, exact historical downloads, and task-document continuity across controller restarts and elapsed time.",
+    groups: ["local"], environments: [localEnvironment],
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex").map(productionStoryProfile),
+    tasks: historyEnduranceTasks, expectedMatrixSize: 3,
+    definitionMetadata: { version: 4, grading: "exact-output-and-ledger-after-restart", browserHistoryReads: "no-http-errors", activeRestartBoundary: "running-diagnostic-tool", commandOutputStream: "exact-bytes", diagnosticEmission: "single-write", restartModes: ["graceful", "hard"], scheduling: "explicit-only", indexedStateRequired: true, automaticRetry: false },
+  },
+  {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,
     description: "Real user requests, useful downloaded work, and durable continuation using production instructions.",
     groups: ["native"], profiles: everydayProfiles, environments: [localEnvironment, daytonaWarmEnvironment],
@@ -1098,6 +1115,7 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           id: task.id,
           flow: task.flow,
           expectedRunCount: task.expectedRunCount,
+          ...(task.historyEndurance ? { historyEndurance: task.historyEndurance, automaticRetry: task.automaticRetry } : {}),
           ...(task.minimumExpectedRunCount === undefined ? {} : { minimumExpectedRunCount: task.minimumExpectedRunCount }),
           restartServerBeforeQuestionAnswer:
             task.restartServerBeforeQuestionAnswer ?? false,
@@ -1189,6 +1207,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
     ...accountingTasks,
     ...lifecycleLiveTasks,
     ...continuationTasks,
+    ...indexedHistoryTasks,
     ...everydayTasks,
     ...runnerTasks,
     ...localIntegrityTasks,

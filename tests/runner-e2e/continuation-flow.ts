@@ -1,4 +1,5 @@
 import { gradeLifecycleBaseline, type LifecycleCheckpoint } from "./lifecycle-baseline.js";
+import { downloadIndexedHistory, type HistoryDownloadEvidence } from "./indexed-history-download.js";
 import { lifecycleLiveCase, lifecycleLiveContinuation, gradeLifecycleNarrative } from "./lifecycle-live-cases.js";
 import { prepareLegacyContinuationSkill } from "./continuation-fixtures.js";
 import { captureFirstTaskAttachments } from "./first-task-attachments.js";
@@ -17,6 +18,7 @@ import {
 } from "./chat-flow.js";
 import {
   continuationScenario,
+  historyOutputText,
   continuationScreenshotFile,
 } from "./continuation-cases.js";
 import {
@@ -38,7 +40,7 @@ export async function runContinuationFlow(input: {
   secrets: readonly string[];
   workspacePath: string;
   deadlineAt: number;
-  restart(): Promise<void>;
+  restart(mode?: "graceful" | "hard"): Promise<void>;
   observe(
     issue: any,
     runs: any[],
@@ -56,6 +58,7 @@ export async function runContinuationFlow(input: {
   let issue: Row | undefined;
   let runs: Row[] = [];
   let checks: ReturnType<typeof gradeContinuation> = [];
+  let historyDownload: HistoryDownloadEvidence | undefined;
   const tasksPath = `/api/companies/${fixtures.company.id}/issues?limit=100`;
   async function refresh() {
     issue = await api.get<Row>(`/api/issues/${issue!.id}`);
@@ -152,6 +155,7 @@ export async function runContinuationFlow(input: {
       interactions,
       attachments,
       runs: [...runs] as ContinuationCheckpoint["runs"],
+      ...(historyDownload ? { historyDownload } : {}),
     });
     await input.evidence("continuation.json", {
       ...scenario,
@@ -242,6 +246,17 @@ export async function runContinuationFlow(input: {
     });
     if (!issue) throw new Error("Missing continuation task");
     await settle(new Set(), scenario.id !== "revision-preserves-approval");
+    const checkHistoryDownload = async () => {
+      const run = runs.find(r => r.contextSnapshot?.issueId === issue!.id);
+      expect(run, "the output-producing run must be recorded").toBeTruthy();
+      historyDownload = await downloadIndexedHistory({ page, api, issuePrefix: fixtures.company.issuePrefix!,
+        run: { id: run!.id, agentId: run!.agentId }, expected: historyOutputText(scenario.marker) });
+      await input.evidence("history-download.json", historyDownload);
+    };
+    if (scenario.id === "large-output-resume") {
+      if (process.env.PAPERCLIP_NATIVE_INDEXED_STATE !== "1") throw new Error("Indexed history qualification requires PAPERCLIP_NATIVE_INDEXED_STATE=1");
+      await checkHistoryDownload();
+    }
     await snapshot("initial");
     assertWaiting();
     if (scenario.id === "untrusted-evidence") {
@@ -252,8 +267,9 @@ export async function runContinuationFlow(input: {
         body: scenario.context,
       });
     }
-    if (scenario.id === "completed-action-resume") {
+    if (["completed-action-resume", "large-output-resume"].includes(scenario.id)) {
       await input.restart();
+      if (scenario.id === "large-output-resume") await checkHistoryDownload();
       await open();
     }
     if (scenario.id === "question-tool-documentation") {
@@ -271,6 +287,13 @@ export async function runContinuationFlow(input: {
       );
       assertWaiting();
       await reply(scenario.approval);
+    }
+    if (scenario.id === "large-output-resume") {
+      // Retain the original run identity after the continuation creates a new run.
+      const first = checkpoints[0]!.historyDownload!;
+      const oldRun = runs.find(r => r.id === first.runId)!;
+      historyDownload = await downloadIndexedHistory({ page, api, issuePrefix: fixtures.company.issuePrefix!,
+        run: { id: oldRun.id, agentId: oldRun.agentId }, expected: historyOutputText(scenario.marker) });
     }
     await snapshot("final");
   } finally {

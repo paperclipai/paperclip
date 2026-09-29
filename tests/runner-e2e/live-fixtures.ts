@@ -265,6 +265,12 @@ export async function setupLiveFixtures(input: {
         secretRefs,
         executionId: input.executionNonce,
       });
+      if (execution.suite.id === "history-endurance") {
+        agent.runtimeConfig = {
+          ...(agent.runtimeConfig as Record<string, unknown>),
+          debug: { providerTrace: "raw" },
+        };
+      }
       if (managedHiring) {
         const account = value<ManagedAccountFixture>(resolved, "ai-connection");
         const config = agent.adapterConfig as Record<string, unknown>;

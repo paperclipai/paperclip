@@ -196,6 +196,17 @@ Tasks carry a **billing code** so that token spend during execution can be attri
 
 The heartbeat is a protocol, not a runtime. Paperclip defines how to initiate an agent's cycle. What the agent does with that cycle — how long it runs, whether it's task-scoped or continuous — is entirely up to the agent.
 
+### Long-running native execution target
+
+Native agents must be able to work for days without accumulated journal bytes,
+completed commands, or completed tool calls exhausting a lifetime execution
+allowance. Continuation reads current authority and unfinished work, not the
+entire historical record. Memory, pending work, and individual messages remain
+bounded; provisioned storage, explicit budgets, and operator/provider policies
+still apply. This is a target contract, not a claim about the current journal
+implementation. See the [durability design](plans/2026-09-28-unbounded-runner-history.md)
+and [implementation target](SPEC-implementation.md#64-long-running-native-execution-target).
+
 ### Execution Adapters
 
 Agent configuration includes an **adapter** that defines how Paperclip invokes the agent. Built-in adapters include:

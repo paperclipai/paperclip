@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import path from "node:path";
+
 export interface ProcessObservation {
   pid: number;
   parentPid: number;
@@ -15,6 +18,77 @@ export interface ObservedProcessGroup {
 export interface ObservedProcessTreeMember {
   process: ProcessObservation;
   depth: number;
+}
+
+/** Keep exact process identities while their parents are still alive. Detached
+ * runner/provider groups can be reparented before Playwright itself exits. */
+export class OwnedProcessTree {
+  #rootStarted: string | undefined;
+  #groups: ObservedProcessGroup[] = [];
+
+  constructor(readonly rootPid: number) {}
+
+  observe(table: readonly ProcessObservation[], rootMayBeAlive: boolean) {
+    const root = table.find((candidate) => candidate.pid === this.rootPid);
+    if (this.#rootStarted === undefined && rootMayBeAlive && root) {
+      this.#rootStarted = root.started;
+    }
+    const roots = new Map<number, number>();
+    if (rootMayBeAlive && root && root.started === this.#rootStarted) {
+      roots.set(root.pid, 0);
+    }
+    // Follow descendants of an already verified orphan as well, but never
+    // accept a reused pid or group id as ownership evidence.
+    const retained = revalidateObservedProcessGroups(this.#groups, table);
+    const byPid = new Map(table.map((candidate) => [candidate.pid, candidate]));
+    for (const group of retained) {
+      for (const member of group.members) {
+        const candidate = byPid.get(member.pid);
+        if (
+          candidate?.started === member.started &&
+          candidate.processGroupId === group.processGroupId
+        ) {
+          roots.set(member.pid, Math.max(roots.get(member.pid) ?? 0, group.depth));
+        }
+      }
+    }
+    const groups = new Map(retained.map((group) => [
+      group.processGroupId,
+      {
+        ...group,
+        members: group.members.filter((member) => {
+          const candidate = byPid.get(member.pid);
+          return candidate?.started === member.started &&
+            candidate.processGroupId === group.processGroupId;
+        }),
+      },
+    ]));
+    for (const [pid, depth] of roots) {
+      for (const observed of observeDescendantProcessTree(table, pid).groups) {
+        const group = groups.get(observed.processGroupId) ?? {
+          processGroupId: observed.processGroupId,
+          depth: depth + observed.depth,
+          members: [],
+        };
+        for (const member of observed.members) {
+          if (!group.members.some((existing) =>
+            existing.pid === member.pid && existing.started === member.started
+          )) group.members.push(member);
+        }
+        groups.set(group.processGroupId, group);
+      }
+    }
+    this.#groups = [...groups.values()];
+    return this.#groups;
+  }
+
+  get observedRoot(): boolean {
+    return this.#rootStarted !== undefined;
+  }
+
+  get groups(): readonly ObservedProcessGroup[] {
+    return this.#groups;
+  }
 }
 
 export function observeDescendantProcessTree(
@@ -139,4 +213,82 @@ export function refreshContinuouslyLiveProcessGroups(
         ]
       : [];
   });
+}
+
+const diagnosticProcessKinds = new Set([
+  "bash",
+  "chrome",
+  "codex",
+  "google-chrome",
+  "node",
+  "paperclip-runnerd",
+  "playwright",
+  "pnpm",
+  "postgres",
+  "sh",
+  "tsx",
+]);
+
+export async function readProcessTable(): Promise<ProcessObservation[] | null> {
+  if (process.platform === "win32") {
+    return null;
+  }
+  return await new Promise<ProcessObservation[] | null>((resolve) => {
+    const inspector = spawn(
+      "ps",
+      ["-e", "-o", "pid=,ppid=,pgid=,lstart=,comm="],
+      {
+        env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+    let output = "";
+    let settled = false;
+    const finish = (value: ProcessObservation[] | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(inspectionTimeout);
+      resolve(value);
+    };
+    const inspectionTimeout = setTimeout(() => {
+      inspector.kill("SIGKILL");
+      finish(null);
+    }, 5_000);
+    inspectionTimeout.unref();
+    inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+      if (output.length + chunk.length > 1024 * 1024) {
+        finish(null);
+        inspector.kill("SIGKILL");
+      } else {
+        output += chunk;
+      }
+    });
+    inspector.once("error", () => finish(null));
+    inspector.once("close", (code) => {
+      if (code !== 0) return finish(null);
+      const observations = output
+        .split(/\r?\n/)
+        .map((line) =>
+          /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+?)\s*$/.exec(
+            line,
+          ),
+        )
+        .filter((match): match is RegExpExecArray => match !== null)
+        .map((match): ProcessObservation => {
+          // A target process can choose its own argv and process name. Emit a
+          // fixed category instead of target-controlled text so diagnostics
+          // can never turn that metadata into a secret-exfiltration channel.
+          const command = path.basename(match[5]!);
+          const kind = diagnosticProcessKinds.has(command) ? command : "other";
+          return {
+            pid: Number(match[1]),
+            parentPid: Number(match[2]),
+            processGroupId: Number(match[3]),
+            started: match[4]!,
+            kind,
+          };
+        });
+      finish(observations);
+    });
+  }).catch(() => null);
 }

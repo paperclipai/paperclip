@@ -122,6 +122,21 @@ A lightweight scheduler/worker in the server process handles:
 
 Separate queue infrastructure is not required for V1.
 
+## 6.4 Long-running Native Execution Target
+
+Native agents must support multi-day runs and continuations without cumulative
+limits on journal bytes, completed commands, or completed tool calls. Current
+authority, paged history, and exact indexed action receipts are separate stores
+of information. Ordinary execution and continuation must not scan or rewrite
+lifetime history. Pending work, memory, and individual messages remain bounded;
+company budgets, governance, provisioned storage, and explicit execution/provider
+limits remain authoritative.
+
+The [long-running durability design](plans/2026-09-28-unbounded-runner-history.md)
+defines the storage decisions, acknowledgment rules, migration, and qualification
+gates. This is a target contract pending that implementation and qualification;
+the existing large-journal reader fix alone does not satisfy it.
+
 ## 7. Canonical Data Model (V1)
 
 All core tables include `id`, `created_at`, `updated_at` unless noted.

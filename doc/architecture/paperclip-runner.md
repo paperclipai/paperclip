@@ -180,6 +180,34 @@ closed. A repeated semantic tool call cannot repeat an application effect.
 Recovery is bounded. Exhausted storage, reconnect, command, or time limits end
 the run with a classified failure instead of an unbounded loop.
 
+### Long-running durability target (2026-09-28)
+
+The [long-running history design](../plans/2026-09-28-unbounded-runner-history.md)
+establishes the replacement for cumulative journal and receipt limits. Current
+authority is maintained transactionally, completed action receipts are indexed,
+and historical output is paged or streamed. A single active turn may continue
+for days without restarting to clear internal history counters. Bounded queues
+and recovery attempts remain; completed work does not consume their capacity.
+An experimental local Codex implementation now separates Postgres controller
+receipts and SQLite runner/provider history from current checkpoints. Fresh
+activation requires `PAPERCLIP_NATIVE_INDEXED_STATE=1`. Local receipt partitions,
+restartable three-store migration, and segmented stdout logs are implemented.
+Streamed body references and paged routing indexes avoid accumulating historical
+bytes in current state. Bounded provider cold recovery and incremental same-session
+checkpoints, whole-session source-loss restore, enforced process-tree retirement,
+automatic migration admission, remote providers and multi-day qualification
+remain incomplete. See the design's current status before making an
+unlimited-history claim.
+
+Physical capacity recovery in the active indexed native runner retries the
+same idempotent storage operation. A bounded exact commit stamp reconciles a
+root commit whose receipt materialization was interrupted. Authenticated ping,
+renewal, stop and revoke remain serviceable while provider output is
+backpressured. An interrupted effect is never rerun to recover storage, and a
+stop without writable storage does not manufacture a terminal receipt. This
+path has real SQLite-full transport tests; other lifecycle and storage-backend
+pressure paths remain qualification work.
+
 ## Semantic actions
 
 PRP carries provider-neutral semantic operation IDs. The package may define an
@@ -285,3 +313,102 @@ prevent server implementation details from becoming accidental public API.
 - Persisted native runs remain readable and recoverable after the flag changes.
 - Codex completes the server to PRP to runnerd to provider to server path.
 - Existing adapter compatibility tests remain byte stable where specified.
+
+### Indexed receipt storage operations (experimental)
+
+Fresh local Codex sessions selected with `PAPERCLIP_NATIVE_INDEXED_STATE=1`
+use range-partitioned runner receipt stores. The following runnerd commands
+operate on an existing private store with its exact locator binding. They never
+print current authority or credential contents.
+
+```sh
+paperclip-runnerd storage partitions --path /private/session/runner-state.sqlite --binding 'runner/RUNNER_ID/SESSION_ID' --limit 32
+paperclip-runnerd storage maintain --path /private/session/runner-state.sqlite --binding 'runner/RUNNER_ID/SESSION_ID' --steps 100
+paperclip-runnerd storage relocate --path /private/session/runner-state.sqlite --binding 'runner/RUNNER_ID/SESSION_ID' --partition-start BASE64_START --destination /private/another-volume
+paperclip-runnerd storage backup --path /private/session/runner-state.sqlite --binding 'runner/RUNNER_ID/SESSION_ID' --destination /private/backups/snapshot-1
+```
+
+Partition inspection returns at most 128 entries, exact decimal counts, a base64
+`start` per range and `nextAfter` for the next `--after` page. The first range's
+start is the empty string; pass `--partition-start ''` when selecting it.
+Relocation requires an existing private destination directory. It starts a
+bounded copy with concurrent-write capture and atomic verified cutover; the
+running store continues maintenance between ordinary operations. The `maintain`
+command also advances at most the requested number of steps (maximum 1,000).
+
+Backup requires a new destination directory under an existing private parent.
+It publishes `authority.sqlite` and its relative receipt directory only after all
+snapshot ranges verify. Repeating an interrupted command with the same source
+and destination resumes its durable job. Live writes continue between bounded
+copy steps. Pinned retired partitions consume disk until the backup completes;
+failed backups retain their pins and staging evidence for recovery. A completed
+destination is never overwritten.
+
+Fresh standalone/evaluation controllers use this same partitioned engine behind
+a bounded private stdio subprocess. Their exact binding comes from the controller
+locator; the commands above also apply to those version-2 stores. Existing
+prototype version-1 controller files retain their original compatibility reader
+and writer. Production controllers continue to use Postgres.
+
+Read-only recovery inspection uses `paperclip-runnerd storage inspect-state
+--path /private/session/runner-state.json` (or `codex-provider-state.json`). It
+reads one current row under the existing lifetime fence and emits ordered,
+192 KiB base64 frames with an exact decimal generation, SHA-256 and required
+completion footer. Local inspection runs the same native command through a
+bounded worker and retains reader credit until the native child has closed;
+it does not open SQLite through a second host engine. SQLite owns database and
+sidecar descriptors: metadata validation must not open and close those files,
+which can release the process's POSIX SQLite locks. Consumers must verify the
+framing, digest and clean process
+exit. The output contains current session data; keep it private. It does not
+scan history, repair a store, checkpoint its WAL, or infer process retirement.
+
+For an already admitted quiet Codex session, `storage snapshot-session` accepts
+`--directory`, a new `--destination`, and `--runner-generation`,
+`--runner-sha256`, `--provider-generation`, `--provider-sha256` from that
+inspection. Both execution stores must be closed. The native operation holds
+both lifetime fences, checks suspended/settled state and session bindings,
+copies receipts in bounded batches (including relocated partitions), verifies
+all exact receipt identities and digests, and atomically publishes both stores
+with portable relative paths and an exact generation manifest. Repeating the
+same request resumes an interrupted copy; conflicting state or destinations
+fail closed. History-sized work has no aggregate command deadline. This is a
+maintenance backup, not a current-state read: its total I/O scales with the
+history being copied and verified.
+
+Published snapshot databases are sealed in rollback-journal mode before
+publication; read-only inspection must not create or alter WAL/SHM sidecars.
+Normal execution reopens a restored store in WAL mode. The outer harness
+manifest binds the exact runner/provider generations, digests and source run;
+restore checks those bindings and provider identity before accepting the
+streamed directory digests. A missing native snapshot marker cannot downgrade
+an indexed store to a legacy backup.
+
+The remote checkpoint consumer uses this native snapshot for indexed Codex
+stores instead of copying SQLite files from the runner directory. Native
+snapshots do not include the controller database, external payload storage, or
+provider home. Publishing a complete disaster-recovery backup still requires
+those resources to be bound to the same admitted recovery boundary. This work
+does not enable remote indexed execution or establish whole-session backup
+qualification.
+
+Every native store connection holds a shared lifetime lock until SQLite closes.
+Cold archival and stopped-runner sealing acquire an exclusive lock, and prepared
+archive intents prevent new opens until transfer finishes. An active or unfinished
+backup must finish before its source can be archived. Contention reports
+`storage_pressure` and preserves the current root for retry. Internal archive and
+seal commands are called only after the controller proves exclusive process
+ownership; a storage lock alone never supplies that proof.
+
+This backup captures one store. Restoring a live Paperclip session also requires
+the matching controller and provider recovery generation and independent process
+ownership verification; copying this directory alone does not authorize a second
+runner. Legacy JSON and version-1 single-file receipt stores are not converted
+by these operator commands. The rollout remains experimental and disabled for
+fresh sessions by default while migration activation, typed recovery consumers,
+provider/remote coverage and long-running qualifications remain incomplete.
+
+The complete history lifetime target contract, including transport epoch rotation,
+coordinated recovery generations and process containment, is specified in
+[Runner history over an unbounded lifetime](runner-history-lifetime.md). Its
+qualification matrix remains separate from individual component test results.

@@ -102,6 +102,20 @@ browser follow-up messages, preserves one project/execution-workspace scope,
 verifies host file contents after every turn, and finishes within three
 ten-minute turn deadlines. Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
 
+Cases may declare `historyEndurance` for the explicit `history-endurance` suite.
+Its rounds, interval, restart frequency, and no-retry policy enter the definition
+fingerprint. The fixed 2/3/73-turn schedules are fixture cost bounds, not product
+history limits. `activeRestartRound` selects a crash during the exact running
+diagnostic tool; grade its bound start/completion IDs, source sequence, exit
+code, and crash timestamps as well as the ordinary continuation evidence. Grade actual elapsed time, every ordered task-document reference,
+provider-session continuity, exact new/original browser download bytes, and the
+independent command-output stream. Preserve the requested byte count when
+changing the diagnostic emission pattern; do not accept a shortened provider
+snapshot or infer success from the run status.
+Preserve each partial round and the first failure. This suite does not record
+continuous video or traces while idle; its marked per-round screenshots and
+sanitized API evidence use the normal publication rules.
+
 Every selected case runs in its own isolated Paperclip process, and independent
 cases may run concurrently. Follow-up turns inside one case retain their shared
 task state. Each case creates and tears down its own company, secrets,

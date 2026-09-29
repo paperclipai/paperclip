@@ -242,6 +242,23 @@ an operating-system read. Symlinks, changing files, invalid JSON, excessive
 nesting, or excess essential evidence fail closed. A projection is read-only evidence and must
 never be written back as a replacement journal.
 
+These limits describe the legacy JSON path, not unlimited-history support.
+The [long-running durability design](../plans/2026-09-28-unbounded-runner-history.md)
+defines its replacement, explicit v2 capability negotiation, one-time retained
+session migration, and rollback rules. Disabling new v2 starts must preserve
+read/recovery support for existing v2 sessions; no fallback may reinterpret a
+stale legacy journal as current authority.
+
+The experimental indexed lane is currently local Codex only. The environment
+flag `PAPERCLIP_NATIVE_INDEXED_STATE=1` selects fresh sessions; existing indexed
+sessions retain their format when the flag is disabled. Explicit capability
+`durability.indexed_state.v1` is required. Existing legacy files stay on their
+original path until a fenced importer is implemented. The legacy writer now
+checks its encoded byte size before publication and rejects oversized writes
+with `storage_pressure`; raising the reader limit is not required for this guard.
+The indexed lane remains disabled by default pending the design's remaining
+recovery, migration, partition and multi-day qualification gates.
+
 ## Required compatibility matrix
 
 Each runner-related pull request updates only rows that it can execute. The

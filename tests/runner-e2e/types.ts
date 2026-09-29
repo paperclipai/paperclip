@@ -14,6 +14,7 @@ export type RunnerTaskFlow =
 
   | "continuation_accounting"
   | "continuation"
+  | "history_endurance"
   | "first_task"
   | "agent_chat"
   | "governed_tool_review"
@@ -126,6 +127,9 @@ export interface RunnerTaskFixture {
   workMode: RunnerTaskWorkMode;
   flow: RunnerTaskFlow;
   expectedRunCount: number;
+  /** Long paid qualifications retain their first outcome without an automatic retry. */
+  automaticRetry?: false;
+  historyEndurance?: { rounds: number; intervalMs: number; restartEvery: number; activeRestartRound?: number };
   /** Optional lower bound; expectedRunCount remains the maximum/cost estimate. */
   minimumExpectedRunCount?: number;
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;

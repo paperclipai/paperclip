@@ -1,3 +1,4 @@
+import { prepareDockerTestDatabase } from "./docker-database.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { paperclipConfigSchema } from "../../packages/shared/src/config-schema.js";
@@ -17,9 +18,9 @@ export async function prepareRunnerE2EServerConfig(input: {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const databaseReservation = await reserveRunnerE2EDatabasePort(
-    input.serverPort,
-  );
+  const useDocker = process.env.PAPERCLIP_RUNNER_E2E_DATABASE === "docker";
+  const databaseReservation = useDocker ? null : await reserveRunnerE2EDatabasePort(input.serverPort);
+  const dockerConnection = useDocker ? await prepareDockerTestDatabase(input.temporaryRoot) : null;
   try {
     const instanceRoot = path.dirname(input.configPath);
     const config = paperclipConfigSchema.parse({
@@ -29,9 +30,10 @@ export async function prepareRunnerE2EServerConfig(input: {
         source: "onboard",
       },
       database: {
-        mode: "embedded-postgres",
+        mode: useDocker ? "postgres" : "embedded-postgres",
+        ...(dockerConnection ? { connectionString: dockerConnection } : {}),
         embeddedPostgresDataDir: path.join(instanceRoot, "db"),
-        embeddedPostgresPort: databaseReservation.port,
+        embeddedPostgresPort: databaseReservation?.port ?? 54329,
         backup: {
           enabled: false,
           dir: path.join(input.temporaryRoot, "backups"),
@@ -65,7 +67,7 @@ export async function prepareRunnerE2EServerConfig(input: {
     });
     return databaseReservation;
   } catch (error) {
-    await databaseReservation.close();
+    await databaseReservation?.close();
     throw error;
   }
 }

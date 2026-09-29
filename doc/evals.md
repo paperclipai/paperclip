@@ -100,6 +100,11 @@ for a suite, profile, case, group, or environment. Daytona needs the immutable
 image digest and `DAYTONA_API_KEY`; follow the README and fixture security guide.
 `--all` excludes manual suites such as `everyday-workflows`. Select that suite
 explicitly; use a narrow selector while developing a fixture.
+The manual [history endurance cells](../tests/runner-e2e/README.md) verify
+repeated real Codex work and retained output across controller restarts. Their
+two-turn active-tool crash, three-turn smoke, and 73-turn/72-hour schedules
+have no automatic paid retry; neither a partial run nor a short cell qualifies
+elapsed multi-day operation.
 
 For Runner Evals, the narrowest useful local validation is the report program's
 help/validation path and the deterministic Runner checks documented in
@@ -263,3 +268,24 @@ named existing controls on legacy and native Codex. Discover it with
 results and follow-up coverage are recorded in that suite's guide.
 
 Continuation accounting has an explicit-only eight-cell Product E2E [baseline suite](../tests/runner-e2e/CONTINUATION-ACCOUNTING.md), complementing the deterministic lifecycle inventory.
+
+
+## Physical history-storage capacity qualification
+
+The opt-in PostgreSQL history-capacity test uses an installed `postgres:17`
+Docker image, records its immutable image ID, publishes only a loopback port,
+and fills a private 16 MiB tmpfs tablespace. It does not fill the host filesystem
+or connect to a development database. It verifies rollback after authority
+updates, exact receipt retry and continued use of the same controller after
+space is released. It is a storage qualification, not a browser/provider E2E.
+
+```sh
+cd server
+PAPERCLIP_HISTORY_PG_CAPACITY_QUALIFICATION=1 \
+PAPERCLIP_HISTORY_REPORT=/tmp/history-pg-capacity.json \
+pnpm exec vitest run src/services/native-runtime/postgres-capacity.qualification.test.ts
+```
+
+WAL remains on a separate available filesystem in this test. Full WAL-device
+exhaustion, provider persistence exhaustion and coordinated volume-loss restore
+remain distinct cases in the [lifetime contract](architecture/runner-history-lifetime.md).
