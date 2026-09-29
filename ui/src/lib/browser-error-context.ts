@@ -21,9 +21,8 @@ export function sanitizeComponentStack(stack: string | null | undefined): string
   return frames.length ? `\n${frames.join("\n")}` : undefined;
 }
 
-/** A bounded snapshot, taken at the error rather than when the capture queue runs. */
-export function buildBrowserErrorContext(details: BrowserErrorDetails) {
-  const componentStack = sanitizeComponentStack(details.componentStack);
+/** Bounded document state; never read page content, locations, or identifiers. */
+export function readBrowserErrorState() {
   const browserState: {
     ready_state?: "loading" | "interactive" | "complete";
     visibility_state?: "visible" | "hidden";
@@ -47,11 +46,17 @@ export function buildBrowserErrorContext(details: BrowserErrorDetails) {
       browserState.translation_marker = classes.contains("translated-ltr") || classes.contains("translated-rtl");
     } catch { /* diagnostic unavailable */ }
   }
+  return browserState;
+}
+
+/** A bounded snapshot, taken at the error rather than when the capture queue runs. */
+export function buildBrowserErrorContext(details: BrowserErrorDetails) {
+  const componentStack = sanitizeComponentStack(details.componentStack);
   return {
     tags: { react_error_boundary: details.boundary },
     contexts: {
       react: componentStack ? { componentStack } : {},
-      browser_state: browserState,
+      browser_state: readBrowserErrorState(),
     },
   };
 }

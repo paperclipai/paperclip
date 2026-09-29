@@ -394,6 +394,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           continuationPolicy: "wake_assignee",
           payload: {
             version: 1,
+            supersedeOnUserComment: true,
             questions: [{
               id: "scope",
               prompt: "Which scope?",
@@ -1435,7 +1436,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("expires ask_user_questions interactions by default when a user comments after creation", async () => {
+  it("expires ask_user_questions when a creator opts into comment supersede", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Question supersede");
     const commentId = randomUUID();
 
@@ -1446,6 +1447,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       kind: "ask_user_questions",
       payload: {
         version: 1,
+        supersedeOnUserComment: true,
         questions: [{
           id: "scope",
           prompt: "Choose the scope",
@@ -1491,7 +1493,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("keeps ask_user_questions pending when user-comment supersede is explicitly disabled", async () => {
+  it("keeps ask_user_questions pending by default when the user sends a message", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Question supersede opt-out");
 
     await interactionsSvc.create({
@@ -1501,7 +1503,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       kind: "ask_user_questions",
       payload: {
         version: 1,
-        supersedeOnUserComment: false,
         questions: [{
           id: "scope",
           prompt: "Choose the scope",
@@ -1512,6 +1513,9 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, {
       userId: "local-board",
     });
+
+    const [created] = await db.select().from(issueThreadInteractions);
+    expect(created?.payload).toMatchObject({ supersedeOnUserComment: false });
 
     const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
       id: issueId,
@@ -1600,6 +1604,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       kind: "ask_user_questions",
       payload: {
         version: 1,
+        supersedeOnUserComment: true,
         questions: [{
           id: "scope",
           prompt: "Choose the scope",
@@ -2519,7 +2524,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       status: "pending",
       continuationPolicy: "wake_assignee",
       payload: {
-        supersedeOnUserComment: true,
+        supersedeOnUserComment: false,
         allowDeclineReason: true,
       },
     });
@@ -2618,6 +2623,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Which files should be deleted?",
+        supersedeOnUserComment: true,
         options: [{ id: "file-a", label: "a.txt" }],
       },
     }, {
@@ -2646,6 +2652,27 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         commentId,
       },
     });
+  });
+
+  it("keeps checkbox confirmations pending by default after a user comment", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Checkbox card remains");
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Choose a file",
+        options: [{ id: "file-a", label: "a.txt" }],
+      },
+    }, { userId: "local-board" });
+    expect(created.payload.supersedeOnUserComment).toBe(false);
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
+      { id: issueId, companyId },
+      { id: randomUUID(), createdAt: new Date(Date.now() + 1_000), authorUserId: "local-board" },
+      { userId: "local-board" },
+    );
+    expect(expired).toHaveLength(0);
+    expect((await db.select().from(issueThreadInteractions))[0]?.status).toBe("pending");
   });
 
   it("submits request_item_verdicts partially and completes when all items are resolved", async () => {
@@ -2677,7 +2704,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         verdicts: ["approve", "reject"],
         requireReasonOn: ["reject"],
         allowBulkApprove: true,
-        supersedeOnUserComment: true,
+        supersedeOnUserComment: false,
       },
     });
 
@@ -2835,6 +2862,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Review generated artifacts.",
+        supersedeOnUserComment: true,
         items: [
           { id: "api", label: "API route" },
           { id: "docs", label: "Docs" },
@@ -2883,6 +2911,27 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         ],
       },
     });
+  });
+
+  it("keeps item verdict requests pending by default after a user comment", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Verdict card remains");
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_item_verdicts",
+      payload: {
+        version: 1,
+        prompt: "Review the file",
+        items: [{ id: "file-a", label: "a.txt" }],
+      },
+    }, { userId: "local-board" });
+    expect(created.payload.supersedeOnUserComment).toBe(false);
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
+      { id: issueId, companyId },
+      { id: randomUUID(), createdAt: new Date(Date.now() + 1_000), authorUserId: "local-board" },
+      { userId: "local-board" },
+    );
+    expect(expired).toHaveLength(0);
+    expect((await db.select().from(issueThreadInteractions))[0]?.status).toBe("pending");
   });
 
   it("returns accepted agent confirmations from review without resetting active work", async () => {
@@ -3187,7 +3236,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       .resolves.toBe("planning");
   });
 
-  it("expires request confirmations by default when a user comments after creation", async () => {
+  it("expires request confirmations when a creator opts into comment supersede", async () => {
     const { companyId, issueId } = await seedConfirmationIssue();
     const commentId = randomUUID();
 
@@ -3199,6 +3248,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
+        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",
@@ -3234,7 +3284,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("keeps request confirmations pending when user-comment supersede is explicitly disabled", async () => {
+  it("keeps request confirmations pending by default when the user sends a message", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Comment supersede opt-out");
 
     await interactionsSvc.create({
@@ -3245,11 +3295,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
-        supersedeOnUserComment: false,
       },
     }, {
       userId: "local-board",
     });
+
+    const [created] = await db.select().from(issueThreadInteractions);
+    expect(created?.payload).toMatchObject({ supersedeOnUserComment: false });
 
     const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
       id: issueId,
@@ -3475,6 +3527,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
+        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",

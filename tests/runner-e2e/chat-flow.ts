@@ -693,11 +693,8 @@ export async function runChatFlow(input: ChatFlowInput) {
           await idle(3);
         } else await turn(clarification, 3);
       } else if (caseId === "plan-handoff") {
-        await page.getByTestId("task-chat-composer-mode").click();
-        await page
-          .getByTestId("task-chat-composer-mode-menu")
-          .getByText("Plan mode", { exact: true })
-          .click();
+        await page.getByTestId("task-chat-composer-add").click();
+        await page.getByTestId("composer-add-plan").click();
         await turn(
           `Let's plan a two-sentence garden club welcome note. The finished welcome note itself must contain the exact phrase ${draftMarker}. Write a plan in the plan panel that includes this requirement, and present it for approval. When I approve the final revision, create a suitable repository-free project and an assigned task for yourself, copy the plan into that task, and have it save the note as a Paperclip document attached to that execution task and finish. Do not create the project or task before approval.`,
           1,
