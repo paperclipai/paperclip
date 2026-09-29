@@ -200,6 +200,33 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     expect(collected).toHaveBeenCalledOnce();
   });
 
+  it("surfaces a protocol turn failure even when Codex exits zero", async () => {
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({
+        type: "turn.failed",
+        error: { message: "401 Missing bearer" },
+      }),
+      stderr: "",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await runTeardown({
+      sandboxAuth: "{}",
+      hostAuth: "{}",
+    });
+
+    expect(result.executionResult).toMatchObject({
+      exitCode: 0,
+      errorMessage: "401 Missing bearer",
+      errorCode: "refresh_token_invalidated",
+      errorFamily: "refresh_token_invalidated",
+    });
+  });
+
   it("stops the bridge and restores the workspace when instruction collection rejects", async () => {
     const order: string[] = [];
     startAdapterExecutionTargetPaperclipBridge.mockResolvedValueOnce({

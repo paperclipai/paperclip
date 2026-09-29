@@ -33,6 +33,7 @@ export function parseCodexJsonl(stdout: string) {
   let errorMessage: string | null = null;
   let sawProtocolEvent = false;
   let sawProtocolTerminalEvent = false;
+  let terminalStatus: "completed" | "failed" | null = null;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -59,6 +60,7 @@ export function parseCodexJsonl(stdout: string) {
     if (type === "error") {
       const msg = asString(event.message, "").trim();
       if (msg) errorMessage = msg;
+      terminalStatus = "failed";
       continue;
     }
 
@@ -72,6 +74,7 @@ export function parseCodexJsonl(stdout: string) {
     }
 
     if (type === "turn.completed") {
+      terminalStatus = "completed";
       const usageObj = parseObject(event.usage);
       usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
       usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
@@ -80,6 +83,7 @@ export function parseCodexJsonl(stdout: string) {
     }
 
     if (type === "turn.failed") {
+      terminalStatus = "failed";
       const err = parseObject(event.error);
       const msg = asString(err.message, "").trim();
       if (msg) errorMessage = msg;
@@ -94,6 +98,7 @@ export function parseCodexJsonl(stdout: string) {
     errorMessage,
     sawProtocolEvent,
     sawProtocolTerminalEvent,
+    terminalStatus,
   };
 }
 

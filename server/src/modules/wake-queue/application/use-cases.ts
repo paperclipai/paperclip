@@ -151,12 +151,12 @@ async function runReleaseDrain(
   // The `processedWakeIds` guard below makes a break of the invariant
   // fail loudly, instead of holding this transaction open forever.
   const processedWakeIds = new Set<string>();
-  const handoffWakeIds: string[] = [];
+  const excludedWakeIds: string[] = [];
 
   while (true) {
     const candidate = await ports.transaction.findNextDeferredWake({
       companyId: run.companyId, issueId: issue.id,
-      ...(handoffWakeIds.length ? { excludedWakeIds: handoffWakeIds } : {}),
+      ...(excludedWakeIds.length ? { excludedWakeIds } : {}),
     });
     if (!candidate) break;
     if (processedWakeIds.has(candidate.id)) {
@@ -167,6 +167,23 @@ async function runReleaseDrain(
       );
     }
     processedWakeIds.add(candidate.id);
+
+    const blockedIssueInteractionWake =
+      candidate.deferredContextSeed.dependencyBlockedInteraction === true ||
+      (candidate.queuedCommentIds.length > 0 &&
+        [
+          "issue_commented",
+          "issue_comment_mentioned",
+          "issue_reopened_via_comment",
+        ].includes(candidate.wakeReason ?? candidate.reason ?? ""));
+    if (issue.status === "blocked" && !blockedIssueInteractionWake) {
+      // The issue may have become blocked after this wake was admitted behind
+      // a live run. Keep the durable receipt deferred so dependency recovery
+      // can re-evaluate it later; do not dispatch ordinary work across the
+      // newer blocker state.
+      excludedWakeIds.push(candidate.id);
+      continue;
+    }
 
     // A lead can post its closing comment before committing Done. Check
     // again when the source run releases its queue, using every original
@@ -204,7 +221,7 @@ async function runReleaseDrain(
         // The old owner can release before assignment admission adopts these
         // exact IDs. Leave its receipt intact, skip it for this drain, and let
         // a current-assignee wake behind it proceed.
-        handoffWakeIds.push(candidate.id);
+        excludedWakeIds.push(candidate.id);
       } else {
         // The current owner has finished. An obsolete assignment cannot
         // launch another former-owner run or reopen its completed task.

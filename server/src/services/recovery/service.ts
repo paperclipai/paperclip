@@ -5216,10 +5216,6 @@ export function recoveryService(
         continue;
       }
 
-      if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
-        result.skipped += 1;
-        continue;
-      }
       if (readDispositionRepairAttempt(latestRun)) {
         const outcome = await reconcileDispositionRepair(issue, latestRun);
         if (outcome === "queued") {

@@ -377,6 +377,43 @@ describe("releaseIssueExecution", () => {
     expect(findNextDeferredWake).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a non-interaction deferred wake queued when the issue became blocked", async () => {
+    const candidate = wakeCandidate({
+      reason: "approval_approved",
+      wakeReason: "approval_approved",
+      queuedCommentIds: [],
+    });
+    const findNextDeferredWake = vi.fn(
+      async (input: { excludedWakeIds?: string[] }) =>
+        input.excludedWakeIds?.includes(candidate.id) ? null : candidate,
+    );
+    const transaction = createFakeTransaction({ findNextDeferredWake });
+    const issueLock = createFakeIssueLock(
+      createFakeHost(),
+      transaction,
+      { ...ISSUE, status: "blocked" },
+    );
+    const releaseIssueExecution = createReleaseIssueExecution({
+      issueLock,
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await releaseIssueExecution({
+      companyId: RUN.companyId,
+      runId: RUN.id,
+      now: new Date(),
+    });
+
+    expect(result.outcome.kind).toBe("released");
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(findNextDeferredWake).toHaveBeenLastCalledWith({
+      companyId: RUN.companyId,
+      issueId: ISSUE.id,
+      excludedWakeIds: [candidate.id],
+    });
+  });
+
   it("continues the loop after a cancel outcome, a fail outcome, and a normalize outcome, then promotes", async () => {
     const queue = [
       // cancel_empty: queued comments, none live, no independent continuation.

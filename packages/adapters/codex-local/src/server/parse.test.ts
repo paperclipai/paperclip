@@ -36,6 +36,7 @@ describe("parseCodexJsonl", () => {
       errorMessage: "resume failed",
       sawProtocolEvent: true,
       sawProtocolTerminalEvent: true,
+      terminalStatus: "failed",
     });
   });
 
@@ -72,6 +73,7 @@ describe("parseCodexJsonl", () => {
       errorMessage: null,
       sawProtocolEvent: true,
       sawProtocolTerminalEvent: true,
+      terminalStatus: "completed",
     });
   });
 });

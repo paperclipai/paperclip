@@ -8339,6 +8339,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("dispatches assigned in-progress work with no prior run or execution lock", async () => {
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    await db
+      .update(issues)
+      .set({ status: "in_progress", startedAt: new Date() })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const [run] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(run).toMatchObject({
+      companyId,
+      agentId,
+      contextSnapshot: expect.objectContaining({
+        issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.continuation_recovery",
+      }),
+    });
+
+    if (run?.id) {
+      await waitForRunToSettle(heartbeat, run.id);
+    }
+  });
+
   it("leaves the onboarding first task idle until the user comments", async () => {
     const { companyId, agentId, issueId } =
       await seedAssignedTodoNoRunFixture();
