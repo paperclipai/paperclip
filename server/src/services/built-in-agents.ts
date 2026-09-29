@@ -11,6 +11,7 @@ import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrig
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import { appendAntiEarlyStopInstructions } from "./anti-early-stop-instructions.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
 import {
@@ -622,7 +623,15 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
       ...definition.bundle,
       instructions: {
         ...definition.bundle.instructions,
-        files: { ...definition.bundle.instructions.files },
+        files: {
+          ...definition.bundle.instructions.files,
+          // Choke point for the anti-early-stop block: every bundled built-in
+          // agent's entry file gets it appended last, so the block cannot drift
+          // between templates and new templates inherit it for free.
+          [definition.bundle.instructions.entryFile]: appendAntiEarlyStopInstructions(
+            definition.bundle.instructions.files[definition.bundle.instructions.entryFile]!,
+          ),
+        },
       },
       skill: {
         ...definition.bundle.skill,

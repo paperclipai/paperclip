@@ -5,6 +5,7 @@ import {
   askUserQuestionsQuestionOptionSchema,
   type AskUserQuestionsPayload,
 } from "@paperclipai/shared";
+import { appendAntiEarlyStopInstructions } from "./anti-early-stop-instructions.js";
 
 // Everything the onboarding first agent is told lives as plain markdown under
 // server/src/onboarding-assets/first-task/ so the board can edit the wording
@@ -140,10 +141,13 @@ export async function renderChiefOfStaffPersona(
 
 // The instruction bundle for the onboarding first agent: the chief-of-staff
 // persona as the entry AGENTS.md. The generic execution contract
-// (default/AGENTS.md) is still appended on every run by the runner, unchanged.
+// (default/AGENTS.md) is still appended on every run by the runner. That contract
+// now ends with the anti-early-stop block, because it is loaded through
+// `loadDefaultAgentInstructionsBundle`, so the guard stays last for this agent too
+// even though the persona is not the final file the runner appends.
 export async function buildOnboardingFirstAgentInstructionsBundle(
   placeholders: OnboardingFirstTaskPlaceholders,
 ): Promise<{ files: Record<string, string>; entryFile: string }> {
   const persona = await renderChiefOfStaffPersona(placeholders);
-  return { files: { "AGENTS.md": persona }, entryFile: "AGENTS.md" };
+  return { files: { "AGENTS.md": appendAntiEarlyStopInstructions(persona) }, entryFile: "AGENTS.md" };
 }

@@ -2738,7 +2738,10 @@ export function agentRoutes(
   // entry file instead of the generic default. Honored only for board-authored
   // requests — the onboarding wizard runs as the board — so a client marker
   // alone cannot swap another actor's instructions. The generic execution
-  // contract (default/AGENTS.md) is still appended on every run, unchanged.
+  // contract (default/AGENTS.md) is still appended on every run by the runner. It
+  // is loaded through `loadDefaultAgentInstructionsBundle`, so it now carries the
+  // anti-early-stop block at its tail and the guard stays the last instruction
+  // even though the persona is not the final file the runner appends.
   async function resolveOnboardingFirstAgentBundle(params: {
     onboardingFirstAgent: unknown;
     actorType: string;
