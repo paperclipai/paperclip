@@ -1116,6 +1116,8 @@ of that file-write barrier. If accepted writes remain stalled after three
 seconds, finalization returns unknown size/hash metadata and skips the final
 durable copy so the run can reach a terminal state. A late write cannot restart
 mirroring or produce a claimed verified snapshot.
+Readers still attempt bounded reads when size is unknown. Legacy comment
+attribution retains its existing 2 MB scan limit.
 
 ### Preinstalled remote runner runtime
 

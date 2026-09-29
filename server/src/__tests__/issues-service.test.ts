@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -41,7 +41,9 @@ import {
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  readIssueCommentRunLogText,
 } from "../services/issues.ts";
+import { getRunLogStore } from "../services/run-log-store.js";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -147,6 +149,53 @@ describeEmbeddedPostgres("issueService run attachment artifacts", () => {
       },
     });
   }, 20_000);
+});
+
+describe("readIssueCommentRunLogText", () => {
+  it.each([null, 128, 0])("reads existing attribution markers with logBytes=%s", async (logBytes) => {
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const agentId = randomUUID();
+    const read = vi.spyOn(getRunLogStore(), "read")
+      .mockResolvedValueOnce({ content: "comment id: ", nextOffset: 12 })
+      .mockResolvedValueOnce({ content: commentId + "\n" });
+    try {
+      const logContent = await readIssueCommentRunLogText({
+        runId, logStore: "local_file", logRef: "test/run.ndjson", logBytes,
+      });
+      const derived = deriveIssueCommentRunLogAttribution(
+        [{
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "local-board",
+          createdByRunId: null,
+          createdAt: new Date("2020-01-01T00:00:01Z"),
+        }],
+        [{
+          runId,
+          agentId,
+          createdAt: new Date("2020-01-01T00:00:00Z"),
+          startedAt: new Date("2020-01-01T00:00:00Z"),
+          finishedAt: new Date("2020-01-01T00:00:02Z"),
+          logContent,
+        }],
+      );
+      if (logBytes === 0) {
+        expect(read).not.toHaveBeenCalled();
+        expect(derived.size).toBe(0);
+      } else {
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(read.mock.calls[1]?.[1]?.offset).toBe(12);
+        expect(derived.get(commentId)).toEqual({
+          derivedAuthorAgentId: agentId,
+          derivedCreatedByRunId: runId,
+          derivedAuthorSource: "run_log_comment_post",
+        });
+      }
+    } finally {
+      read.mockRestore();
+    }
+  });
 });
 
 describe("deriveIssueCommentRunLogAttribution", () => {
