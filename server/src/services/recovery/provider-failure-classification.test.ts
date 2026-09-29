@@ -157,3 +157,30 @@ describe("classifyAdapterFailureForRecovery", () => {
     })).toBeNull();
   });
 });
+
+describe("classifyContinuationFailure", () => {
+  // Measured in production on 2026-09-27: 50 gateway 429 runs landed on the
+  // `default` lane, which retries once with zero backoff - one dispatch per
+  // second. These are delivery refusals before any provider work, so they take
+  // the transient-infrastructure lane (3 attempts, 60s base backoff).
+  it.each([
+    "hermes_gateway_rate_limited",
+    "hermes_gateway_upstream_error",
+    "hermes_gateway_connect_failed",
+  ])("treats an agent-gateway delivery failure (%s) as transient infrastructure", (errorCode) => {
+    expect(classifyContinuationFailure({ errorCode } as never)).toMatchObject({
+      kind: "transient_infra",
+      maxAttempts: 3,
+      baseBackoffMs: 60_000,
+      errorCode,
+    });
+  });
+
+  it("keeps an unknown error code on the default lane", () => {
+    expect(
+      classifyContinuationFailure({
+        errorCode: "some_unmapped_error_code",
+      } as never),
+    ).toMatchObject({ kind: "default", maxAttempts: 1, baseBackoffMs: 0 });
+  });
+});

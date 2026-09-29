@@ -486,6 +486,14 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "claude_transient_upstream",
   "provider_quota",
   "timeout",
+  // An agent gateway that refuses the wake (its own concurrency cap / upstream
+  // 5xx) fails before any provider work starts. Classifying these as anything
+  // but transient infrastructure puts them on the `default` lane, which has one
+  // attempt and zero backoff - measured in production on 2026-09-27: 50 gateway
+  // 429 runs, one dispatch per second, each with a usable Retry-After.
+  "hermes_gateway_rate_limited",
+  "hermes_gateway_upstream_error",
+  "hermes_gateway_connect_failed",
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([

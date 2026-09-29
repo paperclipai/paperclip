@@ -1073,6 +1073,21 @@ function resolveCodexTransientFallbackMode(
   return "fresh_session_safer_invocation";
 }
 
+// Delivery failures from an agent's own gateway are transient infrastructure,
+// not a failed attempt at the task: the API server refused the wake before any
+// provider work started. Measured in production on 2026-09-27: the agent
+// gateway's `max_concurrent_runs` cap answers `POST /v1/runs` with 429 +
+// `Retry-After: 1`, the adapter records `errorFamily: transient_upstream` and
+// `retryNotBefore`, and the run still settled as a terminal failure with
+// `scheduledRetryAt: null` - 50 runs over three minutes, one per second. These
+// codes belong in the same bounded-transient lane as the codex/claude upstream
+// codes below, so the retry ladder (and any later Retry-After hint) applies.
+const TRANSIENT_GATEWAY_DELIVERY_ERROR_CODES = new Set<string>([
+  "hermes_gateway_rate_limited",
+  "hermes_gateway_upstream_error",
+  "hermes_gateway_connect_failed",
+]);
+
 function readHeartbeatRunErrorFamily(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
@@ -1086,7 +1101,9 @@ function readHeartbeatRunErrorFamily(
   if (
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
-    run.errorCode === "codex_harness_crash"
+    run.errorCode === "codex_harness_crash" ||
+    (run.errorCode != null &&
+      TRANSIENT_GATEWAY_DELIVERY_ERROR_CODES.has(run.errorCode))
   ) {
     return "transient_upstream";
   }
@@ -1104,7 +1121,7 @@ function isMaxTurnExhaustionRun(
 }
 
 function readTransientRetryNotBeforeFromRun(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson" | "createdAt">,
 ) {
   const resultJson = parseObject(run.resultJson);
   const value = resultJson.retryNotBefore ?? resultJson.transientRetryNotBefore;
@@ -1115,12 +1132,34 @@ function readTransientRetryNotBeforeFromRun(
   )) {
     return null;
   }
+  // Some adapters record the `Retry-After` header verbatim, and the Hermes API
+  // server sends it as delta-seconds (`Retry-After: 1`). Read as a date,
+  // `new Date("1")` is 2001-01-01 - an expired window - so a recorded hint in
+  // that shape would never open a hold. A small bare integer is therefore
+  // seconds after the run started, not a timestamp. Bounded to an hour so an
+  // epoch value can never be mistaken for a delta.
+  const deltaSeconds = readRetryAfterDeltaSeconds(value);
+  if (deltaSeconds !== null) {
+    const startedAt = run.createdAt ? new Date(run.createdAt).getTime() : Date.now();
+    const base = Number.isNaN(startedAt) ? Date.now() : startedAt;
+    return new Date(base + deltaSeconds * 1000);
+  }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function readRetryAfterDeltaSeconds(value: string | number | Date): number | null {
+  if (value instanceof Date) return null;
+  const raw = typeof value === "number" ? value : value.trim();
+  if (typeof raw === "number" && !Number.isSafeInteger(raw)) return null;
+  if (typeof raw === "string" && !/^\d+$/.test(raw)) return null;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 3_600) return null;
+  return seconds;
+}
+
 function readTransientRecoveryContractFromRun(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson" | "createdAt">,
 ) {
   const errorFamily = readHeartbeatRunErrorFamily(run);
   return errorFamily === "transient_upstream" ||
@@ -1130,6 +1169,152 @@ function readTransientRecoveryContractFromRun(
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
       }
     : null;
+}
+
+// An agent's own gateway can refuse the wake before any provider work starts
+// (`TRANSIENT_GATEWAY_DELIVERY_ERROR_CODES`). Its `Retry-After` hint is a
+// window, not a contract: while that window is still open, dispatching another
+// run only produces another refused wake, so new wakes for that agent are
+// parked on a `scheduled_retry` run instead of being dispatched. A gateway that
+// answers with an implausibly large hint must not park an agent's work for
+// hours, so the window is capped and the bounded retry ladder still governs
+// every attempt after it.
+const MAX_GATEWAY_DELIVERY_HOLD_MS = 15 * 60 * 1000;
+// Enough history to find the newest open delivery hint without scanning the
+// whole run ledger of a busy agent.
+const GATEWAY_DELIVERY_HOLD_LEDGER_SCAN_LIMIT = 20;
+const GATEWAY_DELIVERY_HOLD_RETRY_REASON = "gateway_delivery_hold";
+
+type GatewayDeliveryHold = {
+  /** When the hold ends (the retry hint, capped at MAX_GATEWAY_DELIVERY_HOLD_MS). */
+  until: Date;
+  /** The raw hint the adapter recorded, before the cap. */
+  retryNotBefore: Date;
+  errorCode: string | null;
+};
+
+// Reads the newest still-open delivery window for one agent from the run
+// ledger. Only gateway delivery codes count: a provider quota window is a
+// different condition with a much longer horizon and its own lane.
+async function readActiveGatewayDeliveryHold(
+  dbOrTx: Db,
+  input: { companyId: string; agentId: string; now: Date },
+): Promise<GatewayDeliveryHold | null> {
+  const rows = await dbOrTx
+    .select({
+      errorCode: heartbeatRuns.errorCode,
+      resultJson: heartbeatRuns.resultJson,
+      createdAt: heartbeatRuns.createdAt,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        inArray(heartbeatRuns.errorCode, [...TRANSIENT_GATEWAY_DELIVERY_ERROR_CODES]),
+      ),
+    )
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+    .limit(GATEWAY_DELIVERY_HOLD_LEDGER_SCAN_LIMIT);
+
+  let openHint: Date | null = null;
+  let openErrorCode: string | null = null;
+  for (const row of rows) {
+    const hint = readTransientRetryNotBeforeFromRun(row);
+    if (!hint || hint.getTime() <= input.now.getTime()) continue;
+    if (!openHint || hint.getTime() > openHint.getTime()) {
+      openHint = hint;
+      openErrorCode = row.errorCode ?? null;
+    }
+  }
+  if (!openHint) return null;
+
+  const cappedUntil = input.now.getTime() + MAX_GATEWAY_DELIVERY_HOLD_MS;
+  return {
+    until: new Date(Math.min(openHint.getTime(), cappedUntil)),
+    retryNotBefore: openHint,
+    errorCode: openErrorCode,
+  };
+}
+
+// One parked run per (agent, issue) per window: the wake that opened the
+// deferral and every later wake coalesces into it, so the pair produces one
+// run when the window closes instead of one run per wake.
+async function findLiveGatewayDeliveryHoldRun(
+  dbOrTx: Db,
+  input: { companyId: string; agentId: string; issueId: string; now: Date },
+) {
+  return dbOrTx
+    .select({
+      id: heartbeatRuns.id,
+      wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.status, "scheduled_retry"),
+        eq(heartbeatRuns.scheduledRetryReason, GATEWAY_DELIVERY_HOLD_RETRY_REASON),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        gt(heartbeatRuns.scheduledRetryAt, input.now),
+      ),
+    )
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}
+
+// A parked wake keeps the input the wake carried, so a comment that arrived
+// during the window is still part of the run that finally starts.
+async function coalesceWakeIntoGatewayDeliveryHoldRun(
+  dbOrTx: Db,
+  input: {
+    run: { id: string; wakeupRequestId: string | null; contextSnapshot: unknown };
+    payload: Record<string, unknown> | null;
+    now: Date;
+  },
+) {
+  const carriedCommentIds = queuedCommentIdsFromWakePayload(input.payload);
+  if (carriedCommentIds.length) {
+    const context = parseObject(input.run.contextSnapshot);
+    const mergedCommentIds = [
+      ...new Set([...queuedCommentIdsFromRunContext(context), ...carriedCommentIds]),
+    ];
+    await dbOrTx
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: withQueuedCommentIdsInRunContext(context, mergedCommentIds),
+        updatedAt: input.now,
+      })
+      .where(eq(heartbeatRuns.id, input.run.id));
+  }
+  if (input.run.wakeupRequestId) {
+    await dbOrTx
+      .update(agentWakeupRequests)
+      .set({
+        coalescedCount: sql`${agentWakeupRequests.coalescedCount} + 1`,
+        updatedAt: input.now,
+      })
+      .where(eq(agentWakeupRequests.id, input.run.wakeupRequestId));
+  }
+}
+
+function withGatewayDeliveryHoldPayload(
+  payload: Record<string, unknown> | null,
+  issueId: string,
+  hold: GatewayDeliveryHold,
+) {
+  return {
+    ...(payload ?? {}),
+    issueId,
+    gatewayDeliveryHold: {
+      until: hold.until.toISOString(),
+      retryNotBefore: hold.retryNotBefore.toISOString(),
+      errorCode: hold.errorCode,
+    },
+  };
 }
 
 function isSpawnLikeFailureMessage(value: unknown) {
@@ -28096,6 +28281,64 @@ export function heartbeatService(
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
           }
 
+          // A gateway that refused an earlier wake is still inside its delivery
+          // window: creating another dispatchable run here would only produce
+          // another refused wake that never does the work. The wake is parked
+          // on a `scheduled_retry` run instead (promoted by
+          // promoteDueScheduledRetries once the window closes), and every later
+          // wake for the same agent and issue coalesces into that parked run.
+          const deliveryHoldNow = new Date();
+          const gatewayDeliveryHold = await readActiveGatewayDeliveryHold(
+            tx as unknown as Db,
+            { companyId: agent.companyId, agentId, now: deliveryHoldNow },
+          );
+          if (gatewayDeliveryHold) {
+            const parkedRun = await findLiveGatewayDeliveryHoldRun(tx as unknown as Db, {
+              companyId: agent.companyId,
+              agentId,
+              issueId: issue.id,
+              now: deliveryHoldNow,
+            });
+            // Only a plain wake coalesces into the parked run. A wake that
+            // carries its own execution contract - an interaction resolution, a
+            // durable chat turn, an interaction continuation - must not be
+            // merged into another wake's run: the parked run keeps the first
+            // wake's contextSnapshot, so merging this one would deliver the
+            // later request as the earlier turn and drop its own contract.
+            // Those wakes park on their own run instead, in the same window.
+            const carriesOwnExecutionContext =
+              Boolean(opts.idempotencyKey?.startsWith("chat-inbound:")) ||
+              isInteractionResolutionWakePayload(payload) ||
+              hasInteractionContinuationWakeContext(enrichedContextSnapshot);
+            if (parkedRun && !carriesOwnExecutionContext) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason,
+                payload: withGatewayDeliveryHoldPayload(
+                  payload,
+                  issue.id,
+                  gatewayDeliveryHold,
+                ),
+                status: "coalesced",
+                runId: parkedRun.id,
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: deliveryHoldNow,
+              });
+              await coalesceWakeIntoGatewayDeliveryHoldRun(tx as unknown as Db, {
+                run: parkedRun,
+                payload,
+                now: deliveryHoldNow,
+              });
+              return { kind: "deferred" as const };
+            }
+          }
+
           const wakeupRequest = await tx
             .insert(agentWakeupRequests)
             .values({
@@ -28105,7 +28348,9 @@ export function heartbeatService(
               source,
               triggerDetail,
               reason,
-              payload,
+              payload: gatewayDeliveryHold
+                ? withGatewayDeliveryHoldPayload(payload, issue.id, gatewayDeliveryHold)
+                : payload,
               status: "queued",
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
@@ -28182,7 +28427,20 @@ export function heartbeatService(
               agentId,
               invocationSource: source,
               triggerDetail,
-              status: "queued",
+              // A delivery-hold wake is parked, not dispatched: the run exists
+              // so the wake keeps its issue, actor and comment context, but it
+              // starts only when the gateway's window closes. The attempt below
+              // counts the park itself (like the workspace/connection waits),
+              // and `gateway_delivery_hold` is a non-failure wait lane, so the
+              // promoted run still gets the full bounded retry ladder.
+              status: gatewayDeliveryHold ? "scheduled_retry" : "queued",
+              ...(gatewayDeliveryHold
+                ? {
+                    scheduledRetryAt: gatewayDeliveryHold.until,
+                    scheduledRetryAttempt: 1,
+                    scheduledRetryReason: GATEWAY_DELIVERY_HOLD_RETRY_REASON,
+                  }
+                : {}),
               responsibleUserId: await resolveQueuedResponsibleUserId(),
               wakeupRequestId: wakeupRequest.id,
               retryOfRunId: failedChatRetry
@@ -28241,6 +28499,10 @@ export function heartbeatService(
           // executionRunId is NOT stamped here (enqueueWakeup queues the run but
           // doesn't start it). It will be stamped in claimQueuedRun() once the run
           // transitions to "running" — Fix A (lazy locking).
+
+          // A parked run is not a queued run: nothing may dispatch it before the
+          // gateway's window closes, so this wake reports itself as deferred.
+          if (gatewayDeliveryHold) return { kind: "deferred" as const };
 
           return { kind: "queued" as const, run: newRun };
         })
