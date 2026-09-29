@@ -184,7 +184,7 @@ function readConfig(configPath: string): PartialConfig | null {
 export function resolveDatabaseTarget(): ResolvedDatabaseTarget {
   const configPath = resolvePaperclipConfigPath();
   const envPath = resolvePaperclipEnvPath(configPath);
-  const envEntries = readEnvEntries(envPath);
+  const envEntries = process.env.PAPERCLIP_DECLARATIVE === "true" ? {} : readEnvEntries(envPath);
 
   const envUrl = process.env.DATABASE_URL?.trim();
   if (envUrl) {

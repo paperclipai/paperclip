@@ -2798,3 +2798,4 @@ export type { AgentInstructionCandidate } from "./types/agent.js";
 export { resolveAgentInstructionCandidateSchema, type ResolveAgentInstructionCandidate } from "./validators/agent.js";
 
 export { isHeartbeatRunVisibleInMine } from "./heartbeat-inbox.js";
+export { deploymentManifestSchema, type DeploymentManifest } from "./deployment-manifest.js";

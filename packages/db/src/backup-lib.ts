@@ -317,16 +317,31 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, label: string):
   }
 }
 
+/** libpq passwords are child-only environment values, never command arguments. */
+export function postgresUtilityConnection(connectionString: string, inherited = process.env) {
+  const url = new URL(connectionString);
+  const password = url.searchParams.get("password") ?? decodeURIComponent(url.password);
+  url.password = "";
+  url.searchParams.delete("password");
+  const env: NodeJS.ProcessEnv = inherited.PAPERCLIP_DECLARATIVE === "true"
+    ? Object.fromEntries(["PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR", "LD_LIBRARY_PATH", "SSL_CERT_FILE"].filter((key) => inherited[key] !== undefined).map((key) => [key, inherited[key]]))
+    : { ...inherited };
+  if (password) env.PGPASSWORD = password;
+  return { connectionString: url.toString(), env };
+}
+
 async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
+  const connection = postgresUtilityConnection(opts.connectionString);
   const child = spawn(
     pgDumpBin,
     [
-      `--dbname=${opts.connectionString}`,
+      `--dbname=${connection.connectionString}`,
+      "--no-password",
       "--format=plain",
       "--clean",
       "--if-exists",
@@ -336,7 +351,7 @@ async function runPgDumpBackup(opts: {
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
-        ...process.env,
+        ...connection.env,
         PGCONNECT_TIMEOUT: String(opts.connectTimeout),
       },
     },
@@ -354,10 +369,12 @@ async function runPgDumpBackup(opts: {
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
   const psqlBin = process.env.PAPERCLIP_PSQL_PATH || "psql";
+  const connection = postgresUtilityConnection(opts.connectionString);
   const child = spawn(
     psqlBin,
     [
-      `--dbname=${opts.connectionString}`,
+      `--dbname=${connection.connectionString}`,
+      "--no-password",
       "--set=ON_ERROR_STOP=1",
       "--quiet",
       "--no-psqlrc",
@@ -365,7 +382,7 @@ async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: 
     {
       stdio: ["pipe", "ignore", "pipe"],
       env: {
-        ...process.env,
+        ...connection.env,
         PGCONNECT_TIMEOUT: String(connectTimeout),
       },
     },

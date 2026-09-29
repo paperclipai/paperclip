@@ -15,6 +15,69 @@ function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
 }
 
+/** Hold this lease for the entire managed controller or offline apply lifetime.
+ * The caller must stop work on loss: reconnecting cannot restore ownership. */
+export async function acquireDeploymentLease(connection: string, onLost: () => void) {
+  let active = false;
+  const client = postgres(connection, {
+    max: 1,
+    idle_timeout: 0,
+    max_lifetime: 0,
+    connection: { application_name: "paperclip-deployment-lease" },
+    onnotice: () => {},
+    onclose: () => {
+      if (active) {
+        active = false;
+        onLost();
+      }
+    },
+  });
+  const reserved = await client.reserve().catch(async (error) => {
+    await client.end({ timeout: 1 });
+    throw error;
+  });
+  try {
+    const [result] = await reserved`select pg_try_advisory_lock(1735289202) as acquired`;
+    if (!result.acquired) throw new Error("A declarative server or provisioner already owns this database");
+    active = true;
+  } catch (error) {
+    reserved.release();
+    await client.end({ timeout: 1 });
+    throw error;
+  }
+  let releasing: Promise<void> | undefined;
+  return () => releasing ??= (async () => {
+    const held = active;
+    active = false;
+    try {
+      if (held) await reserved`select pg_advisory_unlock(1735289202)`;
+    } finally {
+      reserved.release();
+      await client.end({ timeout: 1 });
+    }
+  })();
+}
+
+/** Managed launches must not infer compatibility from an unknown journal. */
+export async function assertDeploymentSchemaCompatible(url: string) {
+  const connection = createUtilitySql(url);
+  try {
+    const schema = await discoverMigrationTableSchema(connection);
+    if (!schema) return;
+    const columns = await getMigrationTableColumnNames(connection, schema);
+    if (!columns.has("hash")) throw new Error("Declarative deployment requires a hash-based migration journal");
+    const known = await mapHashesToMigrationFiles(await listMigrationFiles());
+    const rows = await connection.unsafe<{ hash: string }[]>(
+      `SELECT hash FROM ${quoteIdentifier(schema)}.${quoteIdentifier(DRIZZLE_MIGRATIONS_TABLE)} ORDER BY id`,
+    );
+    if (rows.some((row) => !known.has(row.hash))) {
+      throw new Error("Database contains unknown or newer migrations; restore a compatible backup or use a compatible binary");
+    }
+  } finally {
+    await connection.end({ timeout: 1 });
+  }
+}
+
 type RegisteredPostgresClient = ReturnType<typeof postgres>;
 
 /**

@@ -32,8 +32,10 @@ import {
   resolveHomeAwarePath,
 } from "./home-paths.js";
 
+import { deploymentServerCredential } from "./deployment/runtime.js";
+
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
-if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
+if (process.env.PAPERCLIP_DECLARATIVE !== "true" && existsSync(PAPERCLIP_ENV_FILE_PATH)) {
   loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
 }
 
@@ -42,14 +44,14 @@ const cwdEnvExists = existsSync(CWD_ENV_PATH);
 const isSameFile = cwdEnvExists && existsSync(PAPERCLIP_ENV_FILE_PATH)
   ? realpathSync(CWD_ENV_PATH) === realpathSync(PAPERCLIP_ENV_FILE_PATH)
   : CWD_ENV_PATH === PAPERCLIP_ENV_FILE_PATH;
-if (shouldLoadWorkingDirectoryEnv({
+if (process.env.PAPERCLIP_DECLARATIVE !== "true" && shouldLoadWorkingDirectoryEnv({
   cwdEnvExists,
   isPaperclipEnvFile: isSameFile,
 })) {
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
 }
 
-maybeRepairLegacyWorktreeConfigAndEnvFiles();
+if (process.env.PAPERCLIP_DECLARATIVE !== "true") maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 
@@ -329,8 +331,8 @@ export function loadConfig(): Config {
     ),
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
-    databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
-    databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
+    databaseUrl: deploymentServerCredential("database") ?? process.env.DATABASE_URL ?? fileDbUrl,
+    databaseMigrationUrl: deploymentServerCredential("migration") ?? process.env.DATABASE_MIGRATION_URL,
     embeddedPostgresDataDir: resolveHomeAwarePath(
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
     ),

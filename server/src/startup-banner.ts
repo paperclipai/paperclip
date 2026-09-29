@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import type { BindMode, DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { deploymentServerCredential } from "./deployment/runtime.js";
 
 import { parse as parseEnvFileContents } from "dotenv";
 
@@ -72,6 +73,7 @@ function resolveAgentJwtSecretStatus(
   status: "pass" | "warn";
   message: string;
 } {
+  if (deploymentServerCredential("auth")) return { status: "pass", message: "set (runtime credential)" };
   const envValue = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
   if (envValue) {
     return {

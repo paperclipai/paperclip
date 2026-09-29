@@ -13,6 +13,9 @@ import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
+import { reconcileDeploymentOnStartup } from "./deployment/startup.js";
+import { embeddedDeploymentIdentity } from "./deployment/runtime.js";
+import { acquireDeploymentLease, assertDeploymentSchemaCompatible } from "@paperclipai/db";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
@@ -265,6 +268,7 @@ async function startServerWithDatabaseTeardown(
     label: string,
     opts?: EnsureMigrationsOptions,
   ): Promise<MigrationSummary> {
+    if (process.env.PAPERCLIP_DECLARATIVE === "true") await assertDeploymentSchemaCompatible(connectionString);
     const autoApply = opts?.autoApply === true;
     let state = await inspectMigrations(connectionString);
     if (state.status === "needsMigrations" && state.reason === "pending-migrations") {
@@ -417,11 +421,24 @@ async function startServerWithDatabaseTeardown(
   let migrationSummary: MigrationSummary = "skipped";
   let activeDatabaseConnectionString: string;
   let resolvedEmbeddedPostgresPort: number | null = null;
+  let releaseDeploymentLease: (() => Promise<void>) | undefined;
+  const leaseDeployment = async (url: string) => {
+    if (process.env.PAPERCLIP_DECLARATIVE !== "true") return;
+    releaseDeploymentLease = await acquireDeploymentLease(url, () => {
+      logger.fatal("Declarative database lease was lost; stopping before further work dispatch");
+      process.exit(1);
+    });
+    startupDatabase.close = async () => {
+      await releaseDeploymentLease?.(); releaseDeploymentLease = undefined;
+      if (embeddedPostgresStartedByThisProcess) await (embeddedPostgresSupervisor?.shutdown() ?? embeddedPostgres?.stop());
+    };
+  };
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
   assertCloudDatabaseContract();
   if (config.databaseUrl) {
+    await leaseDeployment(config.databaseUrl);
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
   
@@ -450,6 +467,7 @@ async function startServerWithDatabaseTeardown(
     await prepareEmbeddedPostgresNativeRuntime();
   
     const dataDir = resolve(config.embeddedPostgresDataDir);
+    const identity = embeddedDeploymentIdentity();
     const configuredPort = config.embeddedPostgresPort;
     let port = configuredPort;
     const logBuffer = createEmbeddedPostgresLogBuffer(120);
@@ -516,13 +534,14 @@ async function startServerWithDatabaseTeardown(
     const runningPid = getRunningPid();
     if (runningPid) {
       port = embeddedPostgresOwnerPort(readFileSync(postmasterPidFile, "utf8"), dataDir, runningPid);
-      const actualDataDir = await getPostgresDataDirectory(`postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`);
+      if (process.env.PAPERCLIP_DECLARATIVE === "true" && port !== configuredPort) throw new Error("Embedded PostgreSQL is running on a different port");
+      const actualDataDir = await getPostgresDataDirectory(identity.url(port, "postgres"));
       if (typeof actualDataDir !== "string" || resolve(actualDataDir) !== resolve(dataDir)) {
         throw new Error("Refusing to reuse PostgreSQL: its data directory belongs to another instance.");
       }
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
     } else {
-      const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
+      const configuredAdminConnectionString = identity.url(configuredPort, "postgres");
       try {
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
         if (
@@ -531,21 +550,22 @@ async function startServerWithDatabaseTeardown(
         ) {
           throw new Error("reachable postgres does not use the expected embedded data directory");
         }
-        await ensurePostgresDatabase(configuredAdminConnectionString, "paperclip");
+        await ensurePostgresDatabase(configuredAdminConnectionString, identity.database);
         logger.warn(
           `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
         );
       } catch {
         const detectedPort = await detectPort(configuredPort);
         if (detectedPort !== configuredPort) {
+          if (process.env.PAPERCLIP_DECLARATIVE === "true") throw new Error("Configured embedded PostgreSQL port is already in use");
           logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
         }
         port = detectedPort;
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
         const createEmbeddedPostgres = () => new EmbeddedPostgres({
           databaseDir: dataDir,
-          user: "paperclip",
-          password: "paperclip",
+          user: identity.user,
+          password: identity.password,
           port,
           persistent: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -615,13 +635,14 @@ async function startServerWithDatabaseTeardown(
       }
     }
   
-    const embeddedAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
+    const embeddedAdminConnectionString = identity.url(port, "postgres");
+    const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, identity.database);
     if (dbStatus === "created") {
       logger.info("Created embedded PostgreSQL database: paperclip");
     }
   
-    const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+    const embeddedConnectionString = identity.url(port);
+    await leaseDeployment(embeddedConnectionString);
     const shouldAutoApplyFirstRunMigrations = !clusterAlreadyInitialized || dbStatus === "created";
     if (shouldAutoApplyFirstRunMigrations) {
       logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
@@ -644,8 +665,17 @@ async function startServerWithDatabaseTeardown(
   const closeDatabaseClients = async () => {
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
     await Promise.all(clients.map((client) => endDatabaseClient(client, 5)));
+    await releaseDeploymentLease?.();
+    releaseDeploymentLease = undefined;
   };
-  startupDatabase.close = closeDatabaseClients;
+  startupDatabase.close = async () => {
+    await closeDatabaseClients();
+    if (embeddedPostgresStartedByThisProcess) await (embeddedPostgresSupervisor?.shutdown() ?? embeddedPostgres?.stop());
+  };
+
+  if (process.env.PAPERCLIP_DECLARATIVE === "true") {
+    await reconcileDeploymentOnStartup(db, config);
+  }
   
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better
@@ -683,6 +713,9 @@ async function startServerWithDatabaseTeardown(
     port: requestedListenPort,
     hostname: config.host,
   });
+  if (process.env.PAPERCLIP_DECLARATIVE === "true" && listenPort !== requestedListenPort) {
+    throw new Error("Configured HTTP port is already in use; declarative deployments never select another port");
+  }
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLoopbackUrlPort(config.authPublicBaseUrl, listenPort);
   }

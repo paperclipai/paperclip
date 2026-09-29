@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
 import {
   DEFAULT_DATABASE_APPLICATION_NAME,
+  acquireDeploymentLease,
+  assertDeploymentSchemaCompatible,
   applyPendingMigrations,
   closeRegisteredClients,
   createDb,
@@ -136,6 +138,54 @@ describeEmbeddedPostgres("createDb pool defaults", () => {
       remaining = await backendsNamed("paperclip-idle-test");
     }
     expect(remaining).toBe(0);
+  }, 30_000);
+});
+
+describeEmbeddedPostgres("managed deployment database ownership", () => {
+  it("excludes a second controller until the first releases its connection", async () => {
+    const url = await createTempDatabase();
+    const lost = vi.fn();
+    const release = await acquireDeploymentLease(url, lost);
+    cleanups.push(release);
+    await expect(acquireDeploymentLease(url, vi.fn())).rejects.toThrow("already owns");
+    await release();
+    await release();
+    expect(lost).not.toHaveBeenCalled();
+    const next = await acquireDeploymentLease(url, vi.fn());
+    cleanups.push(next);
+    await next();
+  }, 30_000);
+
+  it("reports lease loss once and does not reacquire after its backend is terminated", async () => {
+    const url = await createTempDatabase();
+    const observer = postgres(url, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => { await observer.end({ timeout: 1 }); });
+    const lost = vi.fn();
+    const release = await acquireDeploymentLease(url, lost);
+    cleanups.push(release);
+    const [owner] = await observer`
+      select pid from pg_locks where locktype = 'advisory' and objid = 1735289202
+      and database = (select oid from pg_database where datname = current_database())`;
+    expect(owner?.pid).toEqual(expect.any(Number));
+    await observer`select pg_terminate_backend(${owner.pid})`;
+    await expect.poll(() => lost.mock.calls.length).toBe(1);
+    const next = await acquireDeploymentLease(url, vi.fn());
+    cleanups.push(next);
+    await release();
+    expect(lost).toHaveBeenCalledTimes(1);
+    await expect(acquireDeploymentLease(url, vi.fn())).rejects.toThrow("already owns");
+  }, 30_000);
+
+  it("refuses unknown migration hashes without changing the journal", async () => {
+    const url = await createTempDatabase();
+    await expect(assertDeploymentSchemaCompatible(url)).resolves.toBeUndefined();
+    const observer = postgres(url, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => { await observer.end({ timeout: 1 }); });
+    await observer`insert into drizzle.__drizzle_migrations (hash, created_at)
+      values ('unknown-managed-deployment-migration', 9999999999999)`;
+    const before = await observer`select * from drizzle.__drizzle_migrations order by id`;
+    await expect(assertDeploymentSchemaCompatible(url)).rejects.toThrow("unknown or newer migrations");
+    expect(await observer`select * from drizzle.__drizzle_migrations order by id`).toEqual(before);
   }, 30_000);
 });
 

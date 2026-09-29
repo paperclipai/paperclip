@@ -238,6 +238,19 @@ function asLocalEncryptedMaterial(value: StoredSecretVersionMaterial): LocalEncr
   throw badRequest("Invalid local_encrypted secret material");
 }
 
+/** Check a supplied key without creating files or recording secret access. */
+export function verifyLocalEncryptedMaterials(rawKey: string, materials: StoredSecretVersionMaterial[]): void {
+  const key = decodeMasterKey(rawKey);
+  if (!key) throw new Error("Invalid deployment encryption key");
+  try {
+    for (const material of materials) decryptValue(key, asLocalEncryptedMaterial(material));
+  } catch {
+    // The runtime resolver's detailed diagnostics include a key fingerprint.
+    // Deployment output must not expose that fingerprint or encrypted material.
+    throw new Error("Deployment encryption key cannot decrypt stored secrets");
+  }
+}
+
 export const localEncryptedProvider: SecretProviderModule = {
   id: "local_encrypted",
   descriptor() {

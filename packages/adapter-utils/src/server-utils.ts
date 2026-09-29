@@ -3513,6 +3513,10 @@ export function sanitizeInheritedPaperclipEnv(
   baseEnv: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
+  if (baseEnv.PAPERCLIP_DECLARATIVE === "true") {
+    const allowed = new Set(["PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR", "XDG_RUNTIME_DIR", "LD_LIBRARY_PATH", "SSL_CERT_FILE", "NIX_SSL_CERT_FILE"]);
+    for (const key of Object.keys(env)) if (!allowed.has(key)) delete env[key];
+  }
   delete env.PAPERCLIPAI_CMD;
   for (const key of Object.keys(env)) {
     if (!key.startsWith("PAPERCLIP_")) continue;
