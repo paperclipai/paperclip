@@ -8,6 +8,7 @@
  * change already exists in the input.
  */
 
+import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import type {
   CapabilityFixtureInteraction,
   CapabilityFixtureState,
@@ -761,7 +762,7 @@ export function projectCapabilityIssueThread(
       : snapshot.config.provider === "opencode" || snapshot.config.driver === "opencode_server"
         ? "Real OpenCode"
       : snapshot.config.provider === "acpx" || snapshot.config.driver === "acpx_runtime"
-        ? `Real ${snapshot.config.acpxAgent === "grok" ? "Grok Build" : snapshot.config.acpxAgent === "claude" ? "Claude" : snapshot.config.acpxAgent === "codex" ? "Codex" : "Pi"} via ACPX`
+        ? `Real ${ACPX_CAPABILITY_PROFILES[snapshot.config.acpxAgent ?? "pi"].displayName} via ACPX`
         : "Real Codex"
     : mode === "replay" ? "Replay" : "Fake agent";
   const connection = input.connection ?? { state: "connected", attempt: 0 };

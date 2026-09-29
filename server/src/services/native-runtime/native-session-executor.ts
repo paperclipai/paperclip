@@ -1,3 +1,4 @@
+import { resolveAcpxQualification } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
@@ -585,6 +586,19 @@ export function buildNativeProviderEnvironment(
     environment.PAPERCLIP_WORKSPACE_CWD = assignedWorkspaceCwd;
   }
   return environment;
+}
+
+/** Missing candidate bindings must not turn the controller's ambient credentials into explicit input. */
+export function resolveNativeProviderEnvironment(
+  provider: NativeExecutionInput["provider"],
+  configured: NodeJS.ProcessEnv | undefined,
+  host: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (configured !== undefined) return configured;
+  if (provider.kind === "acpx" && ["pi", "cursor", "copilot"].includes(provider.agent)) {
+    return buildNativeProviderEnvironment({}, host);
+  }
+  return host;
 }
 
 type PlanSynchronization = {
@@ -7361,10 +7375,11 @@ async function executePaperclipNativeSessionWithinScope(
   }
   if (
     input.execution.provider.kind === "acpx" &&
-    input.execution.provider.agent === "pi"
+    ["pi", "cursor", "copilot"].includes(input.execution.provider.agent) &&
+    !resolveAcpxQualification(input.execution.provider, process.env)
   ) {
     throw new Error(
-      "paperclip_runner_provider_unsupported: ACPX Pi is unavailable until descriptor-confined verified launch is implemented",
+      "paperclip_runner_provider_unsupported: ACPX candidate requires exact host qualification authorization",
     );
   }
   const preparationSpans = input.preparationSpans ?? [];
@@ -8198,7 +8213,7 @@ async function executePaperclipNativeSessionWithinScope(
         scope: input.execution.binding,
         target: input.runnerExecutionTarget,
         cwd: input.execution.workspace.cwd,
-        env: input.runnerEnvironment ?? process.env,
+        env: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
         resolveCredentials: (binding) => resolveGitHubOperationCredentials(input.db, binding),
         onLog: input.onLog,
       });
@@ -8263,8 +8278,8 @@ async function executePaperclipNativeSessionWithinScope(
               createNativeSessionBackend(input.execution, {
                 runnerInstanceId: input.runnerInstanceId,
                 onSpawn: input.onSpawn,
-                opencodeEnvironment: input.runnerEnvironment ?? process.env,
-                acpxEnvironment: input.runnerEnvironment ?? process.env,
+                opencodeEnvironment: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
+                acpxEnvironment: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
                 opencodeRuntimeDirectory: resolve(
                   resolvePaperclipInstanceRoot(),
                   "runtime",
@@ -9106,10 +9121,10 @@ async function executePaperclipNativeSessionWithinScope(
     summary: native.result.summary,
     sessionId: native.normalizedSessionId,
     sessionDisplayId: native.providerSessionId ?? native.normalizedSessionId,
-    provider: "openai",
+    provider: nativeUsageBiller(input.execution.provider),
     model: input.execution.provider.model,
     usage: normalizeNativeUsage(native.usage),
-    costUsd: nativeUsageCostUsd(native.usage),
+    costUsd: nativeUsageCostUsd(native.usage, input.execution.provider),
     usageBasis: "per_run",
     nativeFinalization: finalization,
   };
@@ -9165,7 +9180,23 @@ function nativeUsageMeasurement(usage: Record<string, unknown>) {
   );
 }
 
-export function nativeUsageCostUsd(usage: Record<string, unknown> | null) {
+export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): string {
+  if (provider.kind === "acpx") {
+    if (provider.agent === "cursor") return "cursor";
+    if (provider.agent === "copilot") return "github";
+    if (provider.agent === "pi") return "openrouter";
+  }
+  return "openai";
+}
+
+export function nativeUsageCostUsd(
+  usage: Record<string, unknown> | null,
+  provider?: NativeExecutionInput["provider"],
+) {
+  // The ACP normalization contract fills absent per-turn cost with zero and
+  // reports actual cost cumulatively. Until it carries an authoritative run
+  // delta with provenance, neither value is a candidate's billed USD receipt.
+  if (provider?.kind === "acpx" && ["cursor", "copilot", "pi"].includes(provider.agent)) return undefined;
   if (!usage) return undefined;
   const measurement = nativeUsageMeasurement(usage);
   const direct =
@@ -9311,6 +9342,10 @@ type RemoteProviderPackManifest = {
     distDigest: string;
     bridgeDigest: string;
     acpxProfileDigests: typeof REMOTE_PROVIDER_PACK_PROFILE_DIGESTS;
+    candidateProviders?: Partial<Record<"cursor" | "copilot" | "pi", {
+      version: string; profileDigest: string; closureDigest: string; qualification: "pending";
+      path: string; sha256: string;
+    }>>;
     artifacts: {
       grokLauncher: { path: string; sha256: string };
       nodeCommand: { path: string; sha256: string };
@@ -9474,6 +9509,28 @@ export function readRemoteProviderPackManifest(
     throw new Error(
       "runner_remote_provider_artifact_incompatible: provider dist tree digest mismatch",
     );
+  }
+  if (payload.candidateProviders !== undefined) {
+    const candidates = payload.candidateProviders;
+    if (!candidates || typeof candidates !== "object" || Array.isArray(candidates) || Object.keys(candidates).length > 3) {
+      throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate inventory");
+    }
+    for (const [provider, candidate] of Object.entries(candidates)) {
+      const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
+      if (!["cursor", "copilot", "pi"].includes(provider) || !candidate
+        || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
+        || candidate.qualification !== "pending" || candidate.path !== expectedPath
+        || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
+        || !/^sha256:[a-f0-9]{64}$/.test(candidate.profileDigest)
+        || !/^sha256:[a-f0-9]{64}$/.test(candidate.closureDigest)
+        || !/^sha256:[a-f0-9]{64}$/.test(candidate.sha256)) {
+        throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate identity");
+      }
+      const candidatePath = providerPackRelativePath(candidate.path, "candidate assets");
+      if (sha256DirectoryTree(resolve(packRoot, candidatePath)) !== candidate.sha256) {
+        throw new Error("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");
+      }
+    }
   }
   const bridgeDigest = `sha256:${createHash("sha256")
     .update(payload.artifacts.opencodeProxy.sha256)
@@ -10881,6 +10938,7 @@ async function createRunnerdBackendWithinSessionClaim(
       "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
       "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
       "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
+      "for(const candidate of Object.values(manifest.payload.candidateProviders||{})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
       "const version=process.versions.node.split('.').map(Number)",
       "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
       "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
@@ -12179,7 +12237,9 @@ async function createRunnerdBackendWithinSessionClaim(
     : input.execution;
   const isGrok = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "grok";
   let effectiveRunnerEnvironmentBase: NodeJS.ProcessEnv = {
-    ...(input.runnerEnvironment ?? (isGrok ? {} : process.env)),
+    ...(isGrok
+      ? input.runnerEnvironment ?? {}
+      : resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment)),
   };
   const grokCredential = isGrok ? await prepareGrokRunnerCredentials({
     companyId: input.execution.binding.companyId, environment: effectiveRunnerEnvironmentBase, remote: Boolean(remoteTarget),
@@ -12334,6 +12394,8 @@ async function createRunnerdBackendWithinSessionClaim(
         ...(input.execution.provider.kind === "acpx"
           ? {
               acpxAgent: input.execution.provider.agent,
+              // Read only the server operator environment, never agent/runtime env.
+              acpxCandidateProfile: resolveAcpxQualification(input.execution.provider, process.env),
               acpxPermissionMode: input.execution.provider.permissionMode,
               acpxPermissionModePinned:
                 input.execution.schema === "paperclip.native-execution-input.v4" ||
@@ -12429,7 +12491,7 @@ async function createRunnerdBackendWithinSessionClaim(
         runnerBinary: controllerRunnerBinary,
         codexCommand: remoteCodexBinary ?? undefined,
         sourceCodexHome: remoteTarget
-          ? resolveSourceCodexHome(input.runnerEnvironment ?? process.env)
+          ? resolveSourceCodexHome(resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment))
           : undefined,
         runnerProcessLauncher: remoteProcessLauncher,
         runnerReconnectGraceMs: remoteTarget ? 120_000 : undefined,

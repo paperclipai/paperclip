@@ -11,7 +11,9 @@ export interface QualifiedAcpxProfile {
   readonly protocolVersion: typeof ACPX_DRIVER_PROTOCOL_VERSION;
   readonly acpxVersion: typeof QUALIFIED_ACPX_VERSION;
   readonly agent: QualifiedAcpxAgent;
-  readonly agentProfileVersion: 1;
+  readonly agentProfileVersion: 1 | 2 | 3 | 4 | 5;
+  readonly qualificationStatus?: "pending";
+  readonly modelPolicy?: "explicit-provider-verified";
   /** Wire identity: an npm package name or a runner-owned builtin: identifier. */
   readonly agentServerPackage: string;
   readonly agentServerVersion: string;
@@ -56,6 +58,28 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     reportedModelId: "openrouter/deepseek/deepseek-v4-flash-0731",
     permissionPolicy: "interactive",
   },
+  cursor: {
+    driverKind: ACPX_DRIVER_KIND, protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
+    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "cursor", agentProfileVersion: 2,
+    agentServerPackage: "cursor-agent", agentServerVersion: "2026.09.26-dd393fe",
+    agentRuntimePackage: null, agentRuntimeVersion: null,
+    commandDigest: "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+    // Authenticated discovery has not established a qualification model. Never
+    // turn this empty declaration into a default; callers must select an ID.
+    qualificationModel: "", reportedModelId: "", permissionPolicy: "interactive",
+    modelPolicy: "explicit-provider-verified", qualificationStatus: "pending",
+  },
+  copilot: {
+    driverKind: ACPX_DRIVER_KIND, protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
+    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "copilot", agentProfileVersion: 2,
+    agentServerPackage: "@github/copilot", agentServerVersion: "1.0.88",
+    agentRuntimePackage: null, agentRuntimeVersion: null,
+    commandDigest: "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+    // Authenticated discovery has not established a qualification model. Never
+    // turn this empty declaration into a default; callers must select an ID.
+    qualificationModel: "", reportedModelId: "", permissionPolicy: "interactive",
+    modelPolicy: "explicit-provider-verified", qualificationStatus: "pending",
+  },
   claude: {
     driverKind: ACPX_DRIVER_KIND,
     protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
@@ -96,7 +120,7 @@ export function resolveQualifiedAcpxProfile(
 ): QualifiedAcpxProfile {
   const profile = QUALIFIED_ACPX_PROFILES[agent];
   if (!requestedModel.trim()) throw new Error("ACPX model must not be empty");
-  if (agent !== "claude" && agent !== "grok" && requestedModel !== profile.qualificationModel) {
+  if (agent !== "claude" && agent !== "grok" && profile.modelPolicy !== "explicit-provider-verified" && requestedModel !== profile.qualificationModel) {
     throw new Error(
       `ACPX ${agent} profile requires exact model ${profile.qualificationModel}; received ${requestedModel}`,
     );

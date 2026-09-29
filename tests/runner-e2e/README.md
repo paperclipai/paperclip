@@ -119,6 +119,8 @@ Shell variables take precedence over the local file. The recognized names are:
 - `XAI_API_KEY` (local Grok API-key profile)
 - `GROK_AUTH_JSON` (local native Grok subscription profile)
 - `DAYTONA_API_KEY`
+- `CURSOR_AUTH_TOKEN` (extended Cursor candidate)
+- `COPILOT_GITHUB_TOKEN` (extended Copilot candidate)
 - `PAPERCLIP_E2E_DAYTONA_IMAGE` (Daytona only)
 
 The image must be an immutable `image@sha256:...` reference. The launcher
@@ -1210,3 +1212,46 @@ missing events or a narrative completion cannot pass. Existing run, copyback,
 screenshot, billing and environment cleanup checks apply. Use
 `--id api-response-reading.runner-codex.daytona.saved-text-pages` with an
 immutable Daytona image; no private hooks or fixture database writes are used.
+
+## Extended ACP harnesses (explicit only)
+
+`--suite extended-harnesses` declares 30 Product E2E cells: Cursor, Copilot,
+and Pi on local and Daytona, each exercising authenticated completion,
+question/answer continuation, revision-bound semantic plan approval, restart
+with pending input, and file edit plus independent byte validation. The file
+case uses a public project workspace so Daytona copy-back is graded too.
+These are candidate definitions, not a claim of provider qualification. Native
+provider-specific questions, plan decisions, restrictive permissions and steering
+need their separate conformance/qualification evidence.
+
+```sh
+pnpm test:e2e:runner -- --list --suite extended-harnesses
+pnpm test:e2e:runner -- --id extended-harnesses.runner-acpx-pi.local.hello-complete
+```
+
+The suite is excluded from `--all`, and candidate cells never automatically
+retry. Select one cell first, reserve its spend and reconcile provider billing
+before another attempt. Existing subscriptions/credits and incremental cash
+charges are separate; unavailable receipts do not mean zero cost. The September
+28 qualification budget is $100 total including retries and Daytona resources:
+$25 per provider and $25 coordinated infrastructure/diagnosis.
+
+The launcher binds only the selected candidate and exact discovered model in
+`PAPERCLIP_RUNNER_ACPX_QUALIFICATION`, a JSON array of `{agent,model}` pairs.
+The server reads this operator environment at its normal runnerd construction
+boundary; agent config/environment cannot enable qualification. Normal hosts
+have no admission override. It does not bypass profile, executable, credential,
+company, tool or permission checks. Keep this variable confined to isolated
+qualification instances. Model catalog discovery alone does not prove inference
+entitlement; all three profiles remain pending until the required live evidence
+passes. Cursor and Copilot models are the explicit September 28 authenticated
+discovery choices; Pi imports its production profile's fixed OpenRouter model.
+
+Run each candidate from its provider branch, with its verified candidate assets
+materialized under the runner package, and build the TypeScript sidecar before
+local execution. Daytona additionally requires that branch's immutable Linux
+candidate image and the matching controller-owned provider pack described in
+[`docker/daytona-runner/README.md`](../../docker/daytona-runner/README.md).
+The separate Runner Evals `extended-harnesses` campaign lives in the private
+`paperclip-evals` repository and grades semantic protocol behavior against the
+mock control plane. Neither suite substitutes for the other.

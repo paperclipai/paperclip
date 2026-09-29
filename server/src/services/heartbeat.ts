@@ -5253,11 +5253,13 @@ export function resolveLedgerCostStatus(input: {
   cachedInputTokens: number;
   outputTokens: number;
 }): CostStatus {
-  const hasTokenUsage =
-    input.inputTokens > 0 ||
-    input.cachedInputTokens > 0 ||
-    input.outputTokens > 0;
-  return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
+  // A paused turn can have neither a token receipt nor a cost receipt. Zero
+  // normalized counters do not establish that its billed cost was zero.
+  return typeof input.costUsd === "number" &&
+    Number.isFinite(input.costUsd) &&
+    input.costUsd >= 0
+    ? "reported"
+    : "unpriced";
 }
 
 export function resolveCacheAdjustedCostUsd(input: {

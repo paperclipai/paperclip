@@ -82,7 +82,7 @@ describe("runner E2E Daytona image contract", () => {
     );
     expect(extractDaytonaBaseImages(dockerfile)).toEqual([
       "rust:1.97-bookworm@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6",
-      "node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b",
+      "node:24.21.0-bookworm@sha256:5a750d3be5e5c80275f8c9a5367c3aed99c2875656590c8d0701c7ee687f5f0a",
       "daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3",
     ]);
     expect(dockerignore).toContain("**/node_modules");
@@ -199,6 +199,7 @@ describe("runner E2E Daytona image contract", () => {
       "patches",
       "packages/paperclip-eval-kernel/src",
       "packages/paperclip-runner/package.json",
+      "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
       "packages/paperclip-runner/runner/crates",
       "packages/paperclip-runner/src",
     ]) {
@@ -275,6 +276,14 @@ describe("runner E2E Daytona image contract", () => {
         'pub const VERSION: &str = "one";\n',
       );
       const baseline = await computeDaytonaImageContentId(options);
+      const candidate = await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi"] });
+      expect(candidate).not.toBe(baseline);
+      expect(await computeDaytonaImageContentId({ ...options, candidateProviders: ["copilot", "pi"] }))
+        .toBe(await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "copilot"] }));
+      await expect(computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "pi"] }))
+        .rejects.toThrow("distinct known");
+      await expect(computeDaytonaImageContentId({ ...options, candidateProviders: ["unknown"] }))
+        .rejects.toThrow("distinct known");
       expect(
         await computeDaytonaImageContentId({
           ...options,

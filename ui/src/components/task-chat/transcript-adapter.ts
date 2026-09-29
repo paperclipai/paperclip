@@ -384,6 +384,15 @@ function providerActivityItem(
     });
   }
 
+  if (entry.family === "provider_notice" && Array.isArray(entry.payload.details)) {
+    for (const raw of entry.payload.details.slice(0, 64)) {
+      const detail = objectRecord(raw);
+      if (typeof detail.name === "string" && typeof detail.value === "string") {
+        details.push({ label: clip(detail.name, 160), value: clip(detail.value, 4000), mono: false });
+      }
+    }
+  }
+
   const steps =
     entry.family === "plan" && Array.isArray(entry.payload.steps)
       ? entry.payload.steps

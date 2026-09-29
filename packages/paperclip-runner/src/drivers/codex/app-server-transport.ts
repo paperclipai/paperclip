@@ -1,3 +1,4 @@
+import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
@@ -30,6 +31,8 @@ export type CodexServerRequestHandler = (
 ) => Promise<Record<string, unknown>>;
 
 export interface CodexAppServerTransport {
+  /** Runner-owned live capability projection; absent on native Codex transports. */
+  turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   request(
     method: string,
     params: Record<string, unknown>,

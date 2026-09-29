@@ -80,7 +80,7 @@ export interface NativeAwsAgentCoreProfileSnapshot {
   eventExpiryDays: 90;
 }
 
-export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok";
+export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot";
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
 export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
@@ -90,7 +90,7 @@ export interface NativeAcpxProfileSnapshot {
   protocolVersion: 1;
   acpxVersion: "0.13.1";
   agent: NativeAcpxAgent;
-  agentProfileVersion: 1;
+  agentProfileVersion: 1 | 2 | 3 | 4 | 5;
   agentServerPackage: string;
   agentServerVersion: string;
   agentRuntimePackage: string | null;
@@ -568,8 +568,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
-    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok") {
-      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, or grok");
+    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot") {
+      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, or copilot");
     }
     if (isV4) {
       if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
@@ -596,7 +596,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       || profile.protocolVersion !== 1
       || profile.acpxVersion !== "0.13.1"
       || profile.agent !== provider.agent
-      || profile.agentProfileVersion !== 1
+      || (profile.agentProfileVersion !== 1 && profile.agentProfileVersion !== 2 && profile.agentProfileVersion !== 3 && profile.agentProfileVersion !== 4 && profile.agentProfileVersion !== 5)
     ) {
       throw new NativeExecutionInputError("input.provider.profile does not match the qualified ACPX v1 profile");
     }
@@ -617,7 +617,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
         protocolVersion: 1,
         acpxVersion: "0.13.1",
         agent: provider.agent,
-        agentProfileVersion: 1,
+        agentProfileVersion: profile.agentProfileVersion,
         agentServerPackage: text(profile.agentServerPackage, "input.provider.profile.agentServerPackage"),
         agentServerVersion: text(profile.agentServerVersion, "input.provider.profile.agentServerVersion"),
         agentRuntimePackage: runtimePackage,

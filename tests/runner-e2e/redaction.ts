@@ -4,6 +4,7 @@ import path from "node:path";
 import { redactDiagnosticText } from "../../packages/adapter-utils/src/command-redaction.js";
 
 const SECRET_SHAPES = [
+  /\b(?:github_pat_|ghp_)[A-Za-z0-9_]{16,}\b/g,
   /\bsk-ant-[A-Za-z0-9_-]{16,}\b/g,
   /\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g,
   /\b(?:openrouter|daytona)[-_]?(?:api)?[-_]?key["'=:\s]+[A-Za-z0-9._-]{12,}\b/gi,

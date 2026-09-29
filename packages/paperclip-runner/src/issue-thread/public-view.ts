@@ -246,7 +246,18 @@ function publicProviderPayload(
     case "wait":
       return common(["schema", "waitId", "reason", "status", "plannedDurationMs", "elapsedDurationMs"]);
     case "provider_notice":
-      return common(["schema", "noticeId", "severity", "category", "scope", "recoverable", "userActionable", "summary"]);
+      return {
+        ...common(["schema", "noticeId", "severity", "category", "scope", "recoverable", "userActionable", "summary"]),
+        details: (Array.isArray(source.details) ? source.details : []).slice(0, 64).map(value => {
+          const detail = asRecord(value);
+          return { name: clamp(typeof detail.name === "string" ? detail.name : "Detail", 160), value: clamp(typeof detail.value === "string" ? detail.value : "", 4_000) };
+        }),
+        ...(source.provenance ? { provenance: Object.fromEntries(
+          Object.entries(asRecord(source.provenance)).filter(([key, value]) =>
+            ["method", "eventType", "sessionId", "turnId", "agentId", "timestamp"].includes(key) && typeof value === "string"
+          ).map(([key, value]) => [key, clamp(String(value), 240)]),
+        ) } : {}),
+      };
   }
 }
 

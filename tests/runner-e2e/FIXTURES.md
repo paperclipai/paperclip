@@ -234,6 +234,14 @@ must be an automatic, causally bound repair that records completion. They use
 public task comments/status APIs and run-detail evidence; no private runtime
 hooks or database mutations are used by the fixture.
 
+The explicit-only `extended-harnesses` suite uses five bounded journeys for each
+pending ACP candidate on local and Daytona. Candidate profile metadata includes
+the exact authenticated discovery choice without promoting it to a product
+default. Its file case anchors the task to a public project workspace, validates
+the model's claimed result by reading the actual final bytes, and also exercises
+remote copy-back. Keep candidate admission scoped to the selected model and the
+isolated operator environment; ordinary agent configuration must not enable it.
+
 ## Persistent agent files
 
 The `instruction_persistence` flow uses production managed storage and public file
