@@ -646,6 +646,8 @@ export const queryKeys = {
     ) => ["company-search", companyId, q, scope, limit, offset] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
+  workforceOverview: (companyId: string, initiative?: string | null) =>
+    ["workforce-overview", companyId, initiative ?? ""] as const,
   attention: (companyId: string) => ["attention", companyId] as const,
   decisions: {
     list: (companyId: string, status?: string) =>

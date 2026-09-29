@@ -241,6 +241,8 @@ describe("Sidebar", () => {
     const agentLinks = [...container.querySelectorAll('a[href="/agents"]')];
     expect(agentLinks).toHaveLength(1);
     expect([...container.querySelectorAll('a[href="/activity"]')]).toHaveLength(1);
+    const workforceLink = [...container.querySelectorAll("nav a")].find((anchor) => anchor.textContent?.trim() === "Workforce");
+    expect(workforceLink?.getAttribute("href")).toBe("/activity/workforce");
     expect(navLabels).toContain("Audit");
     expect(navLabels).not.toContain("Settings");
     expect(navLabels).not.toContain("Activity");

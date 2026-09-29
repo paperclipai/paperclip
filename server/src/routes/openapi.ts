@@ -5391,6 +5391,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/workforce-overview",
+  tags: ["activity"],
+  summary: "Get the read-only live workforce overview",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      initiative: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/recovery-observability",
   tags: ["dashboard"],
   summary: "Get recovery observability report",

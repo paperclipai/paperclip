@@ -51,6 +51,7 @@ import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { CompanyActivity } from "./pages/audit/CompanyActivity";
+import { WorkforceOverview } from "./pages/WorkforceOverview";
 import { AuditHub } from "./pages/audit/AuditHub";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
@@ -380,6 +381,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
+      <Route path="activity/workforce" element={<WorkforceOverview />} />
       <Route path="activity" element={streamlinedUiEnabled ? <CompanyActivity /> : <ProductionSurface><ProductionCompanyActivity /></ProductionSurface>} />
       {streamlinedUiEnabled ? (
         <>
@@ -791,12 +793,15 @@ export function App() {
             <>
               <Route path="audit/*" element={<UnprefixedBoardRedirect />} />
               <Route path="activity" element={<UnprefixedBoardRedirect />} />
+              <Route path="activity/workforce" element={<UnprefixedBoardRedirect />} />
               <Route path="activity/*" element={<UnprefixedBoardRedirect />} />
               <Route path="runs" element={<UnprefixedBoardRedirect />} />
               <Route path="costs" element={<UnprefixedBoardRedirect />} />
               <Route path="budgets" element={<UnprefixedBoardRedirect />} />
             </>
-          ) : null}
+          ) : (
+            <Route path="activity/workforce" element={<UnprefixedBoardRedirect />} />
+          )}
           <Route path="decisions" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/studio" element={<UnprefixedBoardRedirect />} />
