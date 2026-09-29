@@ -9,6 +9,7 @@ import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 import { firstTaskTasks } from "./first-task-cases.js";
 import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "../../packages/adapters/codex-local/src/index.js";
@@ -1273,7 +1274,16 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       ...profile,
       buildAgent(input: AgentFixtureBuildInput) {
         const agent = profile.buildAgent(input);
-        return { ...agent, adapterConfig: { ...(agent.adapterConfig as Record<string, unknown>), idleTimeoutMs: 1_200_000 } };
+        // Managed agent-folder collection intentionally stops the provider at
+        // every turn. Fixed external instructions exercise retained processes.
+        return { ...agent, adapterConfig: {
+          ...(agent.adapterConfig as Record<string, unknown>),
+          idleTimeoutMs: 1_200_000,
+          instructionsBundleMode: "external",
+          instructionsRootPath: fileURLToPath(new URL("./fixtures/git-streaming/", import.meta.url)),
+          instructionsEntryFile: "AGENTS.md",
+          instructionsFilePath: fileURLToPath(new URL("./fixtures/git-streaming/AGENTS.md", import.meta.url)),
+        } };
       },
     })),
     environments: [{
@@ -1285,7 +1295,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     }],
     tasks: [daytonaGitStreamingTask],
     expectedMatrixSize: 1,
-    definitionMetadata: { version: 6, nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
+    definitionMetadata: { version: 7, instructions: "fixed-external", nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
   },
 ] as const;
 

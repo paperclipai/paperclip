@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { contextIntegrityTasks } from "./context-integrity-cases.js";
 import { normalizePrpResultSignals } from "../../packages/paperclip-runner/src/protocol/result-normalization.js";
 import {
@@ -42,7 +43,9 @@ describe("runner E2E catalog", () => {
       DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "33333333-3333-4333-8333-333333333333", version: "latest" as const },
     };
     const buildInput = { executionId: "heavy-git", environmentId: "env-1", environmentFixtureId: "daytona" as const, workspacePath: "/workspace", secretRefs };
-    expect(suite.profiles[0]!.buildAgent(buildInput).adapterConfig).toMatchObject({ idleTimeoutMs: 1_200_000 });
+    const adapterConfig = suite.profiles[0]!.buildAgent(buildInput).adapterConfig as Record<string, unknown>;
+    expect(adapterConfig).toMatchObject({ idleTimeoutMs: 1_200_000, instructionsBundleMode: "external", instructionsEntryFile: "AGENTS.md" });
+    expect(readFileSync(String(adapterConfig.instructionsFilePath), "utf8").trim()).not.toBe("");
     expect(runnerProfiles.find(profile => profile.id === "runner-codex")!.buildAgent(buildInput).adapterConfig).toMatchObject({ idleTimeoutMs: 300_000 });
     const environmentInput = { executionId: "heavy-git", secretRefs, daytonaImage: `fixture@sha256:${"a".repeat(64)}` };
     expect(suite.environments[0]!.buildEnvironment(environmentInput).config).toMatchObject({ runnerIdleTimeoutMs: 1_200_000, autoStopInterval: 25, autoArchiveInterval: 30 });

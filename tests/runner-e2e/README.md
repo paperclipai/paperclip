@@ -256,6 +256,10 @@ over the agent setting. Large copyback plus the next preparation
 can exceed the normal five-minute idle window; the PID and process-fingerprint
 continuity checks remain strict. The ordinary warm-continuity cell keeps its
 existing five-minute policy.
+This cell uses a fixed external instruction bundle. Managed agent folders
+intentionally checkpoint and stop the provider after every turn for file
+collection; external instructions allow this cell to test retained-process
+continuity without changing that collection policy.
 It seeds an empty local Git project, creates 60,000 small untracked files through
 the real provider, then performs the same three browser-driven review turns.
 Each later turn updates all 60,000 generated files to distinct turn-specific
