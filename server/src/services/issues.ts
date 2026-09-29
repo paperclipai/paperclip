@@ -231,6 +231,7 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_TIMEOUT_MS = 3_000;
 export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS =
   ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -6553,19 +6554,22 @@ export async function readIssueCommentRunLogText(run: {
   // exist. Read those logs within the same byte budget as a known-size log.
   if (run.logBytes !== null && (!Number.isFinite(run.logBytes) || run.logBytes <= 0)) return "";
 
+  const logRef = run.logRef;
   const store = getRunLogStore();
   let offset = 0;
   let content = "";
   let nextOffset: number | undefined = 0;
+  let readingStopped = false;
+  let readTimer: NodeJS.Timeout | undefined;
 
-  try {
-    while (nextOffset !== undefined) {
+  const readChunks = async () => {
+    while (!readingStopped && nextOffset !== undefined) {
       const remainingBytes =
         ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES -
         Buffer.byteLength(content, "utf8");
       if (remainingBytes <= 0) break;
       const chunk = await store.read(
-        { store: "local_file", logRef: run.logRef },
+        { store: "local_file", logRef },
         {
           offset,
           limitBytes: Math.min(
@@ -6574,19 +6578,32 @@ export async function readIssueCommentRunLogText(run: {
           ),
         },
       );
+      if (readingStopped) return;
       content += chunk.content;
       nextOffset = chunk.nextOffset;
       offset = chunk.nextOffset ?? 0;
     }
+  };
+
+  try {
+    await Promise.race([
+      readChunks(),
+      new Promise<never>((_resolve, reject) => {
+        readTimer = setTimeout(() => reject(new Error("Attribution log read timed out")), ISSUE_COMMENT_RUN_LOG_DERIVATION_TIMEOUT_MS);
+        readTimer.unref?.();
+      }),
+    ]);
   } catch (err) {
-    if (err instanceof HttpError && err.status === 404) {
-      logger.warn(
-        { err, runId: run.runId ?? undefined, logRef: run.logRef },
-        "missing heartbeat run log while deriving issue comment metadata",
-      );
-      return content;
-    }
-    throw err;
+    // Attribution enriches already-authorized comments. Missing, failed, or
+    // stalled storage must not prevent listing them; keep any evidence read.
+    // Do not log raw provider errors, which can contain credentialed URLs.
+    logger.warn(
+      { runId: run.runId ?? undefined, logRef, status: err instanceof HttpError ? err.status : undefined },
+      "could not read heartbeat run log while deriving optional issue comment metadata",
+    );
+  } finally {
+    readingStopped = true;
+    clearTimeout(readTimer);
   }
 
   return content;

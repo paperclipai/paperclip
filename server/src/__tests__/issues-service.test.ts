@@ -152,6 +152,45 @@ describeEmbeddedPostgres("issueService run attachment artifacts", () => {
 });
 
 describe("readIssueCommentRunLogText", () => {
+  it.each([null, 128])("keeps partial attribution evidence when storage fails with logBytes=%s", async (logBytes) => {
+    const read = vi.spyOn(getRunLogStore(), "read").mockRejectedValue(new Error("Storage gateway unavailable"));
+    const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes };
+    try {
+      await expect(readIssueCommentRunLogText(run)).resolves.toBe("");
+      read.mockResolvedValueOnce({ content: "earlier evidence", nextOffset: 16 });
+      await expect(readIssueCommentRunLogText(run)).resolves.toBe("earlier evidence");
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it("bounds stalled attribution reads and stops pagination after the deadline", async () => {
+    let release!: (value: { content: string; nextOffset: number }) => void;
+    const stalled = new Promise<{ content: string; nextOffset: number }>((resolve) => { release = resolve; });
+    const read = vi.spyOn(getRunLogStore(), "read")
+      .mockResolvedValueOnce({ content: "earlier evidence", nextOffset: 16 })
+      .mockReturnValueOnce(stalled);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let result: string | undefined;
+    const pending = readIssueCommentRunLogText({
+      runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null,
+    }).then((value) => { result = value; });
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(result).toBe("earlier evidence");
+      release({ content: "too late", nextOffset: 24 });
+      await pending;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(result).toBe("earlier evidence");
+    } finally {
+      release({ content: "", nextOffset: 0 });
+      await pending.catch(() => {});
+      vi.useRealTimers();
+      read.mockRestore();
+    }
+  });
+
   it.each([null, 128, 0])("reads existing attribution markers with logBytes=%s", async (logBytes) => {
     const commentId = randomUUID();
     const runId = randomUUID();

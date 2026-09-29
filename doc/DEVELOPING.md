@@ -1117,7 +1117,9 @@ seconds, finalization returns unknown size/hash metadata and skips the final
 durable copy so the run can reach a terminal state. A late write cannot restart
 mirroring or produce a claimed verified snapshot.
 Readers still attempt bounded reads when size is unknown. Legacy comment
-attribution retains its existing 2 MB scan limit.
+attribution retains its existing 2 MB scan limit and allows three seconds per
+log. Storage errors or timeouts preserve any evidence already read and leave
+the comments available without additional derived attribution.
 
 ### Preinstalled remote runner runtime
 
