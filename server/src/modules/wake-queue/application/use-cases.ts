@@ -168,29 +168,13 @@ async function runReleaseDrain(
     }
     processedWakeIds.add(candidate.id);
 
-    // A lead can post its closing comment before committing Done. Check
-    // again when the source run releases its queue, using every original
-    // comment ID so coalesced human or unrelated input is never hidden.
-    if (
-      issue.status === "done" &&
-      run.agentId === issue.assigneeAgentId &&
-      run.contextSnapshot?.issueId === issue.id &&
-      !candidate.authorizedFailedChatRetry &&
-      !candidate.preservesIndependentContinuation &&
-      candidate.payload.mutation !== "interaction" &&
-      (candidate.wakeReason ?? candidate.reason) === "issue_comment_mentioned" &&
-      await ports.transaction.isCompletedDelegationMention({
-        companyId: run.companyId,
-        issueId: issue.id,
-        finishingRunId: run.id,
-        wakeAgentId: candidate.agentId,
-        commentIds: [...new Set([...candidate.queuedCommentIds, ...candidate.deferredCommentIds])],
-      })
-    ) {
+    // Retire saved mention requests too, so release cannot turn context into
+    // a new run or reopen completed work after this policy takes effect.
+    if ((candidate.wakeReason ?? candidate.reason) === "issue_comment_mentioned") {
       await ports.transaction.cancelDeferredWake({
         companyId: run.companyId,
         wakeId: candidate.id,
-        reason: "Delegation closing note refers to completed child work",
+        reason: "Agent mentions are context only",
         now: input.now,
       });
       continue;

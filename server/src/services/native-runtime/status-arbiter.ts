@@ -1,6 +1,6 @@
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 
-export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v7";
+export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v6";
 
 export type NativeAuthoritativeIssueStatus =
   | "backlog"
@@ -113,18 +113,9 @@ export function arbitrateNativeStatus(input: {
   reviewOwnerUserId?: string | null;
   /** Review decisions own task state; a reviewer's finish report cannot override them. */
   nativeReviewOutcome?: "resolved" | "pending" | "stale";
-  /** A mention response does not own the source task's lifecycle. */
-  mentionContextRun?: boolean;
   agentId: string;
   priorIssueStatus: NativeAuthoritativeIssueStatus;
 }): NativeStatusDecision {
-  if (input.mentionContextRun) {
-    return {
-      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
-      statusAction: "preserve", toStatus: input.priorIssueStatus,
-      reasonCode: "mention_context_finished", unblockDescriptor: null, effects: [],
-    };
-  }
   if (["done", "cancelled"].includes(input.priorIssueStatus)) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,

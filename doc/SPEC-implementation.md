@@ -622,6 +622,11 @@ rollout mode, and fails closed with the cap in the error once enforcement is
 active. Writes to the run's own source issue are not counted. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
 
+Agent @-mentions are context links only: they do not wake the mentioned agent,
+assign work, or forward comments to another task. Normal comment feedback still
+routes to the current assignee. Work for another agent requires explicit
+assignment, delegation, or a review request.
+
 Agent-authored issue comments persist the responsible user derived from the
 authenticated actor; clients cannot choose that attribution. Each comment also
 records the write-policy reason, and spoof attempts fail with an audited 422.

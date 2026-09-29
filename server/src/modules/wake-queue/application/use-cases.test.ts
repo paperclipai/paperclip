@@ -115,7 +115,6 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       releasePolicy: null,
     })),
     getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
-    isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
     claimDeferredWakeForPromotion: vi.fn(async () => true),
     finalizePromotedWake: vi.fn(async (input) => runSummary(input.wakeId)),
@@ -146,48 +145,33 @@ function createFakeRecovery(): RecoveryEscalationPort {
 }
 
 describe("releaseIssueExecution", () => {
-  it.each(["closing", "mixed_comments", "explicit_resume", "interaction", "other_source_task", "parent_open"])(
-    "checks late completed-delegation mentions without dropping independent input (%s)", async (scenario) => {
-      const originalCommentIds = ["closing-comment", "second-comment"];
-      const candidate = wakeCandidate({
-        reason: "issue_comment_mentioned", wakeReason: "issue_comment_mentioned",
-        requestedByActorType: "agent", requestedByActorId: RUN.agentId,
-        queuedCommentIds: [originalCommentIds[0]], deferredCommentIds: originalCommentIds,
-        preservesIndependentContinuation: scenario === "explicit_resume",
-        payload: scenario === "interaction" ? { mutation: "interaction" } : {},
-        deferredContextSeed: scenario === "explicit_resume" ? { resumeIntent: true } : {},
-      });
-      const queue = [candidate];
-      const transaction = createFakeTransaction({
-        findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
-        isCompletedDelegationMention: vi.fn(async () => scenario !== "mixed_comments"),
-        getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [originalCommentIds[0]], containedSelfAuthoredComment: false })),
-      });
-      const issue = { ...ISSUE, status: scenario === "parent_open" ? "in_progress" : "done" };
-      const run = { ...RUN, status: "succeeded", contextSnapshot: { issueId: scenario === "other_source_task" ? "other-issue" : ISSUE.id } };
-      const release = createReleaseIssueExecution({
-        issueLock: createFakeIssueLock(createFakeHost(), transaction, issue, run), recovery: createFakeRecovery(),
-      });
-      const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
-      if (scenario === "closing" || scenario === "mixed_comments") {
-        expect(transaction.isCompletedDelegationMention).toHaveBeenCalledWith({
-          companyId: RUN.companyId, issueId: ISSUE.id, finishingRunId: RUN.id,
-          wakeAgentId: AGENT.id, commentIds: originalCommentIds,
-        });
-      } else {
-        expect(transaction.isCompletedDelegationMention).not.toHaveBeenCalled();
-      }
-      if (scenario === "closing") {
-        expect(result.outcome.kind).toBe("released");
-        expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(1);
-        expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
-        expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
-      } else {
-        expect(result.outcome.kind).toBe("promoted");
-        expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
-      }
-    },
-  );
+  it.each(["done", "in_progress"].flatMap((status) => [false, true].map((reasonOnly) => ({ status, reasonOnly }))))("cancels legacy deferred mentions without reopening or promoting ($status, reasonOnly=$reasonOnly)", async ({ status, reasonOnly }) => {
+    const queue = [wakeCandidate({
+      reason: reasonOnly ? "issue_comment_mentioned" : "issue_execution_deferred", wakeReason: reasonOnly ? null : "issue_comment_mentioned",
+      queuedCommentIds: ["context-comment"], deferredCommentIds: ["context-comment"],
+      deferredContextSeed: { resumeIntent: true, wakeReason: "issue_comment_mentioned" },
+    })];
+    const transaction = createFakeTransaction({ findNextDeferredWake: vi.fn(async () => queue.shift() ?? null) });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status }),
+      recovery: createFakeRecovery(),
+    });
+    await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date(), suppressImmediateRecovery: true });
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({
+      wakeId: "wake-1", reason: "Agent mentions are context only",
+    }));
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+    expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+    expect(transaction.reopenIssue).not.toHaveBeenCalled();
+  });
+
+  it("preserves new assignee feedback that superseded a legacy mention receipt", async () => {
+    const queue = [wakeCandidate({ agentId: ISSUE.assigneeAgentId!, reason: "issue_comment_mentioned", wakeReason: "issue_commented" })];
+    const transaction = createFakeTransaction({ findNextDeferredWake: vi.fn(async () => queue.shift() ?? null) });
+    const release = createReleaseIssueExecution({ issueLock: createFakeIssueLock(createFakeHost(), transaction), recovery: createFakeRecovery() });
+    expect((await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() })).outcome.kind).toBe("promoted");
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+  });
 
   it("preserves the former owner's queue for handoff adoption while draining the new owner's wake", async () => {
     const stale = wakeCandidate({ agentId: RUN.agentId, queuedCommentIds: ["saved-user-direction"] });
@@ -233,7 +217,6 @@ describe("releaseIssueExecution", () => {
 
   it.each([
     { agentId: ISSUE.assigneeAgentId!, wakeReason: "issue_commented", preservesIndependentContinuation: false, authorizedFailedChatRetry: false },
-    { agentId: "mentioned-agent", wakeReason: "issue_comment_mentioned", preservesIndependentContinuation: false, authorizedFailedChatRetry: false },
     { agentId: "interaction-agent", wakeReason: "issue_commented", preservesIndependentContinuation: true, authorizedFailedChatRetry: false },
     { agentId: "interaction-payload-agent", wakeReason: "issue_commented", preservesIndependentContinuation: false, authorizedFailedChatRetry: false, payload: { mutation: "interaction" } },
     { agentId: "chat-agent", wakeReason: "issue_commented", preservesIndependentContinuation: false, authorizedFailedChatRetry: true },

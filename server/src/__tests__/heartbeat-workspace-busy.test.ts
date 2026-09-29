@@ -633,62 +633,23 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(executedRunIds).toContain(retryRun!.id);
   });
 
-  it("defers a non-assignee run and executes its retry despite the assignee mismatch", async () => {
+  it("cancels a legacy queued mention before adapter or workspace retry dispatch", async () => {
     const fixture = await seedWorkspaceFixture();
-
-    // A comment-mention wake for an agent that is NOT the issue assignee —
-    // the interaction-wake shape that legitimately reaches adapter dispatch
-    // without assignee-ship.
-    const run = await heartbeat.invoke(
-      fixture.nonAssigneeAgentId,
-      "on_demand",
-      {
-        issueId: fixture.issueId,
-        wakeReason: "issue_comment_mentioned",
-        commentId: randomUUID(),
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: fixture.companyId, agentId: fixture.nonAssigneeAgentId,
+      invocationSource: "automation", status: "queued", responsibleUserId: "responsible-user",
+      contextSnapshot: {
+        issueId: fixture.issueId, wakeReason: "issue_comment_mentioned",
+        commentId: randomUUID(), workspaceBusyDeferredWhileAssignee: false,
       },
-      "system",
-    );
-    expect(run).not.toBeNull();
-
-    const deferred = await waitForRunToLeaveActiveStates(run!.id);
-    expect(deferred?.status).toBe("cancelled");
-    expect(deferred?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
-    expect(executedRunIds).not.toContain(run!.id);
-
-    const retryRun = await waitForRetryRun(run!.id);
-    expect(retryRun).toMatchObject({
-      status: "scheduled_retry",
-      scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
-    });
-    expect(
-      (retryRun?.contextSnapshot as Record<string, unknown> | null)?.workspaceBusyDeferredWhileAssignee,
-    ).toBe(false);
-
-    // The non-assignee run never held the issue execution lock, so the
-    // deferral must not have stolen or released it.
-    const issueRow = await db
-      .select({ executionRunId: issues.executionRunId })
-      .from(issues)
-      .where(eq(issues.id, fixture.issueId))
-      .then((rows) => rows[0] ?? null);
-    expect(issueRow?.executionRunId).toBeNull();
-
-    // The holder finishes; the retry must survive the promotion gate even
-    // though the retry's agent is not the issue assignee.
-    await db
-      .update(heartbeatRuns)
-      .set({ status: "succeeded", finishedAt: new Date() })
-      .where(eq(heartbeatRuns.id, fixture.holderRunId));
-
-    const afterDue = new Date(new Date(retryRun!.scheduledRetryAt!).getTime() + 1_000);
-    const promotion = await heartbeat.promoteDueScheduledRetries(afterDue);
-    expect(promotion.runIds).toContain(retryRun!.id);
-
+    }).returning();
     await heartbeat.resumeQueuedRuns();
-    const finishedRetry = await waitForRunToLeaveActiveStates(retryRun!.id);
-    expect(finishedRetry?.status).toBe("succeeded");
-    expect(executedRunIds).toContain(retryRun!.id);
+    const cancelled = await waitForRunToLeaveActiveStates(run.id);
+    expect(cancelled).toMatchObject({ status: "cancelled", errorCode: "issue_mention_context_only" });
+    expect(executedRunIds).not.toContain(run.id);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toEqual([]);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(issue).toMatchObject({ assigneeAgentId: fixture.agentId, executionRunId: null });
   });
 
   it("still cancels an assignee retry at promotion when the issue is reassigned", async () => {

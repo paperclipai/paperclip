@@ -44,14 +44,6 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
-  it.each(["done", "in_progress", "in_review", "blocked"] as const)("a mention response preserves %s and the assignee's lifecycle", (priorIssueStatus) => {
-    for (const terminalState of ["succeeded", "failed", "cancelled"] as const) {
-      expect(arbitrate({ priorIssueStatus, terminalState, mentionContextRun: true })).toMatchObject({
-        statusAction: "preserve", toStatus: priorIssueStatus, effects: [], reasonCode: "mention_context_finished",
-      });
-    }
-  });
-
   it("a reviewer finishes its decision without completing rejected or still-reviewed work", () => {
     for (const priorIssueStatus of ["in_progress", "in_review"] as const) {
       const decision = arbitrate({ priorIssueStatus, nativeReviewOutcome: "resolved" });
@@ -485,7 +477,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v7",
+        policyVersion: "phase6-v6",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

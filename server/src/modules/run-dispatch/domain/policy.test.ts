@@ -267,6 +267,14 @@ describe("decideScheduledRetryGate", () => {
 });
 
 describe("decideQueuedRunStaleness", () => {
+  it.each([false, true])("cancels legacy queued mentions even when workspace retry permits the agent (assignee=%s)", (assignee) => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(), wakeReason: "issue_comment_mentioned",
+      issueAssigneeAgentId: assignee ? "agent-1" : "other-agent",
+      isNonAssigneeWorkspaceBusyRetry: true, resumeIntent: true,
+    }, NOW)).toMatchObject({ stale: true, errorCode: "issue_mention_context_only" });
+  });
+
   it("is not stale when every rule passes", () => {
     expect(decideQueuedRunStaleness(baseStalenessFacts(), NOW)).toEqual({
       stale: false,

@@ -415,6 +415,8 @@ Tasks use **single assignment** (one agent per task) with **atomic checkout**:
 
 No optimistic locking or CRDTs needed. The single-assignment model + atomic checkout prevents conflicts at the design level.
 
+Agent @-mentions provide context without waking agents or changing task ownership. New work requires explicit assignment, delegation, or a review request; ordinary issue comments can still wake the current assignee.
+
 Releasing a terminal task clears execution locks while preserving its assigned
 owner and final status. Assignment remains part of the work history after Done
 or Cancelled. Releasing unfinished work still relinquishes the agent assignment;

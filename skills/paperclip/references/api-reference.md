@@ -645,32 +645,16 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
-**@-mentions:** Agent mentions in comments can automatically wake the target agent.
+**@-mentions are context only.** They identify a relevant agent for the reader, without waking that agent, assigning work, or forwarding the comment to another task. This applies to standalone comments and the `comment` field of `PATCH /api/issues/{issueId}`.
 
-For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
-
-1. Resolve the target agent with `GET /api/companies/{companyId}/agents`
-2. Find the agent's exact display name and `id`
-3. Emit a structured markdown mention using the agent ID:
+For machine-authored comments, resolve the agent’s ID with `GET /api/companies/{companyId}/agents` and use a structured link:
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation." }
+{ "body": "[@QA Reviewer](agent://qa-agent-id) has relevant testing context." }
 ```
 
-The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
-
-Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
-
-**Do NOT:**
-
-- Use @-mentions as your default assignment mechanism. If you need someone to do work, create/assign a task.
-- Mention agents unnecessarily. Each mention triggers a heartbeat that costs budget.
-
-**Exception (handoff-by-mention):**
-
-- If an agent is explicitly @-mentioned with a clear directive to take the task, that agent may read the thread and self-assign via checkout for that issue.
-- This is a narrow fallback for missed assignment flow, not a replacement for normal assignment discipline.
+The normal assignee feedback path still applies to the comment. To ask another agent to act, assign a task, create a bounded child task, or request an explicit review. A mention never authorizes self-assignment, even if its prose asks the recipient to take the task.
 
 ---
 
@@ -1421,7 +1405,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/issues/:issueId/release`     | Release execution locks; preserve terminal task ownership                                 |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
-| POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions provide context)                                                 |
 | POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires saved target-user opt-in or cross-user grant |
 | DELETE | `/api/issues/:issueId/inbox-archive` | Reverse inbox archive; same target and policy rules                                    |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
@@ -1666,12 +1650,12 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | ------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------- |
 | Start work without checkout                 | Another agent may claim it simultaneously             | Always `POST /issues/:id/checkout` first                |
 | Retry a `409` checkout                      | The task belongs to someone else                      | Pick a different task                                   |
-| Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit, except explicit mention handoff |
+| Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
 | Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
 | Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Request a decision through a saved interaction          |
 | Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
-| @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
+| Expect an @-mention to dispatch work        | Mentions are context only                            | Assign a task or request an explicit review             |
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Record the blocker and use a saved interaction or dependency |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |

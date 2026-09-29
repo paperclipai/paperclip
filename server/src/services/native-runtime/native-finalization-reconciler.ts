@@ -1,4 +1,3 @@
-import { isNativeMentionContextRun } from "./native-mention-context.js";
 import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
@@ -555,21 +554,9 @@ export async function reconcileNativeFinalizations(
     logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
   });
   if (runIds?.length) {
-    const scopes = await db.select({
-      issueId: nativeRunFinalizations.issueId,
-      runnerProfileJson: heartbeatRuns.runnerProfileJson,
-      nativeIssueId: heartbeatRuns.nativeIssueId,
-      agentId: heartbeatRuns.agentId,
-      wakeupRequestId: heartbeatRuns.wakeupRequestId,
-    }).from(nativeRunFinalizations)
-      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
-        eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
+    const scopes = await db.select({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations)
       .where(inArray(nativeRunFinalizations.runId, runIds));
-    // Targeted mention reconciliation cannot retire the source owner's review.
-    // The unscoped maintenance sweep below still retires obsolete policy cards.
-    for (const scope of scopes) {
-      if (!isNativeMentionContextRun(scope)) await dismissAutomaticCompletionReviews(db, scope.issueId);
-    }
+    for (const scope of scopes) await dismissAutomaticCompletionReviews(db, scope.issueId);
   } else {
     await dismissAutomaticCompletionReviews(db);
   }
@@ -587,8 +574,6 @@ export async function reconcileNativeFinalizations(
       assessmentId: nativeRunFinalizations.assessmentId,
       decisionId: nativeRunFinalizations.decisionId,
       runnerProfileJson: heartbeatRuns.runnerProfileJson,
-      nativeIssueId: heartbeatRuns.nativeIssueId,
-      wakeupRequestId: heartbeatRuns.wakeupRequestId,
     })
     .from(heartbeatRuns)
     .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
@@ -613,8 +598,6 @@ export async function reconcileNativeFinalizations(
     ));
   const results = [];
   for (const row of rows) {
-    // A completed mention response has no ownership of the source task to reassess.
-    if (row.coordinatorPhase === "committed" && isNativeMentionContextRun(row)) continue;
     const pendingEffects = row.decisionId
       ? await db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
           eq(statusDecisionEffects.companyId, row.companyId),
