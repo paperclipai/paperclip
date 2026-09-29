@@ -186,7 +186,7 @@ impl AcpxProviderDescriptor {
                 "1.0.88",
                 None,
                 None,
-                "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+                "sha256:a119e436b4ad13ee70e1f58bedad4a0f20761b5fd982b752981f0cb1bc65f797",
             ),
             "grok" => (
                 "grok-4.7",
@@ -2731,7 +2731,7 @@ mod tests {
                 "copilot",
                 "@github/copilot",
                 "1.0.88",
-                "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+                "sha256:a119e436b4ad13ee70e1f58bedad4a0f20761b5fd982b752981f0cb1bc65f797",
                 None,
                 None,
                 "explicit-model",
@@ -2759,6 +2759,14 @@ mod tests {
             value["providerPolicy"] = json!({"readOnly":true});
             let valid: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
             valid.validate(&context()).unwrap();
+            if agent == "copilot" {
+                let mut legacy = value.clone();
+                legacy["commandDigest"] = json!(
+                    "sha256:527f9cbbad2f3e75169cae70d7aa5b189200e57f1ab7f9e1523357b5606b0939"
+                );
+                let legacy: AcpxProviderDescriptor = serde_json::from_value(legacy).unwrap();
+                assert!(legacy.validate(&context()).is_err());
+            }
             for field in ["model", "agentServerVersion", "commandDigest"] {
                 let mut wrong = value.clone();
                 wrong[field] = json!("");

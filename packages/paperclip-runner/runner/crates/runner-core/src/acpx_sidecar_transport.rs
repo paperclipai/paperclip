@@ -697,6 +697,8 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "AGENT_DISCONNECTED" => return "agent_disconnected",
         "AUTH_REQUIRED" => return "authentication_required",
         "COPILOT_AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_POLICY_VIOLATION" => return "copilot_policy_violation",
+        "COPILOT_DETACHED_WORK_UNSUPPORTED" => return "copilot_detached_work_unsupported",
         "COPILOT_ENTITLEMENT_DENIED" => return "provider_entitlement_denied",
         "COPILOT_MODEL_UNAVAILABLE" => return "requested_model_unsupported",
         "SESSION_RESUME_REQUIRED" => return "session_resume_required",
@@ -888,6 +890,11 @@ mod tests {
             "provider_lifetime_owned"
         );
         let admission_failures = [
+            ("COPILOT_POLICY_VIOLATION", "copilot_policy_violation"),
+            (
+                "COPILOT_DETACHED_WORK_UNSUPPORTED",
+                "copilot_detached_work_unsupported",
+            ),
             (
                 "ACPX_RUNTIME_ADMISSION_VERIFICATION_TIMEOUT",
                 "runtime_admission_verification_timeout",

@@ -53,6 +53,7 @@ import {
 } from "./recovery-identity.js";
 import {
   prepareAcpxRuntimeSandbox,
+  refreshCopilotSystemInstructions,
   type AcpxRuntimeSandbox,
   type AcpxProviderRuntimePolicy,
 } from "./runtime-sandbox.js";
@@ -474,6 +475,14 @@ export class AcpxRuntimeHost {
         launchEnvironment = Object.freeze({ ...launchEnvironment, AGENT_HOME: agentFiles.root,
           ...(options.agent === "pi" ? { PAPERCLIP_PI_AGENT_HOME: agentFiles.root } : {}),
         });
+      }
+      if (options.agent === "copilot") {
+        // A rejected contender must never overwrite an active provider's text.
+        // Do not race this write against cancellation: retain the lifetime lease
+        // until the atomic refresh settles, then honor an intervening abort.
+        options.signal?.throwIfAborted();
+        await refreshCopilotSystemInstructions(sandbox, boundedInstructions(options.systemInstructions));
+        options.signal?.throwIfAborted();
       }
       if (options.agent === "pi") {
         const skills = await acquireAbortableAdmissionResource({

@@ -30,6 +30,7 @@ import {
 import type { AcpxModelStatus } from "./model-verification.js";
 import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
+import { assertCopilotPromptPolicy, createCopilotProtocolGuard } from "./copilot-policy.js";
 import { createCursorInstructionAdmission } from "./cursor-instructions.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
@@ -320,6 +321,9 @@ export async function openQualifiedAcpxRuntime(
     elicitationModes: ["form"],
     ...(options.clientCapabilities === undefined ? {} : { clientCapabilities: structuredClone(options.clientCapabilities) }),
     extensionMethods: [...new Set([...extensionRequests, ...extensionNotifications])],
+    ...(options.profile.agent === "copilot" ? {
+      protocolGuardFactory: () => createCopilotProtocolGuard(options.profile.reportedModelId),
+    } : {}),
     onExtensionRequest: async (method, params, context) => {
       const active = extensionBoundary.active;
       if (!extensionRequests.has(method) || !active?.onRequest || !ownsExtensionTurn(active, params) || context.signal.aborted) {
@@ -537,6 +541,7 @@ export async function openQualifiedAcpxRuntime(
       commandLaunches,
       permissionBoundary,
       extensionBoundary,
+      options.profile.agent === "copilot" ? assertCopilotPromptPolicy : undefined,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -966,6 +971,7 @@ function runtimePort(
   commandLaunches: { count: number; refreshConsumedCommand?: () => Promise<void> },
   permissionBoundary: { active: AbortController | null; handler?: AcpRuntimeOptions["onPermissionRequest"] },
   extensionBoundary: AcpxRuntimeExtensionBoundary,
+  assertPromptPolicy?: (text: string) => void,
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
   let extensionControls: Promise<void> = Promise.resolve();
@@ -1323,6 +1329,7 @@ function runtimePort(
         }
       : {}),
     startTurn(input) {
+      assertPromptPolicy?.(input.text);
       if (extensionBoundary.active) throw new Error("ACPX runtime already has an active turn");
       const approval = new AbortController();
       const controller = new AbortController();
