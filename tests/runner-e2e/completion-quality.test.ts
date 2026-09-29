@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { COMPLETION_QUALITY_CONFIG, completionQualityControls, completionQualityStatus, completionQualityRequest, judgeCompletionQuality, reserveCompletionQuality, validateCompletionQuality } from "./completion-quality.js";
 const observation = { sourceId: "chat", marker: "REF", worker: { id: "task", title: "Welcome", status: "done", completedAt: "2026-09-01T00:00:00Z" }, documents: [{ id: "doc", issueId: "task", key: "welcome", body: "Welcome to the garden. Meet at 10:30." }], comments: [{ id: "reply", issueId: "chat", authorAgentId: "agent", createdAt: "2026-09-01T00:01:00Z", body: "The note is ready at /issues/task", createdByRunId: "run" }], runs: [] };
 const criteria = Object.keys(COMPLETION_QUALITY_CONFIG.rubric).map(id => ({ id, passed: true, rationale: "Supported by the saved note and reply", evidenceIds: ["reply", "doc"] }));
-const reports = [{ replyId: "reply", rationale: "Reports the completed task", completedTaskIdsReferenced: ["task"], correctsReplyIds: [] as string[] }];
+const reports = [{ replyId: "reply", rationale: "Reports the completed task", completedTaskIdsReferenced: ["task"], resultAccessTaskIds: ["task"], correctsReplyIds: [] as string[] }];
 describe("completion semantic qualification", () => {
   it("uses a pinned no-tool judge and separates untrusted evidence from instructions", () => {
     const request = completionQualityRequest(observation);
@@ -40,13 +40,25 @@ describe("completion semantic qualification", () => {
     [["task"], [], [], true],
   ])("evaluates newly reported results and corrections (%j → %j)", (first, second, corrections, passed) => {
     const inventory = [
-      { ...reports[0], completedTaskIdsReferenced: first as string[] },
-      { ...reports[0], replyId: "reply-again", completedTaskIdsReferenced: second as string[], correctsReplyIds: corrections as string[] },
+      { ...reports[0], completedTaskIdsReferenced: first as string[], resultAccessTaskIds: first as string[] },
+      { ...reports[0], replyId: "reply-again", completedTaskIdsReferenced: second as string[], resultAccessTaskIds: second as string[], correctsReplyIds: corrections as string[] },
     ];
     const verdict = validateCompletionQuality({ criteria, reports: inventory }, twoReplies);
     expect(verdict.passed).toBe(passed);
     expect(verdict.reports).toEqual(inventory);
     if (!passed) expect(verdict.criteria.at(-1)?.evidenceIds).toEqual(["reply", "reply-again"]);
+  });
+  it("accepts first result access after a status-only announcement, but rejects a third redundant reply", () => {
+    const inventory = [{ ...reports[0], resultAccessTaskIds: [] }, { ...reports[0], replyId: "reply-again" }];
+    expect(validateCompletionQuality({ criteria, reports: inventory }, twoReplies).passed).toBe(true);
+    const repeated = { ...twoReplies, comments: [...twoReplies.comments,
+      { ...observation.comments[0], id: "third", createdAt: "2026-09-01T00:03:00Z" }] };
+    expect(validateCompletionQuality({ criteria, reports: [...inventory, { ...reports[0], replyId: "third" }] }, repeated).passed).toBe(false);
+  });
+  it("requires result access to reference unique, inventoried tasks", () => {
+    for (const access of [undefined, ["foreign"], ["second"], ["task", "task"]]) {
+      expect(() => validateCompletionQuality({ criteria, reports: [{ ...reports[0], resultAccessTaskIds: access }] }, observation)).toThrow(/inventory/);
+    }
   });
   it("uses recorded chronology instead of model report order", () => {
     const inventory = [{ ...reports[0], replyId: "reply-again", completedTaskIdsReferenced: ["task", "second"] }, reports[0]];
@@ -89,7 +101,7 @@ describe("completion semantic qualification", () => {
     const controls = completionQualityControls(observation);
     expect(controls.map(c => [c.name, c.expectedPass])).toEqual([["accurate", true], ["stale", false], ["unsupported", false], ["corrected", true],
       ["duplicate", false], ["redundant-acknowledgement", false], ["distinct-tasks", true],
-      ["pending-then-joint", true], ["joint-then-repeated", false], ["supported-content-check", true], ["unsupported-content-check", false], ["recap-with-new-result", true]]);
+      ["pending-then-joint", true], ["joint-then-repeated", false], ["supported-content-check", true], ["unsupported-content-check", false], ["completion-then-result", true], ["completion-then-result-then-repeat", false], ["recap-with-new-result", true]]);
     expect(controls[3].observation.comments).toHaveLength(2);
     expect(controls[4].observation.comments[0].body).not.toBe(controls[4].observation.comments[1].body);
     const distinct = JSON.parse(completionQualityRequest(controls[6].observation).input);

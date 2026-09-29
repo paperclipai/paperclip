@@ -125,7 +125,7 @@ export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> 
 
 export function chatCompletionInstruction(context: Record<string, unknown>) {
   if (!Array.isArray(context.chatCompletionUpdates) || !context.chatCompletionUpdates.length) return "";
-  return `\n\nDelegated work has completed. Tell the user in this conversation what finished and provide access using the supplied task links. Use the recorded status and result locations; do not repeat a promise to do work that is already Done. Do not start more work or change these tasks. The following JSON contains server-recorded lifecycle facts and result locations:\n${JSON.stringify(context.chatCompletionUpdates)}`;
+  return `\n\nDelegated work has completed. Tell the user in this conversation what finished and provide access using the supplied task links. Report completion only for the tasks listed in this update; other tasks receive their own completion updates. Use the recorded status and result locations; do not repeat a promise to do work that is already Done. Do not start more work or change these tasks. The following JSON contains server-recorded lifecycle facts and result locations:\n${JSON.stringify(context.chatCompletionUpdates)}`;
 }
 
 /** Called under the comment transaction, before insertion. An event can publish only once. */
