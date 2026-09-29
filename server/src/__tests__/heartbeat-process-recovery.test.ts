@@ -13960,6 +13960,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, fixture.runId));
     expect(decision?.reasonCode).toBe(repairUsed ? "prior_status_preserved_no_live_path" : "completion_evidence_incomplete");
+    expect(decision?.decisionJson).toMatchObject({
+      boardResponseWait: { sourceCommentId: fixture.commentId },
+      boardResponseWaitOrigin: { sourceCommentId: fixture.commentId },
+    });
+    expect(await db.select().from(issueComments)
+      .where(eq(issueComments.createdByRunId, fixture.runId))).toHaveLength(0);
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId));
     expect(wakes).toHaveLength(repairUsed ? 1 : 2);
     if (!repairUsed) expect(wakes.find((wake) => wake.id !== fixture.wakeupRequestId)?.payload).toMatchObject({
@@ -14586,8 +14592,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
-  it("rechecks native passive Board source inside the status transaction", async () => {
-    const fixture = await seedNativePassiveBoardResponse();
+  it.each(
+    (["board_response_waiting", "completion_evidence_incomplete", "prior_status_preserved_no_live_path"] as const)
+      .flatMap((reasonCode) => (["edited", "deleted", "newer_comment", "wake_actor"] as const)
+        .map((change) => ({ reasonCode, change }))),
+  )("rechecks native Board source inside the status transaction ($reasonCode, $change)", async ({ reasonCode, change }) => {
+    const fixture = await seedNativePassiveBoardResponse("response_wake", {
+      blockingWork: reasonCode !== "board_response_waiting",
+    });
     const expected = await readNativeBoardResponseWaitSource(db, fixture);
     const origin = await readNativeBoardResponseWaitOrigin(db, fixture);
     await finalizeNativeRun({
@@ -14604,10 +14616,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(issues)
       .where(eq(issues.id, fixture.issueId));
-    await db
+    const recoveryActionsBefore = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    if (change === "edited") await db
       .update(issueComments)
       .set({ body: "A later edit revoked this result", updatedAt: new Date() })
       .where(eq(issueComments.id, fixture.commentId));
+    if (change === "deleted") await db.update(issueComments)
+      .set({ deletedAt: new Date() }).where(eq(issueComments.id, fixture.commentId));
+    if (change === "newer_comment") await db.insert(issueComments).values({
+      companyId: fixture.companyId, issueId: fixture.issueId, authorType: "user",
+      authorUserId: "responsible-user", body: "Stop; the request has changed.",
+    });
+    if (change === "wake_actor") await db.update(agentWakeupRequests)
+      .set({ requestedByActorType: "system" }).where(eq(agentWakeupRequests.id, fixture.wakeupRequestId));
     await expect(
       commitNativeStatusDecision({
         db,
@@ -14619,12 +14641,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         priorStatusVersion: issue!.statusVersion,
         priorDecisionId: issue!.lastStatusDecisionId,
         decision: {
-          policyVersion: "phase6-v4",
-          statusAction: "in_progress",
+          policyVersion: "phase6-v7",
+          statusAction: reasonCode === "prior_status_preserved_no_live_path" ? "preserve" : "in_progress",
           toStatus: "in_progress",
-          reasonCode: "board_response_waiting",
+          reasonCode,
           unblockDescriptor: null,
-          effects: [],
+          effects: reasonCode === "board_response_waiting" ? [] : reasonCode === "completion_evidence_incomplete" ? [{
+            kind: "enqueue_continuation", continuationKind: "same_agent", agentId: fixture.agentId,
+            summary: "Finish remaining work", idempotencyKey: "native-completion-incomplete",
+          }] : [{
+            kind: "record_finalization_error", cause: "completion_evidence_incomplete",
+            nextAction: "Bind a durable continuation", agentId: fixture.agentId,
+          }],
         },
         requireBoardResponseWaitSource: expected!.source,
         requireBoardResponseWaitOrigin: origin!,
@@ -14642,6 +14670,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .from(statusDecisions)
         .where(eq(statusDecisions.runId, fixture.runId)),
     ).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toEqual(recoveryActionsBefore);
   });
 
   it("does not let a native passive Board wait suppress a fresh request or reassignment", async () => {
