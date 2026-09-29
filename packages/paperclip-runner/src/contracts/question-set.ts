@@ -262,8 +262,8 @@ export function parsePaperclipQuestionSet(value: unknown): PaperclipQuestionSet 
     ...(optionalText(candidate.title, "/input/title", 1_000) !== undefined
       ? { title: optionalText(candidate.title, "/input/title", 1_000) }
       : {}),
-    ...(optionalText(candidate.description, "/input/description") !== undefined
-      ? { description: optionalText(candidate.description, "/input/description") }
+    ...(optionalText(candidate.description, "/input/description", 100_000) !== undefined
+      ? { description: optionalText(candidate.description, "/input/description", 100_000) }
       : {}),
     ...(optionalText(candidate.submitLabel, "/input/submitLabel", 200) !== undefined
       ? { submitLabel: optionalText(candidate.submitLabel, "/input/submitLabel", 200) }

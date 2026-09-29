@@ -1,10 +1,13 @@
+import { dirname, join } from "node:path";
+import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
+import { createAcpxRuntimeSkillLease } from "./runtime-skill-lease.js";
 import { stageManagedGrokCredential } from "./grok-credentials.js";
-import { join } from "node:path";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
 
 import type {
   AcpElicitationHandler,
+  AcpRuntimeOptions,
   AcpRuntimeEvent,
   AcpRuntimeTurnResult,
 } from "acpx/runtime";
@@ -26,7 +29,6 @@ import {
   type AcpxProviderLifetimeLease,
 } from "./codex-credentials.js";
 import {
-  verifyQualifiedAcpxInstallation,
   type VerifiedAcpxCommandLease,
   type VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
@@ -51,6 +53,7 @@ import {
 import {
   prepareAcpxRuntimeSandbox,
   type AcpxRuntimeSandbox,
+  type AcpxProviderRuntimePolicy,
 } from "./runtime-sandbox.js";
 import type { AcpxExpectedSessionIdentity } from "./sidecar-protocol.js";
 
@@ -83,6 +86,11 @@ export interface AcpxRuntimeGoalCapability {
   actions: Array<"set" | "pause" | "resume" | "clear">;
 }
 
+export interface AcpxRuntimeSteeringCapability {
+  steering: boolean;
+  queuedFollowUp: boolean;
+}
+
 export interface AcpxRuntimeGoalSnapshot {
   objective: string;
   status: "active" | "paused" | "blocked" | "limited" | "complete";
@@ -100,6 +108,9 @@ export interface AcpxRuntimeTurnInput {
   requestId: string;
   signal?: AbortSignal;
   onElicitation?: AcpElicitationHandler;
+  onPermissionRequest?: AcpRuntimeOptions["onPermissionRequest"];
+  onExtensionRequest?: AcpRuntimeOptions["onExtensionRequest"];
+  onExtensionNotification?: AcpRuntimeOptions["onExtensionNotification"];
 }
 
 export interface AcpxRuntimeTurn {
@@ -116,6 +127,9 @@ export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
   setModel?(model: string): Promise<void>;
+  steeringCapability?(): AcpxRuntimeSteeringCapability | null;
+  steerActiveTurn?(text: string, requestId: string): Promise<void>;
+  queueFollowUp?(text: string, requestId: string): Promise<void>;
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
   controlGoal?(
@@ -127,6 +141,8 @@ export interface AcpxRuntimePort {
 }
 
 export interface AcpxRuntimePortOpenOptions {
+  /** Ephemeral provider extension metadata; mandatory ACP caps remain host-owned. */
+  clientCapabilities?: Record<string, unknown>;
   command: VerifiedAcpxCommandLease;
   /** Replace a consumed launch snapshot after an ephemeral control session. */
   refreshConsumedCommand?: () => Promise<void>;
@@ -166,7 +182,7 @@ export type AcpxSemanticToolSession = Omit<RunnerToolBridgeOptions, "secret">;
 
 export interface AcpxRetainedCleanupFailure {
   resource:
-    "credential" | "provider_lifetime" | "command" | "runtime" | "tool_bridge";
+    "credential" | "provider_lifetime" | "command" | "runtime" | "tool_bridge" | "skills";
   attempt: number;
   error: unknown;
 }
@@ -198,6 +214,10 @@ export interface AcpxRuntimeHostDependencies {
 }
 
 export interface OpenAcpxRuntimeHostOptions {
+  /** Explicit task execution policy; never inferred from auto-approval. Required for Pi. */
+  providerPolicy?: AcpxProviderRuntimePolicy;
+  /** Never persisted as session options or recovery identity. */
+  clientCapabilities?: Record<string, unknown>;
   runtimeDirectory: string;
   normalizedSessionId: string;
   workingDirectory: string;
@@ -288,10 +308,8 @@ export class AcpxRuntimeHost {
     dependencies: AcpxRuntimeHostDependencies,
   ): Promise<AcpxRuntimeHost> {
     options.signal?.throwIfAborted();
-    if (options.agent === "pi") {
-      throw new Error(
-        "ACPX pi is unavailable until its runtime has descriptor-confined verified launch",
-      );
+    if (options.agent === "pi" && typeof options.providerPolicy?.readOnly !== "boolean") {
+      throw new Error("Pi admission requires an explicit task execution policy");
     }
     const nativeMcp = nativeMcpLaunchBinding(options.environment);
     if (nativeMcp?.name === "paperclip") {
@@ -311,6 +329,8 @@ export class AcpxRuntimeHost {
           profile,
           requestedModel: options.model,
           permissionMode: options.permissionMode,
+          ...(["cursor", "copilot", "pi"].includes(options.agent) && options.providerPolicy !== undefined
+            ? { providerPolicy: options.providerPolicy } : {}),
         }),
       dependencies.retainAdmissionCleanup,
     );
@@ -330,7 +350,7 @@ export class AcpxRuntimeHost {
     const installation = await runAbortableAdmissionStage(
       options.signal,
       () =>
-        (dependencies.verifyInstallation ?? verifyQualifiedAcpxInstallation)(
+        (dependencies.verifyInstallation ?? verifyAcpxProfileInstallation)(
           profile,
         ),
       dependencies.retainAdmissionCleanup,
@@ -389,6 +409,16 @@ export class AcpxRuntimeHost {
             agent: options.agent,
             environment: options.environment,
             tools: options.semanticTools?.tools,
+            ...(options.providerPolicy === undefined ? {} : { providerPolicy: {
+              ...options.providerPolicy,
+              systemInstructions: boundedInstructions(options.systemInstructions),
+              protectedPaths: [
+                ...(options.providerPolicy.protectedPaths ?? []),
+                ...(installation.agentServerPackageJsonPath === null
+                  ? []
+                  : [dirname(installation.agentServerPackageJsonPath)]),
+              ],
+            } }),
           }),
         dependencies.retainAdmissionCleanup,
       );
@@ -424,6 +454,30 @@ export class AcpxRuntimeHost {
           releaseLate: (lateLifetime) => lateLifetime.close(),
           reportFailure: (failure) =>
             dependencies.reportRetainedCleanupFailure(failure),
+        });
+      }
+      assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
+      let launchEnvironment = sandbox.launchEnvironment;
+      if (options.agent === "pi") {
+        const skills = await acquireAbortableAdmissionResource({
+          signal: options.signal,
+          acquire: () => createAcpxRuntimeSkillLease(options.runtimeContext ?? null),
+          resource: "skills", releaseLate: value => value.close(),
+          reportFailure: dependencies.reportRetainedCleanupFailure,
+        });
+        const providerLifetime = credential;
+        credential = {
+          lifetimeFenceCandidates: providerLifetime.lifetimeFenceCandidates,
+          lifetimeFenceFds: providerLifetime.lifetimeFenceFds,
+          activateLifetimeOwner: pid => providerLifetime.activateLifetimeOwner(pid),
+          async close() {
+            // Only release assigned files after the provider lifetime quorum closes.
+            await providerLifetime.close();
+            await skills.close();
+          },
+        };
+        launchEnvironment = Object.freeze({ ...sandbox.launchEnvironment,
+          PAPERCLIP_PI_READ_ROOTS: JSON.stringify([...(options.providerPolicy?.readRoots ?? []), ...skills.readRoots]),
         });
       }
       if (options.agent === "claude" || options.agent === "grok") {
@@ -467,9 +521,13 @@ export class AcpxRuntimeHost {
       }
       runtime = await acquireAbortableAdmissionResource({
         signal: options.signal,
-        acquire: () => {
+        acquire: async () => {
           options.assertWorkspaceHeld?.();
+          await assertAcpxProfileWorkspace(options.agent, binding.workspacePath);
           return dependencies.openRuntime({
+            ...(options.clientCapabilities === undefined ? {} : {
+              clientCapabilities: structuredClone(options.clientCapabilities),
+            }),
             command: command!,
             refreshConsumedCommand: commandOwner.refreshConsumedCommand,
             profile,
@@ -480,7 +538,7 @@ export class AcpxRuntimeHost {
             permissionPolicy: acpxRuntimePermissionPolicy(
               binding.permissionMode,
             ),
-            launchEnvironment: sandbox.launchEnvironment,
+            launchEnvironment,
             credentialFenceFds: admittedLifetime.lifetimeFenceFds,
             activateCredentialFenceOwner:
               admittedLifetime.activateLifetimeOwner.bind(admittedLifetime),
@@ -565,6 +623,7 @@ export class AcpxRuntimeHost {
           : [],
       });
     } catch (error) {
+      error = classifyAcpxProfileError(options.agent, error) ?? error;
       const cleanup = cleanupRuntimeResources(
         runtime,
         toolBridge,
@@ -637,6 +696,36 @@ export class AcpxRuntimeHost {
     return this.#runtime.goalCapability?.() ?? null;
   }
 
+  steeringCapability(): AcpxRuntimeSteeringCapability | null {
+    return this.#runtime.steeringCapability?.() ?? null;
+  }
+
+  async steerActiveTurn(text: string, turnId?: string): Promise<void> {
+    const turn = this.#activeTurn;
+    if (this.#closed || this.#closingStarted || !turn || (turnId !== undefined && turn.requestId !== turnId)) {
+      throw new Error("ACPX steering does not own an active turn");
+    }
+    if (!this.steeringCapability()?.steering || !this.#runtime.steerActiveTurn) {
+      throw new Error("ACPX active steering is unavailable");
+    }
+    await turn.promptStarted;
+    if (this.#activeTurn !== turn || this.#closingStarted) throw new Error("ACPX steering turn expired");
+    await this.#runtime.steerActiveTurn(boundedTurnText(text), turn.requestId);
+  }
+
+  async queueFollowUp(text: string, turnId?: string): Promise<void> {
+    const turn = this.#activeTurn;
+    if (this.#closed || this.#closingStarted || !turn || (turnId !== undefined && turn.requestId !== turnId)) {
+      throw new Error("ACPX follow-up does not own an active turn");
+    }
+    if (!this.steeringCapability()?.queuedFollowUp || !this.#runtime.queueFollowUp) {
+      throw new Error("ACPX queued follow-up is unavailable");
+    }
+    await turn.promptStarted;
+    if (this.#activeTurn !== turn || this.#closingStarted) throw new Error("ACPX follow-up turn expired");
+    await this.#runtime.queueFollowUp(boundedTurnText(text), turn.requestId);
+  }
+
   goalSnapshot(): AcpxRuntimeGoalSnapshot | null {
     return this.#runtime.goalSnapshot?.() ?? null;
   }
@@ -670,6 +759,9 @@ export class AcpxRuntimeHost {
       requestId,
       ...(input.signal ? { signal: input.signal } : {}),
       ...(input.onElicitation ? { onElicitation: input.onElicitation } : {}),
+      ...(input.onPermissionRequest ? { onPermissionRequest: input.onPermissionRequest } : {}),
+      ...(input.onExtensionRequest ? { onExtensionRequest: input.onExtensionRequest } : {}),
+      ...(input.onExtensionNotification ? { onExtensionNotification: input.onExtensionNotification } : {}),
     });
     this.#activeTurn = turn;
     void turn.result

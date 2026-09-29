@@ -149,7 +149,12 @@ function runtimeRequestEntry(input: {
   const requestId = text(request.requestId) ?? text(input.payload.requestId);
   if (!requestId) return null;
   const suffix = input.eventType.split(".").at(-1);
-  const rawStatus = text(request.status) ?? suffix;
+  // The lifecycle event is authoritative. ACP delivery receipts carry
+  // status:"delivered" in their payload, which must not reopen a resolved
+  // request as pending just because it is not a UI lifecycle status.
+  const rawStatus = suffix === "resolved" || suffix === "expired" || suffix === "cancelled"
+    ? suffix
+    : text(request.status) ?? suffix;
   const resolvedAction = text(request.action)
     ?? text(input.payload.action)
     ?? input.previous?.resolvedAction

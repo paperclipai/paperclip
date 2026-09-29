@@ -45,6 +45,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
+        provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
         runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
@@ -130,8 +131,12 @@ fn bootstraps_a_codex_session_and_confirms_run_identity() {
 #[test]
 fn validates_qualified_policy_and_tool_catalog_before_spawning() {
     let mut invalid_agent = config("bootstrap");
-    invalid_agent.agent = "pi".to_owned();
-    assert!(start_error(&invalid_agent).contains("claude, codex, or grok"));
+    invalid_agent.agent = "unknown".to_owned();
+    assert!(start_error(&invalid_agent).contains("known immutable profile"));
+
+    let mut missing_policy = config("bootstrap");
+    missing_policy.agent = "copilot".to_owned();
+    assert!(start_error(&missing_policy).contains("explicit provider read-only policy"));
 
     let mut unpinned = config("bootstrap");
     unpinned.permission_mode_pinned = false;

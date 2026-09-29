@@ -1,5 +1,7 @@
 import { codexLocalReasoningEffortsForModel, isCodexLocalFastModeSupported, isCodexLocalKnownModel } from "@paperclipai/adapter-codex-local";
-import { modelSupportsEffort, KIMI_SUPPORTED_EFFORTS } from "@paperclipai/adapter-kimi-local";
+import { claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
+import { DEFAULT_GROK_LOCAL_MODEL, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
+import { DEFAULT_KIMI_LOCAL_MODEL, modelSupportsEffort, KIMI_SUPPORTED_EFFORTS } from "@paperclipai/adapter-kimi-local";
 import { aiConnectionBindingSchema, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 
 export interface ComposerRunSettings {
@@ -43,14 +45,19 @@ export function composerCatalogProvider(agent: Agent | undefined): string | unde
 }
 
 export function composerEfforts(agent: Agent | undefined, model: string, catalogIds: readonly string[]): readonly string[] {
-  if (!agent || !model) return [];
-  if (agent.adapterType === "codex_local") {
-    return isCodexLocalKnownModel(model) ? codexLocalReasoningEffortsForModel(model) : [];
+  if (!agent) return [];
+  const effectiveModel = model.trim() || (agent.adapterType === "grok_local" ? DEFAULT_GROK_LOCAL_MODEL
+    : agent.adapterType === "kimi_local" ? DEFAULT_KIMI_LOCAL_MODEL : "");
+  if (!effectiveModel) return [];
+  if (agent.adapterType === "codex_local" || (agent.adapterType === "paperclip_runner" && composerCatalogProvider(agent) === "codex")) {
+    return isCodexLocalKnownModel(effectiveModel) ? codexLocalReasoningEffortsForModel(effectiveModel) : [];
   }
-  if (!catalogIds.includes(model)) return [];
-  if (agent.adapterType === "claude_local") return ["low", "medium", "high"];
+  if (!catalogIds.includes(effectiveModel)) return [];
+  if (agent.adapterType === "claude_local") return claudeLocalReasoningEffortsForModel(effectiveModel);
+  if (agent.adapterType === "grok_local") return grokLocalReasoningEffortsForModel(effectiveModel);
   if (agent.adapterType === "pi_local") return ["off", "minimal", "low", "medium", "high", "xhigh"];
-  if (agent.adapterType === "kimi_local" && modelSupportsEffort(model)) return KIMI_SUPPORTED_EFFORTS;
+  if (agent.adapterType === "kimi_local" && typeof agent.adapterConfig.engine === "string"
+    && agent.adapterConfig.engine.trim().toLowerCase() === "cli" && modelSupportsEffort(effectiveModel)) return KIMI_SUPPORTED_EFFORTS;
   return [];
 }
 
@@ -71,7 +78,7 @@ export function readComposerRunSettings(
   const config = overrides?.adapterConfig ?? {};
   const effortKey = composerEffortKey(adapterType);
   const effortValue = effortKey && (config[effortKey]
-    ?? (adapterType === "codex_local" ? config.reasoningEffort ?? config.effort : undefined));
+    ?? (adapterType === "codex_local" || adapterType === "paperclip_runner" ? config.reasoningEffort ?? config.effort : undefined));
   return {
     model: typeof config.model === "string" ? config.model : null,
     effort: typeof effortValue === "string" ? effortValue : null,
@@ -87,8 +94,9 @@ export function readComposerRunSettings(
 }
 
 function composerEffortKey(adapterType: string | undefined): string | null {
-  if (adapterType === "codex_local") return "modelReasoningEffort";
+  if (adapterType === "codex_local" || adapterType === "paperclip_runner") return "modelReasoningEffort";
   if (adapterType === "claude_local" || adapterType === "kimi_local") return "effort";
+  if (adapterType === "grok_local") return "reasoningEffort";
   if (adapterType === "pi_local") return "thinking";
   if (adapterType === "opencode_local") return "variant";
   return null;

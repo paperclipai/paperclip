@@ -137,7 +137,8 @@ export function ComposerRunSettingsPicker({
   const filteredModels = models.filter((item) =>
     `${item.label} ${item.id}`.toLowerCase().includes(query.toLowerCase()));
   const exactMatch = models.some((item) => item.id.toLowerCase() === query.toLowerCase());
-  const needsProvider = agent && ["opencode_local", "pi_local", "kimi_local"].includes(agent.adapterType);
+  const needsProvider = agent && (["opencode_local", "pi_local", "kimi_local"].includes(agent.adapterType)
+    || (agent.adapterType === "paperclip_runner" && provider === "opencode"));
   const manualValid = query.length > 0 && !/\s/.test(query)
     && (!needsProvider || /^[^/]+\/.+[^/]$/.test(query))
     && (provider !== "openrouter" || /^openrouter\/[^/]+\/.+[^/]$/.test(query));

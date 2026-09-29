@@ -120,6 +120,21 @@ describe("NativeExecutionInputV1", () => {
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", approvalPolicy: "on-request" },
     });
+    const withEffort = parseNativeExecutionInput({
+      ...current,
+      schema: NATIVE_EXECUTION_INPUT_SCHEMA,
+      provider: { kind: "codex", model: "gpt-6-astra", approvalPolicy: "on-request", reasoningEffort: "ultra" },
+    });
+    expect(withEffort.provider).toMatchObject({ kind: "codex", reasoningEffort: "ultra" });
+    expect(parseNativeExecutionInput(withEffort)).toEqual(withEffort);
+    expect(() => parseNativeExecutionInput({
+      ...withEffort,
+      provider: { kind: "codex", model: "gpt-6-astra", approvalPolicy: "on-request", reasoningEffort: "impossible" },
+    })).toThrow("reasoningEffort");
+    expect(() => parseNativeExecutionInput({
+      ...current,
+      provider: { kind: "codex", model: null, approvalPolicy: "on-request", reasoningEffort: "ultra" },
+    })).toThrow("input.provider");
     expect(() => parseNativeExecutionInput({
       ...parsed,
       schema: "paperclip.native-execution-input.v4",
@@ -280,7 +295,7 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("eventExpiryDays");
   });
 
-  it("accepts only a closed ACPX profile matching the driver and agent", () => {
+  it.each([1, 2, 3, 4, 5] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
     const provider = {
       kind: "acpx",
       agent: "pi",
@@ -291,7 +306,7 @@ describe("NativeExecutionInputV1", () => {
         protocolVersion: 1,
         acpxVersion: "0.13.1",
         agent: "pi",
-        agentProfileVersion: 1,
+        agentProfileVersion,
         agentServerPackage: "pi-acp",
         agentServerVersion: "0.0.33",
         agentRuntimePackage: "@earendil-works/pi-coding-agent",
@@ -312,6 +327,13 @@ describe("NativeExecutionInputV1", () => {
       profile: provider.profile,
     });
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+    for (const unsupportedVersion of [0, 6, 1.5, "5", null]) {
+      expect(() => parseNativeExecutionInput({
+        ...input,
+        session: { ...input.session, driverKind: "acpx_runtime" },
+        provider: { ...provider, profile: { ...provider.profile, agentProfileVersion: unsupportedVersion } },
+      })).toThrow("qualified ACPX v1 profile");
+    }
     expect(buildNativeModelEnvelope(parsed).workspace).toEqual({ cwd: "/safe/workspace" });
     expect(() => parseNativeExecutionInput({
       ...input,

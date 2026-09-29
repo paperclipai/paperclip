@@ -969,7 +969,7 @@ export async function repairCommittedNativeChatResponse(
         input.issueId,
         resolved.text,
         { agentId: run.agentId, runId: run.id },
-        { authorizationReason: CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON },
+        { authorizationReason: CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, completionReply: true },
         tx,
       );
       const presentationDecision = {

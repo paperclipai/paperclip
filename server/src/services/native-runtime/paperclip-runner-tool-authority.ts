@@ -1,3 +1,4 @@
+import { executeAgentInstructionTool } from "./agent-instruction-tools.js";
 import { createReadStream } from "node:fs";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
@@ -83,6 +84,7 @@ import {
 } from "./chat-attachment-read.js";
 
 const IMPLEMENTED_OPERATIONS = new Set([
+  "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions",
   "search_api", "call_api", "hire_agent",
   "get_task_context", "get_task_history", "search_tasks", "report_progress",
   "request_human_input",
@@ -368,6 +370,13 @@ export class PaperclipRunnerToolAuthority {
       throw new Error("paperclip_runner_tool_mode_denied");
     }
     switch (call.tool) {
+      case "read_agent_instructions":
+      case "update_agent_instructions":
+      case "get_agent_instruction_history":
+      case "restore_agent_instructions":
+        return executeAgentInstructionTool({ db: this.db, binding: {
+          companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
+        }, tool: call.tool, arguments: call.arguments });
       case "create_skill": {
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
         const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);

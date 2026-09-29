@@ -200,6 +200,37 @@ describe("paperclip runner transcript projection", () => {
     })).toEqual([expect.objectContaining({ kind: "system", text: expect.stringContaining("unsafe") })]);
   });
 
+  it("preserves complete native plan context and revision identity through replay", () => {
+    const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+    const description = "# Plan\n" + "x".repeat(99_981) + "\nFINAL-CHECK";
+    expect(description.length).toBe(100_000);
+    const questionId = `plan-${"a".repeat(64)}`;
+    const event = (eventType: string, payload: Record<string, unknown>) => parse(JSON.stringify({
+      type: "paperclip.prp.event", event: { eventType, payload },
+    }), "2026-09-28T12:00:00.000Z");
+    expect(event("runtime_request.created", { request: {
+      requestId: "native-plan", requestKind: "runtime", type: "input", input: {
+        schema: "paperclip.question_set.v1", description,
+        questions: [{ id: questionId, prompt: "Review", required: true, answerMode: "single_select", options: [{ id: "accept", label: "Accept plan" }, { id: "reject", label: "Reject plan" }, { id: "cancel", label: "Cancel plan request" }] }],
+      },
+    } })).toEqual([expect.objectContaining({ questionSet: expect.objectContaining({ description, questions: [expect.objectContaining({ id: questionId })] }) })]);
+    expect(event("runtime_request.resolved", { requestId: "native-plan", response: {
+      schema: "paperclip.question_response.v1", answers: { [questionId]: { selectedOptionIds: ["accept"] } },
+    } })).toEqual([expect.objectContaining({ questionSet: expect.objectContaining({ description }), response: expect.objectContaining({ answers: { [questionId]: { selectedOptionIds: ["accept"] } } }) })]);
+  });
+
+  it("rejects oversized native plan context instead of showing an incomplete decision", () => {
+    const entries = paperclipRunnerUIAdapter.parseStdoutLine(JSON.stringify({
+      type: "paperclip.prp.event", event: { eventType: "runtime_request.created", payload: { request: {
+        requestId: "oversized-plan", type: "input", input: {
+          schema: "paperclip.question_set.v1", description: "x".repeat(100_001),
+          questions: [{ id: "plan-revision", prompt: "Review", answerMode: "single_select", options: [{ id: "accept", label: "Accept" }] }],
+        },
+      } } },
+    }), "2026-09-28T12:00:00.000Z");
+    expect(entries).toEqual([{ kind: "system", ts: "2026-09-28T12:00:00.000Z", text: expect.stringContaining("No decision can be submitted") }]);
+  });
+
   it("coalesces runtime request lifecycle data and emits terminal state", () => {
     const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
     const event = (eventType: string, payload: Record<string, unknown>, turnId = "turn-1") => parse(JSON.stringify({

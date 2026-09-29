@@ -72,6 +72,13 @@ export class CodexHarnessSession
     }
   }
 
+  turnControlCapabilities() {
+    if (this.driverKind === "acpx_runtime") {
+      return this.transport.turnControlCapabilities?.() ?? { steering: false, queuedFollowUp: false };
+    }
+    return { steering: this.capabilities.steering, queuedFollowUp: false };
+  }
+
   ids(): ReturnType<HarnessSession["ids"]> {
     return {
       driverSessionId: this.opened.threadId,
@@ -214,6 +221,7 @@ export class CodexHarnessSession
     try {
       response = await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
           text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"
@@ -300,18 +308,23 @@ export class CodexHarnessSession
   }
 
   async steer(input: {
+    mode?: "steer" | "follow_up";
     turnId: string;
     message: NativeUserMessage;
     correlationId?: string;
   }): Promise<void> {
     this.assertProtocolIntegrity();
-    this.requireCapability("steering");
+    const controls = this.turnControlCapabilities();
+    if (!(input.mode === "follow_up" ? controls.queuedFollowUp : controls.steering)) {
+      throw this.unsupported("steering", "requested turn control was not negotiated");
+    }
     this.requireActiveTurn(input.turnId, "steering");
     if (input.correlationId) {
       const acknowledgedTurnId = this.acknowledgedSteeringCorrelations.get(
         input.correlationId,
       );
       if (acknowledgedTurnId) {
+        if (this.driverKind === "acpx_runtime") throw new Error("ACP turn control correlation was already acknowledged");
         if (acknowledgedTurnId !== input.turnId)
           throw new HarnessOperationAlreadyTerminalError("steering");
         return;
@@ -323,6 +336,7 @@ export class CodexHarnessSession
         input: [userInput(input.message)],
         expectedTurnId: input.turnId,
         correlationId: input.correlationId,
+        ...(input.mode === undefined ? {} : { mode: input.mode }),
       });
       if (this.activeTurnId !== input.turnId) {
         throw new HarnessOperationAlreadyTerminalError("steering");
@@ -337,7 +351,8 @@ export class CodexHarnessSession
         "item.completed",
         {
           kind: "steering_acknowledgement",
-          text: "Steering acknowledged for the active turn.",
+          text: input.mode === "follow_up" ? "Follow-up queued by the active provider." : "Steering acknowledged for the active turn.",
+          ...(this.driverKind === "acpx_runtime" ? { mode: input.mode ?? "steer" } : {}),
           status: "acknowledged",
         },
         {

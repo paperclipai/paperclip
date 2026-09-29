@@ -2,11 +2,12 @@
 // service code has no test flag, delay, altered prompt, or private test API.
 import { ServerResponse } from "node:http";
 import { PaperclipRunnerToolAuthority } from "../../server/src/services/native-runtime/paperclip-runner-tool-authority.js";
-import { canonicalDocumentIssueId, contextCommentGateSelected, holdCommittedDocumentResponse } from "./context-comment-gate.js";
+import { canonicalDocumentIssueId, contextCommentGateSelected, holdCommittedDocumentResponse, isArmed } from "./context-comment-gate.js";
 import { holdInteractionResponse } from "./interaction-response-gate.js";
 
 const ids: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
 const contextCommentGate = contextCommentGateSelected(ids);
+const completionBusyGate = ids.some(id => id.startsWith("completion-updates.") && id.endsWith(".handoff-completion-busy"));
 if (ids.some((id) => id.endsWith(".accept-while-running"))) {
   const held = new Set<string>();
   const hold = async (value: any) => {
@@ -47,12 +48,12 @@ if (ids.some((id) => id.endsWith(".accept-while-running"))) {
     return Reflect.apply(end, this, args);
   } as typeof end;
 }
-if (contextCommentGate) {
+if (contextCommentGate || completionBusyGate) {
   const heldIssues = new Set<string>();
   const holdFirstDocument = async (issueId: string) => {
-    if (heldIssues.has(issueId)) return;
+    if (heldIssues.has(issueId) || (!contextCommentGate && !await isArmed(issueId))) return;
     heldIssues.add(issueId);
-    await holdCommittedDocumentResponse(issueId);
+    await holdCommittedDocumentResponse(issueId, Date.now() + (completionBusyGate ? 300_000 : 90_000));
   };
   const execute = PaperclipRunnerToolAuthority.prototype.execute;
   PaperclipRunnerToolAuthority.prototype.execute = async function (...args) {

@@ -80,7 +80,7 @@ export interface NativeAwsAgentCoreProfileSnapshot {
   eventExpiryDays: 90;
 }
 
-export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok";
+export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot";
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
 export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
@@ -90,7 +90,7 @@ export interface NativeAcpxProfileSnapshot {
   protocolVersion: 1;
   acpxVersion: "0.13.1";
   agent: NativeAcpxAgent;
-  agentProfileVersion: 1;
+  agentProfileVersion: 1 | 2 | 3 | 4 | 5;
   agentServerPackage: string;
   agentServerVersion: string;
   agentRuntimePackage: string | null;
@@ -139,6 +139,10 @@ export type NativeProviderConfigV4 =
       permissionMode: NativeAcpxPermissionMode;
       profile: NativeAcpxProfileSnapshot;
     };
+
+export type NativeProviderConfigV5 =
+  | Exclude<NativeProviderConfigV4, { kind: "codex" }>
+  | (Extract<NativeProviderConfigV4, { kind: "codex" }> & { reasoningEffort?: string });
 
 export interface NativeExecutionInputV1 {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V1;
@@ -217,8 +221,9 @@ export interface NativeCompletionSources {
   criteria: Array<{ id: string; source: NativeCompletionSource }>;
 }
 
-export interface NativeExecutionInputV5 extends Omit<NativeExecutionInputV4, "schema"> {
+export interface NativeExecutionInputV5 extends Omit<NativeExecutionInputV4, "schema" | "provider"> {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA;
+  provider: NativeProviderConfigV5;
   completionSources?: NativeCompletionSources;
 }
 
@@ -447,7 +452,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       : provider.kind === "acpx"
         ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile"]
       : provider.kind === "codex" && isV4
-        ? ["kind", "model", "approvalPolicy"]
+        ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort"] : [])]
         : provider.kind === "opencode" && isV4
           ? ["kind", "model", "permissionMode"]
           : ["kind", "model"],
@@ -468,7 +473,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   if (provider.kind === "opencode" && (providerModel === null || !providerModel.includes("/"))) {
     throw new NativeExecutionInputError("input.provider.model is required for opencode in provider/model form");
   }
-  let parsedProvider: NativeProviderConfig;
+  let parsedProvider: NativeProviderConfig | NativeProviderConfigV5;
   if (provider.kind === "claude_managed") {
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for claude_managed");
@@ -568,8 +573,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
-    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok") {
-      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, or grok");
+    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot") {
+      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, or copilot");
     }
     if (isV4) {
       if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
@@ -596,7 +601,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       || profile.protocolVersion !== 1
       || profile.acpxVersion !== "0.13.1"
       || profile.agent !== provider.agent
-      || profile.agentProfileVersion !== 1
+      || (profile.agentProfileVersion !== 1 && profile.agentProfileVersion !== 2 && profile.agentProfileVersion !== 3 && profile.agentProfileVersion !== 4 && profile.agentProfileVersion !== 5)
     ) {
       throw new NativeExecutionInputError("input.provider.profile does not match the qualified ACPX v1 profile");
     }
@@ -617,7 +622,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
         protocolVersion: 1,
         acpxVersion: "0.13.1",
         agent: provider.agent,
-        agentProfileVersion: 1,
+        agentProfileVersion: profile.agentProfileVersion,
         agentServerPackage: text(profile.agentServerPackage, "input.provider.profile.agentServerPackage"),
         agentServerVersion: text(profile.agentServerVersion, "input.provider.profile.agentServerVersion"),
         agentRuntimePackage: runtimePackage,
@@ -640,11 +645,17 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (isV4 && provider.approvalPolicy !== "never" && provider.approvalPolicy !== "on-request" && provider.approvalPolicy !== "untrusted") {
       throw new NativeExecutionInputError("input.provider.approvalPolicy must be never, on-request, or untrusted");
     }
+    if (isV5 && provider.reasoningEffort !== undefined && !["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(String(provider.reasoningEffort))) {
+      throw new NativeExecutionInputError("input.provider.reasoningEffort is unsupported");
+    }
     parsedProvider = {
       kind: "codex",
       model: providerModel,
       ...(isV4
         ? { approvalPolicy: provider.approvalPolicy as NativeCodexApprovalPolicy }
+        : {}),
+      ...(isV5 && provider.reasoningEffort !== undefined
+        ? { reasoningEffort: text(provider.reasoningEffort, "input.provider.reasoningEffort") }
         : {}),
     };
   }
@@ -761,6 +772,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   return {
     ...withPermissions,
     schema: NATIVE_EXECUTION_INPUT_SCHEMA,
+    provider: parsedProvider as NativeProviderConfigV5,
     ...(input.completionSources !== undefined ? { completionSources: parseCompletionSources(input.completionSources) } : {}),
   };
 }
