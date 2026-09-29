@@ -56,6 +56,7 @@
 // `instrumentation.ts`.
 
 import os from "node:os";
+import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
@@ -106,7 +107,18 @@ export const sentryReady: Promise<void> = dsn ? bootstrapSentry(dsn) : Promise.r
 export function captureException(error: unknown): void {
   if (!sentryHandle) return;
   try {
-    sentryHandle.captureException(error);
+    if (error instanceof AdapterStopTimeoutError) {
+      // Event-local, fixed-shape context: no ambient scope or raw error fields.
+      const exception = new Error(error.message);
+      exception.stack = error.stack;
+      sentryHandle.captureException(exception, {
+        tags: { error_code: "adapter_stop_unconfirmed" },
+        contexts: { adapter_stop: { ...error.diagnostics } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else {
+      sentryHandle.captureException(error);
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Sentry captureException failed", err);

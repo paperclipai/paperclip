@@ -29266,7 +29266,12 @@ export function heartbeatService(
           }
 
           if (control) {
-            await waitForAdapterStop(control.settled);
+            await waitForAdapterStop(control.settled, undefined, {
+              runId: run.id,
+              adapterType: agent?.adapterType,
+              runtimeMode: run.runtimeMode,
+              abortRequested: control.controller.signal.aborted,
+            });
             const stopped = await getRun(run.id);
             if (stopped && isHeartbeatRunTerminalStatus(stopped.status)) {
               if (

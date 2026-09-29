@@ -415,6 +415,16 @@ values become `unknown`. A signal such as `SIGKILL` does not establish who sent
 it or prove an out-of-memory kill. These fields do not change error grouping
 or run outcomes, and do not include process output or adapter result payloads.
 
+An unconfirmed adapter Stop timeout has an event-local `adapter_stop` context:
+the run UUID, built-in adapter type, native/legacy runtime mode, configured
+wait duration, and whether abort was requested. Invalid identities become
+`null`, and unknown adapter/runtime values become `unknown`. The report does
+not include stop reasons, prompts, process output, provider responses, or
+credentials. It preserves default error grouping and does not acknowledge
+termination, remove the live execution control, or change the timeout. The
+context is sent only through the existing opt-in Sentry gate and never leaks
+into unrelated captures.
+
 The shared reporter also attaches bounded diagnostic contexts for both legacy
 and native runs:
 
