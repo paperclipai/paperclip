@@ -175,13 +175,16 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
   });
 
   it.each([
-    { status: "done" as const, title: "Done release preserves status", completedAt: new Date() },
-    { status: "cancelled" as const, title: "Cancelled release preserves status", cancelledAt: new Date() },
+    { status: "done" as const, title: "Done release preserves owner", completedAt: new Date(), retainAssignee: true },
+    { status: "cancelled" as const, title: "Cancelled release preserves owner", cancelledAt: new Date(), retainAssignee: true },
     { status: "in_review" as const, title: "In review release preserves status" },
     { status: "blocked" as const, title: "Blocked release preserves status" },
+    { status: "backlog" as const, title: "Backlog release relinquishes ownership" },
+    { status: "todo" as const, title: "Todo release relinquishes ownership" },
+    { status: "in_progress" as const, title: "Active release requeues work", expectedStatus: "todo" },
   ])(
-    "preserves $status when releasing a non-in_progress issue",
-    async ({ status, title, completedAt, cancelledAt }) => {
+    "$title and clears execution locks",
+    async ({ status, title, completedAt, cancelledAt, retainAssignee, expectedStatus = status }) => {
       const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
       const issueId = randomUUID();
       await db.insert(issues).values({
@@ -204,7 +207,8 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         .send();
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(res.body.status).toBe(status);
+      const expectedAssignee = retainAssignee ? agentId : null;
+      expect(res.body).toMatchObject({ status: expectedStatus, assigneeAgentId: expectedAssignee });
 
       const row = await db
         .select({
@@ -212,18 +216,40 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
           executionLockedAt: issues.executionLockedAt,
+          completedAt: issues.completedAt,
+          cancelledAt: issues.cancelledAt,
         })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0]);
       expect(row).toEqual({
-        status,
-        assigneeAgentId: null,
+        status: expectedStatus,
+        assigneeAgentId: expectedAssignee,
         checkoutRunId: null,
         executionRunId: null,
+        executionAgentNameKey: null,
         executionLockedAt: null,
+        completedAt: completedAt ?? null,
+        cancelledAt: cancelledAt ?? null,
       });
+
+      const events = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+      expect(events).toContainEqual(expect.objectContaining({
+        action: "issue.released", companyId, agentId, runId: currentRunId,
+      }));
+
+      if (retainAssignee) {
+        // Repeated cleanup, including by the board, must not erase attribution.
+        const retried = await request(createApp(boardActor(companyId)))
+          .post(`/api/issues/${issueId}/release`)
+          .send();
+        expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+        expect(retried.body).toMatchObject({ status, assigneeAgentId: agentId, checkoutRunId: null, executionRunId: null });
+        const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(saved).toMatchObject({ status, assigneeAgentId: agentId });
+      }
     },
   );
 
