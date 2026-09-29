@@ -21,7 +21,11 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { OneCLI, type ContainerConfig } from "@onecli-sh/sdk";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   JSONRPC_VERSION,
@@ -96,6 +100,8 @@ const INITIALIZE_TIMEOUT_MS = 15_000;
 
 /** Timeout for the shutdown RPC call before escalating to SIGTERM. */
 const SHUTDOWN_DRAIN_MS = 10_000;
+/** Bound OneCLI environment materialization so shutdown cannot wait forever. */
+const WORKER_ENVIRONMENT_SETUP_TIMEOUT_MS = 15_000;
 
 /** Time to wait after SIGTERM before sending SIGKILL. */
 const SIGTERM_GRACE_MS = 5_000;
@@ -3549,6 +3555,62 @@ export interface PluginWorkerManagerOptions {
    * stays upstream admission only.
    */
   maxConcurrentDuplexRoutes?: number | null;
+  /** Test seam for the trusted host-side OneCLI control client. */
+  getOneCliContainerConfig?: (options: { agent: string }) => Promise<ContainerConfig>;
+  /** Test seam for the bounded OneCLI environment setup timeout. */
+  workerEnvironmentSetupTimeoutMs?: number;
+}
+
+export interface PluginWorkerOneCliEnvironment {
+  env: Record<string, string>;
+  cleanup(): Promise<void>;
+}
+
+const TYPESAFE_ROUTING_PLUGIN_ID = "oxford.typesafe-task-routing";
+const TYPESAFE_ROUTING_ONECLI_AGENT = "occ-typesafe-routing-plugin";
+const ONECLI_PROXY_ENV_NAMES = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] as const;
+
+export async function resolvePluginWorkerOneCliEnv(
+  pluginManifestId: string,
+  getContainerConfig: (options: { agent: string }) => Promise<ContainerConfig>,
+): Promise<PluginWorkerOneCliEnvironment> {
+  if (pluginManifestId !== TYPESAFE_ROUTING_PLUGIN_ID) {
+    return { env: {}, cleanup: async () => undefined };
+  }
+
+  const config = await getContainerConfig({ agent: TYPESAFE_ROUTING_ONECLI_AGENT });
+  const env: Record<string, string> = {};
+  for (const name of ONECLI_PROXY_ENV_NAMES) {
+    const value = config.env?.[name];
+    if (typeof value === "string" && value.length > 0) env[name] = value;
+  }
+  if (!env.HTTPS_PROXY && !env.https_proxy) {
+    throw new Error("TypeSafe routing worker OneCLI binding has no HTTPS proxy");
+  }
+  if (typeof config.caCertificate !== "string" || config.caCertificate.trim().length === 0) {
+    throw new Error("TypeSafe routing worker OneCLI binding has no CA certificate");
+  }
+
+  const caDirectory = await mkdtemp(join(tmpdir(), "paperclip-onecli-ca-"));
+  const caPath = join(caDirectory, "proxy-ca.pem");
+  try {
+    await writeFile(caPath, config.caCertificate, { mode: 0o600 });
+  } catch (error) {
+    await rm(caDirectory, { recursive: true, force: true });
+    throw error;
+  }
+
+  return {
+    env: {
+      ...env,
+      NODE_USE_ENV_PROXY: "1",
+      ONECLI_GATEWAY: "true",
+      NODE_EXTRA_CA_CERTS: caPath,
+    },
+    cleanup: async () => {
+      await rm(caDirectory, { recursive: true, force: true });
+    },
+  };
 }
 
 /**
@@ -3629,6 +3691,54 @@ export function createPluginWorkerManager(
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  /** Cleanup owners for host-side resources materialized for each worker. */
+  const workerEnvironmentCleanups = new Map<string, { handle: PluginWorkerHandle; cleanup: () => Promise<void> }>();
+  /** Serializes every start/stop transition for a plugin, not only overlapping starts. */
+  const lifecycleLocks = new Map<string, Promise<void>>();
+  let shuttingDown = false;
+
+  function serializeLifecycle<T>(pluginId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = lifecycleLocks.get(pluginId);
+    const result = previous ? previous.catch(() => undefined).then(operation) : operation();
+    const marker = result.then(() => undefined, () => undefined);
+    lifecycleLocks.set(pluginId, marker);
+    void marker.finally(() => {
+      if (lifecycleLocks.get(pluginId) === marker) lifecycleLocks.delete(pluginId);
+    });
+    return result;
+  }
+
+  async function resolveBoundedWorkerEnvironment(
+    pluginManifestId: string,
+  ): Promise<PluginWorkerOneCliEnvironment> {
+    const configuredTimeout = managerOptions?.workerEnvironmentSetupTimeoutMs;
+    const timeoutMs = typeof configuredTimeout === "number" && Number.isInteger(configuredTimeout)
+      && configuredTimeout >= 1 && configuredTimeout <= WORKER_ENVIRONMENT_SETUP_TIMEOUT_MS
+      ? configuredTimeout
+      : WORKER_ENVIRONMENT_SETUP_TIMEOUT_MS;
+    let timedOut = false;
+    const setup = resolvePluginWorkerOneCliEnv(
+      pluginManifestId,
+      managerOptions?.getOneCliContainerConfig ?? ((input) => new OneCLI().getContainerConfig(input)),
+    );
+    void setup.then(async (environment) => {
+      if (timedOut) await environment.cleanup().catch(() => undefined);
+    }, () => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        setup,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject(new Error(`Plugin worker environment setup timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
   // The one shared, process-scoped aggregate route-slot controller. The manager
   // injects it into every worker handle, so the duplex route ceiling counts every
   // concurrent route across the process, not one agent's setting.
@@ -3641,56 +3751,72 @@ export function createPluginWorkerManager(
       pluginId: string,
       options: WorkerStartOptions,
     ): Promise<PluginWorkerHandle> {
-      // Mutex: if a start is already in-flight for this plugin, wait for it
+      if (shuttingDown) throw new Error("Plugin worker manager is shutting down");
+      // Mutex: if a start is already in-flight for this plugin, share it.
       const inFlight = startupLocks.get(pluginId);
       if (inFlight) {
         log.warn({ pluginId }, "concurrent startWorker call — waiting for in-flight start");
         return inFlight;
       }
 
-      const existing = workers.get(pluginId);
-      if (existing && existing.status !== "stopped") {
-        throw new Error(
-          `Worker already registered for plugin "${pluginId}" (status: ${existing.status})`,
-        );
-      }
-
-      const handle = createPluginWorkerHandle(pluginId, {
-        // Inject the shared process-scoped route-slot controller, unless the
-        // caller already supplied its own (a test may inject its own).
-        duplexRouteSlots,
-        ...options,
-      });
-      workers.set(pluginId, handle);
-
-      // Subscribe to crash/ready events for live event forwarding
-      if (managerOptions?.onWorkerEvent) {
-        const notify = managerOptions.onWorkerEvent;
-        handle.on("crash", (payload) => {
-          notify({
-            type: "plugin.worker.crashed",
-            pluginId: payload.pluginId,
-            code: payload.code,
-            signal: payload.signal,
-            willRestart: payload.willRestart,
+      // Install the lock before the first await, including OneCLI configuration,
+      // so overlapping starts share the complete materialize-and-spawn attempt.
+      const startPromise = serializeLifecycle(pluginId, async () => {
+        if (shuttingDown) throw new Error("Plugin worker manager is shutting down");
+        const existingAfterLock = workers.get(pluginId);
+        if (existingAfterLock && existingAfterLock.status !== "stopped") {
+          throw new Error(`Worker already registered for plugin "${pluginId}" (status: ${existingAfterLock.status})`);
+        }
+        const oneCliEnvironment = await resolveBoundedWorkerEnvironment(options.manifest.id);
+        let handle: PluginWorkerHandle | undefined;
+        try {
+          handle = createPluginWorkerHandle(pluginId, {
+            // Inject the shared process-scoped route-slot controller, unless the
+            // caller already supplied its own (a test may inject its own).
+            duplexRouteSlots,
+            ...options,
+            env: { ...options.env, ...oneCliEnvironment.env },
           });
-        });
-        handle.on("ready", (payload) => {
-          // Only emit restarted if this was a crash recovery (totalCrashes > 0)
-          const diag = handle.diagnostics();
-          if (diag.totalCrashes > 0) {
-            notify({
-              type: "plugin.worker.restarted",
-              pluginId: payload.pluginId,
+          workers.set(pluginId, handle);
+          workerEnvironmentCleanups.set(pluginId, { handle, cleanup: oneCliEnvironment.cleanup });
+
+          // Subscribe to crash/ready events for live event forwarding
+          if (managerOptions?.onWorkerEvent) {
+            const notify = managerOptions.onWorkerEvent;
+            handle.on("crash", (payload) => {
+              notify({
+                type: "plugin.worker.crashed",
+                pluginId: payload.pluginId,
+                code: payload.code,
+                signal: payload.signal,
+                willRestart: payload.willRestart,
+              });
+            });
+            handle.on("ready", (payload) => {
+              // Only emit restarted if this was a crash recovery (totalCrashes > 0)
+              const diag = handle!.diagnostics();
+              if (diag.totalCrashes > 0) {
+                notify({
+                  type: "plugin.worker.restarted",
+                  pluginId: payload.pluginId,
+                });
+              }
             });
           }
-        });
-      }
 
-      log.info({ pluginId }, "starting plugin worker");
-
-      // Set the lock before awaiting start() to prevent concurrent spawns
-      const startPromise = handle.start().then(() => handle).finally(() => {
+          log.info({ pluginId }, "starting plugin worker");
+          await handle.start();
+          return handle;
+        } catch (error) {
+          if (handle && workers.get(pluginId) === handle) workers.delete(pluginId);
+          const cleanupOwner = workerEnvironmentCleanups.get(pluginId);
+          if (cleanupOwner?.handle === handle) workerEnvironmentCleanups.delete(pluginId);
+          await oneCliEnvironment.cleanup().catch((cleanupError) => {
+            log.warn({ pluginId, err: cleanupError }, "failed to clean plugin worker environment");
+          });
+          throw error;
+        }
+      }).finally(() => {
         startupLocks.delete(pluginId);
       });
       startupLocks.set(pluginId, startPromise);
@@ -3699,15 +3825,24 @@ export function createPluginWorkerManager(
     },
 
     async stopWorker(pluginId: string): Promise<void> {
-      const handle = workers.get(pluginId);
-      if (!handle) {
-        log.warn({ pluginId }, "no worker registered for plugin, nothing to stop");
-        return;
-      }
-
-      log.info({ pluginId }, "stopping plugin worker");
-      await handle.stop();
-      workers.delete(pluginId);
+      await serializeLifecycle(pluginId, async () => {
+        const handle = workers.get(pluginId);
+        if (!handle) {
+          log.warn({ pluginId }, "no worker registered for plugin, nothing to stop");
+          return;
+        }
+        log.info({ pluginId }, "stopping plugin worker");
+        try {
+          await handle.stop();
+        } finally {
+          if (workers.get(pluginId) === handle) workers.delete(pluginId);
+          const cleanupOwner = workerEnvironmentCleanups.get(pluginId);
+          if (cleanupOwner?.handle === handle) {
+            workerEnvironmentCleanups.delete(pluginId);
+            await cleanupOwner.cleanup();
+          }
+        }
+      });
     },
 
     getWorker(pluginId: string): PluginWorkerHandle | undefined {
@@ -3724,6 +3859,8 @@ export function createPluginWorkerManager(
     },
 
     async stopAll(): Promise<void> {
+      shuttingDown = true;
+      await Promise.allSettled(lifecycleLocks.values());
       log.info({ count: workers.size }, "stopping all plugin workers");
       const promises = Array.from(workers.values()).map(async (handle) => {
         try {
@@ -3736,6 +3873,12 @@ export function createPluginWorkerManager(
             },
             "error stopping worker during shutdown",
           );
+        } finally {
+          const cleanupOwner = workerEnvironmentCleanups.get(handle.pluginId);
+          if (cleanupOwner?.handle === handle) workerEnvironmentCleanups.delete(handle.pluginId);
+          await cleanupOwner?.cleanup().catch((err) => {
+            log.warn({ pluginId: handle.pluginId, err }, "failed to clean plugin worker environment");
+          });
         }
       });
       await Promise.all(promises);
