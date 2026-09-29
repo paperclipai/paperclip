@@ -134,8 +134,7 @@ export async function runChatCompletionUpdate(context: {
   const completionWait = restart ? await prepareChatBrief(resolveDefaultAgentWorkspaceDir(f.agent.id), `${input.nonce}-completion`, 240_000) : null;
   if (completionWait) {
     const instruction = `For automatic delegated-work completion updates, first run node ${completionWait.scriptPath} and read the organizer's reference before posting your final reply. Do not run this script for the initial task handoff or other user messages. Reading this reference does not authorize additional tasks or changes to the completed work.`;
-    const saved = await api.request.put(`/api/agents/${f.agent.id}/instructions-bundle/file`, { data: { path: "AGENTS.md", content: instruction } });
-    expect(saved.ok()).toBe(true);
+    await api.saveAgentInstructions(f.agent.id, instruction);
   }
   const config = execution.profile.buildAgent({ environmentId: f.environment.id, environmentFixtureId: "local", workspacePath: input.workspacePath, secretRefs: f.secretRefs, executionId: input.nonce });
   const worker = await api.post<Row>(`${company}/agents`, { ...config, name: "Riley Writer", role: "engineer", reportsTo: f.agent.id });
@@ -149,8 +148,7 @@ export async function runChatCompletionUpdate(context: {
   const reference = marker;
   const brief = `The free Friday meetup starts at 10:30 in the community garden. The saved note must include RSVP code ${reference}.`;
   const instructions = `For the welcome-note assignment, run node ${wait.scriptPath} to read the organizer's brief before writing the final note. Save a two-sentence welcome note as a Paperclip document on your assigned task using the brief's details and explicitly include its RSVP code in the note. Then complete your task. Do not edit or comment on another task.`;
-  const saved = await api.request.put(`/api/agents/${worker.id}/instructions-bundle/file`, { data: { path: "AGENTS.md", content: instructions } });
-  expect(saved.ok()).toBe(true);
+  await api.saveAgentInstructions(worker.id, instructions);
   expect(await api.get(`/api/agents/${worker.id}/instructions-bundle/file?path=AGENTS.md`)).toMatchObject({ content: instructions });
   const prompt = `Create ${multiple ? "two separate tasks titled Welcome note A and Welcome note B" : "one task"} in the Garden welcome project (${project.id}) assigned to Riley Writer to write a two-sentence welcome note for our free Friday garden meetup. Riley has the organizer's brief. Save the finished note on that task and include RSVP code ${marker} in the note so attendees know which code to give the organizer. Please tell me here when the work is finished and give me access to the result. You may start the handoff now; no further approval is needed. Let Riley write the note.`;
   let task: Row | undefined;

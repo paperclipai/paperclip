@@ -1189,7 +1189,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
       .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
     environments: [localEnvironment], tasks: chatQualificationTasks, expectedMatrixSize: 6,
-    definitionMetadata: { version: 9, permissions: "production-defaults", instructions: "production", crashBoundary: "verified-native-worker-pid-at-file-wait", recovery: "new-user-message-after-verified-cleanup", answerGrading: "exact-grounded-propositions-plus-separate-semantic-review", scheduling: "explicit-only" },
+    definitionMetadata: { version: 10, instructionSetup: "read-before-write-base-hash", permissions: "production-defaults", instructions: "production", crashBoundary: "verified-native-worker-pid-at-file-wait", recovery: "new-user-message-after-verified-cleanup", answerGrading: "exact-grounded-propositions-plus-separate-semantic-review", scheduling: "explicit-only" },
   },
   {
     id: "completion-updates", label: "Delegated Completion Updates", manualOnly: true,
@@ -1200,7 +1200,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [localEnvironment],
     tasks: [...firstTaskTasks.filter(task => task.id === "interview-plan-accept"), ...chatCompletionTasks],
     expectedMatrixSize: 10,
-    definitionMetadata: { version: 22, requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "await-foreground-or-background-result", busyBoundary: "public-execution-deferred-wake-diagnostics", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v13-task-references-and-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
+    definitionMetadata: { version: 23, instructionSetup: "read-before-write-base-hash", requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "await-foreground-or-background-result", busyBoundary: "public-execution-deferred-wake-diagnostics", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v13-task-references-and-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {
