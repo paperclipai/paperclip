@@ -19675,6 +19675,10 @@ export function heartbeatService(
     return { scanned: pending.length, enqueued, alreadyQueued, invalid };
   }
 
+  async function repairUnroutableBlockedIssues(opts?: { throttle?: boolean }) {
+    return recovery.repairUnroutableBlockedIssues(opts);
+  }
+
   async function reconcileStrandedAssignedIssues() {
     return recovery.reconcileStrandedAssignedIssues({
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
@@ -27781,6 +27785,14 @@ export function heartbeatService(
                 .update(issues)
                 .set({
                   status: "blocked",
+                  // This preflight block has no first-class blocker, so without a
+                  // descriptor the issue would be unroutable: no dependency to resolve and nobody to
+                  // wake. It is a genuine configuration block (not infrastructure), so it stays
+                  // `blocked`; it just has to name who can lift it and how.
+                  unblockDescriptor: {
+                    owner: { agentId },
+                    action: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+                  },
                   checkoutRunId: null,
                   executionRunId: null,
                   executionAgentNameKey: null,
@@ -29750,6 +29762,7 @@ export function heartbeatService(
     },
 
     reconcileStrandedAssignedIssues,
+    repairUnroutableBlockedIssues,
     recoverPendingSessionGoalActions,
     recoverActiveSessionGoals,
 
