@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EmailTaskActivity } from "./EmailTaskActivity";
+import { EmailThreadProvider } from "./EmailMessageCard";
 import { useIssueChatBinding } from "./chat/ExternallyConnectedTaskBanner";
 
 const api = vi.hoisted(() => ({ getIssueBinding: vi.fn(), thread: vi.fn() }));
@@ -94,5 +95,51 @@ describe("task-only connector queries", () => {
     expect(container.textContent).toBe("unbound");
     expect(api.getIssueBinding).not.toHaveBeenCalled();
     expect(api.thread).not.toHaveBeenCalled();
+  });
+});
+
+describe("email thread provider for agent chats", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let client: QueryClient;
+
+  async function render(issueId: string) {
+    flushSync(() => root.render(
+      <QueryClientProvider client={client}>
+        <EmailThreadProvider companyId={companyId} issueId={issueId}>
+          <output>thread</output>
+        </EmailThreadProvider>
+      </QueryClientProvider>,
+    ));
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+    flushSync(() => {});
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    api.thread.mockResolvedValue(null);
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    flushSync(() => root.unmount());
+    client.clear();
+    container.remove();
+  });
+
+  it.each([chatId, ""])("does not read the email task thread for %s", async (id) => {
+    await render(id);
+    expect(api.thread).not.toHaveBeenCalled();
+    expect(container.textContent).toBe("thread");
+  });
+
+  it("still reads the email task thread for a real task", async () => {
+    await render(taskId);
+    expect(api.thread).toHaveBeenCalledWith(companyId, taskId);
   });
 });
