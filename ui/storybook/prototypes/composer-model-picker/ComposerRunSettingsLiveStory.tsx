@@ -46,7 +46,7 @@ export function ComposerRunSettingsLiveStory({
   const [assignee, setAssignee] = useState(`agent:${agentId}`);
   const [settings, setSettings] = useState<ComposerRunSettings | null>(
     initialModel || initialEffort || initialFast
-      ? { model: initialModel ?? null, effort: initialEffort ?? null, fast: initialFast, daybreak: false }
+      ? { model: initialModel ?? null, effort: initialEffort ?? null, fast: initialFast, daybreak: false, daybreakOverride: "inherit" }
       : null,
   );
   const [draft, setDraft] = useState("");

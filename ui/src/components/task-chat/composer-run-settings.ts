@@ -7,9 +7,17 @@ export interface ComposerRunSettings {
   effort: string | null;
   fast: boolean;
   daybreak: boolean;
+  /** Whether Daybreak is explicitly enabled/disabled for this task, or inherited. */
+  daybreakOverride: "inherit" | "enabled" | "disabled";
 }
 
-export const DEFAULT_COMPOSER_RUN_SETTINGS: ComposerRunSettings = { model: null, effort: null, fast: false, daybreak: false };
+export const DEFAULT_COMPOSER_RUN_SETTINGS: ComposerRunSettings = {
+  model: null,
+  effort: null,
+  fast: false,
+  daybreak: false,
+  daybreakOverride: "inherit",
+};
 export const EFFORT_LABELS: Record<string, string> = {
   off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High",
   xhigh: "Extra High", max: "Max", ultra: "Ultra",
@@ -72,6 +80,9 @@ export function readComposerRunSettings(
       config.daybreakEnabled === true
       || config.daybreakEnabled === undefined && agentAdapterConfig?.daybreakEnabled === true
     ),
+    daybreakOverride: adapterType === "codex_local" && typeof config.daybreakEnabled === "boolean"
+      ? config.daybreakEnabled ? "enabled" : "disabled"
+      : "inherit",
   };
 }
 
@@ -104,8 +115,8 @@ export function mergeComposerRunSettings(
   if (settings.effort && effortKey) config[effortKey] = settings.effort;
   if (settings.fast && adapterType === "codex_local") config.fastMode = true;
   if (adapterType === "codex_local") {
-    if (settings.daybreak) config.daybreakEnabled = true;
-    else if (agentAdapterConfig?.daybreakEnabled === true) config.daybreakEnabled = false;
+    if (settings.daybreakOverride === "enabled") config.daybreakEnabled = true;
+    else if (settings.daybreakOverride === "disabled") config.daybreakEnabled = false;
   }
   const useProjectWorkspace = reassigned ? undefined : previous?.useProjectWorkspace;
   return Object.keys(config).length || useProjectWorkspace !== undefined

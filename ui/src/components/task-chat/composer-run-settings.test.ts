@@ -26,18 +26,20 @@ describe("composer run settings", () => {
 
   it("preserves unrelated task overrides while changing or resetting run settings", () => {
     const previous = { adapterConfig: { chrome: true, model: "old", effort: "low" }, useProjectWorkspace: true };
-    expect(mergeComposerRunSettings(previous, "claude_local", { model: "claude-opus", effort: "high", fast: false, daybreak: false }))
+    expect(mergeComposerRunSettings(previous, "claude_local", { model: "claude-opus", effort: "high", fast: false, daybreak: false, daybreakOverride: "inherit" }))
       .toEqual({ adapterConfig: { chrome: true, model: "claude-opus", effort: "high" }, useProjectWorkspace: true });
-    const reset = mergeComposerRunSettings(previous, "claude_local", { model: null, effort: null, fast: false, daybreak: false });
+    const reset = mergeComposerRunSettings(previous, "claude_local", { model: null, effort: null, fast: false, daybreak: false, daybreakOverride: "inherit" });
     expect(reset).toEqual({ adapterConfig: { chrome: true }, useProjectWorkspace: true });
-    expect(readComposerRunSettings(reset, "claude_local")).toEqual({ model: null, effort: null, fast: false, daybreak: false });
+    expect(readComposerRunSettings(reset, "claude_local")).toEqual({ model: null, effort: null, fast: false, daybreak: false, daybreakOverride: "inherit" });
     expect(readComposerRunSettings({ adapterConfig: { reasoningEffort: "xhigh" } }, "codex_local").effort).toBe("xhigh");
-    expect(readComposerRunSettings({ adapterConfig: { daybreakEnabled: true } }, "codex_local").daybreak).toBe(true);
-    expect(readComposerRunSettings(null, "codex_local", { daybreakEnabled: true }).daybreak).toBe(true);
-    expect(readComposerRunSettings({ adapterConfig: { daybreakEnabled: false } }, "codex_local", { daybreakEnabled: true }).daybreak).toBe(false);
-    expect(mergeComposerRunSettings(previous, "codex_local", { model: "gpt-6-astra", effort: "ultra", fast: true, daybreak: true }, true))
+    expect(readComposerRunSettings({ adapterConfig: { daybreakEnabled: true } }, "codex_local")).toMatchObject({ daybreak: true, daybreakOverride: "enabled" });
+    expect(readComposerRunSettings(null, "codex_local", { daybreakEnabled: true })).toMatchObject({ daybreak: true, daybreakOverride: "inherit" });
+    expect(readComposerRunSettings({ adapterConfig: { daybreakEnabled: false } }, "codex_local", { daybreakEnabled: true })).toMatchObject({ daybreak: false, daybreakOverride: "disabled" });
+    expect(mergeComposerRunSettings(previous, "codex_local", { model: "gpt-6-astra", effort: "ultra", fast: true, daybreak: true, daybreakOverride: "enabled" }, true))
       .toEqual({ adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "ultra", fastMode: true, daybreakEnabled: true } });
-    expect(mergeComposerRunSettings(null, "codex_local", { model: null, effort: null, fast: false, daybreak: false }, false, { daybreakEnabled: true }))
+    expect(mergeComposerRunSettings(null, "codex_local", { model: null, effort: null, fast: false, daybreak: false, daybreakOverride: "inherit" }, false, { daybreakEnabled: true }))
+      .toBeNull();
+    expect(mergeComposerRunSettings(null, "codex_local", { model: null, effort: null, fast: false, daybreak: false, daybreakOverride: "disabled" }, false, { daybreakEnabled: true }))
       .toEqual({ adapterConfig: { daybreakEnabled: false } });
   });
 });

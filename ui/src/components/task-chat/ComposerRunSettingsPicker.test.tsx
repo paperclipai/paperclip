@@ -40,7 +40,7 @@ function render(onAssigneeChange: (value: string) => void, onSettingsChange: () 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   flushSync(() => root!.render(<QueryClientProvider client={queryClient}>
     <ComposerRunSettingsPicker companyId="company-1" assigneeValue="agent:a1" currentAssigneeValue="agent:a1"
-      options={options} agents={agents} settings={{ model: "gpt-6-sol", effort: "high", fast: true, daybreak: false }}
+      options={options} agents={agents} settings={{ model: "gpt-6-sol", effort: "high", fast: true, daybreak: false, daybreakOverride: "inherit" }}
       onAssigneeChange={onAssigneeChange} onSettingsChange={onSettingsChange}
       modelOptionsOverride={useCatalog ? undefined : []} />
   </QueryClientProvider>));
@@ -98,7 +98,7 @@ describe("composer assignee picker", () => {
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("aria-pressed")).toBe("false");
     await click("Daybreak access");
-    expect(onSettingsChange).toHaveBeenCalledWith({ model: "gpt-6-sol", effort: "high", fast: true, daybreak: true });
+    expect(onSettingsChange).toHaveBeenCalledWith({ model: "gpt-6-sol", effort: "high", fast: true, daybreak: true, daybreakOverride: "enabled" });
   });
 
   it("shows an instance-declared Codex model list instead of bundled alternatives", async () => {
@@ -138,6 +138,6 @@ describe("composer assignee picker", () => {
     await click("Choose assignee");
     await click("No assignee");
     expect(onAssigneeChange).toHaveBeenCalledWith("");
-    expect(onSettingsChange).toHaveBeenCalledWith({ model: null, effort: null, fast: false, daybreak: false });
+    expect(onSettingsChange).toHaveBeenCalledWith({ model: null, effort: null, fast: false, daybreak: false, daybreakOverride: "inherit" });
   });
 });

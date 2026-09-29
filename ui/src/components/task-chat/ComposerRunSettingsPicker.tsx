@@ -160,7 +160,13 @@ export function ComposerRunSettingsPicker({
     setAssigneeSearch("");
   };
   const chooseModel = (value: string | null) => {
-    onSettingsChange({ model: value, effort: null, fast: false, daybreak: selected.daybreak });
+    onSettingsChange({
+      model: value,
+      effort: null,
+      fast: false,
+      daybreak: selected.daybreak,
+      daybreakOverride: selected.daybreakOverride,
+    });
     setView("settings");
     setModelSearch("");
   };
@@ -191,7 +197,14 @@ export function ComposerRunSettingsPicker({
         <span className="min-w-0 flex-1"><span className="block text-xs text-muted-foreground">Model</span><span className="block truncate text-sm font-medium">{modelName || "Harness default"}</span></span><ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       </button>
       {daybreakAvailable ? <div className="mt-3 rounded-md border border-border/70 px-2.5 py-2">
-        <button type="button" aria-label="Daybreak access" aria-pressed={selected.daybreak} title="Request Codex Daybreak access for this run" onClick={() => onSettingsChange({ ...selected, daybreak: !selected.daybreak })} className="flex w-full items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <button type="button" aria-label="Daybreak access" aria-pressed={selected.daybreak} title="Request Codex Daybreak access for this run" onClick={() => {
+          const daybreak = !selected.daybreak;
+          onSettingsChange({
+            ...selected,
+            daybreak,
+            daybreakOverride: daybreak ? "enabled" : "disabled",
+          });
+        }} className="flex w-full items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <ShieldCheck className={cn("size-4 shrink-0", selected.daybreak ? "composer-run-settings-accent" : "text-muted-foreground")} aria-hidden />
           <span className="min-w-0 flex-1"><span className="block text-sm font-medium">Daybreak</span><span className="block text-xs text-muted-foreground">Requests the approved Codex cybersecurity capability; it does not grant access.</span></span>
           <span className={cn("relative h-5 w-9 shrink-0 rounded-full bg-muted transition-colors", selected.daybreak && "composer-run-settings-accent bg-accent")} aria-hidden><span className={cn("absolute top-0.5 size-4 rounded-full bg-background shadow-sm transition-transform", selected.daybreak ? "translate-x-4" : "translate-x-0.5")} /></span>
