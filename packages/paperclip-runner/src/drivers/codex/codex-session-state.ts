@@ -1,3 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
+import { normalizedEventId, type EventEpochTransition } from "../../control-plane/event-epochs.js";
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
 import type {
   HarnessRuntimeRequest,
@@ -31,6 +34,13 @@ import type {
   PendingRuntimeRequest,
 } from "./codex-driver-types.js";
 import { canonicalJson, record } from "./codex-driver-values.js";
+import { NormalizedDeliveryWriter } from "../../control-plane/normalized-delivery-writer.js";
+import type { CodexRpcServerRequest } from "./app-server-transport.js";
+import { createCodexQuestionResponseContext, normalizeCodexQuestionSet } from "./codex-question-adapter.js";
+import { CodexHistoryMap, CodexHistorySet } from "./codex-history-cache.js";
+
+const durableScalars = ["sourceSequence", "sourceSequenceEpoch", "activeTurnId", "usageSnapshot", "codexUsageBaseline", "result", "resultFingerprint", "resultCallId", "resultTurnId", "protocolFailed", "protocolFailureCode", "protocolFailureMessage", "terminal", "dispositionOnlyRecoveryAvailable", "dispositionOnlyRecoveryConsumed", "dispositionOnlyRecoveryTurnId", "turnStarted", "turnStartPending", "notificationIdentityDiagnostics", "currentGoal", "interruptQueued", "steerSequence", "interruptSequence", "durableTerminal"] as const;
+const durableMaps = ["terminalTurns", "workspaceChangesByTurn", "itemChannels", "lineageByThread", "acknowledgedSteeringCorrelations"] as const;
 
 class AsyncQueue<T> implements AsyncIterable<T> {
   #values: T[] = [];
@@ -66,6 +76,10 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 
   clear(): void {
     this.#values = [];
+  }
+
+  discard(predicate: (value: T) => boolean): void {
+    this.#values = this.#values.filter((value) => !predicate(value));
   }
 
   [Symbol.asyncIterator](): AsyncIterator<T> {
@@ -105,7 +119,13 @@ export class CodexSessionState {
   readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
   readonly eventQueue = new AsyncQueue<PrpEvent>();
+  deliveryWriter: NormalizedDeliveryWriter | null = null;
+  deliveryRestored = false;
+  durableTerminal: { event: PrpEvent; semanticFingerprint: string | null } | null = null;
+  readonly pendingRuntimeRequestSources = new Map<string, CodexRpcServerRequest>();
   sourceSequence: number;
+  sourceSequenceEpoch: string | null = null;
+  readonly capturedEventIds = new AsyncLocalStorage<string[]>();
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;
   codexUsageBaseline: CodexUsageBaseline | null = null;
@@ -131,20 +151,20 @@ export class CodexSessionState {
   dispositionOnlyRecoveryConsumed = false;
   dispositionOnlyRecoveryTurnId: string | null = null;
   turnStarted = false;
-  readonly terminalTurns = new Map<string, string>();
+  terminalTurns: Map<string, string> = new Map();
   readonly workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
-  readonly emittedFileReferences = new Set<string>();
+  emittedFileReferences: Set<string> | CodexHistorySet = new Set();
   readonly itemChannels = new Map<
     string,
     "progress" | "final" | "summary" | "detail" | "unknown"
   >();
   readonly pendingRuntimeRequestMap = new Map<string, PendingRuntimeRequest>();
   notificationIdentityDiagnostics = 0;
-  readonly lineageByThread = new Map<string, HarnessThreadLineageEntry>();
+  lineageByThread: Map<string, HarnessThreadLineageEntry> = new Map();
   currentGoal: HarnessThreadGoal | null = null;
   interruptQueued = false;
   steerSequence = 0;
-  readonly acknowledgedSteeringCorrelations = new Map<string, string>();
+  acknowledgedSteeringCorrelations: Map<string, string> = new Map();
   interruptSequence = 0;
 
   constructor(input: {
@@ -165,6 +185,7 @@ export class CodexSessionState {
     lineage?: HarnessThreadLineageEntry[];
     goal?: HarnessThreadGoal | null;
     sourceSequence: number;
+    sourceEpoch?: string;
     now: () => Date;
     runnerInstanceId: string;
     driverKind: string;
@@ -189,6 +210,7 @@ export class CodexSessionState {
     this.conversationMode = input.conversationMode;
     this.activeTurnId = input.activeTurnId ?? null;
     this.sourceSequence = input.sourceSequence;
+    this.sourceSequenceEpoch = input.sourceEpoch ?? null;
     this.now = input.now;
     this.runnerInstanceId = input.runnerInstanceId;
     this.driverKind = input.driverKind;
@@ -279,6 +301,96 @@ export class CodexSessionState {
     this.dispositionOnlyRecoveryConsumed =
       dispositionOnlyRecoveryPreviouslyConsumed;
     this.dispositionOnlyRecoveryTurnId = dispositionOnlyRecoveryTurnId;
+    this.initializeDelivery();
+  }
+
+  initializeDelivery(): void {
+    const port = this.transport.normalizedDelivery?.();
+    if (!port) return;
+    const saved = port.load();
+    if (saved) {
+      const state = saved.driver;
+      if (state.schema !== "paperclip.codex.reducer.v1" || state.runId !== this.runId || state.sessionId !== this.normalizedSessionId || state.threadId !== this.opened.threadId) throw new HarnessReconciliationError("normalized reducer binding mismatch");
+      const scalars = record(state.scalars);
+      for (const key of durableScalars) {
+        if (key === "sourceSequenceEpoch" && !(key in scalars)) continue; // Retained pre-epoch reducer.
+        if (!(key in scalars)) throw new HarnessReconciliationError(`normalized reducer lacks ${key}`);
+        (this as unknown as Record<string, unknown>)[key] = structuredClone(scalars[key]);
+      }
+      if (this.sourceSequence !== saved.produced || (this.sourceSequenceEpoch ?? undefined) !== saved.producedEpoch) throw new HarnessReconciliationError("normalized reducer cursor mismatch");
+      for (const key of durableMaps) {
+        const entries = state[key];
+        if (!Array.isArray(entries)) throw new HarnessReconciliationError(`normalized reducer lacks ${key}`);
+        const target = this[key] as Map<string, unknown>;
+        target.clear();
+        for (const [id, value] of entries) target.set(id, structuredClone(value));
+      }
+      this.emittedFileReferences.clear();
+      if (!Array.isArray(state.emittedFileReferences) || !Array.isArray(state.pendingRequests)) throw new HarnessReconciliationError("invalid normalized reducer collections");
+      for (const id of state.emittedFileReferences) this.emittedFileReferences.add(id);
+      for (const pending of state.pendingRequests) {
+        const request = pending.request as HarnessRuntimeRequest;
+        const source = pending.source as CodexRpcServerRequest;
+        if (!source || String(source.id) !== request.requestId || source.method !== request.method) throw new HarnessReconciliationError("normalized runtime request binding mismatch");
+        const responseContext = createCodexQuestionResponseContext();
+        normalizeCodexQuestionSet(source.method, source.params, responseContext);
+        this.pendingRuntimeRequestSources.set(request.requestId, source);
+        // Runnerd owns resolution delivery; the vanished controller's JS
+        // promise grants no authority and needs no reconstructed callback.
+        this.pendingRuntimeRequestMap.set(request.requestId, { request, responseContext, settle: () => {} });
+      }
+      this.deliveryRestored = true;
+    }
+    if (port.history) {
+      this.lineageByThread = new CodexHistoryMap("lineage", port.history, this.lineageByThread, saved !== null || this.lineageByThread instanceof CodexHistoryMap,
+        ({ threadId, providerSessionId, parentThreadId, depth }) => ({ threadId, providerSessionId, parentThreadId, depth }),
+        (value) => ({ ...value as Pick<HarnessThreadLineageEntry, "threadId" | "providerSessionId" | "parentThreadId" | "depth">, nickname: null, role: null, status: "unknown" }));
+      this.terminalTurns = new CodexHistoryMap("terminal", port.history, this.terminalTurns, saved !== null);
+      this.acknowledgedSteeringCorrelations = new CodexHistoryMap("steering", port.history, this.acknowledgedSteeringCorrelations, saved !== null || this.acknowledgedSteeringCorrelations instanceof CodexHistoryMap);
+      this.emittedFileReferences = new CodexHistorySet(port.history, this.emittedFileReferences, saved !== null || this.emittedFileReferences instanceof CodexHistorySet);
+    }
+    this.deliveryWriter = new NormalizedDeliveryWriter(port, () => this.deliveryCheckpoint(), (event) => this.eventQueue.push(event), (error) => {
+      this.eventQueue.fail(error);
+      void this.transport.detachControllerForRestart?.().catch(() => undefined);
+    }, () => [
+      ...(this.lineageByThread instanceof CodexHistoryMap ? this.lineageByThread.takeReceipts() : []),
+      ...(this.terminalTurns instanceof CodexHistoryMap ? this.terminalTurns.takeReceipts() : []),
+      ...(this.acknowledgedSteeringCorrelations instanceof CodexHistoryMap ? this.acknowledgedSteeringCorrelations.takeReceipts() : []),
+      ...(this.emittedFileReferences instanceof CodexHistorySet ? this.emittedFileReferences.map.takeReceipts() : []),
+    ]);
+  }
+
+  async prefetchHistory(collection: "terminal" | "file" | "steering" | "lineage", keys: string[]): Promise<void> {
+    const cache = collection === "lineage" ? this.lineageByThread : collection === "terminal" ? this.terminalTurns : collection === "steering" ? this.acknowledgedSteeringCorrelations
+      : this.emittedFileReferences instanceof CodexHistorySet ? this.emittedFileReferences.map : null;
+    if (!(cache instanceof CodexHistoryMap)) return;
+    await this.deliveryWriter?.flush();
+    await cache.prefetch(keys);
+  }
+
+  deliveryCheckpoint(): Record<string, unknown> {
+    for (const id of this.pendingRuntimeRequestSources.keys()) if (!this.pendingRuntimeRequestMap.has(id)) this.pendingRuntimeRequestSources.delete(id);
+    return JSON.parse(JSON.stringify({
+      schema: "paperclip.codex.reducer.v1", runId: this.runId, sessionId: this.normalizedSessionId, threadId: this.opened.threadId,
+      scalars: Object.fromEntries(durableScalars.map((key) => [key, this[key]])),
+      ...Object.fromEntries(durableMaps.map((key) => [key, [...this[key]]])),
+      emittedFileReferences: [...this.emittedFileReferences],
+      pendingRequests: [...this.pendingRuntimeRequestMap].map(([id, pending]) => ({ request: pending.request, source: this.pendingRuntimeRequestSources.get(id) })),
+    })) as Record<string, unknown>;
+  }
+
+  publishEvent(event: PrpEvent): void {
+    this.capturedEventIds.getStore()?.push(event.sourceEventId);
+    if (["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) this.durableTerminal = {
+      event: JSON.parse(JSON.stringify(event)) as PrpEvent, semanticFingerprint: this.resultFingerprint,
+    };
+    if (this.deliveryWriter) this.deliveryWriter.emit(event);
+    else this.eventQueue.push(event);
+  }
+
+  closeEvents(): void {
+    if (!this.deliveryWriter) this.eventQueue.close();
+    else void Promise.resolve().then(() => this.deliveryWriter!.flush()).then(() => this.eventQueue.close(), (error) => this.eventQueue.fail(error));
   }
 
   requireActiveTurn(turnId: string, operation: string): void {
@@ -417,7 +529,7 @@ export class CodexSessionState {
       this.activeTurnId = null;
     }
     this.terminal = true;
-    this.eventQueue.close();
+    this.closeEvents();
     // Notification failure can initiate cleanup before the owning runtime joins
     // it. Observe this background rejection immediately so a deleted remote
     // sandbox cannot crash the controller. The transport retains its original
@@ -426,16 +538,30 @@ export class CodexSessionState {
     void this.transport.close(`protocol_failure:${code}`).catch(() => undefined);
   }
 
+  private allocateSource(): Pick<PrpEvent, "sourceEventId" | "sourceSeq" | "sourceEpoch" | "sourceEpochTransition"> {
+    const limit = this.deliveryWriter?.port.eventEpochs?.limit;
+    let transition: EventEpochTransition | undefined;
+    if (limit !== undefined && this.sourceSequence >= limit) {
+      transition = { schema: "paperclip.prp.event-epoch.v1", runId: this.runId, transitionId: randomUUID(),
+        fromEpoch: this.sourceSequenceEpoch, nextEpoch: randomUUID(), finalOrdinal: this.sourceSequence };
+      this.sourceSequenceEpoch = transition.nextEpoch;
+      this.sourceSequence = 0;
+    }
+    if (!Number.isSafeInteger(this.sourceSequence) || this.sourceSequence >= Number.MAX_SAFE_INTEGER) throw new HarnessReconciliationError("normalized source sequence requires epoch support");
+    const sourceSeq = ++this.sourceSequence;
+    return { sourceEventId: normalizedEventId(this.runnerInstanceId, this.runId, sourceSeq, this.sourceSequenceEpoch ?? undefined), sourceSeq,
+      ...(this.sourceSequenceEpoch ? { sourceEpoch: this.sourceSequenceEpoch } : {}), ...(transition ? { sourceEpochTransition: transition } : {}) };
+  }
+
   emit(
     eventType: PrpEvent["eventType"],
     payload: Record<string, unknown>,
     refs: { turnId?: string; itemId?: string } = {},
   ): void {
-    const sourceSeq = ++this.sourceSequence;
-    this.eventQueue.push({
+    const source = this.allocateSource();
+    this.publishEvent({
       schema: "paperclip.prp.event.v1",
-      sourceEventId: `${this.runnerInstanceId}:${this.runId}:${sourceSeq}`,
-      sourceSeq,
+      ...source,
       sourceInstanceId: this.runnerInstanceId,
       sourceKind: "runner",
       runId: this.runId,
@@ -506,11 +632,10 @@ export class CodexSessionState {
       | "session.goal.cleared",
     payload: Record<string, unknown>,
   ): void {
-    const sourceSeq = ++this.sourceSequence;
-    this.eventQueue.push({
+    const source = this.allocateSource();
+    this.publishEvent({
       schema: "paperclip.prp.event.v2",
-      sourceEventId: `${this.runnerInstanceId}:${this.runId}:${sourceSeq}`,
-      sourceSeq,
+      ...source,
       sourceInstanceId: this.runnerInstanceId,
       sourceKind: "runner",
       runId: this.runId,

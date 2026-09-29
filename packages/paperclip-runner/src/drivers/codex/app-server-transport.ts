@@ -1,10 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
+import type { NormalizedDeliveryPort, RawDeliveryCursor } from "../../control-plane/normalized-delivery.js";
 
 export interface CodexRpcNotification {
   method: string;
   params: Record<string, unknown>;
+  /** Durable consumer position, always present on indexed runner deliveries. */
+  paperclipDelivery?: RawDeliveryCursor;
   /** Internal-only correlation retained outside provider params and canonical PRP payloads. */
   paperclipTrace?: {
     sourceEventId: string;
@@ -36,6 +40,8 @@ export interface CodexAppServerTransport {
   ): Promise<Record<string, unknown>>;
   notify(method: string, params?: Record<string, unknown>): void;
   notifications(): AsyncIterable<CodexRpcNotification>;
+  normalizedDelivery?(): NormalizedDeliveryPort | null;
+  setBeforeRunRotation?(settle: () => Promise<void>): void;
   setServerRequestHandler(handler: CodexServerRequestHandler): void;
   /**
    * Optional provider-neutral resolution path used when a transport has
@@ -367,8 +373,7 @@ const MAX_DIAGNOSTIC_LINE_BYTES = 16 * 1024;
 export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
   #process: ChildProcessWithoutNullStreams;
   #notifications: BoundedAsyncQueue<CodexRpcNotification>;
-  #pending = new Map<number, PendingRequest>();
-  #nextId = 1;
+  #pending = new Map<string | number, PendingRequest>();
   #serverRequestHandler: CodexServerRequestHandler = async () => ({
     success: false,
     contentItems: [{ type: "input_text", text: "Unsupported client request." }],
@@ -502,7 +507,8 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
         ),
       );
     }
-    const id = this.#nextId++;
+    const id = `paperclip-rpc-${randomUUID()}`;
+    if (this.#pending.has(id)) return Promise.reject(new Error("codex app-server fresh request identity unavailable"));
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
       try {
@@ -634,10 +640,10 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
     const message = value;
     const hasResult = Object.hasOwn(message, "result");
     const hasError = Object.hasOwn(message, "error");
-    if (typeof message.id === "number" && (hasResult || hasError)) {
+    if ((typeof message.id === "number" || typeof message.id === "string") && (hasResult || hasError)) {
       if (
-        !Number.isSafeInteger(message.id) ||
-        message.id <= 0 ||
+        (typeof message.id === "number" && (!Number.isSafeInteger(message.id) || message.id <= 0)) ||
+        (typeof message.id === "string" && (message.id.length === 0 || message.id.length > 160)) ||
         hasResult === hasError
       ) {
         this.#fatal(

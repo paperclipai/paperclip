@@ -144,6 +144,9 @@ export interface NativeSession {
   /** Relinquish controller authority without suspending provider execution. */
   detachControllerForRestart?(): Promise<void>;
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
+  acknowledgeEvent?(event: PrpEvent): Promise<void>;
+  setEventCommitter?(commit: (event: PrpEvent) => Promise<void>): void;
+  flushEventDelivery?(): Promise<void>;
   startTurn(input: {
     message: NativeUserMessage;
     /** Set by orchestration only after successful provider-session recovery. */

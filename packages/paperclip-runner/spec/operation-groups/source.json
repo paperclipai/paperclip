@@ -11,6 +11,7 @@
     "session": "Provider-neutral session open, resume, reconciliation, close, and failure.",
     "turn": "Model turn submission through terminal turn disposition.",
     "item": "Provider-neutral model/tool item lifecycle.",
+    "output": "Negotiated, immutable output-body chunks with exact byte offsets and content digests.",
     "mcp_app": "MCP App discovery, initialization, tool, action, host-context, and teardown evidence.",
     "runtime_request": "Runtime permission/input request lifecycle.",
     "interaction": "Issue-thread interaction proposal, materialization, response, delivery, and rejection.",

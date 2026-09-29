@@ -1,3 +1,4 @@
+import { resolveRunnerCargoTestBinary, resolveRunnerCargoTestBinaryOrDefault } from "../../test/cargo-test-binary.js";
 // The retained-settlement maintenance suite below moved out of
 // runnerd-codex-transport.test.ts. Vitest schedules whole files onto
 // workers, so that single 8.9k-line file serialized ~400s of tests and was
@@ -51,7 +52,12 @@ import {
 // Explicit private-artifact test lane; production/default dist is never changed.
 const defaultCapabilityRunnerdBinary = () =>
   process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ??
-  qualifiedCapabilityRunnerdBinary();
+  resolveRunnerCargoTestBinaryOrDefault(
+    resolve(import.meta.dirname, "../../runner"),
+    "debug",
+    "paperclip-runnerd",
+    qualifiedCapabilityRunnerdBinary,
+  );
 
 function maintenanceFixtureBackendName(fixtureId: string): string {
   return `maintenance-test-${fixtureId}`;
@@ -138,10 +144,7 @@ it.each([
     const activated = join(directory, "activated");
     const home = join(directory, "source-home");
     await mkdir(home);
-    const fakeCodex = resolve(
-      import.meta.dirname,
-      "../../runner/target/debug/fake-codex-app-server",
-    );
+    const fakeCodex = resolveRunnerCargoTestBinary(resolve(import.meta.dirname, "../../runner"), "debug", "fake-codex-app-server");
     const bin = join(directory, "provider-bin");
     if (bareCodex) {
       await mkdir(bin);
@@ -270,10 +273,10 @@ it.each([
           .update(await readFile(fixtureRunner))
           .digest("hex")}`,
       });
-      builder.queueCommand("turn.stop", {
+      (await builder.queueCommand("turn.stop", {
         reason: "interrupted original close",
-      });
-      if (!missingHome) builder.queueCommand("runner.suspend", {});
+      }));
+      if (!missingHome) (await builder.queueCommand("runner.suspend", {}));
       // Match the retained production split: runner-owned unacknowledged
       // output plus another full provider-owned prefix behind the old suspend.
       const runnerFile = join(original, "runner/runner-state.json");
@@ -815,10 +818,10 @@ it.each([
                 .update(await readFile(fixtureRunner)).digest("hex")}`,
               onCommittedEvent: appendEvent,
             });
-            const snapshot = replayCore.queueCommand("session.snapshot", {});
-            const stop = replayCore.queueCommand("turn.stop", {
+            const snapshot = (await replayCore.queueCommand("session.snapshot", {}));
+            const stop = (await replayCore.queueCommand("turn.stop", {
               reason: "startup-fence regression only",
-            });
+            }));
             let replayHandle: ReturnType<typeof durableControlPlane.spawnRunner> | null = null;
             let replayAssertionFailed = false;
             try {
@@ -828,7 +831,7 @@ it.each([
                 connectUrl: replayCore.connectUrl,
                 stateDirectory: join(copy, "runner"),
                 identity,
-                ticket: replayCore.issueBootstrapTicket(),
+                ticket: (await replayCore.issueBootstrapTicket()),
                 maxOutboxBytes: runnerState.maxOutboxBytes,
                 p0ReserveBytes: runnerState.p0ReserveBytes,
                 maxRuntimeMs: 2_000,
@@ -846,9 +849,9 @@ it.each([
                   hasRuntimeContext: false,
                 }),
               });
-              await vi.waitFor(() => {
+              await vi.waitFor(async () => {
                 for (const queued of [snapshot, stop]) {
-                  const command = replayCore.getCommand(queued.commandId);
+                  const command = (await replayCore.getCommand(queued.commandId));
                   expect(command?.status).toBe("failed");
                   expect(command?.result).toMatchObject({
                     result: {

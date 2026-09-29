@@ -29,28 +29,24 @@ export async function handleServerRequest(
   state: CodexSessionState,
     request: CodexRpcServerRequest,
   ): Promise<Record<string, unknown>> {
-    const sourceSequenceBefore = state.sourceSequence;
+    const emittedEventIds: string[] = [];
     let rejected = false;
     try {
-      const response = await handleServerRequestBody(state, request);
+      if (request.method !== "item/tool/call") state.pendingRuntimeRequestSources.set(String(request.id), structuredClone(request));
+      const pendingResponse = state.capturedEventIds.run(emittedEventIds, () => handleServerRequestBody(state, request));
+      // Runtime-input admission executes synchronously, then waits for a user.
+      // Persist that admission without holding the notification pump hostage.
+      if (request.method !== "item/tool/call") state.deliveryWriter?.changed(request.paperclipDelivery);
+      const response = await pendingResponse;
       rejected = response.success === false;
       return response;
     } catch (error) {
       rejected = true;
       throw error;
     } finally {
+      state.pendingRuntimeRequestSources.delete(String(request.id));
       const correlation = request.paperclipTrace;
       if (correlation !== undefined) {
-        const emittedEventIds: string[] = [];
-        for (
-          let sourceSeq = sourceSequenceBefore + 1;
-          sourceSeq <= state.sourceSequence;
-          sourceSeq += 1
-        ) {
-          emittedEventIds.push(
-            `${state.runnerInstanceId}:${state.runId}:${sourceSeq}`,
-          );
-        }
         try {
           state.transport.recordTraceInterpretation?.({
             sourceEventId: correlation.sourceEventId,

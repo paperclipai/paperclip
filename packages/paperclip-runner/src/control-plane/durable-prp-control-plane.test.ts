@@ -3,6 +3,7 @@ import {
   createDecipheriv,
   createHash,
   createHmac,
+  randomUUID,
 } from "node:crypto";
 import {
   chmodSync,
@@ -16,6 +17,7 @@ import nodeFs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -30,6 +32,9 @@ import {
   type RunnerProcessLaunchSpec,
 } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "./prp-transport-types.js";
+import { SqliteAuthorityStore } from "./sqlite-authority-store.js";
+import { DurableAuthorityStoreError } from "./durable-authority-store.js";
+import { readDurableControlPlaneState } from "./authority-locator.js";
 
 const identity: DurableRecoveryIdentity = {
   runnerInstanceId: "runner-test-1",
@@ -41,6 +46,438 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("renews encrypted connections repeatedly without resetting durable history or treating rekey as corruption", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-channel-rekey-"));
+  const authority = await SqliteAuthorityStore.open({ path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true });
+  const core = await DurablePrpControlPlane.open({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+    authorityStore: authority, secureChannelFrameLimit: 4 });
+  let client: AuthenticatedClient | null = null;
+  try {
+    await core.start();
+    client = await authenticate(core, await core.issueBootstrapTicket());
+    const token = client!.leaseToken!;
+    const channels = new Set<string>();
+    let first!: Record<string, unknown>;
+    for (let epoch = 0; epoch < 3; epoch++) {
+      channels.add(client!.sessionId);
+      for (let ordinal = 1; ordinal <= 4; ordinal++) {
+        const raw = semanticInputEvent(epoch * 4 + ordinal);
+        (raw.payload as Record<string, unknown>).eventType = "harness.diagnostic";
+        (raw.payload as Record<string, unknown>).payload = { code: "rekey" };
+        if (epoch === 0 && ordinal === 1) first = raw;
+        sendSecure(client!, raw);
+        const reply = await receiveSecure(client!);
+        if (ordinal < 4) expect(reply?.kind).toBe("ack");
+        else expect(reply).toBeNull(); // Accepted cursor survives the lost ACK.
+      }
+      expect(core.store.state.ackedSourceSeq).toBe((epoch + 1) * 4);
+      client = await authenticate(core, token);
+      expect(client).not.toBeNull();
+      expect(client!.welcome.payload).toMatchObject({ ackedSourceSeq: (epoch + 1) * 4 });
+    }
+    expect(channels.size).toBe(3);
+    sendSecure(client!, first);
+    expect((await receiveSecure(client!))?.payload).toMatchObject({ ackedSourceSeq: 12 });
+    expect(core.store.state.malformedFrames).toBe(0);
+    expect(core.store.state.identity).toEqual(identity);
+    expect((await authority.getRecord(identity.runId, "event", "semantic-event-1"))?.body.envelope).toEqual(first);
+  } finally {
+    client?.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing(); await authority.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
+it("keeps fresh connection identities and recoverable state after diagnostic counters saturate", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-diagnostic-boundary-"));
+  const config = { path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true };
+  let authority = await SqliteAuthorityStore.open(config);
+  const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest };
+  let core = await DurablePrpControlPlane.open({ ...options, authorityStore: authority });
+  let client: AuthenticatedClient | null = null;
+  try {
+    for (const field of ["connectionCount", "freshBootstraps", "malformedFrames", "replayDeliveries", "duplicateCommandResults"] as const) {
+      core.store.state[field] = Number.MAX_SAFE_INTEGER;
+    }
+    await core.store.save(); await core.start();
+    client = await authenticate(core, await core.issueBootstrapTicket());
+    const lease = client!.leaseToken!, firstId = client!.welcome.connectionId;
+    client!.socket.destroy();
+    client = await authenticate(core, lease);
+    expect(client!.welcome.connectionId).not.toBe(firstId);
+    expect(core.store.state.connectionCount).toBe(Number.MAX_SAFE_INTEGER);
+    expect(core.store.state.freshBootstraps).toBe(Number.MAX_SAFE_INTEGER);
+    const raw = semanticInputEvent();
+    (raw.payload as Record<string, unknown>).eventType = "harness.diagnostic";
+    (raw.payload as Record<string, unknown>).payload = { code: "retained" };
+    for (let attempt = 0; attempt < 2; attempt++) { sendSecure(client!, raw); expect((await receiveSecure(client!))?.kind).toBe("ack"); }
+    expect(core.store.state.replayDeliveries).toBe(Number.MAX_SAFE_INTEGER);
+    sendMaskedJson(client!.socket, { schema: "invalid-encrypted-frame" });
+    expect(await client!.reader.next()).toBeNull();
+    expect(core.store.state.malformedFrames).toBe(Number.MAX_SAFE_INTEGER);
+    client = null; await core.stop(); await core.drainPendingConnectionProcessing(); await authority.close();
+    authority = await SqliteAuthorityStore.open({ ...config, create: false });
+    core = await DurablePrpControlPlane.open({ ...options, authorityStore: authority });
+    expect(core.store.state.ackedSourceSeq).toBe(1);
+    expect((await authority.getRecord(identity.runId, "event", "semantic-event-1"))?.body.envelope).toEqual(raw);
+  } finally {
+    client?.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing(); await authority.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["rolled_back", "committed", "unreadable"] as const)("retries resource pressure only after verifying an unchanged durable generation (%s)", async disposition => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-pressure-recovery-"));
+  const authority = await SqliteAuthorityStore.open({ path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true });
+  const core = await DurablePrpControlPlane.open({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, authorityStore: authority });
+  try {
+    const before = structuredClone(core.store.state), commit = authority.commit.bind(authority);
+    const fail = vi.spyOn(authority, "commit").mockImplementationOnce(async input => {
+      if (disposition === "committed") await commit(input);
+      throw new DurableAuthorityStoreError("storage_pressure", "injected full disk");
+    });
+    const read = disposition === "unreadable" ? vi.spyOn(authority, "load").mockRejectedValueOnce(new Error("unavailable read")) : null;
+    await expect(core.issueBootstrapTicket()).rejects.toThrow("storage_pressure");
+    fail.mockRestore(); read?.mockRestore();
+    if (disposition === "rolled_back") {
+      expect(core.store.state).toEqual(before);
+      const ticket = await core.issueBootstrapTicket();
+      expect(ticket).toBeTruthy();
+      expect(Object.keys(core.store.state.tickets)).toHaveLength(1);
+    } else {
+      await expect(core.issueBootstrapTicket()).rejects.toThrow("indeterminate");
+    }
+  } finally { await core.stop(); await authority.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("resumes a paged process-owner upgrade after an indeterminate commit without replaying older launch phases", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-owner-upgrade-"));
+  const storage = { path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true };
+  let store = await SqliteAuthorityStore.open(storage);
+  const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest };
+  let core = await DurablePrpControlPlane.open({ ...options, authorityStore: store });
+  try {
+    const snapshot = (await store.load())!;
+    const state = structuredClone(snapshot.state);
+    delete (state.indexedState as Record<string, unknown>).processOwnerIndexVersion;
+    const events = [];
+    for (let index = 1; index <= 260; index++) {
+      for (const phase of ["intent", "spawned"]) {
+        const sourceSeq = events.length + 1;
+        const raw = semanticInputEvent();
+        const payload = raw.payload as Record<string, unknown>;
+        payload.eventType = "harness.diagnostic";
+        payload.sourceSeq = sourceSeq; payload.sourceEventId = `upgrade-event-${sourceSeq}`;
+        payload.payload = { code: "provider_startup_ownership", startup: { schema: "paperclip.provider_startup.v1",
+          launchId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, phase, attemptedProcessGeneration: index,
+          configurationFingerprint: `sha256:${"a".repeat(64)}`, origin: identity,
+          ...(phase === "spawned" ? { processId: 10000 + index, processGroupId: 10000 + index } : {}), processTreeRetired: false } };
+        events.push({ sourceEventId: payload.sourceEventId, sourceSeq, eventType: "harness.diagnostic", envelope: raw,
+          priority: 1, deliveryCount: 1, logicalEffectCount: 1 });
+      }
+    }
+    state.committedEvents = events; state.ackedSourceSeq = events.length;
+    delete ((state.indexedState as { recoveryEvidence: { eventOrder?: string[] } }).recoveryEvidence).eventOrder;
+    await store.commit({ expectedGeneration: snapshot.generation, state, records: [] });
+    await core.stop(); await store.close();
+    store = await SqliteAuthorityStore.open({ ...storage, create: false });
+    const commit = store.commit.bind(store);
+    let pages = 0;
+    const fault = vi.spyOn(store, "commit").mockImplementation(async input => {
+      expect(input.work?.length ?? 0).toBeLessThanOrEqual(128);
+      const generation = await commit(input);
+      if (++pages === 2) throw new Error("lost upgrade commit reply");
+      return generation;
+    });
+    await expect(DurablePrpControlPlane.open({ ...options, authorityStore: store })).rejects.toThrow("lost upgrade commit reply");
+    fault.mockRestore();
+    expect((await store.load())!.state.committedEvents).toHaveLength(520);
+    await store.close();
+    store = await SqliteAuthorityStore.open({ ...storage, create: false });
+    core = await DurablePrpControlPlane.open({ ...options, authorityStore: store });
+    expect(core.store.state.committedEvents).toEqual([]);
+    const first = await core.readProcessOwners();
+    const second = await core.readProcessOwners(first.nextAfter!, 128, first.generation);
+    const third = await core.readProcessOwners(second.nextAfter!, 128, first.generation);
+    expect([first.records.length, second.records.length, third.records.length]).toEqual([128, 128, 4]);
+    for (const row of [...first.records, ...second.records, ...third.records]) expect(row.body.startup).toMatchObject({ phase: "spawned" });
+    expect(Buffer.byteLength(JSON.stringify(core.store.state))).toBeLessThan(8192);
+  } finally { await core.stop(); await store.close(); rmSync(root, { recursive: true, force: true }); }
+}, 30_000);
+
+it("pages unresolved process owners independently of historical events and preserves them after restart", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-owner-history-"));
+  const storage = { path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true };
+  let store = await SqliteAuthorityStore.open(storage);
+  const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest };
+  let core = await DurablePrpControlPlane.open({ ...options, authorityStore: store });
+  let client: AuthenticatedClient | null = null;
+  try {
+    await core.start(); client = await authenticate(core, await core.issueBootstrapTicket());
+    for (let index = 1; index <= 132; index++) {
+      const raw = semanticInputEvent();
+      const payload = raw.payload as Record<string, unknown>;
+      payload.eventType = "harness.diagnostic";
+      payload.sourceEventId = `owner-event-${index}`; payload.sourceSeq = index;
+      payload.payload = { code: "provider_startup_ownership", startup: { schema: "paperclip.provider_startup.v1",
+        launchId: `00000000-0000-4000-8000-${String(Math.min(index, 131)).padStart(12, "0")}`,
+        phase: index === 131 ? "intent" : index === 132 ? "initialization_failed" : "spawned", attemptedProcessGeneration: Math.min(index, 131),
+        configurationFingerprint: `sha256:${"a".repeat(64)}`, origin: identity,
+        ...(index <= 130 ? { processId: 10000 + index, processGroupId: 10000 + index } : {}),
+        ...(index === 132 ? { failedStage: "spawn" } : {}), processTreeRetired: false } };
+      sendSecure(client, raw); expect((await receiveSecure(client))?.kind).toBe("ack");
+    }
+    expect(core.store.state.committedEvents).toEqual([]);
+    expect(Buffer.byteLength(JSON.stringify(core.store.state))).toBeLessThan(8192);
+    const first = await core.readProcessOwners();
+    expect(first.records).toHaveLength(128);
+    expect((await core.readProcessOwners(first.nextAfter!, 128, first.generation)).records).toHaveLength(2);
+    client.socket.destroy(); client = null;
+    await core.stop(); await core.drainPendingConnectionProcessing(); await store.close();
+    store = await SqliteAuthorityStore.open({ ...storage, create: false });
+    core = await DurablePrpControlPlane.open({ ...options, authorityStore: store });
+    expect((await core.readProcessOwners("", 1)).records[0]?.body).toMatchObject({ sourceEventId: "owner-event-1", startup: { processId: 10001, processTreeRetired: false } });
+    expect((await store.getRecord(identity.runId, "event", "owner-event-1"))?.body.eventType).toBe("harness.diagnostic");
+    expect(await store.getWork("process-owner", "00000000-0000-4000-8000-000000000131")).toBeNull();
+    expect((await store.getRecord(identity.runId, "event", "owner-event-132"))?.body.eventType).toBe("harness.diagnostic");
+    await core.issueBootstrapTicket();
+    await expect(core.readProcessOwners(first.nextAfter!, 128, first.generation)).rejects.toThrow("stale_authority");
+  } finally { client?.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing(); await store.close(); rmSync(root, { recursive: true, force: true }); }
+}, 30_000);
+
+it("replays the exact normalized outbox across raw ACK, mapping, run-log commit and consumer ACK crashes", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-normalized-delivery-"));
+  const storage = { path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true };
+  let store = await SqliteAuthorityStore.open(storage);
+  const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest };
+  let core = await DurablePrpControlPlane.open({ ...options, authorityStore: store });
+  let client: AuthenticatedClient | null = null;
+  try {
+    await core.start();
+    client = await authenticate(core, await core.issueBootstrapTicket());
+    const raw = semanticInputEvent();
+    (raw.payload as Record<string, unknown>).eventType = "harness.diagnostic";
+    (raw.payload as Record<string, unknown>).payload = { code: "raw-consumer-test" };
+    sendSecure(client!, raw);
+    expect((await receiveSecure(client!))?.kind).toBe("ack");
+    // The runner's ACK is not the normalized consumer's checkpoint.
+    expect(core.normalizedDelivery()!.load()).toBeNull();
+    const event = { schema: "paperclip.prp.event.v1", sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:1`, sourceSeq: 1,
+      sourceInstanceId: identity.runnerInstanceId, sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
+      eventType: "harness.diagnostic", schemaVersion: 1, priority: 1, emittedAt: "2026-09-28T00:00:00.000Z", payload: { code: "normalized" } } as const;
+    const consumer = core.normalizedDelivery()!;
+    // A retained counter at its old hard ceiling must not block unrelated
+    // semantic identities, and old exact receipts must remain queryable.
+    core.store.state.indexedState!.driverReceiptSequence = "9223372036854775807";
+    await core.store.save();
+    await expect(consumer.commit({ expectedRevision: 0, raw: { epoch: identity.runId, sourceSeq: 2, ordinal: 1 }, driver: {}, events: [event] })).rejects.toThrow("passed the committed raw inbox");
+    await consumer.commit({ expectedRevision: 0, raw: { epoch: identity.runId, sourceSeq: 1, ordinal: 1 }, driver: { reduced: true }, events: [event], receipts: [
+      { collection: "terminal", key: "call-1", value: { accepted: 1 } },
+      { collection: "terminal", key: "call-2", value: { accepted: 2 } },
+    ] });
+    expect(core.store.state.indexedState!.driverReceiptSequence).toBeUndefined();
+    await expect(consumer.commit({ expectedRevision: 0, raw: { epoch: identity.runId, sourceSeq: 1, ordinal: 1 }, driver: {}, events: [] })).rejects.toThrow("revision changed");
+    client!.socket.destroy(); client = null;
+    await core.stop(); await core.drainPendingConnectionProcessing(); await store.close();
+    store = await SqliteAuthorityStore.open({ ...storage, create: false });
+    core = await DurablePrpControlPlane.open({ ...options, authorityStore: store });
+    const reopened = core.normalizedDelivery()!;
+    expect(await reopened.history!.get("terminal", "call-1")).toEqual({ accepted: 1 });
+    expect(await reopened.history!.get("terminal", "call-2")).toEqual({ accepted: 2 });
+    await expect(reopened.commit({ expectedRevision: reopened.load()!.revision, raw: { epoch: identity.runId, sourceSeq: 1, ordinal: 1 }, driver: {}, events: [],
+      receipts: [{ collection: "terminal", key: "call-1", value: { accepted: 99 } }] })).rejects.toThrow("receipt_conflict");
+    expect(reopened.load()).toMatchObject({ raw: { epoch: identity.runId, sourceSeq: 1, ordinal: 1 }, driver: { reduced: true }, pending: [event] });
+    // If the run-log write committed but its receipt was lost, replay these
+    // original bytes (including timestamp); the run-log's exact key dedupes it.
+    await expect(reopened.acknowledge({ ...event, payload: { code: "different" } })).rejects.toThrow("differs from pending event");
+    expect(reopened.load()!.pending).toEqual([event]);
+    await reopened.acknowledge(event);
+    expect(reopened.load()).toMatchObject({ produced: 1, acknowledged: 1, pending: [] });
+    await core.stop(); await store.close();
+    store = await SqliteAuthorityStore.open({ ...storage, create: false });
+    core = await DurablePrpControlPlane.open({ ...options, authorityStore: store });
+    expect(core.normalizedDelivery()!.load()).toMatchObject({ raw: { epoch: identity.runId, sourceSeq: 1, ordinal: 1 }, driver: { reduced: true }, pending: [] });
+  } finally {
+    client?.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing(); await store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([64, 256 * 1024])("backpressures real encrypted input while a durable commit is stalled (payload bytes %s)", async payloadBytes => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-ingress-pressure-"));
+  const store = await SqliteAuthorityStore.open({ path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true });
+  const core = await DurablePrpControlPlane.open({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, authorityStore: store });
+  let client: AuthenticatedClient | null = null;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let incoming = 0, pauses = 0;
+  const attach = core.attachWireConnection.bind(core);
+  const wireSpy = vi.spyOn(core, "attachWireConnection").mockImplementation(wire => attach({
+    onJson: listener => wire.onJson(value => { incoming++; listener(value); }),
+    onClose: wire.onClose.bind(wire), close: wire.close.bind(wire), sendJson: wire.sendJson.bind(wire),
+    pauseRead: () => { pauses++; wire.pauseRead!(); }, resumeRead: () => wire.resumeRead!(),
+  }));
+  try {
+    await core.start(); client = await authenticate(core, await core.issueBootstrapTicket());
+    const commit = store.commit.bind(store);
+    const spy = vi.spyOn(store, "commit").mockImplementationOnce(async input => { await gate; return commit(input); });
+    const before = incoming, count = 40;
+    for (let seq = 1; seq <= count; seq++) {
+      const envelope = semanticInputEvent(seq);
+      envelope.payload = { ...(envelope.payload as Record<string, unknown>), eventType: "item.delta", priority: 2, payload: { delta: "x".repeat(payloadBytes) } };
+      sendSecure(client, envelope);
+    }
+    await vi.waitFor(() => expect(pauses).toBeGreaterThan(0));
+    expect(incoming - before).toBeLessThanOrEqual(16);
+    expect(core.store.state.ackedSourceSeq).toBe(0);
+    release();
+    for (let seq = 1; seq <= count; seq++) expect((await receiveSecure(client))?.kind).toBe("ack");
+    expect(core.store.state.ackedSourceSeq).toBe(count);
+    expect(core.activeRunnerConnectionCount()).toBe(1);
+    expect((await store.getRecord(identity.runId, "event", "semantic-event-1"))?.sequence).toBe("1");
+    expect((await store.getRecord(identity.runId, "event", `semantic-event-${count}`))?.sequence).toBe(String(count));
+    spy.mockRestore();
+  } finally {
+    release(); client?.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing();
+    wireSpy.mockRestore(); await store.close(); rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("disconnects a transport without flow control before it can enqueue unbounded closures", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-ingress-admission-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let receive!: (value: unknown) => void, onClose!: (reason: object) => void;
+  const close = vi.fn((code: number | undefined) => onClose({ code }));
+  let encoded = 0;
+  try {
+    core.attachWireConnection({ onJson: listener => { receive = listener; }, onClose: listener => { onClose = listener; }, sendJson() {}, close });
+    for (let index = 0; index < 10_000; index++) receive({ toJSON() { encoded++; return { protocol: "paperclip.runner", version: 1, kind: "test" }; } });
+    expect(close).toHaveBeenCalledWith(1013);
+    expect(encoded).toBe(65);
+    await core.stop(); await core.drainPendingConnectionProcessing();
+    expect(core.store.state.ackedSourceSeq).toBe(0);
+  } finally { await core.stop(); await core.drainPendingConnectionProcessing(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("publishes indexed event cursors only after their storage commit", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-authority-publication-"));
+  const store = await SqliteAuthorityStore.open({ path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true });
+  const core = await DurablePrpControlPlane.open({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, authorityStore: store });
+  let client: AuthenticatedClient | null = null;
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const waiting = new Promise<void>((resolve) => { entered = resolve; });
+  let spy: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    await core.start();
+    client = await authenticate(core, await core.issueBootstrapTicket());
+    const commit = store.commit.bind(store);
+    spy = vi.spyOn(store, "commit").mockImplementationOnce(async (input) => {
+      entered();
+      await gate;
+      return commit(input);
+    });
+    const event = semanticInputEvent();
+    const payload = event.payload as Record<string, unknown>;
+    payload.eventType = "harness.diagnostic";
+    payload.payload = { code: "publication-test" };
+    sendSecure(client!, event);
+    await waiting;
+    expect(core.store.state.ackedSourceSeq).toBe(0);
+    expect(core.store.state.indexedState?.providerEverStarted).toBe(false);
+    expect((await store.load())?.state.ackedSourceSeq).toBe(0);
+    release();
+    expect((await receiveSecure(client!))?.kind).toBe("ack");
+    expect(core.store.state.ackedSourceSeq).toBe(1);
+    expect((await core.readCommittedEvents(0))[0]?.sourceEventId).toBe("semantic-event-1");
+  } finally {
+    release();
+    client?.socket.destroy();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    spy?.mockRestore();
+    await store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("never recreates an activated authority whose current row was lost", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-missing-authority-"));
+  const storage = { path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true };
+  let store = await SqliteAuthorityStore.open(storage);
+  try {
+    const core = await DurablePrpControlPlane.open({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, authorityStore: store });
+    const snapshot = (await store.load())!;
+    const receipt = { epoch: identity.runId, kind: "event" as const, id: "retained-event", sequence: "1", body: { accepted: true } };
+    await store.commit({ expectedGeneration: snapshot.generation, state: snapshot.state, records: [receipt] });
+    const locator = readFileSync(core.store.path, "utf8");
+    await core.stop();
+    await store.close();
+    const damaged = new DatabaseSync(storage.path);
+    try { damaged.exec("DELETE FROM current_state WHERE key='authority'"); }
+    finally { damaged.close(); }
+    store = await SqliteAuthorityStore.open({ ...storage, create: false });
+    await expect(DurablePrpControlPlane.open({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, authorityStore: store })).rejects.toThrow("activated current authority is missing");
+    expect(await store.load()).toBeNull();
+    expect(await store.getRecord(identity.runId, "event", receipt.id)).toEqual(receipt);
+    expect(readFileSync(core.store.path, "utf8")).toBe(locator);
+  } finally {
+    await store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("keeps indexed command receipts beyond the legacy cap and replays them after restart", async () => {
+  const commandCount = process.env.PAPERCLIP_HISTORY_QUALIFICATION_COMMANDS === "100000" ? 100_000 : 600;
+  const started = performance.now();
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-indexed-prp-"));
+  const storage = { path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true };
+  let store = await SqliteAuthorityStore.open(storage);
+  let core = await DurablePrpControlPlane.open({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, authorityStore: store, connectionLeaseTtlMs: 3_600_000 });
+  let client: AuthenticatedClient | null = null;
+  try {
+    await core.start();
+    client = await authenticate(core, await core.issueBootstrapTicket());
+    expect(client).not.toBeNull();
+    for (let index = 1; index <= commandCount; index++) {
+      const command = await core.queueCommand("session.snapshot", { index, optional: undefined }, `snapshot-${index}`, true);
+      const frame = await receiveSecure(client!);
+      expect(frame).toMatchObject({ kind: "command", payload: { commandId: command.commandId, controllerSeq: index } });
+      sendSecure(client!, { protocol: "paperclip.runner", version: 1, kind: "command_result", ...identity,
+        payload: { commandId: command.commandId, commandType: command.type, controllerSeq: index, status: "completed", result: { index } } });
+      await vi.waitFor(async () => expect((await core.getCommand(command.commandId))?.status).toBe("completed"), { interval: 1, timeout: 5_000 });
+    }
+    expect(core.store.state.commands).toHaveLength(1);
+    const persisted = (await store.load())!.state;
+    expect(persisted.commands).toEqual([]);
+    expect(persisted.indexedState).toMatchObject({ schema: "paperclip.runner.current-authority.v2", recoveryEvidence: {
+      schema: "paperclip.current-evidence.v1", records: { "command:session.snapshot": { epoch: identity.runId, kind: "command", id: `snapshot-${commandCount}` } },
+    } });
+    const proof = await readDurableControlPlaneState(root);
+    expect(proof.commands).toEqual(core.store.state.commands);
+    expect(Buffer.byteLength(JSON.stringify((await store.load())!.state))).toBeLessThan(8192);
+    const old = await core.getCommand("snapshot-1");
+    expect(old?.result).toMatchObject({ result: { index: 1 } });
+    client!.socket.destroy();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    await store.close();
+    store = await SqliteAuthorityStore.open({ ...storage, create: false });
+    core = await DurablePrpControlPlane.open({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, authorityStore: store, connectionLeaseTtlMs: 3_600_000 });
+    expect(await core.queueCommand("session.snapshot", { index: 1 }, "snapshot-1")).toEqual(old);
+    await expect(core.queueCommand("session.snapshot", { index: 2 }, "snapshot-1")).rejects.toThrow("replay conflicts");
+    expect((await core.queueCommand("session.snapshot", { index: commandCount + 1 }, `snapshot-${commandCount + 1}`)).controllerSeq).toBe(commandCount + 1);
+    if (commandCount === 100_000) console.info(JSON.stringify({ qualification: "indexed-controller-commands", completedCommands: commandCount, retainedCommands: core.store.state.commands.length, currentBytes: Buffer.byteLength(JSON.stringify(core.store.state)), elapsedMs: Math.round(performance.now() - started) }));
+    expect(core.store.state.commands).toHaveLength(2);
+  } finally {
+    client?.socket.destroy();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    await store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, process.env.PAPERCLIP_HISTORY_QUALIFICATION_COMMANDS === "100000" ? 900_000 : 60_000);
 
 function renewalRequest(client: AuthenticatedClient, expiresAt: number): Record<string, unknown> {
   return {
@@ -66,7 +503,7 @@ it("renews one authenticated connection for three weeks without replacing its au
   });
   try {
     await core.start();
-    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const client = (await authenticate(core, (await core.issueBootstrapTicket())))!;
     let expiry = Number((client.welcome.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
     const leaseId = client.welcome.connectionLeaseId;
     for (let hour = 0; hour < 21 * 24; hour += 3) {
@@ -116,7 +553,7 @@ it.each(["expired", "revoked", "wrong-run", "wrong-connection", "wrong-epoch", "
     let clock: ReturnType<typeof vi.spyOn> | undefined;
     try {
       await core.start();
-      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const client = (await authenticate(core, (await core.issueBootstrapTicket())))!;
       const expiry = Number((client.welcome.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
       const request = renewalRequest(client, expiry);
       if (fault === "expired") clock = vi.spyOn(Date, "now").mockReturnValue(expiry);
@@ -136,7 +573,7 @@ it.each(["expired", "revoked", "wrong-run", "wrong-connection", "wrong-epoch", "
   },
 );
 
-it("persists the initial warm attachment seed idempotently and rejects replacement", () => {
+it("persists the initial warm attachment seed idempotently and rejects replacement", async () => {
   const root = mkdtempSync(
     resolve(tmpdir(), "runner-initial-attachment-seed-test-"),
   );
@@ -155,26 +592,26 @@ it("persists the initial warm attachment seed idempotently and rejects replaceme
       expectedRunnerVersion,
       expectedRunnerDigest,
     });
-    core.persistRunAttachTemplate(template);
-    core.persistRunAttachTemplate(structuredClone(template));
+    (await core.persistRunAttachTemplate(template));
+    (await core.persistRunAttachTemplate(structuredClone(template)));
 
     expect(
       JSON.parse(
         readFileSync(resolve(root, "control-plane-state.json"), "utf8"),
       ).runAttachTemplate,
     ).toEqual(template);
-    expect(() =>
-      core.persistRunAttachTemplate({
+    await expect(async () =>
+      (await core.persistRunAttachTemplate({
         ...template,
         provider: { ...template.provider, kind: "opencode" },
-      }),
-    ).toThrow("attachment template conflicts");
+      })),
+    ).rejects.toThrow("attachment template conflicts");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-it("persists a connection-free warm attachment seed when rotating run identity", () => {
+it("persists a connection-free warm attachment seed when rotating run identity", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-attachment-seed-test-"));
   const nextIdentity: DurableRecoveryIdentity = {
     ...identity,
@@ -197,7 +634,7 @@ it("persists a connection-free warm attachment seed when rotating run identity",
       expectedRunnerVersion,
       expectedRunnerDigest,
     });
-    core.rotateRunIdentity(nextIdentity, template);
+    (await core.rotateRunIdentity(nextIdentity, template));
 
     const stored = JSON.parse(
       readFileSync(resolve(root, "control-plane-state.json"), "utf8"),
@@ -771,7 +1208,9 @@ function sendMaskedJson(socket: Socket, value: unknown): void {
   } else if (payload.length <= 0xffff) {
     header.push(0x80 | 126, payload.length >>> 8, payload.length & 0xff);
   } else {
-    throw new Error("Test client frame exceeds the supported size.");
+    if (payload.length > 1024 * 1024) throw new Error("Test client frame exceeds the supported size.");
+    header.push(0x80 | 127);
+    for (let shift = 56n; shift >= 0n; shift -= 8n) header.push(Number((BigInt(payload.length) >> shift) & 0xffn));
   }
   const masked = Buffer.from(payload);
   for (let index = 0; index < masked.length; index += 1) {
@@ -805,6 +1244,8 @@ function authHello(
       protocolMin: 1,
       protocolMax: 1,
       warmTransitionVersion: 1,
+      durability: "durability.indexed_state.v1",
+      outputBodies: "history.output_bodies.v1",
       ...selectedIdentity,
       runnerVersion: expectedRunnerVersion,
       runnerDigest: expectedRunnerDigest,
@@ -820,11 +1261,22 @@ async function authenticate(
   warmTransitionId?: string,
   withoutWarmCapability = false,
   protocolMax = 1,
+  commandEpochs = false,
+  commandResume?: { controllerEpoch: string | null; lastControllerCommandSeq: number },
+  eventResume?: import("./event-epochs.js").EventResume,
 ): Promise<AuthenticatedClient | null> {
   const { socket, reader } = await upgradeSocket(controlPlane.connectUrl);
   const material = credentialMaterial(token);
   const hello = authHello(material.credentialId, selectedIdentity);
   (hello.payload as Record<string, unknown>).protocolMax = protocolMax;
+  if (commandEpochs) {
+    (hello.payload as Record<string, unknown>).commandEpochs = "transport.command_epochs.v1";
+    (hello.payload as Record<string, unknown>).resume = commandResume ?? {
+      controllerEpoch: controlPlane.store.state.indexedState?.controllerEpoch ?? null,
+      lastControllerCommandSeq: (controlPlane.store.state.indexedState?.nextControllerSeq ?? 1) - 1,
+    };
+  }
+  if (eventResume) Object.assign(hello.payload as object, { eventEpochs: "transport.event_epochs.v1", eventResume });
   (hello.payload as Record<string, unknown>).runnerDigest = runnerDigest;
   if (warmTransitionId !== undefined)
     (hello.payload as Record<string, unknown>).warmTransitionId =
@@ -927,8 +1379,8 @@ it.each([
     let client: AuthenticatedClient | null = null;
     try {
       await core.start();
-      const command = core.queueCommand("turn.stop", {});
-      const ticket = core.issueBootstrapTicket();
+      const command = (await core.queueCommand("turn.stop", {}));
+      const ticket = (await core.issueBootstrapTicket());
       const ticketId = credentialMaterial(ticket).credentialId;
       authenticating = authenticate(core, ticket);
       await waiting;
@@ -1023,10 +1475,10 @@ it("denies held admission if the previous authenticated owner latches integrity 
   let admission: Promise<AuthenticatedClient | null> | undefined;
   try {
     await core.start();
-    old = await authenticate(core, core.issueBootstrapTicket());
+    old = await authenticate(core, (await core.issueBootstrapTicket()));
     expect(old).not.toBeNull();
-    const command = core.queueCommand("turn.stop", {});
-    const ticket = core.issueBootstrapTicket();
+    const command = (await core.queueCommand("turn.stop", {}));
+    const ticket = (await core.issueBootstrapTicket());
     const ticketId = credentialMaterial(ticket).credentialId;
     hold = true;
     admission = authenticate(core, ticket);
@@ -1218,7 +1670,7 @@ it.each(["committed", "rejected"] as const)(
     const retired = vi.fn();
     try {
       await core.start();
-      client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      client = (await authenticate(core, (await core.issueBootstrapTicket())))!;
       const beforeFrames = admittedFrames;
       for (const sourceSeq of [1, 2]) {
         const envelope = semanticInputEvent(sourceSeq);
@@ -1305,7 +1757,7 @@ it.each([false, true])(
     let drained: Promise<void> | undefined;
     try {
       await core.start();
-      const ticket = core.issueBootstrapTicket();
+      const ticket = (await core.issueBootstrapTicket());
       const ticketId = credentialMaterial(ticket).credentialId;
       authenticating = authenticate(core, ticket);
       await waiting;
@@ -1500,7 +1952,7 @@ describe.sequential("DurablePrpControlPlane", () => {
       });
       try {
         await core.start();
-        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        const client = (await authenticate(core, (await core.issueBootstrapTicket())))!;
         const before = readFileSync(core.store.path, "utf8");
         sendSecure(client, eventAt(4097, true).envelope);
         if (mode === "all_pending") {
@@ -1596,7 +2048,7 @@ describe.sequential("DurablePrpControlPlane", () => {
         const core = authority!;
         const client = (await authenticate(
           core,
-          core.issueBootstrapTicket(),
+          (await core.issueBootstrapTicket()),
           identity,
           runnerDigest,
         ))!;
@@ -1652,7 +2104,7 @@ describe.sequential("DurablePrpControlPlane", () => {
     });
     try {
       await core.start();
-      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const client = (await authenticate(core, (await core.issueBootstrapTicket())))!;
       sendSecure(client, corruptSemanticInputDigest());
       await expect(receiveSecure(client)).resolves.toBeNull();
       expect(onProtocolIntegrityError).toHaveBeenCalledTimes(1);
@@ -1677,15 +2129,15 @@ describe.sequential("DurablePrpControlPlane", () => {
       expect(core.store.state.ackedSourceSeq).toBe(0);
       expect(onCommittedEvent).not.toHaveBeenCalled();
       expect(onSemanticToolInput).not.toHaveBeenCalled();
-      expect(() =>
-        core.rotateRunIdentity({ ...identity, runId: "other-run" }),
-      ).toThrow(error);
+      await expect(async () =>
+        (await core.rotateRunIdentity({ ...identity, runId: "other-run" })),
+      ).rejects.toThrow(error);
 
-      const suspend = core.queueCommand(
+      const suspend = (await core.queueCommand(
         "runner.suspend",
         {},
         "suspend-after-integrity-fault",
-      );
+      ));
       const cleanup = (await authenticate(core, client.leaseToken!))!;
       expect(cleanup.welcome.payload).toMatchObject({
         pendingCommands: [
@@ -1744,7 +2196,7 @@ describe.sequential("DurablePrpControlPlane", () => {
       });
       try {
         await core.start();
-        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        const client = (await authenticate(core, (await core.issueBootstrapTicket())))!;
         sendSecure(client, semanticInputEvent());
         await expect(receiveSecure(client)).resolves.toBeNull();
         expect(onProtocolIntegrityError).toHaveBeenCalledExactlyOnceWith(error);
@@ -1782,7 +2234,7 @@ describe.sequential("DurablePrpControlPlane", () => {
     });
     try {
       await core.start();
-      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const client = (await authenticate(core, (await core.issueBootstrapTicket())))!;
       sendSecure(client, semanticInputEvent());
       await expect(receiveSecure(client)).resolves.toMatchObject({
         kind: "ack",
@@ -1901,7 +2353,7 @@ describe.sequential("DurablePrpControlPlane", () => {
         } else {
           const client = (await authenticate(
             core,
-            core.issueBootstrapTicket(),
+            (await core.issueBootstrapTicket()),
           ))!;
           sendSecure(client, event);
           await expect(receiveSecure(client)).resolves.toBeNull();
@@ -1911,7 +2363,7 @@ describe.sequential("DurablePrpControlPlane", () => {
         expect(onSemanticToolInput).not.toHaveBeenCalled();
         const legitimate = (await authenticate(
           core,
-          core.issueBootstrapTicket(),
+          (await core.issueBootstrapTicket()),
         ))!;
         sendSecure(legitimate, semanticInputEvent());
         await expect(receiveSecure(legitimate)).resolves.toMatchObject({
@@ -1951,7 +2403,7 @@ describe.sequential("DurablePrpControlPlane", () => {
     });
     try {
       await core.start();
-      const first = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const first = (await authenticate(core, (await core.issueBootstrapTicket())))!;
       sendSecure(first, semanticInputEvent());
       await vi.waitFor(() => expect(onCommittedEvent).toHaveBeenCalledTimes(1));
       const replacement = (await authenticate(core, first.leaseToken!))!;
@@ -1984,7 +2436,7 @@ describe.sequential("DurablePrpControlPlane", () => {
     });
     try {
       await core.start();
-      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const client = (await authenticate(core, (await core.issueBootstrapTicket())))!;
       sendSecure(client, corruptSemanticInputDigest());
       await expect(receiveSecure(client)).resolves.toBeNull();
       expect(onProtocolIntegrityError).not.toHaveBeenCalled();
@@ -2023,7 +2475,7 @@ describe.sequential("DurablePrpControlPlane", () => {
       });
       try {
         await core.start();
-        const first = (await authenticate(core, core.issueBootstrapTicket()))!;
+        const first = (await authenticate(core, (await core.issueBootstrapTicket())))!;
         sendSecure(first, semanticInputEvent());
         await expect(receiveSecure(first)).resolves.toBeNull();
         expect(core.store.state.ackedSourceSeq).toBe(0);
@@ -2058,7 +2510,7 @@ describe.sequential("DurablePrpControlPlane", () => {
     const clients: AuthenticatedClient[] = [];
     try {
       await core.start();
-      const first = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const first = (await authenticate(core, (await core.issueBootstrapTicket())))!;
       clients.push(first);
       expect(first.welcome.version).toBe(1);
       first.socket.destroy();
@@ -2076,7 +2528,7 @@ describe.sequential("DurablePrpControlPlane", () => {
       reconnect.socket.destroy();
       // A replacement process has no in-memory lease. Its owner issues the
       // normal one-use bootstrap for the unchanged, validated run authority.
-      const freshTicket = core.issueBootstrapTicket();
+      const freshTicket = (await core.issueBootstrapTicket());
       const replacement = (await authenticate(
         core,
         freshTicket,
@@ -2118,29 +2570,29 @@ describe.sequential("DurablePrpControlPlane", () => {
     });
     try {
       await controlPlane.start();
-      const cancel = controlPlane.queueCommand(
+      const cancel = (await controlPlane.queueCommand(
         "run.cancel",
         { reason: "test" },
         "command-cancel-1",
-      );
+      ));
       expect(
-        controlPlane.queueCommand(
+        (await controlPlane.queueCommand(
           "run.cancel",
           { reason: "test" },
           "command-cancel-1",
-        ),
+        )),
       ).toEqual(cancel);
-      expect(() =>
-        controlPlane.queueCommand(
+      await expect(async () =>
+        (await controlPlane.queueCommand(
           "run.cancel",
           { reason: "different" },
           "command-cancel-1",
-        ),
-      ).toThrow("command replay conflicts");
-      expect(() => controlPlane.queueCommand("unknown.command")).toThrow(
+        )),
+      ).rejects.toThrow("command replay conflicts");
+      await expect(async () => (await controlPlane.queueCommand("unknown.command"))).rejects.toThrow(
         "command is invalid",
       );
-      const ticket = controlPlane.issueBootstrapTicket();
+      const ticket = (await controlPlane.issueBootstrapTicket());
       const first = await authenticate(controlPlane, ticket);
       expect(first?.leaseToken).toEqual(expect.any(String));
       first?.socket.destroy();
@@ -2155,7 +2607,7 @@ describe.sequential("DurablePrpControlPlane", () => {
 
       const wrongRun = await authenticate(
         controlPlane,
-        controlPlane.issueBootstrapTicket(),
+        (await controlPlane.issueBootstrapTicket()),
         {
           ...identity,
           runId: "00000000-0000-4000-8000-000000000999",
@@ -2184,7 +2636,7 @@ describe.sequential("DurablePrpControlPlane", () => {
     let leaseToken: string;
     try {
       await first.start();
-      const client = await authenticate(first, first.issueBootstrapTicket());
+      const client = await authenticate(first, (await first.issueBootstrapTicket()));
       leaseToken = client!.leaseToken!;
       const validation = validatePrpEvent(semanticInputEvent().payload);
       expect(validation, JSON.stringify(validation)).toMatchObject({
@@ -2268,7 +2720,7 @@ describe.sequential("DurablePrpControlPlane", () => {
     let leaseToken: string;
     try {
       await first.start();
-      const client = await authenticate(first, first.issueBootstrapTicket());
+      const client = await authenticate(first, (await first.issueBootstrapTicket()));
       leaseToken = client!.leaseToken!;
       sendSecure(client!, semanticInputEvent());
       await expect(receiveSecure(client!)).resolves.toBeNull();
@@ -2314,19 +2766,19 @@ describe.sequential("DurablePrpControlPlane", () => {
     });
     try {
       await controlPlane.start();
-      const journaled = controlPlane.queueCommand(
+      const journaled = (await controlPlane.queueCommand(
         "semantic_tool.result",
         { callId: "call-1" },
         "command-tool-1",
-      );
-      controlPlane.queueCommand(
+      ));
+      (await controlPlane.queueCommand(
         "turn.interrupt",
         { turnId: "turn-1" },
         "command-interrupt-1",
-      );
+      ));
       const client = await authenticate(
         controlPlane,
-        controlPlane.issueBootstrapTicket(),
+        (await controlPlane.issueBootstrapTicket()),
       );
       expect(client?.welcome.payload).toMatchObject({
         pendingCommands: [
@@ -2420,10 +2872,10 @@ describe.sequential("DurablePrpControlPlane", () => {
       await controlPlane.start();
       client = await authenticate(
         controlPlane,
-        controlPlane.issueBootstrapTicket(),
+        (await controlPlane.issueBootstrapTicket()),
       );
       expect(client).not.toBeNull();
-      const command = controlPlane.queueCommand(
+      const command = (await controlPlane.queueCommand(
         "run.attach",
         {
           paperclipNextAuthority: {
@@ -2436,7 +2888,7 @@ describe.sequential("DurablePrpControlPlane", () => {
         },
         "command-attach-ack-loss",
         true,
-      );
+      ));
       await expect(receiveSecure(client!)).resolves.toMatchObject({
         kind: "command",
       });
@@ -2463,7 +2915,7 @@ describe.sequential("DurablePrpControlPlane", () => {
       ).toEqual(result.payload);
       // The result ACK remains unread on this lost connection. Observing the
       // result must not delete the old receipt or activate its new identity.
-      controlPlane.rotateRunIdentity(nextIdentity);
+      (await controlPlane.rotateRunIdentity(nextIdentity));
       expect(controlPlane.store.state.identity).toEqual(identity);
       client!.socket.destroy();
       replay = await authenticate(controlPlane, leaseToken, identity);
@@ -2530,10 +2982,10 @@ describe.sequential("DurablePrpControlPlane", () => {
     let successor: AuthenticatedClient | null = null;
     try {
       await core.start();
-      const unusedTicket = core.issueBootstrapTicket();
-      peer = await authenticateVersion(core, core.issueBootstrapTicket());
+      const unusedTicket = (await core.issueBootstrapTicket());
+      peer = await authenticateVersion(core, (await core.issueBootstrapTicket()));
       const oldToken = peer!.leaseToken!;
-      const command = core.queueCommand(
+      const command = (await core.queueCommand(
         "run.attach",
         {
           paperclipNextAuthority: {
@@ -2543,7 +2995,7 @@ describe.sequential("DurablePrpControlPlane", () => {
         },
         "command-transition",
         true,
-      );
+      ));
       await expect(receiveSecure(peer!)).resolves.toMatchObject({
         kind: "command",
       });
@@ -2566,10 +3018,10 @@ describe.sequential("DurablePrpControlPlane", () => {
         .warmTransition as Record<string, unknown>;
       const transitionId = receipt.transitionId as string;
       expect(core.store.state.identity).toEqual(identity);
-      expect(() => core.queueCommand("turn.start", {})).toThrow(
+      await expect(async () => (await core.queueCommand("turn.start", {}))).rejects.toThrow(
         "exact cached attachment replay",
       );
-      expect(() => core.issueBootstrapTicket()).toThrow(
+      await expect(async () => (await core.issueBootstrapTicket())).rejects.toThrow(
         "explicit one-use bootstrap",
       );
       if (mode === "revoked-live-peer") {
@@ -2713,12 +3165,12 @@ describe.sequential("DurablePrpControlPlane", () => {
             },
           }),
         ).toBeNull();
-        expect(() =>
-          core.issueWarmTransitionBootstrapTicket({
+        await expect(async () =>
+          (await core.issueWarmTransitionBootstrapTicket({
             transitionId,
             runnerState: { ...runnerState, runId: nextIdentity.runId },
-          }),
-        ).toThrow("snapshot");
+          })),
+        ).rejects.toThrow("snapshot");
         const originalLease = structuredClone(
           Object.values(core.store.state.leases).find(
             (lease) =>
@@ -2728,32 +3180,32 @@ describe.sequential("DurablePrpControlPlane", () => {
         if (mode === "revoked-bootstrap") {
           core.store.state.leases[originalLease.credentialId]!.revokedAt =
             new Date().toISOString();
-          expect(() =>
-            core.issueWarmTransitionBootstrapTicket({
+          await expect(async () =>
+            (await core.issueWarmTransitionBootstrapTicket({
               transitionId,
               runnerState,
-            }),
-          ).toThrow("not authorized");
+            })),
+          ).rejects.toThrow("not authorized");
         } else if (mode === "expired-bootstrap") {
           vi.spyOn(Date, "now").mockReturnValue(
             originalLease.expiresAtUnixMs + 1,
           );
-          expect(() =>
-            core.issueWarmTransitionBootstrapTicket({
+          await expect(async () =>
+            (await core.issueWarmTransitionBootstrapTicket({
               transitionId,
               runnerState,
-            }),
-          ).toThrow("not authorized");
+            })),
+          ).rejects.toThrow("not authorized");
         } else {
-          let ticket = core.issueWarmTransitionBootstrapTicket({
+          let ticket = (await core.issueWarmTransitionBootstrapTicket({
             transitionId,
             runnerState,
-          });
+          }));
           if (mode === "bootstrap-before-result") {
             expect(core.store.state.warmTransition?.phase).toBe(
               "awaiting_result",
             );
-            expect(core.getCommand(command.commandId)?.status).toBe("pending");
+            expect((await core.getCommand(command.commandId))?.status).toBe("pending");
             await core.stop();
             core = new DurablePrpControlPlane({
               stateDirectory: root,
@@ -2816,10 +3268,10 @@ describe.sequential("DurablePrpControlPlane", () => {
               ),
             ).toBeNull();
             wireSpy.mockRestore();
-            ticket = core.issueWarmTransitionBootstrapTicket({
+            ticket = (await core.issueWarmTransitionBootstrapTicket({
               transitionId,
               runnerState,
-            });
+            }));
           }
           successor = await authenticateVersion(
             core,
@@ -2857,7 +3309,7 @@ describe.sequential("DurablePrpControlPlane", () => {
             ),
           ).toBeNull();
           if (mode === "bootstrap-before-result")
-            expect(core.getCommand(command.commandId)?.status).toBe("pending");
+            expect((await core.getCommand(command.commandId))?.status).toBe("pending");
           sendSecure(successor!, {
             protocol: "paperclip.runner",
             version: selectedProtocol,
@@ -2868,7 +3320,7 @@ describe.sequential("DurablePrpControlPlane", () => {
             kind: "command_result_ack",
             payload: { warmTransition: receipt },
           });
-          expect(core.getCommand(command.commandId)?.status).toBe("completed");
+          expect((await core.getCommand(command.commandId))?.status).toBe("completed");
         }
       } else {
         successor = await authenticateVersion(
@@ -2893,12 +3345,12 @@ describe.sequential("DurablePrpControlPlane", () => {
             transitionId,
           ),
         ).toBeNull();
-        const next = core.queueCommand(
+        const next = (await core.queueCommand(
           "session.snapshot",
           {},
           "next-snapshot",
           true,
-        );
+        ));
         expect(
           core.store.state.commandDeliveryCounts[next.commandId],
         ).toBeUndefined();
@@ -2976,7 +3428,7 @@ describe.sequential("DurablePrpControlPlane", () => {
           vi.spyOn(Date, "now").mockReturnValue(
             Number(receipt.leaseExpiresAtUnixMs) + 1,
           );
-          core.issueBootstrapTicket();
+          (await core.issueBootstrapTicket());
           expect(Object.values(core.store.state.leases)).toHaveLength(0);
           vi.restoreAllMocks();
           successor!.socket.destroy();
@@ -2987,7 +3439,7 @@ describe.sequential("DurablePrpControlPlane", () => {
             expectedRunnerVersion,
             expectedRunnerDigest,
           });
-          expect(core.getCommand(command.commandId)?.status).toBe("completed");
+          expect((await core.getCommand(command.commandId))?.status).toBe("completed");
         }
       }
     } finally {
@@ -3015,9 +3467,9 @@ describe.sequential("DurablePrpControlPlane", () => {
     let syncSpy: { mockRestore(): void } | undefined;
     try {
       await core.start();
-      client = await authenticate(core, core.issueBootstrapTicket());
+      client = await authenticate(core, (await core.issueBootstrapTicket()));
       const token = client!.leaseToken!;
-      const command = core.queueCommand(
+      const command = (await core.queueCommand(
         "run.attach",
         {
           paperclipNextAuthority: {
@@ -3032,7 +3484,7 @@ describe.sequential("DurablePrpControlPlane", () => {
         },
         "fsync-attach",
         true,
-      );
+      ));
       await receiveSecure(client!);
       const result = {
         protocol: "paperclip.runner",
@@ -3069,10 +3521,10 @@ describe.sequential("DurablePrpControlPlane", () => {
       const disk = readFileSync(core.store.path, "utf8");
       expect(JSON.parse(disk).warmTransition.phase).toBe("prepared");
       expect(core.store.state.commands[0]?.status).toBe("pending");
-      expect(() => core.queueCommand("turn.start", {})).toThrow(
+      await expect(async () => (await core.queueCommand("turn.start", {}))).rejects.toThrow(
         "indeterminate; reload",
       );
-      expect(() => core.issueBootstrapTicket()).toThrow(
+      await expect(async () => (await core.issueBootstrapTicket())).rejects.toThrow(
         "indeterminate; reload",
       );
       expect(readFileSync(core.store.path, "utf8")).toBe(disk);
@@ -3139,11 +3591,11 @@ describe.sequential("DurablePrpControlPlane", () => {
       let pending: Promise<AuthenticatedClient | null> | undefined;
       try {
         await core.start();
-        first = await authenticate(core, core.issueBootstrapTicket());
+        first = await authenticate(core, (await core.issueBootstrapTicket()));
         const unrelatedToken = first!.leaseToken!;
         first!.socket.destroy();
-        participant = await authenticate(core, core.issueBootstrapTicket());
-        const command = core.queueCommand(
+        participant = await authenticate(core, (await core.issueBootstrapTicket()));
+        const command = (await core.queueCommand(
           "run.attach",
           {
             paperclipNextAuthority: {
@@ -3158,7 +3610,7 @@ describe.sequential("DurablePrpControlPlane", () => {
           },
           "held-proof-attach",
           true,
-        );
+        ));
         await receiveSecure(participant!);
         armed = true;
         pending = authenticate(
@@ -3217,21 +3669,21 @@ describe.sequential("DurablePrpControlPlane", () => {
     });
     try {
       await controlPlane.start();
-      const command = controlPlane.queueCommand(
+      const command = (await controlPlane.queueCommand(
         "runner.suspend",
         {},
         "command-suspend-1",
-      );
+      ));
       const client = await authenticate(
         controlPlane,
-        controlPlane.issueBootstrapTicket(),
+        (await controlPlane.issueBootstrapTicket()),
       );
-      const nextAuthorityCommand = controlPlane.queueCommand(
+      const nextAuthorityCommand = (await controlPlane.queueCommand(
         "runner.drain",
         {},
         "command-after-suspend-1",
         true,
-      );
+      ));
       expect(
         controlPlane.store.state.commandDeliveryCounts[command.commandId],
       ).toBe(1);
@@ -3296,3 +3748,180 @@ describe.sequential("DurablePrpControlPlane", () => {
     }
   });
 });
+
+
+it.each([identity.runId, "r".repeat(240)])("rotates command namespaces durably, reopens a lost transition and preserves earliest receipts (%s)", async (runId) => {
+  const epochIdentity = { ...identity, runId };
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-command-epochs-"));
+  const store = await SqliteAuthorityStore.open({ path: resolve(root, "authority.sqlite"), binding: JSON.stringify(epochIdentity), create: true });
+  const options = { stateDirectory: root, identity: epochIdentity, expectedRunnerVersion, expectedRunnerDigest, authorityStore: store, commandEpochLimit: 4 };
+  let core = await DurablePrpControlPlane.open(options), client: AuthenticatedClient | null = null;
+  const capable = (token: string) => authenticate(core, token, epochIdentity, expectedRunnerDigest, undefined, false, 1, true);
+  let first: Awaited<ReturnType<typeof core.queueCommand>> | undefined;
+  try {
+    await core.start(); client = await capable(await core.issueBootstrapTicket());
+    const lease = client!.leaseToken!;
+    const epochs = new Set<string | undefined>();
+    for (let index = 0; index < 13; index++) {
+      let admission = core.queueCommand(index === 0 ? "run.prepare" : "session.snapshot", { index }, `epoch-command-${index}`, true);
+      // Observe rejection immediately when the first controller is stopped.
+      const outcome = admission.then(value => ({ value }), error => ({ error }));
+      if (index > 0 && index % 4 === 0) {
+        const intent = await receiveSecure(client!);
+        expect(intent?.kind).toBe("command_epoch_rotate");
+        expect(intent?.payload).toMatchObject({ finalOrdinal: 4, fromEpoch: core.store.state.indexedState!.controllerEpoch ?? null });
+        expect(core.store.state.indexedState!.commandEpochTransition).toEqual(intent?.payload);
+        if (index === 4) {
+          // The receiver committed, but its reply was lost. The controller's
+          // durable intent must survive restart and authenticate a capable peer.
+          client!.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing();
+          expect(await outcome).toHaveProperty("error");
+          core = await DurablePrpControlPlane.open(options); await core.start();
+          expect(await authenticate(core, lease, epochIdentity)).toBeNull();
+          const pending = core.store.state.indexedState!.commandEpochTransition!;
+          client = await authenticate(core, lease, epochIdentity, expectedRunnerDigest, undefined, false, 1, true,
+            { controllerEpoch: pending.nextEpoch, lastControllerCommandSeq: 0 });
+          expect((await receiveSecure(client!))?.payload).toEqual(intent?.payload);
+        }
+        sendSecure(client!, { protocol: "paperclip.runner", version: 1, kind: "command_epoch_committed", ...epochIdentity, payload: intent!.payload });
+        await vi.waitFor(() => expect(core.store.state.indexedState?.commandEpochTransition).toBeUndefined(), { interval: 1 });
+        if (index === 4) admission = core.queueCommand(index === 0 ? "run.prepare" : "session.snapshot", { index }, `epoch-command-${index}`, true);
+      }
+      const command = await admission;
+      epochs.add(command.controllerEpoch);
+      expect(command.controllerSeq).toBe(index % 4 + 1);
+      expect((await receiveSecure(client!))?.payload).toMatchObject({ commandId: command.commandId, controllerSeq: command.controllerSeq });
+      sendSecure(client!, { protocol: "paperclip.runner", version: 1, kind: "command_result", ...epochIdentity,
+        payload: { commandId: command.commandId, commandType: command.type, controllerSeq: command.controllerSeq, status: "completed", result: { index } } });
+      await vi.waitFor(async () => expect((await core.getCommand(command.commandId))?.status).toBe("completed"), { interval: 1 });
+      if (index === 0) first = structuredClone((await core.getCommand(command.commandId))!);
+    }
+    expect(epochs.size).toBe(4);
+    expect(core.store.state.commands).toHaveLength(2);
+    expect(await core.queueCommand(first!.type, first!.payload, first!.commandId)).toEqual(first);
+    expect(core.store.state.identity).toEqual(epochIdentity);
+    client!.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing();
+    core = await DurablePrpControlPlane.open(options);
+    expect(await core.queueCommand(first!.type, first!.payload, first!.commandId)).toEqual(first);
+    expect(core.store.state.commands.at(-1)?.commandId).toBe("epoch-command-12");
+    expect(core.store.state.indexedState!.nextControllerSeq).toBe(2);
+    await core.start();
+    expect(await authenticate(core, lease, epochIdentity, expectedRunnerDigest, undefined, false, 1, true,
+      { controllerEpoch: null, lastControllerCommandSeq: 1 })).toBeNull();
+    expect(await authenticate(core, lease, epochIdentity, expectedRunnerDigest, undefined, false, 1, true,
+      { controllerEpoch: core.store.state.indexedState!.controllerEpoch!, lastControllerCommandSeq: 0 })).toBeNull();
+  } finally {
+    client?.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing(); await store.close(); rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+
+it.each(["runner.suspend", "runner.shutdown"])("does not fence a current connection for an old-epoch %s receipt", async type => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-old-terminal-"));
+  const store = await SqliteAuthorityStore.open({ path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true });
+  const core = await DurablePrpControlPlane.open({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, authorityStore: store, commandEpochLimit: 4 });
+  let client: AuthenticatedClient | null = null;
+  try {
+    const old = await core.queueCommand(type, {}, "old-terminal");
+    // Retained receipt from an already-reconciled prior process. This fixture
+    // does not pretend an in-flight terminal command can rotate past cleanup.
+    const oldResult = { commandId: old.commandId, commandType: type, controllerSeq: old.controllerSeq, status: "completed", result: {} };
+    core.store.state.commands[0]!.status = "completed";
+    core.store.state.commands[0]!.result = oldResult;
+    await core.store.save(); await core.start();
+    client = await authenticate(core, await core.issueBootstrapTicket(), identity, expectedRunnerDigest, undefined, false, 1, true);
+    for (let index = 2; index <= 5; index++) {
+      const waiting = core.queueCommand("session.snapshot", { index }, `current-${index}`, true);
+      if (index === 5) {
+        const intent = await receiveSecure(client!);
+        expect(intent?.kind).toBe("command_epoch_rotate");
+        sendSecure(client!, { protocol: "paperclip.runner", version: 1, kind: "command_epoch_committed", ...identity, payload: intent!.payload });
+      }
+      const current = await waiting;
+      expect((await receiveSecure(client!))?.payload).toMatchObject({ commandId: current.commandId });
+      sendSecure(client!, { protocol: "paperclip.runner", version: 1, kind: "command_result", ...identity,
+        payload: { commandId: current.commandId, commandType: current.type, controllerSeq: current.controllerSeq, status: "completed", result: {} } });
+      await vi.waitFor(async () => expect((await core.getCommand(current.commandId))?.status).toBe("completed"), { interval: 1 });
+    }
+    sendSecure(client!, { protocol: "paperclip.runner", version: 1, kind: "command_result", ...identity, payload: oldResult });
+    await vi.waitFor(() => expect(core.store.state.duplicateCommandResults).toBe(1), { interval: 1 });
+    const next = await core.queueCommand("session.snapshot", {}, "still-live", true);
+    expect((await receiveSecure(client!))?.payload).toMatchObject({ commandId: next.commandId, controllerSeq: 2 });
+  } finally {
+    client?.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing(); await store.close(); rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+it("rotates event epochs across lost replies and consumer lag without losing original receipts", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "paperclip-event-epochs-"));
+  const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, eventEpochLimit: 4 };
+  const storage = { path: resolve(root, "authority.sqlite"), binding: JSON.stringify(identity), create: true };
+  let authority = await SqliteAuthorityStore.open(storage);
+  let core = await DurablePrpControlPlane.open({ ...options, authorityStore: authority });
+  let client: AuthenticatedClient | null = null;
+  const resume = (sourceEpoch: string | undefined, sourceSeq: number, transition: import("./event-epochs.js").EventEpochTransition | null = null) => ({ sourceEpoch: sourceEpoch ?? null, nextSourceEventSeq: sourceSeq + 1, ackedSourceSeq: sourceSeq, transition });
+  const connect = (token: string, input: ReturnType<typeof resume>) => authenticate(core, token, identity, expectedRunnerDigest, undefined, false, 2, false, undefined, input);
+  let first: Record<string, unknown> | undefined, epoch: string | undefined;
+  const transitions: import("./event-epochs.js").EventEpochTransition[] = [];
+  try {
+    await core.start(); client = await connect(await core.issueBootstrapTicket(), resume(undefined, 0));
+    const lease = client!.leaseToken!;
+    for (let round = 0; round < 3; round++) {
+      for (let ordinal = 1; ordinal <= 4; ordinal++) {
+        const raw = semanticInputEvent(ordinal); raw.version = 2;
+        Object.assign(raw.payload as object, { sourceEventId: `event-${round}-${ordinal}`, ...(epoch ? { sourceEpoch: epoch } : {}),
+          eventType: ordinal === 1 ? "session.started" : "harness.diagnostic", payload: { round, ordinal } });
+        if (!first) first = structuredClone(raw);
+        sendSecure(client!, raw); expect((await receiveSecure(client!))?.payload).toMatchObject({ ackedSourceSeq: ordinal, ...(epoch ? { sourceEpoch: epoch } : {}) });
+      }
+      const transition = { schema: "paperclip.prp.event-epoch.v1" as const, runId: identity.runId, transitionId: randomUUID(), fromEpoch: epoch ?? null, nextEpoch: randomUUID(), finalOrdinal: 4 };
+      transitions.push(transition);
+      const frame = { protocol: "paperclip.runner", version: 2, kind: "event_epoch_rotate", ...identity, payload: transition };
+      sendSecure(client!, frame);
+      await vi.waitFor(() => expect(core.store.state.indexedState?.sourceEpoch).toBe(transition.nextEpoch));
+      if (round === 0) {
+        // Commit reached storage, its network reply is lost, and the receiver
+        // restarts while normalization is still in the earliest namespace.
+        client!.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing(); await authority.close();
+        authority = await SqliteAuthorityStore.open({ ...storage, create: false });
+        core = await DurablePrpControlPlane.open({ ...options, authorityStore: authority }); await core.start();
+        expect(await authenticate(core, lease, identity, expectedRunnerDigest, undefined, false, 2)).toBeNull();
+        expect(await connect(lease, resume(undefined, 4))).toBeNull();
+        client = await connect(lease, resume(undefined, 4, transition));
+        expect(client!.welcome.payload).toMatchObject({ ackedSourceSeq: 4, sourceEpoch: null });
+        sendSecure(client!, frame);
+      }
+      expect((await receiveSecure(client!))?.payload).toEqual(transition);
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+      epoch = transition.nextEpoch;
+    }
+    expect((await authority.getRecord(identity.runId, "event", "event-0-1"))?.body.envelope).toEqual(first);
+    sendSecure(client!, first!);
+    expect((await receiveSecure(client!))?.payload).toEqual({ ackedSourceSeq: 4 }); // old ACK, never current
+    expect(core.store.state.ackedSourceSeq).toBe(0);
+    const port = core.normalizedDelivery()!;
+    let consumedEpoch: string | undefined;
+    for (const transition of transitions) {
+      const page = await core.readCommittedEvents(0, 128, consumedEpoch);
+      expect(page.map(event => event.sourceSeq)).toEqual([1, 2, 3, 4]);
+      expect(page.every(event => event.sourceEpoch === consumedEpoch)).toBe(true);
+      const previous = port.load();
+      await port.commit({ expectedRevision: previous?.revision ?? 0, raw: { epoch: identity.runId, ...(consumedEpoch ? {sourceEpoch: consumedEpoch} : {}), sourceSeq: 4, ordinal: Number.MAX_SAFE_INTEGER }, driver: {}, events: [] });
+      await expect(port.commit({ expectedRevision: port.load()!.revision, raw: { epoch: identity.runId, sourceEpoch: transition.nextEpoch, sourceSeq: 1, ordinal: 0 }, driver: {}, events: [] })).rejects.toThrow();
+      await port.commit({ expectedRevision: port.load()!.revision, raw: { epoch: identity.runId, sourceEpoch: transition.nextEpoch, sourceSeq: 0, ordinal: 0 }, driver: {}, events: [] });
+      consumedEpoch = transition.nextEpoch;
+    }
+    expect(port.load()!.raw.sourceEpoch).toBe(epoch);
+    expect(core.store.state.committedEvents.map(event => event.sourceEventId)).toEqual(["event-2-1"]);
+    client!.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing();
+    core = await DurablePrpControlPlane.open({ ...options, authorityStore: authority });
+    expect(core.store.state.committedEvents.map(event => event.sourceEventId)).toEqual(["event-2-1"]);
+    expect(core.normalizedDelivery()!.load()!.raw.sourceEpoch).toBe(epoch);
+    // Reusing a transition identity with changed bytes cannot advance the head.
+    await core.start(); client = await connect(lease, resume(epoch, 0));
+    sendSecure(client!, { protocol: "paperclip.runner", version: 2, kind: "event_epoch_rotate", ...identity, payload: { ...transitions[0], nextEpoch: randomUUID() } });
+    expect(await receiveSecure(client!)).toBeNull();
+    expect(core.store.state.indexedState!.sourceEpoch).toBe(epoch);
+  } finally { client?.socket.destroy(); await core.stop(); await core.drainPendingConnectionProcessing(); await authority.close(); rmSync(root, {recursive:true,force:true}); }
+}, 30_000);

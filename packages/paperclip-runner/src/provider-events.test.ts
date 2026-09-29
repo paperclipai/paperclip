@@ -33,6 +33,16 @@ function envelope(
 }
 
 describe("provider-neutral events", () => {
+  it.each([1, 2])("accepts lossless tool output references in PRP v%s without allowing arbitrary fields", version => {
+    const [event] = canonicalProviderEventsFromCodex("item/completed", { item: {
+      id: "command-output", type: "commandExecution", command: "qualification", status: "completed", aggregatedOutput: "x".repeat(5000), exitCode: 0,
+    } });
+    const reference = { schema: "paperclip.output.body.v1", bodyId: "a".repeat(64), sha256: "a".repeat(64), byteLength: "5000", mediaType: "text/plain; charset=utf-8" };
+    const input = { ...envelope(event), schema: `paperclip.prp.event.v${version}`, schemaVersion: version, payload: { ...event.payload, outputBody: reference } };
+    expect(validatePrpEvent(input).ok).toBe(true);
+    expect(validatePrpEvent({ ...input, payload: { ...input.payload, outputBody: { ...reference, byteLength: 5000 } } }).ok).toBe(false);
+    expect(validatePrpEvent({ ...input, payload: { ...input.payload, unexpected: true } }).ok).toBe(false);
+  });
   it("preserves Codex notice summaries with legacy and empty-message fallbacks", () => {
     for (const method of ["configWarning", "deprecationNotice", "warning"]) {
       for (const [params, expected] of [

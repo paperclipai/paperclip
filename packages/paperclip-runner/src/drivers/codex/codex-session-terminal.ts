@@ -158,6 +158,8 @@ export function mapTerminalTurn(
             : "turn.completed";
     state.cancelPendingRequests("turn_terminal");
     state.activeTurnId = null;
+    state.workspaceChangesByTurn.delete(turnId);
+    state.itemChannels.clear();
     state.turnStarted = false;
     state.emit(
       eventType,

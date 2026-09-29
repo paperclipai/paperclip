@@ -6,7 +6,7 @@ Status: canonical explanatory contract for the Paperclip runner V1 surface.
 
 This document keeps three independent meanings of **group** separate. PRP families describe wire evidence and controller commands; capability placement decides who owns an operation; behavioral eval groups organize the 106 scenario corpus. None of the three axes can be used as a substitute for another.
 
-The generated totals are **105 PRP events in 31 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **48 reconciled semantic operations** (14 always, 34 optional), and **106 scenarios in 16 behavior groups**.
+The generated totals are **106 PRP events in 32 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **48 reconciled semantic operations** (14 always, 34 optional), and **106 scenarios in 16 behavior groups**.
 
 ## Axis 1: PRP v1 event and command families
 
@@ -37,6 +37,7 @@ PRP records ordered, replayable execution evidence. It is not the model's Paperc
 | `provider` | Redacted provider notices and actionable warnings. | `provider.notice.recorded` | 1 |
 | `session` | Provider-neutral session open, resume, reconciliation, close, and failure. | `session.starting`<br>`session.started`<br>`session.resuming`<br>`session.resumed`<br>`session.reconciled`<br>`session.updated`<br>`session.closed`<br>`session.failed` | 8 |
 | `turn` | Model turn submission through terminal turn disposition. | `turn.submitted`<br>`turn.accepted`<br>`turn.started`<br>`turn.completed`<br>`turn.failed`<br>`turn.interrupted`<br>`turn.cancelled` | 7 |
+| `output` | Negotiated, immutable output-body chunks with exact byte offsets and content digests. | `output.body.chunk` | 1 |
 | `item` | Provider-neutral model/tool item lifecycle. | `item.started`<br>`item.delta`<br>`item.completed`<br>`item.failed` | 4 |
 | `usage` | Provider/model-attributed usage and accounting boundaries. | `usage.reported` | 1 |
 | `semantic_tool` | Canonical authorized Paperclip tool input and result evidence. | `semantic_tool.input`<br>`semantic_tool.result`<br>`semantic_tool.reconciled` | 3 |

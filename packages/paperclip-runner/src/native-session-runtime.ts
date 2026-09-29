@@ -1,3 +1,4 @@
+import { advanceSourceCursor, decodeSourceCursor, encodeSourceCursor, type SourceCursor } from "./control-plane/event-epochs.js";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -904,6 +905,7 @@ async function consumeTurn(
   const consumer = (async () => {
     let eventCount = 0;
     let highestContiguousSourceSeq = 0;
+    let highestContiguousSourceEpoch: string | undefined;
     let governedResult: PrpStructuredRunResult | null = null;
     let semanticResultProposal: PrpStructuredRunResult | null = null;
     let sessionGoalObserved = sessionGoal !== undefined;
@@ -934,6 +936,7 @@ async function consumeTurn(
         event,
         eventCount,
         highestContiguousSourceSeq,
+        highestContiguousSourceEpoch,
         governedResult: result,
       };
     };
@@ -966,12 +969,11 @@ async function consumeTurn(
       const receipt = await controlPlane.appendEvent(event, {
         signal: appendAbort.signal,
       });
+      await session.acknowledgeEvent?.(event);
       if (stopConsumer) throw new Error("native event consumer stopped");
       eventCount += receipt.disposition === "committed" ? 1 : 0;
-      highestContiguousSourceSeq = Math.max(
-        highestContiguousSourceSeq,
-        receipt.highestContiguousSourceSeq,
-      );
+      highestContiguousSourceSeq = receipt.highestContiguousSourceSeq;
+      highestContiguousSourceEpoch = receipt.highestContiguousSourceEpoch;
       const eventGoal = goalFromEvent(event);
       const goalChanged = eventGoal !== undefined &&
         goalLifecycleFingerprint(eventGoal) !== goalLifecycleFingerprint(previousGoal);
@@ -1127,6 +1129,7 @@ async function consumeTurn(
             event,
             eventCount,
             highestContiguousSourceSeq,
+        highestContiguousSourceEpoch,
             governedResult:
               governedResult ??
               (goalStatus(eventGoal) === "complete" ? semanticResultProposal : null) ??
@@ -1146,6 +1149,7 @@ async function consumeTurn(
               event,
               eventCount,
               highestContiguousSourceSeq,
+        highestContiguousSourceEpoch,
               governedResult:
                 governedResult ??
                 (goalStatus(latestSessionGoal) === "complete" ? semanticResultProposal : null) ??
@@ -1173,6 +1177,7 @@ async function consumeTurn(
           event,
           eventCount,
           highestContiguousSourceSeq,
+        highestContiguousSourceEpoch,
           governedResult,
         };
       }
@@ -1481,6 +1486,15 @@ function checkpointCursor(cursor: string | null | undefined): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+/** This is an allocation high-water mark, not a contiguous delivery ACK.
+ * Retained ledgers can have holes, so never reuse a larger persisted ordinal.
+ * Crossing namespaces still requires the exact predecessor transition. */
+function advanceRecoveryCursor(cursor: SourceCursor, event: PrpEvent): SourceCursor {
+  if (cursor.sourceEpoch !== event.sourceEpoch) return advanceSourceCursor(cursor, event);
+  if (event.sourceEpochTransition || !Number.isSafeInteger(event.sourceSeq) || event.sourceSeq <= cursor.sourceSeq) throw new Error("native_recovery_replay_did_not_advance");
+  return { sourceSeq: event.sourceSeq, ...(event.sourceEpoch ? { sourceEpoch: event.sourceEpoch } : {}) };
+}
+
 async function reconcileRecoveryCursor(input: {
   controlPlane: ControlPlanePort;
   checkpoint: PersistedNativeSession;
@@ -1488,38 +1502,16 @@ async function reconcileRecoveryCursor(input: {
   sourceInstanceId: string;
   signal: AbortSignal;
 }): Promise<PersistedNativeSession> {
-  const checkpointHighWater = checkpointCursor(input.checkpoint.cursor);
-  let afterSourceSeq = checkpointHighWater;
-  let persistedHighWater = checkpointHighWater;
-  while (true) {
-    const replay = await input.controlPlane.replayEvents(
-      {
-        runId: input.runId,
-        sourceInstanceId: input.sourceInstanceId,
-        afterSourceSeq,
-        limit: 1_000,
-      },
-      { signal: input.signal },
-    );
+  let cursor = decodeSourceCursor(input.checkpoint.cursor);
+  for (;;) {
+    const replay = await input.controlPlane.replayEvents({ runId: input.runId, sourceInstanceId: input.sourceInstanceId,
+      afterSourceSeq: cursor.sourceSeq, sourceEpoch: cursor.sourceEpoch, limit: 1_000 }, { signal: input.signal });
     input.signal.throwIfAborted();
-    if (replay.events.length === 0) break;
-    const pageHighWater = replay.events.reduce(
-      (highest, event) => Math.max(highest, event.sourceSeq),
-      afterSourceSeq,
-    );
-    if (pageHighWater <= afterSourceSeq) {
-      throw new Error("native_recovery_replay_did_not_advance");
-    }
-    persistedHighWater = Math.max(persistedHighWater, pageHighWater);
-    afterSourceSeq = pageHighWater;
+    if (!replay.events.length) break;
+    for (const event of replay.events) cursor = advanceRecoveryCursor(cursor, event);
   }
-  if (
-    persistedHighWater === checkpointHighWater &&
-    input.checkpoint.cursor === String(checkpointHighWater)
-  ) {
-    return input.checkpoint;
-  }
-  return { ...input.checkpoint, cursor: String(persistedHighWater) };
+  const encoded = encodeSourceCursor(cursor);
+  return input.checkpoint.cursor === encoded ? input.checkpoint : { ...input.checkpoint, cursor: encoded };
 }
 
 async function replayCheckpointedTurnTerminal(input: {
@@ -1529,63 +1521,22 @@ async function replayCheckpointedTurnTerminal(input: {
   priorTerminalTurnIds: readonly string[];
   expectedTurnId?: string | null;
 }): Promise<{ terminal: PrpEvent; hasPriorResultProposal: boolean } | null> {
-  let afterSourceSeq = 0;
-  const terminals: PrpEvent[] = [];
-  const latestResultProposalByTurn = new Map<string, number>();
+  let cursor: SourceCursor = { sourceSeq: 0 };
+  let latest: { terminal: PrpEvent; hasPriorResultProposal: boolean } | null = null;
   const priorTerminalTurnIds = new Set(input.priorTerminalTurnIds);
-  while (true) {
-    const replay = await input.controlPlane.replayEvents({
-      runId: input.runId,
-      sourceInstanceId: input.sourceInstanceId,
-      afterSourceSeq,
-      limit: 1_000,
-    });
-    if (replay.events.length === 0) {
-      // Disposition recovery owns the newest durable provider terminal. An
-      // older task turn may also have a valid proposal, but selecting it would
-      // finalize stale work and strand the actual recovery terminal.
-      const terminal =
-        [...terminals].sort(
-          (left, right) => right.sourceSeq - left.sourceSeq,
-        )[0] ?? null;
-      const proposalSequence =
-        latestResultProposalByTurn.get(terminal?.turnId ?? "") ?? 0;
-      return terminal === null
-        ? null
-        : {
-            terminal,
-            hasPriorResultProposal:
-              proposalSequence > 0 && proposalSequence < terminal.sourceSeq,
-          };
-    }
+  // A result proposal is only relevant to the currently inspected turn.
+  let proposedTurn: string | undefined;
+  for (;;) {
+    const replay = await input.controlPlane.replayEvents({ runId: input.runId, sourceInstanceId: input.sourceInstanceId,
+      afterSourceSeq: cursor.sourceSeq, sourceEpoch: cursor.sourceEpoch, limit: 1_000 });
+    if (!replay.events.length) return latest;
     for (const event of replay.events) {
-      if (event.turnId && event.eventType === "run.result.proposed") {
-        latestResultProposalByTurn.set(
-          event.turnId,
-          Math.max(
-            latestResultProposalByTurn.get(event.turnId) ?? 0,
-            event.sourceSeq,
-          ),
-        );
-      }
-      if (
-        event.turnId &&
-        isTurnTerminal(event) &&
-        (input.expectedTurnId !== undefined && input.expectedTurnId !== null
-          ? event.turnId === input.expectedTurnId
-          : !priorTerminalTurnIds.has(event.turnId))
-      ) {
-        terminals.push(structuredClone(event));
+      cursor = advanceRecoveryCursor(cursor, event);
+      if (event.turnId && event.eventType === "run.result.proposed") proposedTurn = event.turnId;
+      if (event.turnId && isTurnTerminal(event) && (input.expectedTurnId != null ? event.turnId === input.expectedTurnId : !priorTerminalTurnIds.has(event.turnId))) {
+        latest = { terminal: structuredClone(event), hasPriorResultProposal: proposedTurn === event.turnId };
       }
     }
-    const pageHighWater = replay.events.reduce(
-      (highest, event) => Math.max(highest, event.sourceSeq),
-      afterSourceSeq,
-    );
-    if (pageHighWater <= afterSourceSeq) {
-      throw new Error("native_recovery_replay_did_not_advance");
-    }
-    afterSourceSeq = pageHighWater;
   }
 }
 
@@ -1652,21 +1603,22 @@ async function replayProvesEffectFreeInitialAcpxTurn(input: {
   }
   const targetTurnId = terminalTurns[0]!.turnId;
   const events: PrpEvent[] = [];
-  let afterSourceSeq = 0;
+  let cursor: SourceCursor = { sourceSeq: 0 };
   try {
     while (true) {
       const replay = await input.controlPlane.replayEvents({
         runId: input.runId,
         sourceInstanceId: input.sourceInstanceId,
-        afterSourceSeq,
+        afterSourceSeq: cursor.sourceSeq,
+        sourceEpoch: cursor.sourceEpoch,
         limit: 1_000,
       });
       if (replay.events.length === 0) break;
       for (const event of replay.events) {
         // An incomplete or reordered replay cannot prove absence of work.
-        if (event.sourceSeq !== afterSourceSeq + 1) return false;
+        cursor = advanceSourceCursor(cursor, event);
         events.push(structuredClone(event));
-        afterSourceSeq = event.sourceSeq;
+
         if (events.length > 10_000) return false;
       }
     }
@@ -2035,6 +1987,9 @@ export async function executeNativeSession(
     throw error;
   }
   sessionOriginRunnerInstances.set(session, options.runnerInstanceId);
+  session.setEventCommitter?.(async (event) => {
+    await options.controlPlane.appendEvent(event, { signal: AbortSignal.timeout(30_000) });
+  });
   let sessionClosePromise: Promise<void> | null = null;
   let sessionQuarantined = false;
   const quarantineSession = (reason: string) => {
@@ -2189,6 +2144,7 @@ export async function executeNativeSession(
       event: null as PrpEvent | null,
       eventCount: 0,
       highestContiguousSourceSeq: 0,
+      highestContiguousSourceEpoch: undefined as string | undefined,
       governedResult: null as PrpStructuredRunResult | null,
     };
     const completionSnapshot =
@@ -2205,6 +2161,7 @@ export async function executeNativeSession(
               completedSemanticResultTurnId(completionSnapshot),
           }
         : null;
+    if (completed) await session.flushEventDelivery?.();
     if (!completed) {
       // A recovered driver is authoritative about whether a provider turn is
       // still active. In particular, drivers normalize the checkpoint race
@@ -2295,6 +2252,7 @@ export async function executeNativeSession(
               eventCount: 0,
               highestContiguousSourceSeq:
                 replayedDisposition === null ? 0 : recoveryTerminal.sourceSeq,
+              highestContiguousSourceEpoch: replayedDisposition === null ? undefined : recoveryTerminal.sourceEpoch,
               governedResult: null,
             });
       // Event consumption must begin before startTurn so an eager provider cannot
@@ -2582,7 +2540,7 @@ export async function executeNativeSession(
             }
           }
         }
-        consumed.highestContiguousSourceSeq = Math.max(
+        if (!consumed.highestContiguousSourceEpoch) consumed.highestContiguousSourceSeq = Math.max(
           consumed.highestContiguousSourceSeq,
           controlReplay.highestContiguousSourceSeq,
         );
@@ -2599,7 +2557,7 @@ export async function executeNativeSession(
             accountedControlEventSequences.add(event.sourceSeq);
             consumed.eventCount += 1;
           }
-          consumed.highestContiguousSourceSeq = Math.max(
+          if (!consumed.highestContiguousSourceEpoch) consumed.highestContiguousSourceSeq = Math.max(
             consumed.highestContiguousSourceSeq,
             receipt.highestContiguousSourceSeq,
           );
@@ -2639,6 +2597,7 @@ export async function executeNativeSession(
           driverKind: descriptor.name,
           nativeEventCount: consumed.eventCount,
           highestContiguousSourceSeq: consumed.highestContiguousSourceSeq,
+          ...(consumed.highestContiguousSourceEpoch ? { highestContiguousSourceEpoch: consumed.highestContiguousSourceEpoch } : {}),
         };
       },
     });

@@ -186,14 +186,12 @@ describe("runner semantic MCP bridge", () => {
     expect(handler).toHaveBeenCalledTimes(2);
   });
 
-  it("times out calls and honors MCP cancellation", async () => {
-    const starts: string[] = [];
+  it("times out calls", async () => {
     const bridge = await startRunnerToolBridge({
       tools: [tool("documents.read")],
       timeoutMs: 20,
-      handler: ({ callId, signal }) =>
+      handler: ({ signal }) =>
         new Promise((_resolve, reject) => {
-          starts.push(callId);
           signal.addEventListener(
             "abort",
             () => reject(new Error("handler aborted")),
@@ -217,29 +215,56 @@ describe("runner semantic MCP bridge", () => {
         content: [{ text: "Paperclip tool call timed out" }],
       },
     });
+  });
+
+  it("honors MCP cancellation", async () => {
+    const starts: string[] = [];
+    const bridge = await startRunnerToolBridge({
+      tools: [tool("documents.read")],
+      timeoutMs: 5_000,
+      handler: ({ callId, signal }) =>
+        new Promise((_resolve, reject) => {
+          starts.push(callId);
+          signal.addEventListener(
+            "abort",
+            () => reject(new Error("handler aborted")),
+            { once: true },
+          );
+        }),
+    });
+    bridges.push(bridge);
+
     const pending = rpc(bridge, {
       id: "cancel-me",
       method: "tools/call",
       params: { name: "documents.read", arguments: {} },
     });
-    await vi.waitFor(() => expect(starts).toContain("cancel-me"), {
-      interval: 1,
-      timeout: 15,
-    });
-    expect(
-      (
-        await rpc(bridge, {
-          method: "notifications/cancelled",
-          params: { requestId: "cancel-me" },
-        })
-      ).status,
-    ).toBe(202);
-    expect(await (await pending).json()).toMatchObject({
-      result: {
-        isError: true,
-        content: [{ text: "Paperclip tool call cancelled" }],
-      },
-    });
+    // Attach a rejection handler immediately so a failed start gate cannot
+    // leave an unhandled loopback fetch while teardown closes the server.
+    void pending.catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(starts).toContain("cancel-me"), {
+        interval: 10,
+        timeout: 2_000,
+      });
+      expect(
+        (
+          await rpc(bridge, {
+            method: "notifications/cancelled",
+            params: { requestId: "cancel-me" },
+          })
+        ).status,
+      ).toBe(202);
+      expect(await (await pending).json()).toMatchObject({
+        result: {
+          isError: true,
+          content: [{ text: "Paperclip tool call cancelled" }],
+        },
+      });
+    } finally {
+      await bridge.close();
+      await pending.catch(() => undefined);
+    }
   });
 
   it("preserves successful mutation identity when the result is oversized", async () => {

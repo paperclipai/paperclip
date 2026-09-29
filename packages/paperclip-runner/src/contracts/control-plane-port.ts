@@ -17,8 +17,9 @@ export interface OpenControlPlaneRunInput {
 }
 
 export interface AppendedEventReceipt {
-  cursor: number;
+  cursor: number | string;
   highestContiguousSourceSeq: number;
+  highestContiguousSourceEpoch?: string;
   disposition: "committed" | "duplicate";
 }
 
@@ -42,12 +43,14 @@ export interface ReplayControlPlaneEventsInput {
   runId: string;
   sourceInstanceId: string;
   afterSourceSeq: number;
+  sourceEpoch?: string;
   limit: number;
 }
 
 export interface ReplayedControlPlaneEvents {
   events: PrpEvent[];
   highestContiguousSourceSeq: number;
+  highestContiguousSourceEpoch?: string;
 }
 
 export interface FinalizeControlPlaneOperationOptions {

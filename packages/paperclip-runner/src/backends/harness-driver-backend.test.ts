@@ -4,6 +4,7 @@ import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../
 import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
+import { authorityJson } from "../control-plane/durable-authority-store.js";
 
 const result: PrpStructuredRunResult = {
   schema: "paperclip.run_result.v1",
@@ -97,6 +98,26 @@ const driver: HarnessDriver = {
 };
 
 describe("HarnessDriverBackend", () => {
+  it.each([false, true])("recovers a committed terminal after delivery ACK and validates its binding (conflict: %s)", async (conflict) => {
+    class DurableTerminalSession extends FakeHarnessSession {
+      override async *events(): AsyncIterable<PrpEvent> { /* Already acknowledged before the crash. */ }
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        return {
+          ...(await super.snapshot()), activeTurnId: null,
+          semanticResult: { result, fingerprint: authorityJson(result), turnId: "turn-1" },
+          durableTerminal: { event: { ...prpEvent(2, "turn.completed", { status: "completed" }), ...(conflict ? { normalizedSessionId: "other-session" } : {}) }, semanticFingerprint: authorityJson(result) },
+        };
+      }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, openSession: async () => new DurableTerminalSession() });
+    const session = await backend.openSession({ identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" } });
+    if (conflict) await expect(session.snapshot()).rejects.toBeInstanceOf(NativeSessionProtocolIntegrityError);
+    else {
+      expect((await session.snapshot()).terminal).toMatchObject({ turnTerminalState: "completed", runTerminalState: "succeeded" });
+      expect(await session.result()).toMatchObject({ result, turnId: "turn-1" });
+    }
+  });
+
   it.each([false, true])("honors driver steering support even when the transport exposes a steer method (%s)", async supported => {
     const steer = vi.fn(async () => { throw new Error("provider does not support steering"); });
     const session = Object.assign(new FakeHarnessSession(), { steer });

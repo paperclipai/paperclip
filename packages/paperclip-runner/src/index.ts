@@ -29,6 +29,8 @@ export {
   DurablePrpControlPlane,
   DURABLE_PRP_CONTROL_PLANE_MAX_STATE_BYTES,
   inspectWarmRunTransition,
+  stageLegacyControlPlaneAuthority,
+  type LegacyAuthorityImportOptions,
   type DurablePrpControlPlaneOptions,
   type PrpWireConnection,
   type PrpWireAttachment,
@@ -78,3 +80,19 @@ export * from "./generated/capability-contract.js";
 export * from "./semantic-tools/index.js";
 export * as acceptedCapabilitySemanticTools from "./semantic-tools/index.js";
 export * from "./compatibility.js";
+export * from "./control-plane/durable-authority-store.js";
+export * from "./control-plane/current-authority-evidence.js";
+export { SqliteAuthorityStore } from "./control-plane/sqlite-authority-store.js";
+
+export { readDurableControlPlaneState, parseAuthorityLocator, type AuthorityLocation, type AuthorityLocator, type ExternalAuthorityReader } from "./control-plane/authority-locator.js";
+
+export { readIndexedLocalState, suspendIndexedRunnerState } from "./control-plane/indexed-local-state-reader.js";
+export type { IndexedLocalSnapshot } from "./control-plane/indexed-local-state-reader.js";
+export { IndexedInspectionDecoder } from "./control-plane/indexed-inspection-codec.js";
+export { migrateLegacySessionAuthority, type LegacySessionMigrationOptions, type PreparedLocalSession } from "./control-plane/legacy-authority-activation.js";
+export { assertNoPendingLegacyMigration } from "./control-plane/legacy-migration-gate.js";
+
+export { advanceSourceCursor, normalizedEventId, isEventEpochTransition } from "./control-plane/event-epochs.js";
+export type { SourceCursor, EventEpochTransition } from "./control-plane/event-epochs.js";
+
+export { isProviderProcessGeneration, provesProviderGenerationTransition } from "./control-plane/process-generation.js";

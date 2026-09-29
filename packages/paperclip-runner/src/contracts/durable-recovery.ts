@@ -92,6 +92,7 @@ export interface DurableRecoveryCoreCommand {
   schema: "paperclip.prp.command.v1" | "paperclip.prp.command.v2";
   commandId: string;
   controllerSeq: number;
+  controllerEpoch?: string;
   type: string;
   issuedAt: string;
   payload: Record<string, unknown>;
@@ -106,6 +107,7 @@ export interface DurableRecoveryCoreCommand {
 }
 
 export interface DurableRecoveryCommittedEvent {
+  sourceEpoch?: string;
   sourceSeq: number;
   sourceEventId: string;
   eventType: string;

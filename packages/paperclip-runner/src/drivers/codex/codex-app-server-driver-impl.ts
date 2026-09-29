@@ -379,7 +379,10 @@ export class CodexAppServerDriver implements HarnessDriver {
       );
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const existingThread = record(existing.thread);
-      existingThread.turns = await cancellation.wait(readCodexTurnMetadata(transport, snapshot.driverSessionId));
+      const normalizedRecovery = transport.normalizedDelivery?.()?.load() ?? null;
+      // The indexed reducer plus its unconsumed raw suffix owns recovery.
+      // Enumerating provider turns here would reintroduce lifetime-sized I/O.
+      existingThread.turns = normalizedRecovery ? [] : await cancellation.wait(readCodexTurnMetadata(transport, snapshot.driverSessionId));
       if (text(existingThread.id) !== snapshot.driverSessionId) {
         await cancellation.wait(cancellation.close());
         return {
@@ -473,7 +476,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       const goal = await cancellation.wait(
         this.#discoverGoal(transport, opened.threadId),
       );
-      const recoveringAutonomousGoal = snapshot.goal?.status === "active"
+      const recoveringAutonomousGoal = normalizedRecovery === null && snapshot.goal?.status === "active"
         && goal != null
         && goal.createdAt === snapshot.goal.createdAt;
       if (recoveringAutonomousGoal) {
@@ -496,7 +499,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         recoveredActiveTurnId = active.length === 1 ? text(active[0]?.id) : recoveredActiveTurnId;
       }
       if (
-        !recoveringAutonomousGoal &&
+        normalizedRecovery === null && !recoveringAutonomousGoal &&
         !this.#direct() &&
         snapshot.semanticResult == null &&
         recoveredActiveTurnId === null &&
@@ -608,6 +611,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         stalePendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
         lineage: snapshot.lineage,
         sourceSequence: snapshot.lastSourceSequence ?? 0,
+        sourceEpoch: snapshot.lastSourceEpoch,
       });
       // A provider may settle the checkpointed turn while this controller is
       // disconnected (including during timeout cleanup). Reopening a thread
@@ -616,8 +620,8 @@ export class CodexAppServerDriver implements HarnessDriver {
       // nor submit the original work again. Missing/conflicting history still
       // fails closed in reconcile().
       if (
-        recoveredActiveTurnId !== null ||
-        reconcileUncheckpointedDispositionTurn
+        !session.deliveryRestored && (recoveredActiveTurnId !== null ||
+        reconcileUncheckpointedDispositionTurn)
       ) {
         await cancellation.wait(session.reconcile?.() ?? Promise.resolve({}));
       }
@@ -904,6 +908,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
     lineage?: HarnessThreadLineageEntry[];
     sourceSequence: number;
+    sourceEpoch?: string;
   }): CodexHarnessSession {
     return new CodexHarnessSession({
       ...input,

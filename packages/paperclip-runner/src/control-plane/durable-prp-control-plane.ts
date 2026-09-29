@@ -1,3 +1,5 @@
+import { EVENT_EPOCH_CAPABILITY, EVENT_EPOCH_LIMIT, isEventEpochTransition, isEventResume, eventEpochCloseId, compareCurrentEvents, type EventEpochTransition, type EventResume } from "./event-epochs.js";
+import { COMMAND_EPOCH_CAPABILITY, COMMAND_EPOCH_LIMIT, isCommandEpoch, isCommandEpochTransition, compareCurrentCommands, commandEpochCloseId, type CommandEpochTransition } from "./command-epochs.js";
 import { spawn } from "node:child_process";
 import {
   createCipheriv,
@@ -35,6 +37,13 @@ import {
   type PrpEvent,
 } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
+import { authorityInteger, authorityJson, DurableAuthorityStoreError, INDEXED_DURABILITY_CAPABILITY, MAX_LEGACY_AUTHORITY_STATE_BYTES, type AuthorityRecord, type AuthoritySnapshot, type DurableAuthorityStore } from "./durable-authority-store.js";
+import { materializeCurrentAuthority, referenceCurrentAuthority, type CurrentAuthorityEvidence } from "./current-authority-evidence.js";
+import { processOwnerChanges, processOwnerEvidence } from "./process-owner-evidence.js";
+import { LegacyJsonReader, type LegacyJsonCursor } from "./legacy-json-reader.js";
+import { assertNoPendingLegacyMigration } from "./legacy-migration-gate.js";
+import { normalizedEpochCloseId } from "./event-epochs.js";
+import { acknowledgeNormalizedEvent, applyNormalizedBatch, validateNormalizedDelivery, type NormalizedDeliveryState, type NormalizedDeliveryPort } from "./normalized-delivery.js";
 import {
   type DurableRecoveryCommittedEvent,
   type DurableRecoveryCoreCommand,
@@ -51,6 +60,12 @@ const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
 const transitionCoreStateSchema =
   "paperclip.runner.durable.control-plane-state.warm-transition.v1";
 const maxFrameBytes = 1024 * 1024;
+// Connection-local nonce counters are renewable. Re-authentication derives new
+// keys and resumes durable cursors without changing any task/provider identity.
+const maxSecureChannelFrames = 1_048_576;
+// Diagnostic totals are lower bounds after saturation, never authority,
+// sequence namespaces, or unique identity sources.
+const incrementDiagnosticCount = (value: number) => Math.min(Number.MAX_SAFE_INTEGER, value + 1);
 const maxCommandBytes = maxFrameBytes - 4 * 1024;
 const maxCommands = 500;
 // A provider can emit several 100-event runner batches before the transport's
@@ -59,7 +74,7 @@ const maxCommands = 500;
 const maxCommittedEventWindow = 4_096;
 // The controller admission, cleanup, and recovery readers inspect this same
 // journal. Keep their bound aligned with the durable store as history grows.
-export const DURABLE_PRP_CONTROL_PLANE_MAX_STATE_BYTES = 192 * 1024 * 1024;
+export const DURABLE_PRP_CONTROL_PLANE_MAX_STATE_BYTES = MAX_LEGACY_AUTHORITY_STATE_BYTES;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
@@ -128,7 +143,7 @@ interface ConnectionLeaseRecord {
   revokedAt: string | null;
 }
 
-interface StoredCoreState {
+export interface StoredCoreState {
   schema: typeof coreStateSchema | typeof transitionCoreStateSchema;
   identity: DurableRecoveryIdentity;
   warmTransition?: {
@@ -163,6 +178,24 @@ interface StoredCoreState {
   malformedFrames: number;
   lastLeaseId: string | null;
   lastLeaseExpiresAt: string | null;
+  indexedState?: {
+    schema: "paperclip.runner.current-authority.v1" | "paperclip.runner.current-authority.v2";
+    recoveryEvidence?: CurrentAuthorityEvidence;
+    nextControllerSeq: number;
+    sourceEpoch?: string;
+    lastEventEpochTransition?: EventEpochTransition;
+    commandEpochsNegotiated?: true;
+    controllerEpoch?: string;
+    commandEpochTransition?: CommandEpochTransition;
+    lastCommandEpochTransition?: CommandEpochTransition;
+    providerEverStarted: boolean;
+    externalEffectEverAdmitted: boolean;
+    pendingSemanticInputIds: string[];
+    normalizedDelivery?: NormalizedDeliveryState;
+    driverReceiptSequence?: string;
+    processOwnerIndexVersion?: 1;
+    legacyActivation?: { fenceId: string; preparationDigest: string };
+  };
 }
 
 type PendingAuthorization =
@@ -205,6 +238,13 @@ type LiveAuthorization =
     };
 
 interface PendingChallenge {
+  durability?: string;
+  outputBodies?: string;
+  eventEpochs?: string;
+  eventResume?: EventResume;
+  eventEpochLimit?: number;
+  commandEpochs?: string;
+  commandResume?: { controllerEpoch: string | null; lastControllerCommandSeq: number };
   authorization: PendingAuthorization;
   deadlineUnixMs: number;
   canonicalChallenge: string;
@@ -230,6 +270,8 @@ export interface DurablePrpControlPlaneOptions {
   identity: DurableRecoveryIdentity;
   expectedRunnerVersion: string;
   expectedRunnerDigest: string;
+  /** Open via DurablePrpControlPlane.open when supplying asynchronous storage. */
+  authorityStore?: DurableAuthorityStore;
   /** Complete caller-owned admission before consuming a credential or releasing commands. */
   beforeAuthenticatedConnection?: (input: {
     readonly identity: DurableRecoveryIdentity;
@@ -256,6 +298,12 @@ export interface DurablePrpControlPlaneOptions {
     error: NativeSessionProtocolIntegrityError,
   ) => void;
   connectionLeaseTtlMs?: number;
+  /** May lower the connection rekey interval; never raises the wire bound. */
+  secureChannelFrameLimit?: number;
+  /** Qualification may lower, never raise, the renewable command namespace. */
+  eventEpochLimit?: number;
+  normalizedEventEpochLimit?: number;
+  commandEpochLimit?: number;
 }
 
 export interface RunnerProcessResult {
@@ -426,6 +474,7 @@ function warmTransitionReceipt(
   >,
   runnerVersion: string,
   runnerDigest: string,
+  oldSourceEpoch?: string,
 ): DurableWarmRunTransition {
   const boundary = command.payload.paperclipNextAuthority;
   if (
@@ -469,6 +518,7 @@ function warmTransitionReceipt(
     }),
     resultDigest: canonicalDigest(result),
     oldAckedSourceSeq: ackedSourceSeq,
+    ...(oldSourceEpoch ? { oldSourceEpoch } : {}),
     connection: structuredClone(boundary.connection),
     runnerVersion,
     runnerDigest,
@@ -509,6 +559,7 @@ function validStoredWarmTransition(state: StoredCoreState): boolean {
       lease,
       transition.receipt.runnerVersion,
       transition.receipt.runnerDigest,
+      transition.receipt.oldSourceEpoch,
     );
     return (
       runnerDigestPattern.test(expected.runnerDigest) &&
@@ -520,7 +571,7 @@ function validStoredWarmTransition(state: StoredCoreState): boolean {
             : expected.oldIdentity,
         ) &&
       (transition.phase === "activated" ||
-        (state.ackedSourceSeq === expected.oldAckedSourceSeq &&
+        (state.ackedSourceSeq === expected.oldAckedSourceSeq && state.indexedState?.sourceEpoch === expected.oldSourceEpoch &&
           canonicalJson(
             state.commands.find(
               (command) => command.commandId === expected.commandId,
@@ -538,8 +589,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function unsettledSemanticInput(
   event: DurableRecoveryCommittedEvent,
-  state: Pick<StoredCoreState, "identity" | "commands">,
+  state: Pick<StoredCoreState, "identity" | "commands" | "indexedState">,
 ): boolean {
+  if (state.indexedState) return state.indexedState.pendingSemanticInputIds.includes(event.sourceEventId);
   if (
     event.eventType !== "semantic_tool.input" &&
     event.eventType !== "mcp_app.tool_input"
@@ -599,8 +651,34 @@ function unsettledSemanticInput(
 function isStoredCoreState(
   value: unknown,
   identity: DurableRecoveryIdentity,
+  allowIndexed = false,
 ): value is StoredCoreState {
   if (!isRecord(value)) return false;
+  if (value.indexedState !== undefined) {
+    const current = value.indexedState;
+    if (!allowIndexed || !isRecord(current) || current.schema !== "paperclip.runner.current-authority.v1" ||
+      !Number.isSafeInteger(current.nextControllerSeq) || (current.nextControllerSeq as number) < 1 ||
+      typeof current.providerEverStarted !== "boolean" || typeof current.externalEffectEverAdmitted !== "boolean" ||
+      !Array.isArray(current.pendingSemanticInputIds) || current.pendingSemanticInputIds.length > maxCommands ||
+      !current.pendingSemanticInputIds.every((id) => typeof id === "string" && stableIdPattern.test(id)) ||
+      new Set(current.pendingSemanticInputIds).size !== current.pendingSemanticInputIds.length) return false;
+    if (current.commandEpochsNegotiated !== undefined && current.commandEpochsNegotiated !== true) return false;
+    if ((current.controllerEpoch !== undefined && !isCommandEpoch(current.controllerEpoch)) ||
+      (current.commandEpochTransition !== undefined && (!isCommandEpochTransition(current.commandEpochTransition) ||
+        current.commandEpochTransition.runId !== identity.runId || current.commandEpochTransition.fromEpoch !== (current.controllerEpoch ?? null) ||
+        current.commandEpochTransition.finalOrdinal !== Number(current.nextControllerSeq) - 1))) return false;
+    if (current.controllerEpoch === undefined ? current.lastCommandEpochTransition !== undefined :
+      !isCommandEpochTransition(current.lastCommandEpochTransition) || current.lastCommandEpochTransition.nextEpoch !== current.controllerEpoch || current.lastCommandEpochTransition.runId !== identity.runId) return false;
+    if (current.sourceEpoch === undefined ? current.lastEventEpochTransition !== undefined :
+      !isCommandEpoch(current.sourceEpoch) || !isEventEpochTransition(current.lastEventEpochTransition) || current.lastEventEpochTransition.nextEpoch !== current.sourceEpoch || current.lastEventEpochTransition.runId !== identity.runId) return false;
+    if (current.normalizedDelivery !== undefined) {
+      try { validateNormalizedDelivery(current.normalizedDelivery as NormalizedDeliveryState); }
+      catch { return false; }
+      const delivery = current.normalizedDelivery as NormalizedDeliveryState;
+      if (delivery.raw.epoch !== identity.runId || (delivery.raw.sourceEpoch === current.sourceEpoch && delivery.raw.sourceSeq > Number(value.ackedSourceSeq))
+        || delivery.pending.some((event) => event.runId !== identity.runId || event.sourceInstanceId !== identity.runnerInstanceId || event.normalizedSessionId !== identity.normalizedSessionId || event.sourceKind !== "runner")) return false;
+    }
+  }
   const commands = value.commands;
   const events = value.committedEvents;
   if (
@@ -610,7 +688,7 @@ function isStoredCoreState(
     !isRecord(value.tickets) ||
     !isRecord(value.leases) ||
     !Array.isArray(commands) ||
-    commands.length > maxCommands ||
+    commands.length > maxCommands + (allowIndexed ? 64 : 0) ||
     !Array.isArray(events) ||
     events.length > maxCommittedEventWindow ||
     !Number.isSafeInteger(value.ackedSourceSeq) ||
@@ -653,6 +731,7 @@ function isStoredCoreState(
             },
             completed.receipt.runnerVersion as string,
             completed.receipt.runnerDigest as string,
+            completed.receipt.oldSourceEpoch as string | undefined,
           ),
         ) !== canonicalJson(completed.receipt)
       )
@@ -677,7 +756,11 @@ function isStoredCoreState(
         typeof command.commandId === "string" &&
         stableIdPattern.test(command.commandId) &&
         command.commandId.length <= 160 &&
-        command.controllerSeq === index + 1 &&
+        (value.indexedState
+          ? Number.isSafeInteger(command.controllerSeq) && (command.controllerSeq as number) > 0
+          : command.controllerSeq === index + 1) &&
+        (command.controllerEpoch === undefined || (value.indexedState && isCommandEpoch(command.controllerEpoch))) &&
+        (command.status !== "pending" || command.controllerEpoch === (value.indexedState as StoredCoreState["indexedState"])?.controllerEpoch) &&
         typeof command.type === "string" &&
         commandTypes.has(command.type) &&
         typeof command.issuedAt === "string" &&
@@ -698,6 +781,7 @@ function isStoredCoreState(
     !events.every(
       (event) =>
         isRecord(event) &&
+        (event.sourceEpoch === undefined || (allowIndexed && isCommandEpoch(event.sourceEpoch))) &&
         Number.isSafeInteger(event.sourceSeq) &&
         (event.sourceSeq as number) > 0 &&
         typeof event.sourceEventId === "string" &&
@@ -755,7 +839,7 @@ function warmTransitionRecoveryProof(input: WarmTransitionInspectionInput): {
       !exactIdentity(input.expectedNewIdentity) ||
       !isRecord(state) ||
       !exactIdentity(state.identity) ||
-      !isStoredCoreState(state, state.identity) ||
+      !isStoredCoreState(state, state.identity, true) ||
       !isRecord(runner) ||
       runner.schema !== "paperclip.runner.durable.state.warm-transition.v1"
     )
@@ -826,6 +910,7 @@ function warmTransitionRecoveryProof(input: WarmTransitionInspectionInput): {
         original,
         input.expectedRunnerVersion,
         input.expectedRunnerDigest,
+        state.indexedState?.sourceEpoch,
       );
       if (canonicalJson(expected) !== canonicalJson(receipt)) return null;
       transition = {
@@ -888,6 +973,7 @@ function warmTransitionRecoveryProof(input: WarmTransitionInspectionInput): {
         canonicalJson({ ...wire, deadlineAt: null, precondition: null }) ||
       canonicalJson(pending.result) !==
         canonicalJson(transition.expectedResult ?? transition.command.result) ||
+      runner.sourceEpoch !== (pending.phase === "prepared" ? transition.receipt.oldSourceEpoch : undefined) ||
       runner.ackedSourceSeq !==
         (pending.phase === "prepared"
           ? transition.receipt.oldAckedSourceSeq
@@ -1177,12 +1263,21 @@ function atomicPrivateWrite(path: string, contents: string): void {
   }
 }
 
+function encodeLegacyState(state: StoredCoreState): string {
+  const bytes = `${JSON.stringify(state, null, 2)}\n`;
+  if (Buffer.byteLength(bytes) > DURABLE_PRP_CONTROL_PLANE_MAX_STATE_BYTES) {
+    throw new DurableAuthorityStoreError("storage_pressure", "legacy journal requires indexed migration before more history can be admitted");
+  }
+  return bytes;
+}
+
 class DurableCoreStore {
   readonly path: string;
   #state: StoredCoreState;
   #writeIndeterminate = false;
 
   constructor(directory: string, identity: DurableRecoveryIdentity) {
+    assertNoPendingLegacyMigration(directory);
     try {
       const metadata = lstatSync(directory);
       if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -1208,7 +1303,7 @@ class DurableCoreStore {
       this.#state = parsed;
     } else {
       this.#state = initialCoreState(identity);
-      this.save();
+      atomicPrivateWrite(this.path, encodeLegacyState(this.#state));
     }
   }
 
@@ -1216,12 +1311,13 @@ class DurableCoreStore {
     return this.#state;
   }
 
-  save(): void {
+  async save(): Promise<void> {
     this.assertWritable();
-    atomicPrivateWrite(this.path, `${JSON.stringify(this.#state, null, 2)}\n`);
+    await this.commit(this.#state);
   }
 
   assertWritable(): void {
+    assertNoPendingLegacyMigration(dirname(this.path));
     if (this.#writeIndeterminate)
       throw new Error(
         "Durable authority commit is indeterminate; reload is required.",
@@ -1229,14 +1325,352 @@ class DurableCoreStore {
   }
 
   /** Persist a complete candidate before publishing any new authority in memory. */
-  commit(candidate: StoredCoreState): void {
+  async commit(candidate: StoredCoreState): Promise<void> {
     this.assertWritable();
     try {
-      atomicPrivateWrite(this.path, `${JSON.stringify(candidate, null, 2)}\n`);
+      atomicPrivateWrite(this.path, encodeLegacyState(candidate));
       this.#state = candidate;
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
       // Never overwrite that possibly durable receipt using stale memory.
+      this.#writeIndeterminate = true;
+      throw error;
+    }
+  }
+}
+
+function indexedCurrentState(): NonNullable<StoredCoreState["indexedState"]> {
+  return { schema: "paperclip.runner.current-authority.v1", nextControllerSeq: 1, processOwnerIndexVersion: 1, providerEverStarted: false, externalEffectEverAdmitted: false, pendingSemanticInputIds: [] };
+}
+
+/** Only current authority remains in the checkpoint. These references are
+ * independent of the paged history used by transcript/event consumers. */
+function compactIndexedState(state: StoredCoreState): StoredCoreState {
+  const current = state.indexedState!;
+  const commands = new Map<string, DurableRecoveryCoreCommand>();
+  for (const command of state.commands) {
+    if (command.status === "pending" || command.status === "indeterminate") commands.set(command.commandId, command);
+    else if (command.type !== "semantic_tool.result") commands.set(`latest:${command.type}`, command);
+    else if (["paperclip_finish", "paperclip_block"].includes(String(command.payload.operationId))) commands.set(`terminal:${command.payload.operationId}`, command);
+  }
+  const events = new Map<string, DurableRecoveryCommittedEvent>();
+  for (const event of state.committedEvents) {
+    const body = isRecord(event.envelope.payload) && isRecord(event.envelope.payload.payload) ? event.envelope.payload.payload : {};
+    const semantic = isRecord(body.semantic_tool) ? body.semantic_tool : {};
+    if (current.pendingSemanticInputIds.includes(event.sourceEventId)) events.set(event.sourceEventId, event);
+    else if (["paperclip_finish", "paperclip_block"].includes(String(semantic.operationId))) events.set(`${event.eventType}:${semantic.operationId}`, event);
+    else if (["session.started", "session.resumed", "session.reconciled", "harness.ready", "turn.accepted", "turn.started", "turn.completed", "turn.failed", "run.terminal"].includes(event.eventType)) events.set(event.eventType, event);
+
+  }
+  const retained = [...commands.values()].sort((a, b) => compareCurrentCommands(a, b, current.controllerEpoch));
+  return {
+    ...state, commands: retained,
+    commandDeliveryCounts: Object.fromEntries(retained.map((command) => [command.commandId, state.commandDeliveryCounts[command.commandId] ?? 0])),
+    committedEvents: [...events.values()].sort((a, b) => compareCurrentEvents(a, b, current.sourceEpoch)),
+  };
+}
+
+
+export interface LegacyAuthorityImportOptions {
+  sourcePath: string;
+  identity: DurableRecoveryIdentity;
+  authority: DurableAuthorityStore;
+  /** Stable identity of the exclusive migration, retained across retries. The
+   * embedding runtime must fence legacy writers and verify every process owner
+   * before invoking this API; the source file's presence is not that proof. */
+  fenceId: string;
+  assertExclusiveFence(): Promise<void>;
+  onCheckpoint?(): Promise<void>;
+}
+interface LegacyAuthorityImportState {
+  schema: "paperclip.runner.legacy-authority-import.v1";
+  identity: DurableRecoveryIdentity;
+  fenceId: string;
+  source: string | null;
+  cursor: LegacyJsonCursor | null;
+  phase: "copying" | "reconciling" | "prepared";
+  commandCount: number;
+  eventCount: number;
+  lastSourceSeq: number;
+  reconcileAfter: string;
+  projection: StoredCoreState;
+}
+
+/** Prepare a lossless indexed controller import. Nothing publishes a locator
+ * or starts a peer here: the cross-store activation handshake must separately
+ * verify runner/provider preparation under this same ownership fence. Staged
+ * rows cannot be opened by DurablePrpControlPlane as execution authority. */
+export async function stageLegacyControlPlaneAuthority(options: LegacyAuthorityImportOptions): Promise<AuthoritySnapshot> {
+  if (!stableIdPattern.test(options.fenceId)) throw new Error("Invalid legacy migration fence identity.");
+  await options.assertExclusiveFence();
+  let snapshot = await options.authority.load();
+  let generation = snapshot?.generation ?? "0";
+  let migration = snapshot?.state as unknown as LegacyAuthorityImportState | undefined;
+  if (migration && (migration.schema !== "paperclip.runner.legacy-authority-import.v1" || migration.fenceId !== options.fenceId || authorityJson(migration.identity) !== authorityJson(options.identity))) {
+    throw new Error("Legacy migration staging belongs to a different authority or fence.");
+  }
+  migration ??= {
+    schema: "paperclip.runner.legacy-authority-import.v1", identity: options.identity, fenceId: options.fenceId,
+    source: null, cursor: null, phase: "copying", commandCount: 0, eventCount: 0, lastSourceSeq: 0, reconcileAfter: "0",
+    projection: { ...initialCoreState(options.identity), indexedState: indexedCurrentState() },
+  };
+  const reader = new LegacyJsonReader(options.sourcePath);
+  const persist = async (records: AuthorityRecord[]) => {
+    await options.assertExclusiveFence();
+    const facts = records.filter(record => record.kind === "event").map(record => processOwnerEvidence(record.body as unknown as DurableRecoveryCommittedEvent, options.identity)).filter(fact => fact !== null);
+    const work = await processOwnerChanges(options.authority, facts, { runId: options.identity.runId });
+    generation = await options.authority.commit({ expectedGeneration: generation, state: migration as unknown as Record<string, unknown>, records, work });
+    await options.onCheckpoint?.();
+  };
+  try {
+    while (migration.phase === "copying") {
+      await options.assertExclusiveFence();
+      const page = await reader.page(migration.source, migration.cursor);
+      const records: AuthorityRecord[] = [];
+      for (const entry of page.entries) {
+        const current = migration.projection;
+        if (entry.field === "commands") {
+          const command = entry.value as DurableRecoveryCoreCommand;
+          const sample = { ...initialCoreState(options.identity), indexedState: indexedCurrentState(), commands: [command] };
+          if (!isStoredCoreState(sample, options.identity, true) || command.controllerSeq !== migration.commandCount + 1) throw new Error("Invalid legacy command during migration.");
+          migration.commandCount++;
+          current.indexedState!.nextControllerSeq = command.controllerSeq + 1;
+          if (["session.open", "turn.start", "run.attach"].includes(command.type)) current.indexedState!.providerEverStarted = true;
+          if (command.type === "semantic_tool.result") current.indexedState!.externalEffectEverAdmitted = true;
+          current.commands.push(command);
+          if (command.status !== "pending") records.push({ epoch: options.identity.runId, kind: "command", id: command.commandId, sequence: String(command.controllerSeq), ...(command.controllerEpoch ? { sequenceEpoch: command.controllerEpoch } : {}), body: command as unknown as Record<string, unknown> });
+        } else if (entry.field === "committedEvents") {
+          const event = entry.value as DurableRecoveryCommittedEvent;
+          const sample = { ...initialCoreState(options.identity), indexedState: indexedCurrentState(), committedEvents: [event] };
+          if (!isStoredCoreState(sample, options.identity, true) || event.sourceSeq <= migration.lastSourceSeq) throw new Error("Invalid legacy event during migration.");
+          migration.eventCount++; migration.lastSourceSeq = event.sourceSeq;
+          current.indexedState!.providerEverStarted = true;
+          if (["semantic_tool.input", "mcp_app.tool_input", "runtime.input.requested", "runtime_request.created"].includes(event.eventType)) current.indexedState!.externalEffectEverAdmitted = true;
+          current.committedEvents.push(event);
+          records.push({ epoch: options.identity.runId, kind: "event", id: event.sourceEventId, sequence: String(event.sourceSeq), body: { ...event, deliveryCount: 1 } as unknown as Record<string, unknown> });
+        } else if (entry.field === "commandDeliveryCounts") {
+          if (entry.key === null || !stableIdPattern.test(entry.key) || !Number.isSafeInteger(entry.value) || Number(entry.value) < 0 || Object.hasOwn(current.commandDeliveryCounts, entry.key)) throw new Error("Invalid legacy command delivery count.");
+          Object.defineProperty(current.commandDeliveryCounts, entry.key, { value: entry.value, enumerable: true, configurable: true, writable: true });
+        } else {
+          if (entry.key !== null || entry.field === "indexedState") throw new Error("Unexpected indexed metadata in legacy migration.");
+          Object.defineProperty(current, entry.field, { value: entry.value, enumerable: true, configurable: true, writable: true });
+        }
+        // Each completed entry becomes an immutable row before the staging
+        // checkpoint advances. No imported history accumulates in this view.
+        const deliveryCounts = current.commandDeliveryCounts;
+        migration.projection = compactIndexedState(current);
+        // Counts are at most the legacy pending/command admission bound. They
+        // can precede commands in valid JSON, so filter only after the copy.
+        migration.projection.commandDeliveryCounts = deliveryCounts;
+        if (Object.keys(deliveryCounts).length > maxCommands) throw new Error("Legacy delivery counts exceed admission capacity.");
+      }
+      migration.source = page.source; migration.cursor = page.cursor;
+      if (page.done) {
+        // Initialization defaults are staging scaffolding, never evidence for
+        // a field absent from the source. Empty collections must be explicit.
+        const required = ["schema", "identity", "tickets", "leases", "commands", "committedEvents", "ackedSourceSeq", "connectionCount", "commandDeliveryCounts", "replayDeliveries", "duplicateCommandResults", "freshBootstraps", "malformedFrames"];
+        if (required.some(field => !page.cursor.fields.includes(field))) throw new Error("Legacy authority is missing required source fields.");
+        if (migration.lastSourceSeq > migration.projection.ackedSourceSeq || migration.commandCount > maxCommands || migration.eventCount > maxCommittedEventWindow || !isStoredCoreState(migration.projection, options.identity, true)) throw new Error("Legacy authority is invalid after import.");
+        migration.projection = compactIndexedState(migration.projection);
+        migration.phase = "reconciling";
+      }
+      await persist(records);
+    }
+    // JSON field order is irrelevant. Resolve semantic inputs only after all
+    // completed commands have been imported, using exact indexed lookups.
+    while (migration.phase === "reconciling") {
+      await options.assertExclusiveFence();
+      const page = await options.authority.readEvents(options.identity.runId, migration.reconcileAfter, 128, 8 * 1024 * 1024);
+      for (const record of page.records) {
+        const event = record.body as unknown as DurableRecoveryCommittedEvent;
+        if (["semantic_tool.input", "mcp_app.tool_input"].includes(event.eventType)) {
+          const payload = isRecord(event.envelope.payload) && isRecord(event.envelope.payload.payload) ? event.envelope.payload.payload : {};
+          const semantic = isRecord(payload.semantic_tool) ? payload.semantic_tool : {};
+          const commandId = `command_tool_${createHash("sha256").update(`${options.identity.runId}\0${String(semantic.callId)}`).digest("hex").slice(0, 32)}`;
+          const command = await options.authority.getRecord(options.identity.runId, "command", commandId);
+          if (unsettledSemanticInput(event, { identity: options.identity, commands: command ? [command.body as unknown as DurableRecoveryCoreCommand] : [] })) {
+            migration.projection.indexedState!.pendingSemanticInputIds.push(event.sourceEventId);
+            migration.projection.committedEvents.push(event);
+          }
+        }
+      }
+      migration.projection = compactIndexedState(migration.projection);
+      if (!isStoredCoreState(migration.projection, options.identity, true)) throw new Error("Imported unresolved authority exceeds current admission capacity.");
+      migration.reconcileAfter = page.nextAfter ?? migration.reconcileAfter;
+      if (!page.records.length) migration.phase = "prepared";
+      await persist([]);
+    }
+    if (migration.phase !== "prepared" || !migration.cursor || !migration.source) throw new Error("Invalid legacy migration phase.");
+    // Re-stat the original through the worker even after restarting a prepared
+    // import. The original remains untouched until cross-store activation.
+    await reader.page(migration.source, migration.cursor);
+    await options.assertExclusiveFence();
+    snapshot = { generation, state: migration as unknown as Record<string, unknown> };
+    return snapshot;
+  } finally { await reader.close(); }
+}
+
+/** Internal activation projection. It carries an exact preparation receipt so
+ * a commit-before-filesystem-publication restart can finish the same migration. */
+export function legacyControllerActivation(snapshot: AuthoritySnapshot, identity: DurableRecoveryIdentity, fenceId: string, preparationDigest: string): StoredCoreState {
+  const migration = snapshot.state as unknown as LegacyAuthorityImportState;
+  if (migration.schema !== "paperclip.runner.legacy-authority-import.v1" || migration.phase !== "prepared"
+      || migration.fenceId !== fenceId || authorityJson(migration.identity) !== authorityJson(identity)
+      || !/^[a-f0-9]{64}$/.test(preparationDigest) || !isStoredCoreState(migration.projection, identity, true)) {
+    throw new Error("Invalid prepared controller activation.");
+  }
+  const projection = structuredClone(migration.projection);
+  projection.indexedState!.legacyActivation = { fenceId, preparationDigest };
+  return projection;
+}
+
+function persistenceFailureCode(error: unknown): string {
+  if (error instanceof DurableAuthorityStoreError) return error.message;
+  const cause = isRecord(error) && isRecord(error.cause) ? error.cause : error;
+  const code = typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : "unknown";
+  return /^[a-zA-Z0-9_]{1,80}$/.test(code) ? code : "unknown";
+}
+
+class IndexedCoreStore {
+  readonly path: string;
+  readonly authority: DurableAuthorityStore;
+  #state: StoredCoreState;
+  #durableState: StoredCoreState;
+  #generation: string;
+  #writeIndeterminate = false;
+  #persistedCommandIds = new Set<string>();
+  #persistedEventSeq: number;
+  #persistedSourceEpoch?: string;
+  #epoch: string;
+  #locator: string | null = null;
+  #failure = "unknown";
+
+  constructor(directory: string, identity: DurableRecoveryIdentity, authority: DurableAuthorityStore, snapshot: AuthoritySnapshot | null) {
+    assertNoPendingLegacyMigration(directory);
+    if (!lstatSync(directory, { throwIfNoEntry: false })) mkdirSync(directory, { recursive: true, mode: 0o700 });
+    verifyPrivateDirectory(directory);
+    this.path = resolve(directory, "control-plane-state.json");
+    this.authority = authority;
+    const activated = this.#validateLocator();
+    if (activated && snapshot === null) {
+      throw new DurableAuthorityStoreError("storage_unavailable", "activated current authority is missing; refusing to recreate it");
+    }
+    const state = snapshot?.state ?? { ...initialCoreState(identity), indexedState: indexedCurrentState() };
+    if (!isStoredCoreState(state, identity, true) || !state.indexedState) throw new Error("Indexed current authority is invalid or does not match its identity.");
+    this.#state = state;
+    this.#durableState = structuredClone(state);
+    this.#generation = snapshot?.generation ?? "0";
+    this.#persistedEventSeq = state.ackedSourceSeq;
+    this.#persistedSourceEpoch = state.indexedState?.sourceEpoch;
+    this.#epoch = identity.runId;
+    this.#rememberCommands();
+  }
+
+  #validateLocator(): boolean {
+    const existing = readPrivateFile(this.path);
+    if (existing !== null) {
+      const previous = JSON.parse(existing) as { schema?: string; location?: { binding?: string } };
+      if (previous.schema !== "paperclip.runner.authority-locator.v1" || previous.location?.binding !== this.authority.binding) {
+        throw new Error("Indexed authority activation requires a fenced legacy migration.");
+      }
+      return true;
+    }
+    return false;
+  }
+
+  publishLocator(): void {
+    const value = `${JSON.stringify({ schema: "paperclip.runner.authority-locator.v1", location: this.authority.location })}\n`;
+    if (value === this.#locator) return;
+    this.#validateLocator();
+    atomicPrivateWrite(this.path, value);
+    this.#locator = value;
+  }
+
+  #rememberCommands(): void {
+    this.#persistedCommandIds = new Set(this.#state.commands.filter((command) => command.status !== "pending").map((command) => command.commandId));
+  }
+
+  get state(): StoredCoreState { return this.#state; }
+  rememberPersistedState(state: Record<string, unknown>): void { this.#durableState = structuredClone(state) as unknown as StoredCoreState; }
+  assertWritable(): void {
+    assertNoPendingLegacyMigration(dirname(this.path));
+    if (this.#writeIndeterminate) throw new Error(`Durable authority commit is indeterminate (${this.#failure}); reload is required.`);
+  }
+  async save(): Promise<void> { await this.commit(this.#state); }
+
+  async backfillProcessOwners(): Promise<void> {
+    this.assertWritable();
+    if (this.#state.indexedState?.processOwnerIndexVersion === 1) return;
+    const facts = this.#state.committedEvents.map(event => processOwnerEvidence(event, this.#state.identity)).filter(fact => fact !== null);
+    const work = await processOwnerChanges(this.authority, facts, { runId: this.#state.identity.runId, sourceEpoch: this.#state.indexedState?.sourceEpoch });
+    try {
+      for (let offset = 0; offset < work.length; offset += 128) {
+        // Retain the original bounded prototype checkpoint until every page
+        // commits. A crash can repeat the backfill without losing launch facts.
+        this.#generation = await this.authority.commit({ expectedGeneration: this.#generation,
+          state: this.#state as unknown as Record<string, unknown>, records: [], work: work.slice(offset, offset + 128) });
+      }
+      await this.save();
+    } catch (error) {
+      this.#failure = persistenceFailureCode(error);
+      this.#writeIndeterminate = true;
+      throw error;
+    }
+  }
+
+  async commit(candidate: StoredCoreState, additionalRecords: AuthorityRecord[] = []): Promise<void> {
+    this.assertWritable();
+    candidate = structuredClone(candidate);
+    if (candidate.identity.runId !== this.#epoch) {
+      if (this.#state.indexedState?.normalizedDelivery?.pending.length) {
+        throw new DurableAuthorityStoreError("storage_pressure", "run-log delivery must settle before authority rotation");
+      }
+      candidate.indexedState = indexedCurrentState();
+    }
+    const records: AuthorityRecord[] = [...additionalRecords];
+    const sameEpoch = candidate.identity.runId === this.#epoch;
+    for (const command of candidate.commands) {
+      if (command.status !== "pending" && !(sameEpoch && this.#persistedCommandIds.has(command.commandId))) {
+        records.push({ epoch: candidate.identity.runId, kind: "command", id: command.commandId, sequence: String(command.controllerSeq), ...(command.controllerEpoch ? { sequenceEpoch: command.controllerEpoch } : {}), body: command as unknown as Record<string, unknown> });
+        if (command.type === "semantic_tool.result" && command.status === "completed") {
+          candidate.indexedState!.pendingSemanticInputIds = candidate.indexedState!.pendingSemanticInputIds.filter((id) => id !== command.payload.sourceEventId);
+        }
+      }
+    }
+    for (const event of candidate.committedEvents) {
+      if (event.sourceEpoch === candidate.indexedState?.sourceEpoch && event.sourceSeq > (sameEpoch && event.sourceEpoch === this.#persistedSourceEpoch ? this.#persistedEventSeq : 0)) records.push({ epoch: candidate.identity.runId, kind: "event", id: event.sourceEventId, sequence: String(event.sourceSeq), ...(event.sourceEpoch ? { sequenceEpoch: event.sourceEpoch } : {}), body: { ...event, deliveryCount: 1 } as unknown as Record<string, unknown> });
+    }
+    const facts = candidate.committedEvents.map(event => processOwnerEvidence(event, candidate.identity)).filter(fact => fact !== null);
+    candidate.indexedState!.processOwnerIndexVersion = 1;
+    const work = await processOwnerChanges(this.authority, facts, { runId: candidate.identity.runId, sourceEpoch: candidate.indexedState?.sourceEpoch });
+    const compact = compactIndexedState(candidate);
+    const persisted = referenceCurrentAuthority(compact);
+    try {
+      this.#generation = await this.authority.commit({ expectedGeneration: this.#generation, state: persisted as unknown as Record<string, unknown>, records, work });
+      this.#state = compact;
+      this.#durableState = persisted;
+      this.#epoch = compact.identity.runId;
+      this.#persistedEventSeq = compact.ackedSourceSeq;
+      this.#persistedSourceEpoch = compact.indexedState?.sourceEpoch;
+      this.#rememberCommands();
+      this.publishLocator();
+    } catch (error) {
+      // A resource rejection can be retried through the same live owner only
+      // after a fresh read proves that its transaction did not advance. Never
+      // treat an indeterminate commit or a different writer as a safe rollback.
+      if (error instanceof DurableAuthorityStoreError && error.code === "storage_pressure") {
+        try {
+          const committed = await this.authority.load();
+          if (committed?.generation === this.#generation && authorityJson(committed.state) === authorityJson(this.#durableState)) {
+            this.#state = await materializeCurrentAuthority(committed.state, this.authority.getRecord.bind(this.authority)) as unknown as StoredCoreState;
+            throw error;
+          }
+        } catch (readError) {
+          if (readError === error) throw error;
+          // Failure to verify keeps the normal indeterminate-write fence.
+        }
+      }
+      this.#failure = persistenceFailureCode(error);
       this.#writeIndeterminate = true;
       throw error;
     }
@@ -1256,6 +1690,10 @@ export interface PrpWireConnection {
   close(code?: number): void;
   onJson(listener: (value: unknown) => void): void;
   onClose(listener: (reason: TransportCloseReason) => void): void;
+  /** Stop delivering new frames while durable admission drains. Peers without
+   * flow control are disconnected at the bounded ingress budget and replay. */
+  pauseRead?(): void;
+  resumeRead?(): void;
 }
 
 /** Read-only authentication state for an attached PRP peer. */
@@ -1273,6 +1711,7 @@ class RawWebSocketWireConnection implements PrpWireConnection {
   readonly socket: Duplex;
   #buffer = Buffer.alloc(0);
   #closed = false;
+  #readPaused = false;
   #onJson: (value: unknown) => void = () => undefined;
   #onClose: (reason: TransportCloseReason) => void = () => undefined;
 
@@ -1307,6 +1746,14 @@ class RawWebSocketWireConnection implements PrpWireConnection {
     if (data.length > 0) this.#consume(data);
   }
 
+  pauseRead(): void { this.#readPaused = true; this.socket.pause(); }
+  resumeRead(): void {
+    if (this.#closed) return;
+    this.#readPaused = false;
+    this.#consume(Buffer.alloc(0));
+    if (!this.#readPaused && !this.#closed) this.socket.resume();
+  }
+
   sendJson(value: unknown): void {
     this.sendText(JSON.stringify(value));
   }
@@ -1316,6 +1763,7 @@ class RawWebSocketWireConnection implements PrpWireConnection {
       return;
     }
     const payload = Buffer.from(text);
+    if (this.socket.writableLength + payload.length > 4 * 1024 * 1024) { this.close(1013); return; }
     const header: number[] = [0x81];
     if (payload.length <= 125) {
       header.push(payload.length);
@@ -1336,13 +1784,15 @@ class RawWebSocketWireConnection implements PrpWireConnection {
       return;
     }
     this.#closed = true;
+    this.#buffer = Buffer.alloc(0);
     this.socket.destroy();
     this.#onClose({ message: "local_close" });
   }
 
   #consume(chunk: Buffer): void {
+    if (this.#closed) return;
     this.#buffer = Buffer.concat([this.#buffer, chunk]);
-    while (this.#buffer.length >= 2) {
+    while (!this.#closed && !this.#readPaused && this.#buffer.length >= 2) {
       const first = this.#buffer[0]!;
       const second = this.#buffer[1]!;
       const opcode = first & 0x0f;
@@ -1407,12 +1857,17 @@ class RawWebSocketWireConnection implements PrpWireConnection {
 }
 
 class AuthorityConnection {
+  readonly secureFrameLimit: bigint;
   pendingChallenge: PendingChallenge | null = null;
   secureChannel: SecureChannel | null = null;
   lease: ConnectionLeaseRecord | null = null;
   connectionId: string | null = null;
   terminalLifecycleCommandId: string | null = null;
   warmTransitionVersion: 1 | null = null;
+  commandEpochs = false;
+  eventEpochs = false;
+  eventResume: EventResume | null = null;
+  eventEpochLimit = EVENT_EPOCH_LIMIT;
   identity: DurableRecoveryIdentity | null = null;
   replayOnly = false;
   activationReceipt: DurableWarmRunTransition | null = null;
@@ -1424,8 +1879,10 @@ class AuthorityConnection {
     wire: PrpWireConnection;
     onJson: (value: unknown) => void;
     onClose: () => void;
+    secureFrameLimit: number;
   }) {
     this.wire = input.wire;
+    this.secureFrameLimit = BigInt(input.secureFrameLimit);
     this.#onClose = input.onClose;
     this.wire.onJson(input.onJson);
     this.wire.onClose(() => this.#markClosed());
@@ -1433,6 +1890,12 @@ class AuthorityConnection {
 
   sendJson(value: unknown): void {
     if (this.#closed) return;
+    if (this.secureChannel && this.secureChannel.sendCounter >= this.secureFrameLimit) {
+      // The underlying authority already owns commands/events/ACK cursors.
+      // A lost reply is reconciled on the next authenticated connection.
+      this.close(1012);
+      return;
+    }
     this.wire.sendJson(
       this.secureChannel === null
         ? value
@@ -1456,8 +1919,20 @@ class AuthorityConnection {
 
 /** Authenticated, replay-safe PRP transport authority. Business operations are caller supplied. */
 export class DurablePrpControlPlane {
+  #mutationTail: Promise<unknown> = Promise.resolve();
+  #queuedMutations = 0;
+  #queuedWireFrames = 0;
+  #queuedWireBytes = 0;
+
+  #serialize<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.#queuedMutations >= 64) return Promise.reject(new Error("storage_pressure: authority mutation queue is full"));
+    this.#queuedMutations++;
+    const result = this.#mutationTail.then(operation);
+    this.#mutationTail = result.catch(() => undefined).finally(() => { this.#queuedMutations--; });
+    return result;
+  }
   #identity: DurableRecoveryIdentity;
-  readonly #store: DurableCoreStore;
+  readonly #store: DurableCoreStore | IndexedCoreStore;
   #expectedRunnerVersion: string;
   #expectedRunnerDigest: string;
   #server: Server | null = null;
@@ -1472,8 +1947,13 @@ export class DurablePrpControlPlane {
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
   #connectionLeaseTtlMs: number;
+  #secureChannelFrameLimit: number;
+  #eventEpochLimit: number;
+  #normalizedEventEpochLimit: number;
+  #commandEpochLimit: number;
+  #commandEpochWaiters = new Set<(error?: Error) => void>();
 
-  constructor(options: DurablePrpControlPlaneOptions) {
+  constructor(options: DurablePrpControlPlaneOptions, openedSnapshot?: AuthoritySnapshot | null) {
     if (
       !Object.values(options.identity).every(
         (value) => typeof value === "string" && stableIdPattern.test(value),
@@ -1483,15 +1963,18 @@ export class DurablePrpControlPlane {
       (options.connectionLeaseTtlMs !== undefined &&
         (!Number.isInteger(options.connectionLeaseTtlMs) ||
           options.connectionLeaseTtlMs < 60_000 ||
-          options.connectionLeaseTtlMs > 24 * 60 * 60 * 1_000))
+          options.connectionLeaseTtlMs > 24 * 60 * 60 * 1_000)) ||
+      (options.secureChannelFrameLimit !== undefined &&
+        (!Number.isInteger(options.secureChannelFrameLimit) || options.secureChannelFrameLimit < 4 || options.secureChannelFrameLimit > maxSecureChannelFrames)) ||
+      (options.commandEpochLimit !== undefined && (!Number.isSafeInteger(options.commandEpochLimit) || options.commandEpochLimit < 4 || options.commandEpochLimit > COMMAND_EPOCH_LIMIT))
     ) {
       throw new Error("Durable PRP control plane options are invalid.");
     }
     this.#identity = structuredClone(options.identity);
-    this.#store = new DurableCoreStore(
-      options.stateDirectory,
-      options.identity,
-    );
+    if (options.authorityStore && openedSnapshot === undefined) throw new Error("Indexed authority must be opened asynchronously.");
+    this.#store = options.authorityStore
+      ? new IndexedCoreStore(options.stateDirectory, options.identity, options.authorityStore, openedSnapshot!)
+      : new DurableCoreStore(options.stateDirectory, options.identity);
     this.#expectedRunnerVersion = options.expectedRunnerVersion;
     this.#expectedRunnerDigest = options.expectedRunnerDigest;
     const transition = this.#store.state.warmTransition;
@@ -1509,13 +1992,145 @@ export class DurablePrpControlPlane {
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
     this.#onProtocolIntegrityError = options.onProtocolIntegrityError;
     this.#connectionLeaseTtlMs = options.connectionLeaseTtlMs ?? 60_000;
+    this.#secureChannelFrameLimit = options.secureChannelFrameLimit ?? maxSecureChannelFrames;
+    if (options.eventEpochLimit !== undefined && (!Number.isSafeInteger(options.eventEpochLimit) || options.eventEpochLimit < 4 || options.eventEpochLimit > EVENT_EPOCH_LIMIT)) throw new Error("Invalid event epoch limit");
+    this.#eventEpochLimit = options.eventEpochLimit ?? EVENT_EPOCH_LIMIT;
+    if (options.normalizedEventEpochLimit !== undefined && (!Number.isSafeInteger(options.normalizedEventEpochLimit) || options.normalizedEventEpochLimit < 4 || options.normalizedEventEpochLimit > EVENT_EPOCH_LIMIT)) throw new Error("Invalid normalized event epoch limit");
+    this.#normalizedEventEpochLimit = options.normalizedEventEpochLimit ?? EVENT_EPOCH_LIMIT;
+    this.#commandEpochLimit = options.commandEpochLimit ?? COMMAND_EPOCH_LIMIT;
   }
 
   get store(): DurablePrpControlPlaneStore {
     return this.#store;
   }
 
-  getCommand(commandId: string): DurableRecoveryCoreCommand | undefined {
+  static async open(options: DurablePrpControlPlaneOptions): Promise<DurablePrpControlPlane> {
+    const snapshot = options.authorityStore ? await options.authorityStore.load() : undefined;
+    let opened = snapshot;
+    if (snapshot && options.authorityStore) {
+      opened = { ...snapshot, state: await materializeCurrentAuthority(snapshot.state, options.authorityStore.getRecord.bind(options.authorityStore)) };
+      const current = await options.authorityStore.load();
+      if (current?.generation !== snapshot.generation || authorityJson(current.state) !== authorityJson(snapshot.state)) throw new DurableAuthorityStoreError("stale_authority", "authority changed while resolving current evidence");
+    }
+    const core = new DurablePrpControlPlane(options, opened);
+    if (snapshot && core.#store instanceof IndexedCoreStore) core.#store.rememberPersistedState(snapshot.state);
+    if (options.authorityStore && snapshot === null) await core.#store.save();
+    else if (core.#store instanceof IndexedCoreStore) {
+      await core.#store.backfillProcessOwners();
+      core.#store.publishLocator();
+    }
+    return core;
+  }
+
+  get indexedPersistence(): boolean { return this.#store instanceof IndexedCoreStore; }
+
+  normalizedDelivery(): NormalizedDeliveryPort | null {
+    if (!(this.#store instanceof IndexedCoreStore)) return null;
+    const storage = this.#store;
+    const epoch = this.#identity.runId;
+    const check = () => {
+      this.#store.assertWritable();
+      if (this.#identity.runId !== epoch) throw new DurableAuthorityStoreError("stale_authority", "normalized consumer belongs to a retired run");
+    };
+    const receiptId = (collection: string, key: string) => `driver_${createHash("sha256").update(`${collection}\0${key}`).digest("hex")}`;
+    return {
+      epoch,
+      ...(storage.authority.unorderedEffectReceipts === true ? { eventEpochs: { limit: this.#normalizedEventEpochLimit } } : {}),
+      history: { get: async (collection, key) => {
+        check();
+        const receipt = await storage.authority.getSessionEffect(receiptId(collection, key));
+        check();
+        if (!receipt) return null;
+        if (receipt.body.schema !== "paperclip.driver-receipt.v1" || receipt.body.collection !== collection || receipt.body.key !== key || receipt.body.value == null) throw new DurableAuthorityStoreError("invalid_authority", "driver receipt binding mismatch");
+        return structuredClone(receipt.body.value);
+      } },
+      load: () => { check(); return structuredClone(this.#store.state.indexedState?.normalizedDelivery ?? null); },
+      commit: (batch) => this.#serialize(async () => {
+        check();
+        const currentSource = this.#store.state.indexedState?.sourceEpoch;
+        const closed = batch.raw.sourceEpoch === currentSource ? null : await this.readEventEpochTransition(batch.raw.sourceEpoch);
+        if (batch.raw.epoch !== epoch || batch.raw.sourceSeq > (closed?.finalOrdinal ?? this.#store.state.ackedSourceSeq) || (batch.raw.sourceEpoch !== currentSource && !closed)) throw new DurableAuthorityStoreError("invalid_authority", "normalized consumer passed the committed raw inbox or its epoch");
+        for (const event of batch.events) {
+          if (event.runId !== epoch || event.normalizedSessionId !== this.#identity.normalizedSessionId || event.sourceInstanceId !== this.#identity.runnerInstanceId || event.sourceKind !== "runner") {
+            throw new DurableAuthorityStoreError("invalid_authority", "normalized event binding mismatch");
+          }
+        }
+        const candidate = structuredClone(this.#store.state);
+        const previousDelivery = candidate.indexedState!.normalizedDelivery ?? null;
+        const rawTransition = previousDelivery && previousDelivery.raw.sourceEpoch !== batch.raw.sourceEpoch ? await this.readEventEpochTransition(previousDelivery.raw.sourceEpoch) : null;
+        const next = applyNormalizedBatch(previousDelivery, batch, rawTransition ?? undefined);
+        candidate.indexedState!.normalizedDelivery = next;
+        const receipts: AuthorityRecord[] = [];
+        if ((batch.receipts?.length ?? 0) > 128) throw new DurableAuthorityStoreError("storage_pressure", "driver receipt batch exceeds admission capacity");
+        const unordered = storage.authority.unorderedEffectReceipts === true;
+        const closedEpochs = new Set<string | null>();
+        for (const event of batch.events) {
+          const t = event.sourceEpochTransition;
+          if (!t) continue;
+          if (!unordered || closedEpochs.has(t.fromEpoch) || closedEpochs.has(t.nextEpoch)) throw new DurableAuthorityStoreError("invalid_authority", "normalized epoch reused or unsupported");
+          const closeId = normalizedEpochCloseId(epoch, event.sourceInstanceId, t.fromEpoch);
+          if (await storage.authority.getRecord(epoch, "effect", closeId)
+            || await storage.authority.getRecord(epoch, "effect", normalizedEpochCloseId(epoch, event.sourceInstanceId, t.nextEpoch))
+            || await storage.authority.getRecord(epoch, "effect", `normalized-epoch-${t.transitionId}`)) throw new DurableAuthorityStoreError("receipt_conflict", "normalized epoch identity reused");
+          closedEpochs.add(t.fromEpoch);
+          for (const id of [closeId, `normalized-epoch-${t.transitionId}`]) receipts.push({ epoch, kind: "effect", id, sequence: "0", body: { ...t } });
+        }
+        let sequence = unordered ? 0n : authorityInteger(candidate.indexedState!.driverReceiptSequence ?? "0");
+        for (const receipt of batch.receipts ?? []) {
+          if (!["terminal", "file", "steering", "lineage"].includes(receipt.collection) || typeof receipt.key !== "string" || !receipt.key || Buffer.byteLength(receipt.key) > 4096 || receipt.value == null) throw new DurableAuthorityStoreError("invalid_authority", "invalid driver receipt");
+          const id = receiptId(receipt.collection, receipt.key);
+          const body = { schema: "paperclip.driver-receipt.v1", ...receipt };
+          const existing = await storage.authority.getSessionEffect(id);
+          if (existing) {
+            if (authorityJson(existing.body) !== authorityJson(body)) throw new DurableAuthorityStoreError("receipt_conflict", "driver identity changed its accepted outcome");
+          } else receipts.push({ epoch, kind: "effect", id, sequence: unordered ? "0" : String(++sequence), body });
+        }
+        if (unordered) delete candidate.indexedState!.driverReceiptSequence;
+        else candidate.indexedState!.driverReceiptSequence = String(sequence);
+        await storage.commit(candidate, receipts);
+        return structuredClone(next);
+      }),
+      acknowledge: (event) => this.#serialize(async () => {
+        check();
+        const previous = this.#store.state.indexedState?.normalizedDelivery;
+        if (!previous) throw new DurableAuthorityStoreError("invalid_authority", "normalized consumer has no pending delivery");
+        const candidate = structuredClone(this.#store.state);
+        candidate.indexedState!.normalizedDelivery = acknowledgeNormalizedEvent(previous, event);
+        await this.#store.commit(candidate);
+      }),
+    };
+  }
+
+  /** Cleanup pages current unresolved owners under one authority generation.
+   * Callers must revalidate ownership before taking any process action. */
+  async readProcessOwners(after = "", limit = 128, expectedGeneration?: string) {
+    if (!(this.#store instanceof IndexedCoreStore)) throw new DurableAuthorityStoreError("invalid_authority", "legacy authority has no process-owner index");
+    this.#store.assertWritable();
+    const snapshot = await this.#store.authority.load();
+    if (!snapshot) throw new DurableAuthorityStoreError("storage_unavailable", "process-owner authority is missing");
+    const generation = expectedGeneration ?? snapshot.generation;
+    const page = await this.#store.authority.readWorkPage("process-owner", after, limit, generation);
+    return { ...page, generation };
+  }
+
+  async readCommittedEvents(after: number, limit = 128, sourceEpoch?: string): Promise<DurableRecoveryCommittedEvent[]> {
+    this.#store.assertWritable();
+    if (!(this.#store instanceof IndexedCoreStore)) return this.#store.state.committedEvents.filter((event) => event.sourceSeq > after).slice(0, limit);
+    const page = await this.#store.authority.readEvents(this.#identity.runId, String(after), limit, 4 * 1024 * 1024, sourceEpoch);
+    return page.records.map((record) => record.body as unknown as DurableRecoveryCommittedEvent);
+  }
+
+  async readEventEpochTransition(sourceEpoch?: string): Promise<EventEpochTransition | null> {
+    if (!(this.#store instanceof IndexedCoreStore)) return null;
+    this.#store.assertWritable();
+    const record = await this.#store.authority.getRecord(this.#identity.runId, "effect", eventEpochCloseId({runId: this.#identity.runId, fromEpoch: sourceEpoch ?? null}));
+    if (!record) return null;
+    if (!isEventEpochTransition(record.body) || record.body.runId !== this.#identity.runId || record.body.fromEpoch !== (sourceEpoch ?? null)) throw new DurableAuthorityStoreError("invalid_authority", "event epoch close receipt binding mismatch");
+    return record.body;
+  }
+
+  async getCommand(commandId: string): Promise<DurableRecoveryCoreCommand | undefined> {
+    this.#store.assertWritable();
     return (
       this.#store.state.commands.find(
         (command) => command.commandId === commandId,
@@ -1526,6 +2141,9 @@ export class DurablePrpControlPlane {
       (this.#store.state.completedWarmTransition?.command.commandId ===
       commandId
         ? this.#store.state.completedWarmTransition.command
+        : undefined) ??
+      (this.#store instanceof IndexedCoreStore
+        ? (await this.#store.authority.getRecord(this.#identity.runId, "command", commandId))?.body as unknown as DurableRecoveryCoreCommand | undefined
         : undefined)
     );
   }
@@ -1563,6 +2181,7 @@ export class DurablePrpControlPlane {
   }
 
   async stop(): Promise<void> {
+    for (const done of this.#commandEpochWaiters) done(new DurableAuthorityStoreError("storage_unavailable", "controller stopped with command epoch transition pending"));
     for (const connection of this.#connections) {
       connection.close();
     }
@@ -1628,10 +2247,11 @@ export class DurablePrpControlPlane {
    * retaining its existing connection lease secret. The runner performs the
    * matching state transition only after acknowledging `run.attach`.
    */
-  rotateRunIdentity(
+  async rotateRunIdentity(
     identity: DurableRecoveryIdentity,
     runAttachTemplate?: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
+    return this.#serialize(async () => {
     if (this.#protocolIntegrityError !== null)
       throw this.#protocolIntegrityError;
     const completed = this.#store.state.completedWarmTransition;
@@ -1678,7 +2298,7 @@ export class DurablePrpControlPlane {
         }
         const candidate = structuredClone(this.#store.state);
         candidate.runAttachTemplate = structuredClone(runAttachTemplate);
-        this.#store.commit(candidate);
+        await this.#store.commit(candidate);
       }
       return;
     }
@@ -1710,15 +2330,16 @@ export class DurablePrpControlPlane {
         { ...lease, identity: structuredClone(identity) },
       ]),
     );
-    Object.assign(this.#store.state, initialCoreState(identity), {
+    const candidate = Object.assign(initialCoreState(identity), {
       leases,
       runAttachTemplate:
         runAttachTemplate === undefined
           ? null
           : structuredClone(runAttachTemplate),
     });
+    await this.#store.commit(candidate);
     this.#identity = structuredClone(identity);
-    this.#store.save();
+      });
   }
 
   /**
@@ -1728,7 +2349,8 @@ export class DurablePrpControlPlane {
    * source for a later run.attach. Repeating the same write is idempotent;
    * changing an established seed fails closed.
    */
-  persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
+  async persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): Promise<void> {
+    return this.#serialize(async () => {
     if (!isRecord(runAttachTemplate.provider)) {
       throw new Error("Durable PRP run attachment template is invalid.");
     }
@@ -1741,11 +2363,14 @@ export class DurablePrpControlPlane {
       throw new Error("Durable PRP run attachment template conflicts.");
     }
     if (existing !== undefined && existing !== null) return;
-    this.#store.state.runAttachTemplate = structuredClone(runAttachTemplate);
-    this.#store.save();
+    const candidate = structuredClone(this.#store.state);
+    candidate.runAttachTemplate = structuredClone(runAttachTemplate);
+    await this.#store.commit(candidate);
+      });
   }
 
-  issueBootstrapTicket(ttlMs = 5_000): string {
+  async issueBootstrapTicket(ttlMs = 5_000): Promise<string> {
+    return this.#serialize(async () => {
     this.#store.assertWritable();
     if (this.#store.state.warmTransition) {
       throw new Error(
@@ -1755,11 +2380,12 @@ export class DurablePrpControlPlane {
     if (!Number.isInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 60_000) {
       throw new Error("Durable PRP bootstrap TTL is invalid.");
     }
-    this.#pruneCredentials();
+    const candidate = structuredClone(this.#store.state);
+    this.#pruneCredentials(candidate);
     const ticket = `bootstrap_${randomUUID()}`;
     const material = credentialMaterial(ticket);
     const expiresAtUnixMs = Date.now() + ttlMs;
-    this.#store.state.tickets[material.credentialId] = {
+    candidate.tickets[material.credentialId] = {
       recordId: `bootstrap_ticket_${randomUUID()}`,
       credentialId: material.credentialId,
       authKeyDigest: `sha256:${material.authKey.toString("hex")}`,
@@ -1770,19 +2396,21 @@ export class DurablePrpControlPlane {
       expiresAtUnixMs,
       usedAt: null,
     };
-    this.#store.state.freshBootstraps += 1;
-    this.#store.save();
+    candidate.freshBootstraps = incrementDiagnosticCount(candidate.freshBootstraps);
+    await this.#store.commit(candidate);
     return ticket;
+      });
   }
 
   /** Caller-owned recovery admission is required; a receipt is not a credential. */
-  issueWarmTransitionBootstrapTicket(
+  async issueWarmTransitionBootstrapTicket(
     input: {
       transitionId: string;
       runnerState: Record<string, unknown>;
     },
     ttlMs = 5_000,
-  ): string {
+  ): Promise<string> {
+    return this.#serialize(async () => {
     this.#store.assertWritable();
     const pending = input.runnerState.warmTransition;
     const proof = warmTransitionRecoveryProof({
@@ -1827,17 +2455,23 @@ export class DurablePrpControlPlane {
       usedAt: null,
       warmTransitionId: transition.receipt.transitionId,
     };
-    candidate.freshBootstraps += 1;
-    this.#store.commit(candidate);
+    candidate.freshBootstraps = incrementDiagnosticCount(candidate.freshBootstraps);
+    await this.#store.commit(candidate);
     return ticket;
+      });
   }
 
-  queueCommand(
+  async queueCommand(
     type: string,
     payload: Record<string, unknown> = {},
     commandId?: string,
     deliverImmediately = false,
-  ): DurableRecoveryCoreCommand {
+  ): Promise<DurableRecoveryCoreCommand> {
+    // Internal adapters can use optional object properties. Persist the exact
+    // JSON sent on the wire, just as the legacy JSON writer did.
+    payload = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
+    for (;;) {
+    const queued = await this.#serialize(async () => {
     this.#store.assertWritable();
     const transition = this.#store.state.warmTransition;
     if (transition && transition.phase !== "activated") {
@@ -1873,9 +2507,7 @@ export class DurablePrpControlPlane {
       throw new Error("Durable PRP command is invalid.");
     }
     if (commandId !== undefined) {
-      const existing = this.#store.state.commands.find(
-        (candidate) => candidate.commandId === commandId,
-      );
+      const existing = await this.getCommand(commandId);
       if (existing !== undefined) {
         if (
           existing.type !== type ||
@@ -1888,20 +2520,47 @@ export class DurablePrpControlPlane {
         if (deliverImmediately && existing.status === "pending") {
           for (const connection of this.#connections) {
             if (connection.secureChannel !== null)
-              this.#sendNextCommand(connection);
+              await this.#sendNextCommand(connection);
           }
         }
         return existing;
       }
     }
-    const controllerSeq = this.#store.state.commands.length + 1;
+    const current = this.#store.state.indexedState;
+    if (current && (current.commandEpochTransition || current.nextControllerSeq > this.#commandEpochLimit)) {
+      if (!(this.#store instanceof IndexedCoreStore) || !this.#store.authority.commandEpochs || !this.#store.authority.unorderedEffectReceipts)
+        throw new DurableAuthorityStoreError("storage_pressure", "command epoch rotation requires a capable indexed authority store");
+      if (!current.commandEpochTransition) {
+        if (!current.commandEpochsNegotiated && ![...this.#connections].some(c => c.secureChannel && c.commandEpochs && !c.replayOnly))
+          throw new DurableAuthorityStoreError("storage_pressure", "command epoch rotation requires an authenticated capable runner");
+        let nextEpoch: string | undefined;
+        for (let attempt = 0; attempt < 32; attempt++) {
+          const proposed = randomUUID();
+          if (proposed !== current.controllerEpoch && !await this.#store.authority.getRecord(this.#identity.runId, "effect",
+            commandEpochCloseId({ runId: this.#identity.runId, fromEpoch: proposed }))) { nextEpoch = proposed; break; }
+        }
+        if (!nextEpoch) throw new DurableAuthorityStoreError("storage_unavailable", "could not allocate a fresh command namespace");
+        const candidate = structuredClone(this.#store.state);
+        candidate.indexedState!.commandEpochTransition = {
+          schema: "paperclip.prp.command-epoch.v1", runId: this.#identity.runId,
+          transitionId: randomUUID(), fromEpoch: current.controllerEpoch ?? null,
+          nextEpoch, finalOrdinal: current.nextControllerSeq - 1,
+        };
+        await this.#store.commit(candidate);
+      }
+      for (const connection of this.#connections) if (connection.secureChannel) await this.#sendNextCommand(connection);
+      return null;
+    }
+    const controllerSeq = current?.nextControllerSeq ?? this.#store.state.commands.length + 1;
+    if (!Number.isSafeInteger(controllerSeq + 1)) throw new Error("PRP sequence requires an exact-integer protocol epoch transition.");
     const command: DurableRecoveryCoreCommand = {
       schema: type.startsWith("session.goal.")
         ? "paperclip.prp.command.v2"
         : "paperclip.prp.command.v1",
       commandId:
-        commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
+        commandId ?? (current?.controllerEpoch ? `command_prp_${randomUUID()}` : `command_prp_${controllerSeq.toString().padStart(8, "0")}`),
       controllerSeq,
+      ...(current?.controllerEpoch ? { controllerEpoch: current.controllerEpoch } : {}),
       type,
       issuedAt: new Date().toISOString(),
       payload,
@@ -1909,30 +2568,77 @@ export class DurablePrpControlPlane {
       result: null,
     };
     if (
-      this.#store.state.commands.length >= maxCommands ||
+      (this.indexedPersistence
+        ? this.#store.state.commands.filter((entry) => entry.status === "pending" || entry.status === "indeterminate").length
+        : this.#store.state.commands.length) >= maxCommands ||
       Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes
     ) {
       throw new Error("Durable PRP command journal bound exceeded.");
     }
-    this.#store.state.commands.push(command);
-    this.#store.save();
+    const candidate = structuredClone(this.#store.state);
+    candidate.commands.push(command);
+    if (candidate.indexedState) {
+      candidate.indexedState.nextControllerSeq = controllerSeq + 1;
+      if (["session.open", "turn.start", "run.attach"].includes(type)) candidate.indexedState.providerEverStarted = true;
+    }
+    await this.#store.commit(candidate);
     if (deliverImmediately) {
       for (const connection of this.#connections) {
         if (connection.secureChannel !== null) {
-          this.#sendNextCommand(connection);
+          await this.#sendNextCommand(connection);
         }
       }
     }
     return command;
+      });
+      if (queued) return queued;
+      await this.#waitForCommandEpoch();
+    }
   }
 
-  commandOutcome(commandId: string): {
+  #waitForCommandEpoch(): Promise<void> {
+    if (!this.#store.state.indexedState?.commandEpochTransition) return Promise.resolve();
+    if (this.#commandEpochWaiters.size >= 64) return Promise.reject(new DurableAuthorityStoreError("storage_pressure", "command epoch admission queue is full"));
+    return new Promise((resolve, reject) => {
+      const done = (error?: Error) => { clearTimeout(timer); this.#commandEpochWaiters.delete(done); if (error) reject(error); else resolve(); };
+      const timer = setTimeout(() => {
+        this.#commandEpochWaiters.delete(done);
+        reject(new DurableAuthorityStoreError("storage_pressure", "command epoch transition remains pending; retry admission"));
+      }, 30_000);
+      timer.unref();
+      this.#commandEpochWaiters.add(done);
+    });
+  }
+
+  async #commandEpochCommitted(connection: AuthorityConnection, envelope: Record<string, unknown>): Promise<void> {
+    if (!connection.commandEpochs || !this.#liveConnectionIsCurrent(connection) || !(this.#store instanceof IndexedCoreStore)) { connection.close(); return; }
+    const pending = this.#store.state.indexedState?.commandEpochTransition;
+    const receipt = envelope.payload;
+    if (!isCommandEpochTransition(receipt) || receipt.runId !== this.#identity.runId) { connection.close(); return; }
+    if (!pending) {
+      const committed = await this.#store.authority.getRecord(this.#identity.runId, "effect", `command-epoch-${receipt.transitionId}`);
+      if (!committed || authorityJson(committed.body) !== authorityJson(receipt)) connection.close();
+      return;
+    }
+    if (authorityJson(pending) !== authorityJson(receipt) || this.#store.state.commands.some(c => c.status === "pending")) { connection.close(); return; }
+    const candidate = structuredClone(this.#store.state);
+    candidate.indexedState!.controllerEpoch = pending.nextEpoch;
+    candidate.indexedState!.lastCommandEpochTransition = structuredClone(pending);
+    candidate.indexedState!.nextControllerSeq = 1;
+    delete candidate.indexedState!.commandEpochTransition;
+    const body = receipt as unknown as Record<string, unknown>;
+    await this.#store.commit(candidate, [
+      { epoch: this.#identity.runId, kind: "effect", id: `command-epoch-${pending.transitionId}`, sequence: "0", body },
+      { epoch: this.#identity.runId, kind: "effect", id: commandEpochCloseId(pending), sequence: "0", body },
+    ]);
+    for (const done of this.#commandEpochWaiters) done();
+  }
+
+  async commandOutcome(commandId: string): Promise<{
     status: DurableRecoveryCoreCommand["status"];
     result: Record<string, unknown> | null;
-  } | null {
-    const command = this.#store.state.commands.find(
-      (candidate) => candidate.commandId === commandId,
-    );
+  } | null> {
+    const command = await this.getCommand(commandId);
     if (!command) return null;
     return {
       status: command.status,
@@ -1995,12 +2701,35 @@ export class DurablePrpControlPlane {
   attachWireConnection(wire: PrpWireConnection): PrpWireAttachment {
     let connection!: AuthorityConnection;
     let processing = Promise.resolve();
+    let closed = false, paused = false, frames = 0, bytes = 0;
     connection = new AuthorityConnection({
       wire,
+      secureFrameLimit: this.#secureChannelFrameLimit,
       onJson: (value) => {
+        if (closed) return;
+        let size: number;
+        try { size = Buffer.byteLength(JSON.stringify(value)); }
+        catch { wire.close(1007); return; }
+        // Bound admission before adding a promise closure. The mutation queue
+        // alone cannot bound frames waiting to enter that queue. These limits
+        // concern currently buffered work; settled history returns all credit.
+        if (size > 4 * 1024 * 1024 || frames >= 64 || bytes + size > 16 * 1024 * 1024 ||
+          this.#queuedWireFrames >= 256 || this.#queuedWireBytes + size > 64 * 1024 * 1024) {
+          closed = true; wire.close(1013); return;
+        }
+        frames++; bytes += size; this.#queuedWireFrames++; this.#queuedWireBytes += size;
+        if (!paused && wire.pauseRead && wire.resumeRead && (frames >= 16 || bytes >= 4 * 1024 * 1024)) {
+          paused = true; wire.pauseRead();
+        }
         processing = processing
           .then(() => this.#handleJson(connection, value))
-          .catch(() => connection.close());
+          .catch(() => connection.close())
+          .finally(() => {
+            frames--; bytes -= size; this.#queuedWireFrames--; this.#queuedWireBytes -= size;
+            if (!closed && paused && frames <= 8 && bytes <= 2 * 1024 * 1024) {
+              paused = false; wire.resumeRead!();
+            }
+          });
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
         const release = () => {
@@ -2009,7 +2738,7 @@ export class DurablePrpControlPlane {
         };
         void tail.then(release, release);
       },
-      onClose: () => this.#connections.delete(connection),
+      onClose: () => { closed = true; this.#connections.delete(connection); },
     });
     this.#connections.add(connection);
     return {
@@ -2022,6 +2751,10 @@ export class DurablePrpControlPlane {
     wire: unknown,
   ): Promise<void> {
     this.#store.assertWritable();
+    if (connection.secureChannel && connection.secureChannel.receiveCounter >= connection.secureFrameLimit) {
+      connection.close(1012);
+      return;
+    }
     let envelope: Record<string, unknown>;
     try {
       envelope =
@@ -2029,8 +2762,11 @@ export class DurablePrpControlPlane {
           ? (wire as Record<string, unknown>)
           : decryptSecureJson(connection.secureChannel, wire);
     } catch {
-      this.#store.state.malformedFrames += 1;
-      this.#store.save();
+      await this.#serialize(async () => {
+        const candidate = structuredClone(this.#store.state);
+        candidate.malformedFrames = incrementDiagnosticCount(candidate.malformedFrames);
+        await this.#store.commit(candidate);
+      });
       connection.close();
       return;
     }
@@ -2074,7 +2810,7 @@ export class DurablePrpControlPlane {
       return;
     }
     if (kind === "lease_renew") {
-      this.#renewLease(connection, envelope);
+      await this.#serialize(() => this.#renewLease(connection, envelope));
       return;
     }
     if (kind === "event") {
@@ -2087,16 +2823,26 @@ export class DurablePrpControlPlane {
       await this.#event(connection, envelope);
       return;
     }
+    if (kind === "event_epoch_rotate") {
+      await this.#serialize(() => this.#eventEpochRotate(connection, envelope));
+      return;
+    }
+    if (kind === "command_epoch_committed") {
+      await this.#serialize(() => this.#commandEpochCommitted(connection, envelope));
+      return;
+    }
     if (kind === "command_result") {
       if (
         this.#store.state.warmTransition &&
         this.#store.state.warmTransition.phase !== "activated"
       )
         connection.replayOnly = true;
-      this.#commandResult(connection, envelope);
+      await this.#serialize(() => this.#commandResult(connection, envelope));
       return;
     }
     if (kind === "warm_transition_activated") {
+      return this.#serialize(async () => {
+      if (!connection.lease || !this.#liveConnectionIsCurrent(connection)) return;
       const transition = this.#store.state.warmTransition;
       const receipt = connection.activationReceipt;
       const completed = this.#store.state.completedWarmTransition;
@@ -2131,7 +2877,7 @@ export class DurablePrpControlPlane {
           command: structuredClone(transition.command),
         };
         delete candidate.warmTransition;
-        this.#store.commit(candidate);
+        await this.#store.commit(candidate);
         connection.lease = this.#store.state.leases[transition.credentialId]!;
       }
       connection.sendJson(
@@ -2144,18 +2890,28 @@ export class DurablePrpControlPlane {
       );
       connection.activationReceipt = null;
       connection.replayOnly = false;
-      this.#sendNextCommand(connection);
-      return;
+      await this.#sendNextCommand(connection);
+      });
     }
     if (kind !== "pong") {
       connection.close();
     }
   }
 
-  #renewLease(
+  #liveConnectionIsCurrent(connection: AuthorityConnection): boolean {
+    if (!connection.secureChannel || !connection.lease || connection.lease.revokedAt !== null ||
+      connection.lease.expiresAtUnixMs <= Date.now() || canonicalJson(this.#store.state.leases[connection.lease.credentialId]) !== canonicalJson(connection.lease)) {
+      connection.close();
+      return false;
+    }
+    return true;
+  }
+
+  async #renewLease(
     connection: AuthorityConnection,
     envelope: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
+    if (!this.#liveConnectionIsCurrent(connection)) return;
     const lease = connection.lease!;
     const payload = envelope.payload as Record<string, unknown> | undefined;
     const expectedExpiry = payload?.connectionLeaseExpiresAtUnixMs;
@@ -2191,7 +2947,7 @@ export class DurablePrpControlPlane {
       );
       renewed.expiresAt = new Date(renewed.expiresAtUnixMs).toISOString();
       candidate.lastLeaseExpiresAt = renewed.expiresAt;
-      this.#store.commit(candidate);
+      await this.#store.commit(candidate);
       connection.lease = this.#store.state.leases[lease.credentialId]!;
     }
     connection.sendJson(
@@ -2208,10 +2964,56 @@ export class DurablePrpControlPlane {
     );
   }
 
+  async #eventEpochRotate(connection: AuthorityConnection, envelope: Record<string, unknown>): Promise<void> {
+    if (!connection.eventEpochs || !this.#liveConnectionIsCurrent(connection) || !(this.#store instanceof IndexedCoreStore)) { connection.close(); return; }
+    const transition = envelope.payload;
+    if (!isEventEpochTransition(transition) || transition.runId !== this.#identity.runId) { connection.close(); return; }
+    const existing = await this.#store.authority.getRecord(this.#identity.runId, "effect", `event-epoch-${transition.transitionId}`);
+    if (existing) {
+      if (authorityJson(existing.body) !== authorityJson(transition)) { connection.close(); return; }
+    } else {
+      const current = this.#store.state;
+      if (transition.fromEpoch !== (current.indexedState?.sourceEpoch ?? null) || transition.finalOrdinal !== current.ackedSourceSeq || current.warmTransition ||
+        await this.readEventEpochTransition(transition.nextEpoch)) { connection.close(); return; }
+      const candidate = structuredClone(current);
+      candidate.indexedState!.sourceEpoch = transition.nextEpoch;
+      candidate.indexedState!.lastEventEpochTransition = transition;
+      candidate.ackedSourceSeq = 0;
+      await this.#store.commit(candidate, [
+        {epoch: this.#identity.runId, kind: "effect", id: `event-epoch-${transition.transitionId}`, sequence: "0", body: transition as unknown as Record<string, unknown>},
+        {epoch: this.#identity.runId, kind: "effect", id: eventEpochCloseId(transition), sequence: "0", body: transition as unknown as Record<string, unknown>},
+      ]);
+    }
+    connection.sendJson(this.#controlEnvelope(connection, `event_epoch_${transition.transitionId}`, "event_epoch_committed", transition as unknown as Record<string, unknown>));
+  }
+
   #authorizeHello(
     payload: Record<string, unknown>,
   ): PendingAuthorization | null {
-    this.#pruneCredentials();
+    if (this.indexedPersistence && (payload.durability !== INDEXED_DURABILITY_CAPABILITY || payload.outputBodies !== "history.output_bodies.v1")) return null;
+    const current = this.#store.state.indexedState;
+    if (payload.runId === this.#store.state.identity.runId && current) {
+      if (current.sourceEpoch && payload.eventEpochs !== EVENT_EPOCH_CAPABILITY) return null;
+      if (payload.eventEpochs === EVENT_EPOCH_CAPABILITY && this.#store instanceof IndexedCoreStore && this.#store.authority.eventEpochs) {
+        const resume = payload.eventResume;
+        if (!isEventResume(resume)) return null;
+        if (resume.sourceEpoch === (current.sourceEpoch ?? null)) {
+          if (resume.ackedSourceSeq > this.#store.state.ackedSourceSeq || resume.nextSourceEventSeq <= this.#store.state.ackedSourceSeq) return null;
+        } else if (!resume.transition || authorityJson(resume.transition) !== authorityJson(current.lastEventEpochTransition ?? null) || this.#store.state.ackedSourceSeq !== 0) return null;
+      }
+
+      if ((current.commandEpochsNegotiated || current.controllerEpoch || current.commandEpochTransition) && payload.commandEpochs !== COMMAND_EPOCH_CAPABILITY) return null;
+      if (payload.commandEpochs === COMMAND_EPOCH_CAPABILITY && this.#store instanceof IndexedCoreStore && this.#store.authority.commandEpochs) {
+        if (!isRecord(payload.resume)) return null;
+        const epoch = payload.resume.controllerEpoch ?? null, ordinal = payload.resume.lastControllerCommandSeq;
+        if (!Number.isSafeInteger(ordinal) || Number(ordinal) < 0) return null;
+        const transition = current.commandEpochTransition;
+        if (transition && epoch === transition.nextEpoch) {
+          if (ordinal !== 0) return null; // successor commands are not admitted before its receipt
+        } else if (epoch !== (current.controllerEpoch ?? null) || Number(ordinal) > current.nextControllerSeq - 1 ||
+          Number(ordinal) < current.nextControllerSeq - 1 - this.#store.state.commands.filter(c => c.status === "pending").length) return null;
+      }
+    }
     const credentialId = payload.credentialId;
     if (typeof credentialId !== "string") return null;
     const ticket = this.#store.state.tickets[credentialId];
@@ -2344,23 +3146,23 @@ export class DurablePrpControlPlane {
     return authorization;
   }
 
-  #pruneCredentials(): void {
+  #pruneCredentials(candidate: StoredCoreState): void {
     const now = Date.now();
     for (const [credentialId, ticket] of Object.entries(
-      this.#store.state.tickets,
+      candidate.tickets,
     )) {
       if (ticket.usedAt !== null || ticket.expiresAtUnixMs <= now) {
-        delete this.#store.state.tickets[credentialId];
+        delete candidate.tickets[credentialId];
       }
     }
     for (const [credentialId, lease] of Object.entries(
-      this.#store.state.leases,
+      candidate.leases,
     )) {
       if (
-        credentialId !== this.#store.state.warmTransition?.credentialId &&
+        credentialId !== candidate.warmTransition?.credentialId &&
         (lease.revokedAt !== null || lease.expiresAtUnixMs <= now)
       ) {
-        delete this.#store.state.leases[credentialId];
+        delete candidate.leases[credentialId];
       }
     }
   }
@@ -2432,6 +3234,15 @@ export class DurablePrpControlPlane {
         ? authorization.protocolVersion
         : Math.min(protocolVersion, payload.protocolMax as number);
     const challengePayload: Record<string, unknown> = {
+      ...(this.indexedPersistence ? { durability: INDEXED_DURABILITY_CAPABILITY, outputBodies: "history.output_bodies.v1" } : {}),
+      ...(this.#store instanceof IndexedCoreStore && this.#store.authority.commandEpochs && payload.commandEpochs === COMMAND_EPOCH_CAPABILITY ? {
+        commandEpochs: COMMAND_EPOCH_CAPABILITY,
+        commandResume: { controllerEpoch: (payload.resume as { controllerEpoch?: string })?.controllerEpoch ?? null,
+          lastControllerCommandSeq: Number((payload.resume as { lastControllerCommandSeq?: number })?.lastControllerCommandSeq) },
+      } : {}),
+      ...(selectedVersion >= 2 && this.#store instanceof IndexedCoreStore && this.#store.authority.eventEpochs && payload.eventEpochs === EVENT_EPOCH_CAPABILITY && isEventResume(payload.eventResume) ? {
+        eventEpochs: EVENT_EPOCH_CAPABILITY, eventResume: structuredClone(payload.eventResume), eventEpochLimit: this.#eventEpochLimit,
+      } : {}),
       credentialId: authorization.credentialId,
       credentialKind: authorization.kind,
       clientNonce: payload.clientNonce,
@@ -2465,6 +3276,15 @@ export class DurablePrpControlPlane {
       [Buffer.from(canonicalChallenge)],
     ).toString("hex");
     connection.pendingChallenge = {
+      ...(this.indexedPersistence ? { durability: INDEXED_DURABILITY_CAPABILITY, outputBodies: "history.output_bodies.v1" } : {}),
+      ...(this.#store instanceof IndexedCoreStore && this.#store.authority.commandEpochs && payload.commandEpochs === COMMAND_EPOCH_CAPABILITY ? {
+        commandEpochs: COMMAND_EPOCH_CAPABILITY,
+        commandResume: { controllerEpoch: (payload.resume as { controllerEpoch?: string })?.controllerEpoch ?? null,
+          lastControllerCommandSeq: Number((payload.resume as { lastControllerCommandSeq?: number })?.lastControllerCommandSeq) },
+      } : {}),
+      ...(selectedVersion >= 2 && this.#store instanceof IndexedCoreStore && this.#store.authority.eventEpochs && payload.eventEpochs === EVENT_EPOCH_CAPABILITY && isEventResume(payload.eventResume) ? {
+        eventEpochs: EVENT_EPOCH_CAPABILITY, eventResume: structuredClone(payload.eventResume), eventEpochLimit: this.#eventEpochLimit,
+      } : {}),
       authorization,
       deadlineUnixMs: Math.min(
         authorization.expiresAtUnixMs,
@@ -2549,6 +3369,12 @@ export class DurablePrpControlPlane {
         return;
       }
     }
+    return this.#serialize(async () => {
+    authorization = this.#reauthorizePendingChallenge(pending, Date.now());
+    if (!authorization || !this.#connections.has(connection) || connection.pendingChallenge !== pending) {
+      connection.close();
+      return;
+    }
     const clientProof = expectedClientProof.toString("hex");
     // A held proof may span preparation or activation on another connection.
     // Reapply today's transition lane policy, not merely the old credential
@@ -2556,6 +3382,10 @@ export class DurablePrpControlPlane {
     if (
       this.#authorizeHello({
         credentialId: pending.authorization.credentialId,
+        ...(pending.durability ? { durability: pending.durability } : {}),
+        ...(pending.outputBodies ? { outputBodies: pending.outputBodies } : {}),
+        ...(pending.commandEpochs ? { commandEpochs: pending.commandEpochs, resume: pending.commandResume } : {}),
+        ...(pending.eventEpochs ? { eventEpochs: pending.eventEpochs, eventResume: pending.eventResume } : {}),
         ...pending.requestedIdentity,
         runnerVersion: this.#expectedRunnerVersion,
         runnerDigest: this.#expectedRunnerDigest,
@@ -2615,7 +3445,7 @@ export class DurablePrpControlPlane {
           new Date().toISOString();
         candidate.warmTransition!.credentialId = material.credentialId;
       }
-      this.#store.commit(candidate);
+      await this.#store.commit(candidate);
     } else {
       lease = authorization.lease;
     }
@@ -2643,7 +3473,7 @@ export class DurablePrpControlPlane {
         };
         candidate.leases = { [lease.credentialId]: structuredClone(lease) };
         candidate.runAttachTemplate = this.#store.state.runAttachTemplate;
-        this.#store.commit(candidate);
+        await this.#store.commit(candidate);
         this.#identity = structuredClone(candidate.identity);
         lease = this.#store.state.leases[lease.credentialId]!;
       }
@@ -2652,6 +3482,10 @@ export class DurablePrpControlPlane {
     connection.lease = lease;
     connection.identity = structuredClone(requestedIdentity);
     connection.warmTransitionVersion = pending.warmTransitionVersion ?? null;
+    connection.commandEpochs = pending.commandEpochs === COMMAND_EPOCH_CAPABILITY;
+    connection.eventEpochs = pending.eventEpochs === EVENT_EPOCH_CAPABILITY;
+    connection.eventResume = pending.eventResume ?? null;
+    connection.eventEpochLimit = pending.eventEpochLimit ?? EVENT_EPOCH_LIMIT;
     connection.activationReceipt =
       this.#store.state.warmTransition?.phase === "activated"
         ? structuredClone(this.#store.state.warmTransition.receipt)
@@ -2664,7 +3498,7 @@ export class DurablePrpControlPlane {
       this.#store.state.warmTransition !== undefined &&
       this.#store.state.warmTransition.phase !== "activated";
     if (connection.activationReceipt) connection.replayOnly = true;
-    connection.connectionId = `connection_${this.#store.state.connectionCount + 1}`;
+    connection.connectionId = `connection_${randomUUID()}`;
     connection.secureChannel = createSecureChannel(
       authorization.authKey,
       pending.canonicalChallenge,
@@ -2675,19 +3509,22 @@ export class DurablePrpControlPlane {
       if (active !== connection && active.secureChannel !== null)
         active.close();
     }
-    this.#welcome(connection, leaseToken);
+    await this.#welcome(connection, leaseToken);
+    });
   }
 
-  #welcome(connection: AuthorityConnection, leaseToken: string | null): void {
+  async #welcome(connection: AuthorityConnection, leaseToken: string | null): Promise<void> {
     const lease = connection.lease;
     if (lease === null || connection.connectionId === null) {
       connection.close();
       return;
     }
 
-    this.#store.state.connectionCount += 1;
-    this.#store.state.lastLeaseId = lease.leaseId;
-    this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
+    const candidate = structuredClone(this.#store.state);
+    if (connection.commandEpochs && candidate.indexedState) candidate.indexedState.commandEpochsNegotiated = true;
+    candidate.connectionCount = incrementDiagnosticCount(candidate.connectionCount);
+    candidate.lastLeaseId = lease.leaseId;
+    candidate.lastLeaseExpiresAt = lease.expiresAt;
 
     const pending = connection.replayOnly ? [] : this.#nextPendingCommand();
     const [pendingCommand] = pending;
@@ -2696,14 +3533,14 @@ export class DurablePrpControlPlane {
         ? pendingCommand.commandId
         : null;
     for (const command of pending) {
-      this.#store.state.commandDeliveryCounts[command.commandId] =
-        (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
+      candidate.commandDeliveryCounts[command.commandId] =
+        incrementDiagnosticCount(candidate.commandDeliveryCounts[command.commandId] ?? 0);
     }
-    this.#store.save();
+    await this.#store.commit(candidate);
     connection.sendJson({
       protocol,
       version: lease.protocolVersion,
-      envelopeId: `welcome_${this.#store.state.connectionCount}`,
+      envelopeId: `welcome_${randomUUID()}`,
       kind: "welcome",
       runnerInstanceId: this.#identity.runnerInstanceId,
       environmentLeaseId: this.#identity.environmentLeaseId,
@@ -2718,6 +3555,8 @@ export class DurablePrpControlPlane {
         selectedVersion: lease.protocolVersion,
         heartbeatIntervalMs: 250,
         connectionLeaseRenewalVersion: 1,
+        ...(connection.commandEpochs ? { commandEpochs: COMMAND_EPOCH_CAPABILITY } : {}),
+        ...(connection.eventEpochs ? { eventEpochs: EVENT_EPOCH_CAPABILITY, eventEpochLimit: connection.eventEpochLimit, sourceEpoch: connection.eventResume!.sourceEpoch } : {}),
         connectionLeaseId: lease.leaseId,
         ...(leaseToken === null ? {} : { connectionLeaseToken: leaseToken }),
         connectionLeaseExpiresAt: lease.expiresAt,
@@ -2732,7 +3571,7 @@ export class DurablePrpControlPlane {
         },
         maxFrameBytes,
         maxBatchEvents: 100,
-        ackedSourceSeq: this.#store.state.ackedSourceSeq,
+        ackedSourceSeq: connection.eventResume && connection.eventResume.sourceEpoch !== (this.#store.state.indexedState?.sourceEpoch ?? null) ? this.#store.state.indexedState!.lastEventEpochTransition!.finalOrdinal : this.#store.state.ackedSourceSeq,
         pendingCommands: pending.map(this.#wireCommand),
         ...(connection.warmTransitionVersion === 1
           ? { warmTransitionVersion: 1 }
@@ -2750,6 +3589,7 @@ export class DurablePrpControlPlane {
             : {}),
       },
     });
+    if (this.#store.state.indexedState?.commandEpochTransition && pending.length === 0) await this.#sendNextCommand(connection);
   }
 
   #wireCommand(
@@ -2796,7 +3636,7 @@ export class DurablePrpControlPlane {
     };
   }
 
-  #sendNextCommand(connection: AuthorityConnection): void {
+  async #sendNextCommand(connection: AuthorityConnection): Promise<void> {
     if (
       connection.terminalLifecycleCommandId !== null ||
       connection.replayOnly ||
@@ -2804,27 +3644,34 @@ export class DurablePrpControlPlane {
     )
       return;
     const [command] = this.#nextPendingCommand();
-    if (command === undefined) return;
+    if (command === undefined) {
+      const transition = this.#store.state.indexedState?.commandEpochTransition;
+      if (transition && connection.commandEpochs) connection.sendJson(this.#controlEnvelope(connection,
+        `command_epoch_${transition.transitionId}`, "command_epoch_rotate", transition as unknown as Record<string, unknown>));
+      return;
+    }
     if (this.#isTerminalLifecycleCommand(command)) {
       connection.terminalLifecycleCommandId = command.commandId;
     }
-    this.#store.state.commandDeliveryCounts[command.commandId] =
-      (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
-    this.#store.save();
+    const candidate = structuredClone(this.#store.state);
+    candidate.commandDeliveryCounts[command.commandId] =
+      incrementDiagnosticCount(candidate.commandDeliveryCounts[command.commandId] ?? 0);
+    await this.#store.commit(candidate);
     connection.sendJson(
       this.#controlEnvelope(
         connection,
-        `command_${command.commandId}_${this.#store.state.commandDeliveryCounts[command.commandId]}`,
+        `command_${randomUUID()}`,
         "command",
         this.#wireCommand(command),
       ),
     );
   }
 
-  #commandResult(
+  async #commandResult(
     connection: AuthorityConnection,
     envelope: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
+    if (!this.#liveConnectionIsCurrent(connection)) return;
     const result = envelope.payload as Record<string, unknown> | undefined;
     const commandId = result?.commandId;
     if (result === undefined || typeof commandId !== "string") {
@@ -2857,14 +3704,12 @@ export class DurablePrpControlPlane {
           credentialId: transition.credentialId,
           command: structuredClone(completed),
         };
-        this.#store.commit(candidate);
+        await this.#store.commit(candidate);
       }
       this.#ackWarmTransition(connection, transition.receipt);
       return;
     }
-    const command = this.#store.state.commands.find(
-      (candidate) => candidate.commandId === commandId,
-    );
+    const command = await this.getCommand(commandId);
     if (command === undefined) {
       connection.close();
       return;
@@ -2892,11 +3737,12 @@ export class DurablePrpControlPlane {
         connection.close();
         return;
       }
-      this.#store.state.duplicateCommandResults += 1;
-      this.#store.save();
+      const candidate = structuredClone(this.#store.state);
+      candidate.duplicateCommandResults = incrementDiagnosticCount(candidate.duplicateCommandResults);
+      await this.#store.commit(candidate);
       this.#ackTerminalCommandResult(connection, command);
       if (!this.#isTerminalLifecycleCommand(command)) {
-        this.#sendNextCommand(connection);
+        await this.#sendNextCommand(connection);
       }
       return;
     }
@@ -2917,6 +3763,7 @@ export class DurablePrpControlPlane {
         connection.lease,
         this.#expectedRunnerVersion,
         this.#expectedRunnerDigest,
+        this.#store.state.indexedState?.sourceEpoch,
       );
       const candidate = structuredClone(this.#store.state);
       const completed = candidate.commands.find(
@@ -2931,17 +3778,19 @@ export class DurablePrpControlPlane {
         credentialId: connection.lease.credentialId,
         command: structuredClone(completed),
       };
-      this.#store.commit(candidate);
+      await this.#store.commit(candidate);
       connection.replayOnly = true;
       this.#ackWarmTransition(connection, receipt);
       return;
     }
-    command.status = status;
-    command.result = structuredClone(result);
-    this.#store.save();
-    this.#ackTerminalCommandResult(connection, command);
+    const candidate = structuredClone(this.#store.state);
+    const settled = candidate.commands.find((entry) => entry.commandId === commandId)!;
+    settled.status = status;
+    settled.result = structuredClone(result);
+    await this.#store.commit(candidate);
+    this.#ackTerminalCommandResult(connection, settled);
     if (!this.#isTerminalLifecycleCommand(command)) {
-      this.#sendNextCommand(connection);
+      await this.#sendNextCommand(connection);
     }
   }
 
@@ -2967,7 +3816,8 @@ export class DurablePrpControlPlane {
 
   #isTerminalLifecycleCommand(command: DurableRecoveryCoreCommand): boolean {
     return (
-      command.type === "runner.suspend" || command.type === "runner.shutdown"
+      (command.type === "runner.suspend" || command.type === "runner.shutdown") &&
+      command.controllerEpoch === this.#store.state.indexedState?.controllerEpoch
     );
   }
 
@@ -3036,10 +3886,12 @@ export class DurablePrpControlPlane {
     }
     const event = validated.event;
     const sourceSeq = event?.sourceSeq;
+    const sourceEpoch = event?.sourceEpoch;
     const sourceEventId = event?.sourceEventId;
     const eventType = event?.eventType;
     const priority = event?.priority;
     if (
+      (sourceEpoch !== undefined && !connection.eventEpochs) ||
       typeof sourceSeq !== "number" ||
       typeof sourceEventId !== "string" ||
       typeof eventType !== "string" ||
@@ -3077,13 +3929,15 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
-    const existing = this.#store.state.committedEvents.find(
+    let existing = this.#store.state.committedEvents.find(
       (candidate) => candidate.sourceEventId === sourceEventId,
-    );
+    ) ?? (this.#store instanceof IndexedCoreStore
+      ? (await this.#store.authority.getRecord(this.#identity.runId, "event", sourceEventId))?.body as unknown as DurableRecoveryCommittedEvent | undefined
+      : undefined);
     if (
       existing === undefined
-        ? sourceSeq !== this.#store.state.ackedSourceSeq + 1
-        : sourceSeq !== existing.sourceSeq
+        ? sourceEpoch !== this.#store.state.indexedState?.sourceEpoch || sourceSeq !== this.#store.state.ackedSourceSeq + 1
+        : sourceEpoch !== existing.sourceEpoch || sourceSeq !== existing.sourceSeq
     ) {
       connection.close();
       return;
@@ -3123,6 +3977,7 @@ export class DurablePrpControlPlane {
     // a new external effect whose local evidence would then be discarded.
     const eventToEvict =
       existing === undefined &&
+      !this.indexedPersistence &&
       this.#store.state.committedEvents.length >= maxCommittedEventWindow
         ? this.#store.state.committedEvents.findIndex(
             (candidate) =>
@@ -3139,7 +3994,7 @@ export class DurablePrpControlPlane {
     // then do we advance the cumulative cursor. Reversing this order can make
     // an uncommitted event disappear from the runner outbox permanently.
     try {
-      await this.#onCommittedEvent?.(event);
+      if (!this.indexedPersistence) await this.#onCommittedEvent?.(event);
     } catch (error) {
       if (error instanceof NativeSessionProtocolIntegrityError) {
         this.#failProtocolIntegrity(connection, error);
@@ -3148,32 +4003,41 @@ export class DurablePrpControlPlane {
       }
       return;
     }
+    const committed = await this.#serialize(async () => {
     // Another authenticated connection can replace this one while its commit
     // is in flight. Once that exact owner has faulted, even a prior successful
     // commit cannot reopen delivery or invoke a new business operation.
     if (this.#protocolIntegrityError !== null) {
       connection.close();
-      return;
+      return false;
     }
 
+    const candidate = structuredClone(this.#store.state);
+    existing = candidate.committedEvents.find((candidate) => candidate.sourceEventId === sourceEventId) ??
+      (this.#store instanceof IndexedCoreStore ? (await this.#store.authority.getRecord(this.#identity.runId, "event", sourceEventId))?.body as unknown as DurableRecoveryCommittedEvent | undefined : undefined);
+    if ((existing ? existing.sourceEpoch !== sourceEpoch || existing.sourceSeq !== sourceSeq || canonicalJson(existing.envelope) !== canonicalJson(envelope) : sourceEpoch !== candidate.indexedState?.sourceEpoch || sourceSeq !== candidate.ackedSourceSeq + 1) || envelope.runId !== this.#identity.runId) {
+      connection.close();
+      return false;
+    }
     if (existing !== undefined) {
-      existing.deliveryCount += 1;
-      this.#store.state.replayDeliveries += 1;
+      existing.deliveryCount = incrementDiagnosticCount(existing.deliveryCount);
+      candidate.replayDeliveries = incrementDiagnosticCount(candidate.replayDeliveries);
     } else {
-      if (this.#store.state.committedEvents.length >= maxCommittedEventWindow) {
+      if (!this.indexedPersistence && candidate.committedEvents.length >= maxCommittedEventWindow) {
         // The awaited business commit may allow another authenticated owner
         // or a tool completion to advance the window. Re-evaluate, never use
         // an index sampled before that await to delete a different input.
-        const currentEviction = this.#store.state.committedEvents.findIndex(
-          (candidate) => !unsettledSemanticInput(candidate, this.#store.state),
+        const currentEviction = candidate.committedEvents.findIndex(
+          (event) => !unsettledSemanticInput(event, candidate),
         );
         if (currentEviction < 0) {
           connection.close();
-          return;
+          return false;
         }
-        this.#store.state.committedEvents.splice(currentEviction, 1);
+        candidate.committedEvents.splice(currentEviction, 1);
       }
-      this.#store.state.committedEvents.push({
+      candidate.committedEvents.push({
+        ...(sourceEpoch ? { sourceEpoch } : {}),
         sourceSeq,
         sourceEventId,
         eventType,
@@ -3182,9 +4046,23 @@ export class DurablePrpControlPlane {
         deliveryCount: 1,
         logicalEffectCount: 1,
       });
-      this.#store.state.ackedSourceSeq = sourceSeq;
+      candidate.ackedSourceSeq = sourceSeq;
+      if (candidate.indexedState) {
+        candidate.indexedState.providerEverStarted = true;
+        if (isSemanticInput || ["mcp_app.tool_input", "runtime.input.requested", "runtime_request.created"].includes(eventType)) {
+          candidate.indexedState.externalEffectEverAdmitted = true;
+        }
+        if (isSemanticInput) candidate.indexedState.pendingSemanticInputIds.push(sourceEventId);
+      }
     }
-    this.#store.save();
+    await this.#store.commit(candidate);
+
+
+      return true;
+    });
+    if (!committed) return;
+    if (this.indexedPersistence) await this.#onCommittedEvent?.(event);
+    if (this.#protocolIntegrityError !== null || envelope.runId !== this.#identity.runId) { connection.close(); return; }
 
     if (
       isSemanticInput &&
@@ -3213,14 +4091,12 @@ export class DurablePrpControlPlane {
         .update(`${this.#identity.runId}\0${call.callId}`)
         .digest("hex")
         .slice(0, 32)}`;
-      const alreadyQueued = this.#store.state.commands.some(
-        (command) => command.commandId === commandId,
-      );
+      const alreadyQueued = (await this.getCommand(commandId)) !== undefined;
       if (!alreadyQueued && !this.#pendingSemanticCalls.has(commandId)) {
         this.#pendingSemanticCalls.add(commandId);
-        const queueResult = (result: unknown, isError: boolean): void => {
+        const queueResult = async (result: unknown, isError: boolean): Promise<void> => {
           try {
-            this.queueCommand(
+            await this.queueCommand(
               "semantic_tool.result",
               { ...call, result, isError },
               commandId,
@@ -3245,16 +4121,11 @@ export class DurablePrpControlPlane {
       }
     }
 
-    connection.sendJson(
-      this.#controlEnvelope(
-        connection,
-        `ack_${this.#store.state.ackedSourceSeq}`,
-        "ack",
-        {
-          ackedSourceSeq: this.#store.state.ackedSourceSeq,
-        },
-      ),
-    );
+    const ackedSourceSeq = sourceEpoch === this.#store.state.indexedState?.sourceEpoch ? this.#store.state.ackedSourceSeq : (await this.readEventEpochTransition(sourceEpoch))?.finalOrdinal;
+    if (ackedSourceSeq === undefined) { connection.close(); return; }
+    connection.sendJson(this.#controlEnvelope(connection, `ack_${randomUUID()}`, "ack", {
+      ackedSourceSeq, ...(sourceEpoch ? { sourceEpoch } : {}),
+    }));
   }
 }
 
@@ -3336,6 +4207,7 @@ function runnerEnvironment(
 }
 
 export function spawnRunner(options: {
+  indexedDurability?: boolean;
   connectUrl?: string;
   connection?: RunnerProcessConnection;
   stateDirectory: string;
@@ -3396,6 +4268,7 @@ export function spawnRunner(options: {
           connection.listenPath,
         ];
   const args = [
+    ...(options.indexedDurability ? ["--indexed-state"] : []),
     ...connectionArgs,
     "--state-dir",
     options.stateDirectory,

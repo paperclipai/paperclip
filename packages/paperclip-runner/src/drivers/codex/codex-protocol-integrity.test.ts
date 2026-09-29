@@ -54,7 +54,7 @@ async function authenticatedRunner(
   };
   const digest = (domain: string, parts: Buffer[]) =>
     createHash("sha256").update(framed(domain, parts)).digest();
-  const credential = Buffer.from(core.issueBootstrapTicket());
+  const credential = Buffer.from((await core.issueBootstrapTicket()));
   const authKey = digest("paperclip-runner-auth-key-v1", [credential]);
   const mac = (domain: string, parts: Buffer[]) =>
     createHmac("sha256", authKey).update(framed(domain, parts)).digest();
@@ -607,8 +607,8 @@ describe("Codex protocol integrity propagation", () => {
               result,
             },
           });
-          await vi.waitFor(() =>
-            expect(core.getCommand(command.commandId)?.status).toBe("completed"),
+          await vi.waitFor(async () =>
+            expect((await core.getCommand(command.commandId))?.status).toBe("completed"),
           );
         };
         const event = (

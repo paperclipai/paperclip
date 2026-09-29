@@ -1,5 +1,8 @@
-import { realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { afterAll } from "vitest";
 
 import {
   CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
@@ -45,7 +48,10 @@ import {
   type CodexTraceInterpretation,
 } from "./app-server-transport.js";
 
-export const WORKSPACE = realpathSync.native(process.cwd());
+// A managed checkout can live under ~/.codex, which production correctly
+// rejects as provider working space. Fake sessions own a real private fixture.
+export const WORKSPACE = realpathSync.native(mkdtempSync(join(tmpdir(), "codex-driver-test-")));
+afterAll(() => rmSync(WORKSPACE, { recursive: true, force: true }));
 
 export class TestQueue<T> implements AsyncIterable<T> {
   values: T[] = [];

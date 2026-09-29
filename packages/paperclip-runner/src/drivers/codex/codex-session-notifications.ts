@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { observeCodexUsage, codexRunUsage } from "./codex-usage-baseline.js";
 import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
 import { harnessRuntimeRequestOutcome } from "../../contracts/harness-driver.js";
+import { handleServerRequest } from "./codex-session-server-requests.js";
 import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import type { CodexRpcNotification, CodexTraceInterpretation } from "./app-server-transport.js";
@@ -39,9 +41,31 @@ import {
 export async function pumpNotifications(state: CodexSessionState): Promise<void> {
     try {
       for await (const notification of state.transport.notifications()) {
+        await state.deliveryWriter?.waitForCapacity();
+        if (notification.method === "paperclip/runtimeRequest") {
+          const request = notification.params.request as unknown as import("./app-server-transport.js").CodexRpcServerRequest;
+          void handleServerRequest(state, { ...request, paperclipDelivery: notification.paperclipDelivery }).catch((error) => state.eventQueue.fail(error));
+          await state.deliveryWriter?.flush();
+          continue;
+        }
+        if (notification.method === "turn/completed") await state.turnStartSettled;
+        const params = notification.params;
+        const lineage = lineageFromThread(params.thread);
+        await state.prefetchHistory("lineage", [state.opened.threadId, text(params.threadId), text(record(params.turn).threadId), lineage.threadId, lineage.parentThreadId ?? ""]);
+        const turnId = text(params.turnId, text(record(params.turn).id, state.activeTurnId ?? ""));
+        await state.prefetchHistory("terminal", [turnId]);
+        const item = itemFromParams(params);
+        if (notification.method === "item/completed" && text(item.type) === "agentMessage") {
+          await state.prefetchHistory("file", paperclipWorkspaceFileReferencesFromText(state.opened.context.workingDirectory, text(item.text), turnId).map((reference) => reference.referenceId));
+        }
         await mapNotification(state, notification);
+        await state.deliveryWriter?.flush();
       }
     } catch (error) {
+      if (state.deliveryWriter?.failure) {
+        state.eventQueue.fail(state.deliveryWriter.failure);
+        return;
+      }
       if (error instanceof NativeSessionProtocolIntegrityError) {
         state.failProtocolIntegrity(error);
         return;
@@ -59,26 +83,17 @@ export async function pumpNotifications(state: CodexSessionState): Promise<void>
   }
 
 async function mapNotification(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
-    const sourceSequenceBefore = state.sourceSequence;
+    const emittedEventIds: string[] = [];
     let rejected = false;
     try {
-      await mapNotificationBody(state, notification);
+      state.capturedEventIds.run(emittedEventIds, () => mapNotificationBody(state, notification));
+      state.deliveryWriter?.changed(notification.paperclipDelivery);
     } catch (error) {
       rejected = true;
       throw error;
     } finally {
       const correlation = notification.paperclipTrace;
       if (correlation !== undefined) {
-        const emittedEventIds: string[] = [];
-        for (
-          let sourceSeq = sourceSequenceBefore + 1;
-          sourceSeq <= state.sourceSequence;
-          sourceSeq += 1
-        ) {
-          emittedEventIds.push(
-            `${state.runnerInstanceId}:${state.runId}:${sourceSeq}`,
-          );
-        }
         const disposition: CodexTraceInterpretation["disposition"] = rejected
           ? "rejected"
           : emittedEventIds.length > 0
@@ -104,7 +119,7 @@ async function mapNotification(state: CodexSessionState, notification: CodexRpcN
     }
   }
 
-async function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
+function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): void {
     if (!isSupportedCodexNotificationMethod(notification.method)) return;
     if (notification.method === "item/completed" && notification.params.kind === "steering_acknowledgement"
       && !notification.params.threadId && !notification.params.turnId && !notification.params.thread && !notification.params.turn) return;
@@ -270,7 +285,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         },
         {
           turnId: turnId || undefined,
-          itemId: `${threadId}:goal:update:${state.sourceSequence + 1}`,
+          itemId: `${threadId}:goal:update:${randomUUID()}`,
         },
       );
       state.emitGoalEvent("session.goal.updated", goal, {
@@ -289,7 +304,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
           action: "notification",
           goal: null,
         },
-        { itemId: `${threadId}:goal:clear:${state.sourceSequence + 1}` },
+        { itemId: `${threadId}:goal:clear:${randomUUID()}` },
       );
       state.emitGoalEvent("session.goal.cleared", null, {
         workingNow: state.activeTurnId !== null,
@@ -429,7 +444,6 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       // channel before turn/start's own response settles on the request
       // channel. Wait for the pending turn/start to settle first, so
       // turn.accepted always precedes the terminal event for the same turn.
-      await state.turnStartSettled;
       if (state.terminalTurns.has(turnId)) {
         mapTerminalTurn(state, turn, turnId);
         return;
@@ -448,6 +462,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
           kind: text(item.type, "unknown"),
           channel,
           providerPhase: text(item.phase) || undefined,
+          ...(item.outputBody ? { outputBody: item.outputBody } : {}),
           text: itemText(item),
           item,
         }),
@@ -467,6 +482,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
           kind: text(item.type, "unknown"),
           channel,
           providerPhase: text(item.phase) || undefined,
+          ...(item.outputBody ? { outputBody: item.outputBody } : {}),
           text: itemText(item),
           item,
         }),
@@ -519,6 +535,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
           kind: deltaKind,
           channel,
           providerMethod: notification.method,
+          ...(params.outputBody ? { outputBody: params.outputBody } : {}),
           text: text(params.delta, text(params.patch, text(params.output))),
           update: params,
         }),
@@ -546,7 +563,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         { kind: "usage", usage: state.usageSnapshot },
         {
           turnId,
-          itemId: `${turnId}:usage:${state.sourceSequence + 1}`,
+          itemId: `${turnId}:usage:${randomUUID()}`,
         },
       );
       return;

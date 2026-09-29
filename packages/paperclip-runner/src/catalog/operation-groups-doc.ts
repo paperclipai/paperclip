@@ -99,7 +99,7 @@ export interface OperationGroupsInput {
   catalogIndexSource: string;
 }
 
-const EXPECTED_EVENT_COUNT = 105;
+const EXPECTED_EVENT_COUNT = 106;
 const EXPECTED_COMMAND_COUNT = 18;
 const EXPECTED_SCENARIO_COUNT = 106;
 const EXPECTED_BEHAVIOR_GROUP_COUNT = 16;

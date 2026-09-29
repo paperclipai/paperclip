@@ -470,6 +470,8 @@ export interface PersistedHarnessSession {
   activeTurnId?: string | null;
   semanticResult?: PersistedHarnessSemanticResult | null;
   terminalTurns?: PersistedHarnessTurnTerminal[];
+  /** Indexed reducer fact committed with its normalized delivery outbox. */
+  durableTerminal?: { event: PrpEvent; semanticFingerprint: string | null };
   codexUsageBaseline?: { baseline: Record<string, number>; latest: Record<string, number> };
   /** A result-less terminal task may spend this fail-closed one-shot recovery allowance. */
   dispositionOnlyRecoveryConsumed?: boolean;
@@ -479,6 +481,7 @@ export interface PersistedHarnessSession {
   goal?: HarnessThreadGoal | null;
   lineage?: HarnessThreadLineageEntry[];
   lastSourceSequence?: number;
+  lastSourceEpoch?: string;
   /** Tagged provider identity used to reject cross-profile recovery. */
   providerIdentity?: PersistedHarnessProviderIdentity;
   /** Narrow escape hatch for a durable response-wake when a provider cannot reload its prior native session. */
@@ -501,6 +504,10 @@ export interface HarnessSession {
     displayId?: string | null;
   };
   events(): AsyncIterable<PrpEvent>;
+  /** Called only after the exact normalized event is durable in the run log. */
+  acknowledgeEvent?(event: PrpEvent): Promise<void>;
+  setEventCommitter?(commit: (event: PrpEvent) => Promise<void>): void;
+  flushEventDelivery?(): Promise<void>;
   attachRun?(input: { runId: string }): Promise<void> | void;
   startTurn(input: {
     message: NativeUserMessage;

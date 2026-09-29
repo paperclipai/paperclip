@@ -16,6 +16,25 @@ function nodeTransport(
 }
 
 describe("Codex app-server transport limits", () => {
+  it("correlates concurrent out-of-order responses by opaque request identity", async () => {
+    const transport = nodeTransport(`
+      const readline = require("node:readline");
+      const pending = [];
+      readline.createInterface({input:process.stdin}).on("line", line => {
+        const request = JSON.parse(line); pending.push(request);
+        if (pending.length === 3) for (const value of pending.reverse()) {
+          process.stdout.write(JSON.stringify({id:value.id,result:{id:value.id,method:value.method}})+"\\n");
+        }
+      });
+    `);
+    try {
+      const values = await Promise.all(["first", "second", "third"].map(method => transport.request(method, {})));
+      expect(values.map(value => value.method)).toEqual(["first", "second", "third"]);
+      expect(new Set(values.map(value => value.id)).size).toBe(3);
+      for (const value of values) expect(value.id).toMatch(/^paperclip-rpc-[a-f0-9-]{36}$/);
+    } finally { await transport.close(); }
+  });
+
   it("passes only bounded controller-projected GitHub credentials", () => {
     expect(
       createSanitizedCodexEnvironment({

@@ -78,6 +78,7 @@ export interface TypedEventFamilyCapability {
 }
 
 export const CANONICAL_PROVIDER_EVENT_TYPES = [
+  "output.body.chunk",
   "harness.diagnostic",
   "plan.updated",
   "tool.execution.started",

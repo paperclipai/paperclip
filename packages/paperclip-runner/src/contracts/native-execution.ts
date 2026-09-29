@@ -232,6 +232,7 @@ export interface NativeSessionExecutionResult {
   driverVersion: string;
   nativeEventCount: number;
   highestContiguousSourceSeq: number;
+  highestContiguousSourceEpoch?: string;
   usage: Record<string, unknown> | null;
   /** The active durable goal reached a safe turn boundary for run rollover. */
   goalRolloverRequired?: boolean;

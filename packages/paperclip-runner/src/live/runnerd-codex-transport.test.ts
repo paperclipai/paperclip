@@ -1,3 +1,4 @@
+import { resolveRunnerCargoTestBinary, resolveRunnerCargoTestBinaryOrDefault } from "../../test/cargo-test-binary.js";
 import {
   cp,
   mkdir,
@@ -35,6 +36,9 @@ import { executeNativeSession } from "../native-session-runtime.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
+// Preserve the real implementation even if a timed-out fixture is still unwinding.
+const openUnmockedControlPlane = DurablePrpControlPlane.open.bind(DurablePrpControlPlane);
+import { SqliteAuthorityStore } from "../control-plane/sqlite-authority-store.js";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -90,7 +94,12 @@ import {
 // Explicit private-artifact test lane; production/default dist is never changed.
 const defaultCapabilityRunnerdBinary = () =>
   process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ??
-  qualifiedCapabilityRunnerdBinary();
+  resolveRunnerCargoTestBinaryOrDefault(
+    resolve(import.meta.dirname, "../../runner"),
+    "debug",
+    "paperclip-runnerd",
+    qualifiedCapabilityRunnerdBinary,
+  );
 
 async function expectTurnStarted(
   notifications: AsyncIterator<{ method: string }>,
@@ -705,7 +714,9 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
       codexCommand: fakeCodex,
       codexArgs: fakeCodexArgs(stateDirectory, "--split-event-burst"),
       stateDirectory,
-      closeGraceMs: 2_000,
+      // Only the expiry case requires a short deadline. The success case must
+      // leave room for real journal fsyncs under a parallel storage test load.
+      closeGraceMs: mode === "within_budget" ? 10_000 : 2_000,
       controlPlaneRegistration: async (authority) => {
         core = authority;
         await authority.start();
@@ -832,7 +843,7 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
       await rm(stateDirectory, { recursive: true, force: true });
     }
   },
-  15_000,
+  30_000,
 );
 
 it("infers a remote provider turn until its own terminal event is durable", () => {
@@ -2106,6 +2117,16 @@ it("rehydrates canonical session goals into Codex goal notifications", () => {
   ).toEqual({ revision: 7, threadId: "thread-1", workingNow: false });
 });
 
+it("preserves the command output channel and execution binding through the facade", () => {
+  const payload = { kind: "commandExecution", providerMethod: "item/commandExecution/outputDelta", itemId: "exec-1", text: "stdout" };
+  expect(runnerdCanonicalNotificationMethod("item.delta", payload)).toBe("item/commandExecution/outputDelta");
+  expect(rehydrateRunnerdDeltaNotification(payload, "thread", "turn")).toMatchObject({
+    threadId: "thread", turnId: "turn", itemId: "exec-1", delta: "stdout", kind: "commandExecution",
+  });
+  expect(runnerdCanonicalNotificationMethod("item.delta", { ...payload, providerMethod: "paperclip/runResult" })).toBeUndefined();
+  expect(runnerdCanonicalNotificationMethod("item.delta", { kind: "agentMessage", text: "prose" })).toBe("item/agentMessage/delta");
+});
+
 it("routes canonical session goals back through the Codex notification facade", () => {
   expect(
     runnerdCanonicalNotificationMethod("session.goal.updated", {
@@ -2201,10 +2222,7 @@ it("recovers provider readiness from an already-committed journal without replay
   ).toEqual(persistedReady);
 });
 
-const fakeCodex = resolve(
-  import.meta.dirname,
-  "../../runner/target/debug/fake-codex-app-server",
-);
+const fakeCodex = resolveRunnerCargoTestBinary(resolve(import.meta.dirname, "../../runner"), "debug", "fake-codex-app-server");
 
 function fakeCodexArgs(stateDirectory: string, ...args: string[]): string[] {
   return [
@@ -2325,13 +2343,13 @@ it("keeps a quiet active Codex turn in the same process across connection lease 
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-renew-active-"));
   const callsPath = join(stateDirectory, "calls.log");
   const cores: DurablePrpControlPlane[] = [];
-  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
-  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane")
-    .mockImplementation(function(options: ConstructorParameters<typeof OriginalCore>[0]) {
-      const core = new OriginalCore({ ...options, connectionLeaseTtlMs: 60_000 });
+  const openCore = openUnmockedControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane.DurablePrpControlPlane, "open")
+    .mockImplementation(async function(options: Parameters<typeof openCore>[0]) {
+      const core = await openCore({ ...options, connectionLeaseTtlMs: 60_000 });
       cores.push(core);
       return core;
-    } as unknown as typeof OriginalCore);
+    });
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(stateDirectory, "--hold-turn", "--record-process-start", "--call-log", callsPath),
@@ -2556,13 +2574,23 @@ it("controls a Codex session goal end to end through durable PRP v2", async () =
   });
 }, 30_000);
 
-it.each([false, true])("binds goal turns through the full Codex harness (autonomous continuation: %s)", async (autocontinue) => {
+it.each([{ autocontinue: false, indexed: false }, { autocontinue: true, indexed: false }, { autocontinue: true, indexed: true }])("binds goal turns through the full Codex harness (autonomous continuation: $autocontinue, indexed: $indexed)", async ({ autocontinue, indexed }) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-goal-harness-"));
+  let authority: SqliteAuthorityStore | null = null;
+  const sink = indexed ? await SqliteAuthorityStore.open({ path: join(stateDirectory, "normalized.sqlite"), binding: "normalized-goal-test", create: true }) : null;
+  let sinkGeneration = "0";
+  const append = async (event: PrpEvent) => {
+    if (sink) sinkGeneration = await sink.commit({ expectedGeneration: sinkGeneration, state: { lastSourceSeq: event.sourceSeq }, records: [{ epoch: event.runId, kind: "event", id: event.sourceEventId, sequence: String(event.sourceSeq), body: event as unknown as Record<string, unknown> }] });
+  };
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(stateDirectory, "--goal-autostart", ...(autocontinue ? ["--goal-autocontinue"] : [])),
     stateDirectory,
+    ...(indexed ? {
+      prpIdentity: { runnerInstanceId: "runner-codex", environmentLeaseId: "environment-goal", runId: "run-goal-harness-autostart", normalizedSessionId: "normalized-goal-harness-autostart", turnId: "turn-goal", itemId: "item-goal" },
+      authorityStoreFactory: async (_identity: unknown, directory: string) => authority = await SqliteAuthorityStore.open({ path: join(directory, "authority.sqlite"), binding: "goal-harness-indexed", create: true }),
+    } : {}),
   });
   const driver = new CodexAppServerDriver({
     taskEnvelope: {
@@ -2593,11 +2621,13 @@ it.each([false, true])("binds goal turns through the full Codex harness (autonom
       normalizedSessionId: "normalized-goal-harness-autostart",
       workingDirectory: tmpdir(),
     });
+    if (indexed) session.setEventCommitter!(append);
     const observed: Array<{ eventType: string }> = [];
     const turnStarted = Promise.race([
       (async () => {
         for await (const event of session!.events()) {
           observed.push(event);
+          if (indexed) { await append(event); await session!.acknowledgeEvent!(event); }
           if (event.eventType === "turn.started" && event.turnId === (autocontinue ? "provider-goal-turn-2" : "provider-goal-turn-1")) return event;
           if (event.eventType === "session.failed") {
             throw new Error(`goal autostart failed: ${JSON.stringify(event.payload)}`);
@@ -2625,6 +2655,8 @@ it.each([false, true])("binds goal turns through the full Codex harness (autonom
   } finally {
     await session?.close();
     await bundle.transport.close();
+    await (authority as SqliteAuthorityStore | null)?.close();
+    await sink?.close();
     await rm(stateDirectory, { recursive: true, force: true });
   }
   expect(bundle.evidence()).toMatchObject({
@@ -3439,10 +3471,7 @@ it("does not retry a real memoized transport close whose suspension proof is una
   }));
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
-    codexCommand: resolve(
-      import.meta.dirname,
-      "../../runner/target/debug/fake-codex-app-server",
-    ),
+    codexCommand: resolveRunnerCargoTestBinary(resolve(import.meta.dirname, "../../runner"), "debug", "fake-codex-app-server"),
     codexArgs: ["--state-file", join(stateDirectory, "fake-codex-state.json")],
     stateDirectory,
     closeGraceMs: 400,
@@ -4273,13 +4302,13 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
     const commitEntered = new Promise<void>((resolveEntered) => {
       enteredCommit = resolveEntered;
     });
-    const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+    const openCore = openUnmockedControlPlane;
     const coreSpy = vi
-      .spyOn(durableControlPlane, "DurablePrpControlPlane")
-      .mockImplementation(function (
-        options: ConstructorParameters<typeof OriginalCore>[0],
+      .spyOn(durableControlPlane.DurablePrpControlPlane, "open")
+      .mockImplementation(async function (
+        options: Parameters<typeof openCore>[0],
       ) {
-        const core = new OriginalCore({
+        const core = await openCore({
           ...options,
           onCommittedEvent: async (event) => {
             await options.onCommittedEvent?.(event);
@@ -4314,7 +4343,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         });
         cores.push(core);
         return core;
-      } as unknown as typeof OriginalCore);
+      });
     const launch = durableControlPlane.spawnRunner;
     const launchSpy = vi
       .spyOn(durableControlPlane, "spawnRunner")
@@ -4570,16 +4599,16 @@ it.each([false, true])(
     const callsPath = join(stateDirectory, "calls.log");
     const cores: DurablePrpControlPlane[] = [];
     const handles: ReturnType<typeof durableControlPlane.spawnRunner>[] = [];
-    const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+    const openCore = openUnmockedControlPlane;
     const coreSpy = vi
-      .spyOn(durableControlPlane, "DurablePrpControlPlane")
-      .mockImplementation(function (
-        options: ConstructorParameters<typeof OriginalCore>[0],
+      .spyOn(durableControlPlane.DurablePrpControlPlane, "open")
+      .mockImplementation(async function (
+        options: Parameters<typeof openCore>[0],
       ) {
-        const core = new OriginalCore(options);
+        const core = await openCore(options);
         cores.push(core);
         return core;
-      } as unknown as typeof OriginalCore);
+      });
     const launch = durableControlPlane.spawnRunner;
     const launchSpy = vi
       .spyOn(durableControlPlane, "spawnRunner")
@@ -4651,8 +4680,8 @@ it.each([false, true])(
         const getCommand = core.getCommand.bind(core);
         observerSpy = vi
           .spyOn(core, "getCommand")
-          .mockImplementation((commandId) => {
-            const command = getCommand(commandId);
+          .mockImplementation(async (commandId) => {
+            const command = await getCommand(commandId);
             if (
               command?.type === "run.attach" &&
               core.store.state.completedWarmTransition?.command.commandId !==
@@ -4929,20 +4958,20 @@ it.each([
         },
       };
     };
-    const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+    const openCore = openUnmockedControlPlane;
     const coreSpy = vi
-      .spyOn(durableControlPlane, "DurablePrpControlPlane")
-      .mockImplementation(function (
-        options: ConstructorParameters<typeof OriginalCore>[0],
+      .spyOn(durableControlPlane.DurablePrpControlPlane, "open")
+      .mockImplementation(async function (
+        options: Parameters<typeof openCore>[0],
       ) {
-        const core = new OriginalCore(options);
+        const core = await openCore(options);
         cores.push(core);
         if (recovering && snapshotFault) {
           const getCommand = core.getCommand.bind(core);
           snapshotObserverSpy = vi
             .spyOn(core, "getCommand")
-            .mockImplementation((id) => {
-              const command = getCommand(id);
+            .mockImplementation(async (id) => {
+              const command = await getCommand(id);
               if (
                 command?.type !== "session.snapshot" ||
                 command.status !== "completed"
@@ -4968,7 +4997,7 @@ it.each([
             });
         }
         return core;
-      } as unknown as typeof OriginalCore);
+      });
     const launch = durableControlPlane.spawnRunner;
     const launchSpy = vi
       .spyOn(durableControlPlane, "spawnRunner")

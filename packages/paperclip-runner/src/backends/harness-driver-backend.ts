@@ -1,3 +1,4 @@
+import { decodeSourceCursor, encodeSourceCursor, normalizedEventId } from "../control-plane/event-epochs.js";
 import type {
   HarnessDriver,
   HarnessSession,
@@ -17,6 +18,7 @@ import type {
   PrpEvent,
   PrpTerminalState,
 } from "../protocol/replay-contract.js";
+import { validatePrpEvent } from "../protocol/replay-contract.js";
 
 const MAX_RECOVERY_TERMINAL_TURNS = 4_096;
 const MAX_RECOVERY_TERMINAL_BYTES = 8 * 1024 * 1024;
@@ -133,6 +135,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       normalizedSessionId: snapshot.identity.sessionId,
       activeTurnId,
       lastSourceSequence: parseCursor(snapshot.cursor),
+      ...(decodeSourceCursor(snapshot.cursor).sourceEpoch ? { lastSourceEpoch: decodeSourceCursor(snapshot.cursor).sourceEpoch } : {}),
       ...(snapshot.semanticResult === undefined ||
       snapshot.semanticResult === null
         ? {}
@@ -393,6 +396,7 @@ class HarnessNativeSession implements NativeSession {
   readonly #session: HarnessSession;
   #terminal: PrpTerminalState | null = null;
   #explicitlyCancelled = false;
+  #lastDriverEventId: string | null = null;
   #protocolIntegrityFailure: NativeSessionProtocolIntegrityError | null = null;
 
   #assertProtocolIntegrity(): void {
@@ -412,6 +416,24 @@ class HarnessNativeSession implements NativeSession {
     try {
       const snapshot = await this.#session.snapshot();
       this.#assertProtocolIntegrity();
+      // The indexed driver has an explicit terminal fact even if the previous
+      // process died after its run-log ACK but before orchestration checkpointed.
+      const durable = snapshot.durableTerminal;
+      if (!this.#explicitlyCancelled && this.#terminal === null && durable && snapshot.activeTurnId === null && snapshot.semanticResult) {
+        const event = durable.event;
+        if (!validatePrpEvent(event).ok || event.runId !== this.#input.identity.runId || event.normalizedSessionId !== this.#input.identity.sessionId
+          || event.turnId !== snapshot.semanticResult.turnId || durable.semanticFingerprint !== snapshot.semanticResult.fingerprint
+          || durable.semanticFingerprint !== canonicalJson(snapshot.semanticResult.result)
+          || !["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) {
+          throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
+        }
+        this.#terminal = {
+          schema: "paperclip.prp.terminal.v1",
+          turnTerminalState: event.eventType === "turn.completed" ? "completed" : event.eventType === "turn.failed" ? "failed" : event.eventType === "turn.interrupted" ? "interrupted" : "cancelled",
+          runTerminalState: event.eventType === "turn.completed" ? "succeeded" : event.eventType === "turn.failed" ? "failed" : "cancelled",
+          reportedWorkDisposition: snapshot.semanticResult.result.reportedWorkDisposition,
+        };
+      }
       return snapshot;
     } catch (error) {
       this.#rethrowProtocolIntegrity(error);
@@ -504,6 +526,7 @@ class HarnessNativeSession implements NativeSession {
     this.#assertProtocolIntegrity();
     let sourceInstanceId: string | null = null;
     let lastSourceSequence = 0;
+    let lastSourceEpoch: string | undefined;
     let sawTerminal = false;
     let synthesizedDurableWait = false;
     let streamFailure: unknown = null;
@@ -517,7 +540,8 @@ class HarnessNativeSession implements NativeSession {
             event.payload.kind === "interrupt_acknowledgement");
         if (this.#explicitlyCancelled && !isCancellationEvent) continue;
         sourceInstanceId = event.sourceInstanceId;
-        lastSourceSequence = Math.max(lastSourceSequence, event.sourceSeq);
+        lastSourceSequence = event.sourceSeq;
+        lastSourceEpoch = event.sourceEpoch;
         if (event.eventType === "runtime_request.created") {
           const request = plainRecord(event.payload.request);
           if (
@@ -577,6 +601,7 @@ class HarnessNativeSession implements NativeSession {
             reportedWorkDisposition: disposition,
           };
         }
+        this.#lastDriverEventId = event.sourceEventId;
         yield structuredClone(event);
       }
     } catch (error) {
@@ -596,7 +621,8 @@ class HarnessNativeSession implements NativeSession {
       let governedWaitTurnId: string | undefined;
       for (const request of observedPendingInputs.values()) {
         const sourceSeq =
-          Math.max(lastSourceSequence, snapshot?.lastSourceSequence ?? 0) + 1;
+          Math.max(lastSourceSequence, snapshot?.lastSourceEpoch === lastSourceEpoch ? snapshot?.lastSourceSequence ?? 0 : 0) + 1;
+        if (!Number.isSafeInteger(sourceSeq)) throw new Error("native_synthetic_event_epoch_required");
         lastSourceSequence = sourceSeq;
         const requestId = String(request.requestId);
         const turnId =
@@ -606,7 +632,8 @@ class HarnessNativeSession implements NativeSession {
           typeof request.itemId === "string" ? request.itemId : requestId;
         yield {
           schema: "paperclip.prp.event.v1",
-          sourceEventId: `${sourceInstanceId}:${this.#input.identity.runId}:${sourceSeq}`,
+          sourceEventId: normalizedEventId(sourceInstanceId, this.#input.identity.runId, sourceSeq, lastSourceEpoch),
+          ...(lastSourceEpoch ? { sourceEpoch: lastSourceEpoch } : {}),
           sourceSeq,
           sourceInstanceId,
           sourceKind: "runner",
@@ -635,7 +662,8 @@ class HarnessNativeSession implements NativeSession {
       }
       if (governedWaitTurnId) {
         const sourceSeq =
-          Math.max(lastSourceSequence, snapshot?.lastSourceSequence ?? 0) + 1;
+          Math.max(lastSourceSequence, snapshot?.lastSourceEpoch === lastSourceEpoch ? snapshot?.lastSourceSequence ?? 0 : 0) + 1;
+        if (!Number.isSafeInteger(sourceSeq)) throw new Error("native_synthetic_event_epoch_required");
         lastSourceSequence = sourceSeq;
         synthesizedDurableWait = true;
         sawTerminal = true;
@@ -647,7 +675,8 @@ class HarnessNativeSession implements NativeSession {
         };
         yield {
           schema: "paperclip.prp.event.v1",
-          sourceEventId: `${sourceInstanceId}:${this.#input.identity.runId}:${sourceSeq}`,
+          sourceEventId: normalizedEventId(sourceInstanceId, this.#input.identity.runId, sourceSeq, lastSourceEpoch),
+          ...(lastSourceEpoch ? { sourceEpoch: lastSourceEpoch } : {}),
           sourceSeq,
           sourceInstanceId,
           sourceKind: "runner",
@@ -663,6 +692,22 @@ class HarnessNativeSession implements NativeSession {
       }
     }
     if (streamFailure && !synthesizedDurableWait) throw streamFailure;
+  }
+
+  async acknowledgeEvent(event: PrpEvent): Promise<void> {
+    // Backend-synthesized provider-loss facts have their own durable writer;
+    // they were never entries in the driver's normalized outbox.
+    if (this.#lastDriverEventId !== event.sourceEventId) return;
+    await this.#session.acknowledgeEvent?.(event);
+    this.#lastDriverEventId = null;
+  }
+
+  setEventCommitter(commit: (event: PrpEvent) => Promise<void>): void {
+    this.#session.setEventCommitter?.(commit);
+  }
+
+  async flushEventDelivery(): Promise<void> {
+    await this.#session.flushEventDelivery?.();
   }
 
   async startTurn(input: Parameters<HarnessSession["startTurn"]>[0]) {
@@ -801,7 +846,7 @@ class HarnessNativeSession implements NativeSession {
       cursor:
         snapshot.lastSourceSequence === undefined
           ? null
-          : String(snapshot.lastSourceSequence),
+          : encodeSourceCursor({ sourceSeq: snapshot.lastSourceSequence, sourceEpoch: snapshot.lastSourceEpoch }),
       semanticResult: this.#explicitlyCancelled
         ? null
         : (snapshot.semanticResult?.result ?? null),
@@ -849,7 +894,7 @@ export function createHarnessDriverBackend(
 function parseCursor(cursor: string | null | undefined): number | undefined {
   if (cursor === undefined || cursor === null || cursor === "")
     return undefined;
-  const parsed = Number(cursor);
+  const parsed = decodeSourceCursor(cursor).sourceSeq;
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 

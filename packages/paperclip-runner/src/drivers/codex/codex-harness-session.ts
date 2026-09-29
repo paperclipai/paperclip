@@ -59,14 +59,17 @@ export class CodexHarnessSession
   extends CodexSessionState
   implements HarnessSession
 {
+  #eventCommitter: ((event: PrpEvent) => Promise<void>) | null = null;
+
   constructor(input: CodexSessionStateInput) {
     super(input);
     this.transport.setServerRequestHandler((request) =>
       handleServerRequest(this, request),
     );
-    initializeCodexSessionEvents(this, input);
-    if (this.terminal) {
-      this.eventQueue.close();
+    this.transport.setBeforeRunRotation?.(() => this.flushEventDelivery());
+    if (!this.deliveryRestored) initializeCodexSessionEvents(this, input);
+    if (this.terminal && !this.deliveryWriter) {
+      this.closeEvents();
     } else {
       void pumpNotifications(this);
     }
@@ -116,6 +119,7 @@ export class CodexHarnessSession
     this.resultFingerprint = null;
     this.resultCallId = null;
     this.resultTurnId = null;
+    this.durableTerminal = null;
     this.dispositionOnlyRecoveryConsumed = false;
     this.dispositionOnlyRecoveryTurnId = null;
     this.terminal = false;
@@ -124,6 +128,10 @@ export class CodexHarnessSession
     this.protocolFailed = false;
     this.protocolFailureCode = null;
     this.protocolFailureMessage = null;
+    this.deliveryWriter = null;
+    this.deliveryRestored = false;
+    if (this.transport.normalizedDelivery?.()) { this.sourceSequence = 0; this.sourceSequenceEpoch = null; }
+    this.initializeDelivery();
     this.emit("run.attached", { runId: input.runId, sameSession: true });
   }
 
@@ -133,6 +141,28 @@ export class CodexHarnessSession
 
   events(): AsyncIterable<PrpEvent> {
     return this.eventQueue;
+  }
+
+  async acknowledgeEvent(event: PrpEvent): Promise<void> {
+    await this.deliveryWriter?.acknowledge(event);
+  }
+
+  setEventCommitter(commit: (event: PrpEvent) => Promise<void>): void {
+    this.#eventCommitter = commit;
+  }
+
+  async flushEventDelivery(): Promise<void> {
+    const writer = this.deliveryWriter;
+    if (!writer) return;
+    await writer.flush();
+    for (;;) {
+      const event = writer.port.load()?.pending[0];
+      if (!event) return;
+      if (!this.#eventCommitter) throw new Error("normalized event sink is unavailable before run rotation");
+      await this.#eventCommitter(event);
+      await writer.acknowledge(event);
+      this.eventQueue.discard((queued) => queued.sourceEventId === event.sourceEventId);
+    }
   }
 
   async startTurn(input: {
@@ -308,6 +338,7 @@ export class CodexHarnessSession
     this.requireCapability("steering");
     this.requireActiveTurn(input.turnId, "steering");
     if (input.correlationId) {
+      await this.prefetchHistory("steering", [input.correlationId]);
       const acknowledgedTurnId = this.acknowledgedSteeringCorrelations.get(
         input.correlationId,
       );
@@ -344,7 +375,7 @@ export class CodexHarnessSession
           turnId: input.turnId,
           itemId: input.correlationId
             ? `${input.turnId}:steer:${input.correlationId}`
-            : `${input.turnId}:steer:${++this.steerSequence}`,
+            : `${input.turnId}:steer:${randomUUID()}`,
         },
       );
     } catch (error) {
@@ -372,7 +403,7 @@ export class CodexHarnessSession
           text: "Interrupt queued until the provider assigns the turn identity.",
           status: "queued",
         },
-        { itemId: `interrupt:queued:${++this.interruptSequence}` },
+        { itemId: `interrupt:queued:${randomUUID()}` },
       );
       return;
     }
@@ -403,7 +434,7 @@ export class CodexHarnessSession
         },
         {
           turnId,
-          itemId: `${turnId}:interrupt:${++this.interruptSequence}`,
+          itemId: `${turnId}:interrupt:${randomUUID()}`,
         },
       );
     } catch (error) {
@@ -599,7 +630,7 @@ export class CodexHarnessSession
           action: input.action,
           goal,
         },
-        { itemId: `${this.opened.threadId}:goal:${this.sourceSequence + 1}` },
+        { itemId: `${this.opened.threadId}:goal:${randomUUID()}` },
       );
       this.emitGoalEvent(
         input.action === "clear"
@@ -649,6 +680,15 @@ export class CodexHarnessSession
   async reconcile(): Promise<Record<string, unknown>> {
     this.assertProtocolIntegrity();
     this.requireCapability("reconciliation");
+    if (this.deliveryWriter) {
+      await this.deliveryWriter.flush();
+      const snapshot = await this.read();
+      const thread = record(snapshot.thread);
+      if (text(thread.id) !== this.opened.threadId || (this.opened.providerSessionId !== null && text(thread.sessionId) !== this.opened.providerSessionId)) {
+        throw new HarnessReconciliationError("thread/read returned a different indexed provider session");
+      }
+      return snapshot;
+    }
     const snapshot = await this.read();
     const thread = record(snapshot.thread);
     if (text(thread.id) !== this.opened.threadId) {
@@ -768,6 +808,7 @@ export class CodexHarnessSession
 
   async snapshot(): Promise<PersistedHarnessSession> {
     this.assertProtocolIntegrity();
+    await this.deliveryWriter?.flush();
     return {
       driverKind: this.driverKind,
       workingDirectory: this.opened.context.workingDirectory,
@@ -795,6 +836,7 @@ export class CodexHarnessSession
         turnId,
         fingerprint,
       })),
+      ...(this.deliveryWriter && this.durableTerminal ? { durableTerminal: structuredClone(this.durableTerminal) } : {}),
       dispositionOnlyRecoveryConsumed: this.dispositionOnlyRecoveryConsumed,
       dispositionOnlyRecoveryTurnId: this.dispositionOnlyRecoveryTurnId,
       pendingRuntimeRequests: this.pendingRuntimeRequests(),
@@ -802,11 +844,14 @@ export class CodexHarnessSession
         this.currentGoal === null ? null : structuredClone(this.currentGoal),
       lineage: this.lineage(),
       lastSourceSequence: this.sourceSequence,
+      ...(this.sourceSequenceEpoch ? { lastSourceEpoch: this.sourceSequenceEpoch } : {}),
     };
   }
 
   async close(input?: { reason: string }): Promise<void> {
     this.cancelPendingRequests("session_closed");
+    await this.deliveryWriter?.flush();
+    if (this.#eventCommitter) await this.flushEventDelivery();
     this.eventQueue.close();
     await this.transport.close(input?.reason);
   }

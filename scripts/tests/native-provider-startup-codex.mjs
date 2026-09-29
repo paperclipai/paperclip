@@ -157,12 +157,12 @@ if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
         await delay(10);
       }
     };
-    const launch = (core, iteration) =>
+    const launch = async (core, iteration) =>
       spawnRunner({
         connectUrl: core.connectUrl,
         stateDirectory: runnerDirectory,
         identity,
-        ticket: core.issueBootstrapTicket(60_000),
+        ticket: (await core.issueBootstrapTicket(60_000)),
         maxOutboxBytes: 16 * 1024 * 1024,
         p0ReserveBytes: 1024 * 1024,
         maxRuntimeMs: 10_000,
@@ -302,7 +302,7 @@ if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
     let core = makeCore();
     let handle;
     let firstExit;
-    const prepare = core.queueCommand(
+    const prepare = (await core.queueCommand(
       "run.prepare",
       {
         provider: {
@@ -329,30 +329,30 @@ if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
         },
       },
       "startup-prepare",
-    );
-    const open = core.queueCommand("session.open", {}, "startup-open");
+    ));
+    const open = (await core.queueCommand("session.open", {}, "startup-open"));
     try {
       await core.start();
-      handle = launch(core, 1);
+      handle = await launch(core, 1);
       // Atomic controller commits publish new snapshots. Observe commands by
       // stable ID instead of waiting on the original queueCommand object.
       await waitUntil(
-        () =>
-          (core.getCommand(open.commandId)?.status ?? "pending") !== "pending",
+        async () =>
+          ((await core.getCommand(open.commandId))?.status ?? "pending") !== "pending",
       );
       assert.equal(
-        core.getCommand(prepare.commandId)?.status,
+        (await core.getCommand(prepare.commandId))?.status,
         "completed",
         "prepare_must_succeed",
       );
       assert.equal(
-        core.getCommand(open.commandId)?.status,
+        (await core.getCommand(open.commandId))?.status,
         "failed",
         "missing_thread_must_fail",
       );
       assert.ok(
-        core
-          .getCommand(open.commandId)
+        (await core
+          .getCommand(open.commandId))
           ?.result?.result?.message?.includes(
             `no rollout found for thread id ${missingThread}`,
           ),
@@ -451,31 +451,31 @@ if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
     ])
       await copyFile(source, join(snapshots, name));
     const firstFailure = structuredClone(
-      core.getCommand(open.commandId)?.result,
+      (await core.getCommand(open.commandId))?.result,
     );
     const ledgerBefore = await readFile(ledger);
     const identityLedgerBefore = await readFile(identityLedger);
     core = makeCore();
-    const snapshot = core.queueCommand(
+    const snapshot = (await core.queueCommand(
       "session.snapshot",
       {},
       "reopened-snapshot",
-    );
-    const reopen = core.queueCommand("session.open", {}, "reopened-open");
+    ));
+    const reopen = (await core.queueCommand("session.open", {}, "reopened-open"));
     handle = null;
     let secondExit;
     try {
       await core.start();
-      handle = launch(core, 2);
+      handle = await launch(core, 2);
       await waitUntil(
-        () =>
-          (core.getCommand(snapshot.commandId)?.status ?? "pending") !==
+        async () =>
+          ((await core.getCommand(snapshot.commandId))?.status ?? "pending") !==
             "pending" &&
-          (core.getCommand(reopen.commandId)?.status ?? "pending") !==
+          ((await core.getCommand(reopen.commandId))?.status ?? "pending") !==
             "pending",
       );
       for (const queued of [snapshot, reopen]) {
-        const command = core.getCommand(queued.commandId);
+        const command = (await core.getCommand(queued.commandId));
         assert.ok(command, "reopened_command_must_exist");
         assert.equal(command.status, "failed");
         assert.ok(

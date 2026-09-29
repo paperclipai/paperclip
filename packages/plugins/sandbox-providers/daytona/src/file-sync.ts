@@ -1,3 +1,4 @@
+import { visitCommandLines, writeTopLevelNames } from "./file-sync-stream.js";
 import path from "node:path";
 import os from "node:os";
 import { promises as fs, createReadStream, createWriteStream } from "node:fs";
@@ -164,32 +165,13 @@ async function createHostTarball(input: {
   followSymlinks?: boolean;
 }): Promise<void> {
   const excludeArgs = ["._*", ...(input.exclude ?? [])].flatMap((entry) => ["--exclude", entry]);
-  const entries = (await fs.readdir(input.localDir)).sort((left, right) => left.localeCompare(right));
-  if (entries.length === 0) {
-    // An empty source is valid (blank workspace / empty asset dir). Write a valid
-    // gzip-compressed empty tar (1024-byte zero EOF marker) so extraction is a
-    // clean no-op and uses the same transport as non-empty directories.
-    await fs.writeFile(input.archivePath, await new Promise<Buffer>((resolve, reject) => {
-      zlib.gzip(Buffer.alloc(1024), (error, compressed) => error ? reject(error) : resolve(compressed));
-    }));
-    return;
-  }
-  await execFileAsync(
-    "tar",
-    [
-      "-cz",
-      "--no-xattrs",
-      ...(input.followSymlinks ? ["-h"] : []),
-      "-f",
-      input.archivePath,
-      "-C",
-      input.localDir,
-      ...excludeArgs,
-      "--",
-      ...entries,
-    ],
-    { env: { ...process.env, COPYFILE_DISABLE: "1" }, maxBuffer: 32 * 1024 * 1024 },
-  );
+  const namesPath = `${input.archivePath}.names`;
+  try {
+    await writeTopLevelNames(input.localDir, namesPath);
+    await execFileAsync("tar", ["-cz", "--no-xattrs", ...(input.followSymlinks ? ["-h"] : []),
+      "-f", input.archivePath, "-C", input.localDir, ...excludeArgs, "--null", "-T", namesPath],
+      { env: { ...process.env, COPYFILE_DISABLE: "1" }, maxBuffer: 64 * 1024 });
+  } finally { await fs.rm(namesPath, { force: true }); }
 }
 
 /**
@@ -251,12 +233,8 @@ export function splitLinkEntryOnce(field: string, delimiter: string): { name: st
  * targets are inspected; any unparseable line fails closed.
  */
 async function assertTarballEntriesConfined(archivePath: string): Promise<void> {
-  const { stdout } = await execFileAsync("tar", ["-tvf", archivePath], {
-    env: { ...process.env, COPYFILE_DISABLE: "1" },
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
-  for (const line of lines) {
+  await visitCommandLines("tar", ["-tvf", archivePath], (line) => {
+    if (!line.trim()) return;
     const parsed = parseTarVerboseListingLine(line);
     if (!parsed) {
       throw new Error(`Daytona syncOut refusing tarball with an unparseable entry listing: ${line}`);
@@ -287,7 +265,7 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
         );
       }
     }
-  }
+  });
 }
 
 async function extractHostTarball(input: { archivePath: string; localDir: string }): Promise<void> {
@@ -305,8 +283,7 @@ async function countHostFiles(root: string, exclude?: string[]): Promise<number>
   const excludeSet = new Set(exclude ?? []);
   let total = 0;
   const walk = async (dir: string): Promise<void> => {
-    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
+    for await (const entry of await fs.opendir(dir, { bufferSize: 128 })) {
       if (excludeSet.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
@@ -1183,14 +1160,14 @@ async function syncOutDirectoryMapping(input: {
     // Tar the source in-sandbox (naming top-level entries so no "." self-entry is
     // embedded), reproducing the `followSymlinks` → `-h` mapping, then stream the
     // single archive back over the native bulk channel.
+    const namesPath = `${remoteTar}.names`;
     const tarScript = [
+      "set -e",
       `cd ${shellQuote(mapping.sourcePath)}`,
-      "set -- *",
-      'if [ "$#" -eq 1 ] && [ "$1" = "*" ] && [ ! -e "$1" ] && [ ! -L "$1" ]; then set --; fi',
-      'for entry in .[!.]* ..?*; do [ -e "$entry" ] || [ -L "$entry" ] || continue; set -- "$@" "$entry"; done',
-      `if [ "$#" -eq 0 ]; then dd if=/dev/zero of=${shellQuote(remoteTar)} bs=1024 count=1; ` +
-        `else tar -c --no-xattrs ${mapping.followSymlinks ? "-h " : ""}${excludeFlags} -f ${shellQuote(remoteTar)} -- "$@"; fi`,
-    ].join(" && ");
+      `trap ${shellQuote(`rm -f -- ${shellQuote(namesPath)}`)} EXIT`,
+      `find . -mindepth 1 -maxdepth 1 -print0 > ${shellQuote(namesPath)}`,
+      `tar -c --no-xattrs ${mapping.followSymlinks ? "-h " : ""}${excludeFlags} -f ${shellQuote(remoteTar)} --null -T ${shellQuote(namesPath)}`,
+    ].join("; ");
     await assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(tarScript)}`, timeoutSeconds, "syncOut tar");
     guardRoundTrips += 1;
 
