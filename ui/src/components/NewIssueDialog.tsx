@@ -380,6 +380,8 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   descriptionEditorRef,
   assigneeSelectorRef,
   projectSelectorRef,
+  titleInputRef,
+  titleError,
   onChange,
 }: {
   value: string;
@@ -389,6 +391,8 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   descriptionEditorRef: RefObject<MarkdownEditorRef | null>;
   assigneeSelectorRef: RefObject<HTMLButtonElement | null>;
   projectSelectorRef: RefObject<HTMLButtonElement | null>;
+  titleInputRef: RefObject<HTMLTextAreaElement | null>;
+  titleError: boolean;
   onChange: (value: string) => void;
 }) {
   const [draftValue, setDraftValue] = useState(value);
@@ -399,8 +403,13 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
 
   return (
     <textarea
-      className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
+      ref={titleInputRef}
+      className={cn(
+        "w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50",
+        titleError && "text-destructive placeholder:text-destructive/60",
+      )}
       placeholder="Task title"
+      aria-invalid={titleError || undefined}
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -492,7 +501,9 @@ export function NewIssueDialog() {
   const [description, setDescription] = useState("");
   const titleRef = useRef("");
   const descriptionRef = useRef("");
+  const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [titleHasText, setTitleHasText] = useState(false);
+  const [titleError, setTitleError] = useState(false);
   const [draftHasText, setDraftHasText] = useState(false);
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
@@ -769,6 +780,7 @@ export function NewIssueDialog() {
     const nextDraftHasText = nextTitleHasText || descriptionRef.current.trim().length > 0;
     setTitleHasText((current) => current === nextTitleHasText ? current : nextTitleHasText);
     setDraftHasText((current) => current === nextDraftHasText ? current : nextDraftHasText);
+    if (nextTitleHasText) setTitleError(false);
     queueDraftSave({ title: nextTitle });
   }, [queueDraftSave]);
 
@@ -1005,6 +1017,7 @@ export function NewIssueDialog() {
     setStagedFiles([]);
     setIsFileDragOver(false);
     setCompanyOpen(false);
+    setTitleError(false);
     executionWorkspaceDefaultProjectId.current = null;
     initializationKeyRef.current = null;
   }
@@ -1041,7 +1054,12 @@ export function NewIssueDialog() {
   function handleSubmit() {
     const currentTitle = titleRef.current.trim();
     const currentDescription = descriptionRef.current.trim();
-    if (!effectiveCompanyId || !currentTitle || createIssue.isPending) return;
+    if (!effectiveCompanyId || createIssue.isPending) return;
+    if (!currentTitle) {
+      setTitleError(true);
+      titleInputRef.current?.focus();
+      return;
+    }
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       lane: assigneeModelLane,
@@ -1488,8 +1506,19 @@ export function NewIssueDialog() {
               descriptionEditorRef={descriptionEditorRef}
               assigneeSelectorRef={assigneeSelectorRef}
               projectSelectorRef={projectSelectorRef}
+              titleInputRef={titleInputRef}
+              titleError={titleError}
               onChange={handleTitleChange}
             />
+            {titleError ? (
+              <p
+                data-testid="new-issue-title-error"
+                className="mt-1 text-xs text-destructive"
+                role="alert"
+              >
+                Title is required.
+              </p>
+            ) : null}
           </div>
 
           {effectiveCompanyId ? (
@@ -2361,8 +2390,8 @@ export function NewIssueDialog() {
             ) : null}
             <Button
               size="sm"
-              className="min-w-(--sz-8_5rem) disabled:opacity-100"
-              disabled={!titleHasText || createIssue.isPending}
+              className="min-w-(--sz-8_5rem)"
+              disabled={createIssue.isPending}
               onClick={handleSubmit}
               aria-busy={createIssue.isPending}
             >

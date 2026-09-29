@@ -517,6 +517,36 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("shows an inline error and does not submit when the title is empty", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleTextarea = Array.from(container.querySelectorAll("textarea"))
+      .find((textarea) => textarea.getAttribute("placeholder") === "Task title");
+    expect(titleTextarea).not.toBeUndefined();
+
+    const descriptionTextarea = Array.from(container.querySelectorAll("textarea"))
+      .find((textarea) => textarea.getAttribute("aria-label") === "Add description...");
+    expect(descriptionTextarea).not.toBeUndefined();
+
+    await typeTextareaValue(descriptionTextarea!, "A description without a title");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="new-issue-title-error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Title is required.");
+
+    act(() => root.unmount());
+  });
+
   it("does not show user-secret warnings when the draft will not run an env binding that needs them", async () => {
     const { root } = renderDialog(container);
     await flush();
@@ -1589,6 +1619,48 @@ describe("NewIssueDialog", () => {
         watchdog: { agentId: "agent-9", instructions: "Keep it moving" },
       }),
     );
+
+    act(() => root.unmount());
+  });
+
+  it("shows an inline error and focuses the title when submitting with an empty title", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    expect(descriptionInput).not.toBeNull();
+
+    // Fill only the description, leaving the title empty.
+    await typeTextareaValue(descriptionInput!, "A description without a title");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    // The button is disabled while the title is empty, so submit via the
+    // keyboard shortcut path (Cmd/Ctrl+Enter) which reaches handleSubmit.
+    await act(async () => {
+      titleInput!.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        key: "Enter",
+        metaKey: true,
+      }));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="new-issue-title-error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Title is required.");
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(titleInput);
+
+    // Typing a title clears the error and enables submission.
+    await typeTextareaValue(titleInput!, "Now it has a title");
+    expect(container.querySelector('[data-testid="new-issue-title-error"]')).toBeNull();
+
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
 
     act(() => root.unmount());
   });
