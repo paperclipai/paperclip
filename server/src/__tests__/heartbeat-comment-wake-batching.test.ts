@@ -3421,7 +3421,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, primaryAgentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        // Terminal run status is persisted before comment policy and lock
+        // cleanup. Observe release before checking the final queue state.
+        const [issue] = await db.select({ executionRunId: issues.executionRunId }).from(issues).where(eq(issues.id, issueId));
+        return runs.length === 2 && runs.every((run) => run.status === "succeeded") && issue.executionRunId === null;
       }, 90_000);
       const mentionedRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, mentionedAgentId));
       expect(mentionedRuns).toEqual([]);
