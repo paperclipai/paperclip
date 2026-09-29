@@ -247,6 +247,44 @@ export function normalizeCursorPlanRequest(value: unknown): {
   };
 }
 
+const RICH_EVENT_BYTE_LIMIT = 240 * 1024;
+const TODO_DETAIL_OMITTED = "\n[Further todo detail omitted]";
+
+/** Todo activity is a display snapshot, never the document sent for approval. */
+function boundTodoProjection(event: CanonicalProviderEvent, todos: Todo[]): CanonicalProviderEvent[] {
+  const fits = () => Buffer.byteLength(JSON.stringify(event)) <= RICH_EVENT_BYTE_LIMIT;
+  if (fits()) return [event];
+  const summary = "Todo detail shortened to fit the activity limit; all todo identities and statuses are preserved.";
+  event.payload.explanation = summary;
+  const points = todos.map(todo => Array.from(todo.content));
+  const prefixes = points.map(parts => {
+    let units = 0;
+    return parts.filter(point => { units += point.length; return units <= 3_940; });
+  });
+  const project = (limit: number) => {
+    event.payload.steps = todos.map((todo, index) => ({
+      stepId: stableId(todo.id),
+      body: (points[index]!.length <= limit ? todo.content : prefixes[index]!.slice(0, limit).join("") + TODO_DETAIL_OMITTED)
+        + (todo.status === "cancelled" ? "\n(Cancelled)" : ""),
+      status: todo.status === "cancelled" ? "blocked" : todo.status,
+    }));
+  };
+  // Measure serialized bytes (including JSON escaping), not string length.
+  // A common prefix bound retains useful detail for every todo and never splits
+  // a Unicode code point. At most 12 probes for the native 3,980-unit bound.
+  let low = 0;
+  let high = 3_980;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    project(mid);
+    if (fits()) low = mid;
+    else high = mid - 1;
+  }
+  project(low);
+  if (!fits()) throw new Error("Cursor todo identities exceed the activity byte bound");
+  return [event, notice(`${event.itemId}:todo-detail`, "cursor_todo_detail_partial", summary)];
+}
+
 /** Create one reducer per active turn; Cursor todo updates are deltas. */
 export function createCursorNotificationNormalizer(input: { workspacePath: string; turnId: string }) {
   let todos = new Map<string, Todo>();
@@ -261,16 +299,21 @@ export function createCursorNotificationNormalizer(input: { workspacePath: strin
       const next = request.merge ? new Map(todos) : new Map<string, Todo>();
       for (const todo of parseTodos(request.todos)) next.set(todo.id, todo);
       if (next.size > 256) throw new Error("Cursor todo snapshot exceeds 256 items");
-      todos = next;
-      return [{ eventType: "plan.updated", itemId, payload: {
-        schema: "paperclip.plan.updated.v1", planId, revision: ++revision,
+      const event: CanonicalProviderEvent = { eventType: "plan.updated", itemId, payload: {
+        schema: "paperclip.plan.updated.v1", planId, revision: revision + 1,
         explanation: null,
-        steps: Array.from(todos.values(), todo => ({ stepId: stableId(todo.id),
+        steps: Array.from(next.values(), todo => ({ stepId: stableId(todo.id),
           body: todo.status === "cancelled" ? `${todo.content}\n(Cancelled)` : todo.content,
           status: todo.status === "cancelled" ? "blocked" : todo.status })),
-        complete: todos.size > 0 && Array.from(todos.values()).every(todo => todo.status === "completed"),
+        complete: next.size > 0 && Array.from(next.values()).every(todo => todo.status === "completed"),
         syncStatus: "not_applicable", documentRevision: null,
-      } }];
+      } };
+      const events = boundTodoProjection(event, [...next.values()]);
+      // Keep complete native detail for future deltas, but commit only after the
+      // entire display snapshot fits the rich-event boundary.
+      todos = next;
+      revision++;
+      return events;
     }
     if (method === "cursor/task") {
       const subtype = typeof request.subagentType === "string" ? request.subagentType : object(request.subagentType).custom;

@@ -111,7 +111,7 @@ function acpxExecution(
         protocolVersion: 1,
         acpxVersion: "0.13.1",
         agent,
-        agentProfileVersion: 1,
+        agentProfileVersion: agent === "pi" ? QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion : 1,
         agentServerPackage:
           agent === "codex"
             ? "@agentclientprotocol/codex-acp"
@@ -132,7 +132,7 @@ function acpxExecution(
           agent === "codex"
             ? "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3"
             : agent === "pi"
-              ? "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f"
+              ? QUALIFIED_ACPX_PROFILES.pi.commandDigest
               : "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
       },
     },
@@ -555,6 +555,14 @@ describe("native backend factory", () => {
     expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime",
       acpxEnvironment: { COPILOT_GITHUB_TOKEN: "explicit-fixture", CURSOR_API_KEY: "explicit-fixture", OPENROUTER_API_KEY: "explicit-fixture" },
     })).toThrow("ACPX candidate direct execution requires completed qualification");
+  });
+
+  it.each([1, 2] as const)("rejects a Pi version %s warm snapshot after the rich ACP upgrade", version => {
+    const input = acpxExecution("pi");
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    input.provider.profile.agentProfileVersion = version;
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
+      .toThrow("does not match the qualified agentProfileVersion");
   });
 
   it("rejects a Codex ACPX snapshot that drifts from its qualified profile", () => {

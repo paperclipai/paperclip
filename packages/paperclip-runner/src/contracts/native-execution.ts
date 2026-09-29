@@ -90,7 +90,7 @@ export interface NativeAcpxProfileSnapshot {
   protocolVersion: 1;
   acpxVersion: "0.13.1";
   agent: NativeAcpxAgent;
-  agentProfileVersion: 1 | 2 | 3 | 4 | 5 | 6;
+  agentProfileVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   agentServerPackage: string;
   agentServerVersion: string;
   agentRuntimePackage: string | null;
@@ -601,7 +601,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       || profile.protocolVersion !== 1
       || profile.acpxVersion !== "0.13.1"
       || profile.agent !== provider.agent
-      || (profile.agentProfileVersion !== 1 && profile.agentProfileVersion !== 2 && profile.agentProfileVersion !== 3 && profile.agentProfileVersion !== 4 && profile.agentProfileVersion !== 5 && profile.agentProfileVersion !== 6)
+      || (profile.agentProfileVersion !== 1 && profile.agentProfileVersion !== 2 && profile.agentProfileVersion !== 3 && profile.agentProfileVersion !== 4 && profile.agentProfileVersion !== 5 && profile.agentProfileVersion !== 6 && profile.agentProfileVersion !== 7)
     ) {
       throw new NativeExecutionInputError("input.provider.profile does not match the qualified ACPX v1 profile");
     }

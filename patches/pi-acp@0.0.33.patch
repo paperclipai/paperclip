@@ -1,0 +1,1077 @@
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -11,6 +11,7 @@
+ // src/acp/auth.ts
+ var PI_SETUP_METHOD_ID = "pi_terminal_login";
+ function getAuthMethods(opts) {
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1") return [];
+   const supportsTerminalAuthMeta = opts?.supportsTerminalAuthMeta ?? true;
+   const method = {
+     id: PI_SETUP_METHOD_ID,
+@@ -53,7 +54,7 @@
+
+ // src/pi-rpc/process.ts
+ import { spawn } from "child_process";
+-import * as readline from "readline";
++import { PI_ACP_FEATURES, PiToolIdentities, piHistoricalToolIdentity, PiRpcFrames, PiUiBridge, PiTurnUsage, createPiLaunchSpec, snapshotPiWorkspaceFile } from "./paperclip-runtime.js";
+
+ // src/pi-rpc/command.ts
+ import { platform } from "os";
+@@ -94,51 +95,42 @@
+   pending = /* @__PURE__ */ new Map();
+   eventHandlers = [];
+   preludeLines = [];
+-  constructor(child) {
++  constructor(child, invocationNamespace) {
++    this.toolIdentities = new PiToolIdentities(invocationNamespace);
+     this.child = child;
+-    const rl = readline.createInterface({ input: child.stdout });
+-    rl.on("line", (line) => {
+-      if (!line.trim()) return;
+-      let msg;
+-      try {
+-        msg = JSON.parse(line);
+-      } catch {
+-        const cleaned = stripAnsi(String(line)).trimEnd();
+-        if (cleaned) this.preludeLines.push(cleaned);
++    this.exited = null;
++    const fail = (error) => {
++      if (this.exited) return;
++      this.exited = error;
++      for (const [, pending] of this.pending) pending.reject(error);
++      this.pending.clear();
++      for (const handler of this.eventHandlers) handler({ type: "paperclip_process_exit" });
++    };
++    const frames = new PiRpcFrames((msg) => {
++      if (msg.type === "response") {
++        if (typeof msg.id === "string") this.pending.get(msg.id)?.resolve(msg);
+         return;
+       }
+-      if (msg?.type === "response") {
+-        const id = typeof msg.id === "string" ? msg.id : void 0;
+-        if (id) {
+-          const pending = this.pending.get(id);
+-          if (pending) {
+-            this.pending.delete(id);
+-            pending.resolve(msg);
+-            return;
+-          }
+-        }
+-      }
+-      for (const h of this.eventHandlers) h(msg);
++      const event = this.toolIdentities.normalize(msg);
++      for (const handler of this.eventHandlers) handler(event);
+     });
+-    child.on("exit", (code, signal) => {
+-      const err = new Error(`pi process exited (code=${code}, signal=${signal})`);
+-      for (const [, p] of this.pending) p.reject(err);
+-      this.pending.clear();
++    child.stdout.on("data", (chunk) => {
++      try { frames.write(chunk); } catch (error) { fail(error); this.dispose("SIGKILL"); }
+     });
+-    child.on("error", (err) => {
+-      for (const [, p] of this.pending) p.reject(err);
+-      this.pending.clear();
++    child.stdout.on("end", () => {
++      try { frames.end(); } catch (error) { fail(error); }
+     });
++    child.on("exit", () => fail(new Error("Pi process exited before its next request")));
++    child.on("error", fail);
+   }
+   static async spawn(params) {
+-    const cmd = getPiCommand(params.piCommand);
+-    const args = ["--mode", "rpc", "--no-themes"];
+-    if (params.sessionPath) args.push("--session", params.sessionPath);
+-    const child = spawn(cmd, args, {
++    const launch = createPiLaunchSpec(params, process.env);
++    const cmd = launch.command;
++    const child = spawn(cmd, launch.args, {
+       cwd: params.cwd,
+       stdio: "pipe",
+-      env: process.env,
+-      shell: shouldUseShellForPiCommand(cmd)
++      env: launch.env,
++      shell: false
+     });
+     try {
+       await new Promise((resolve4, reject) => {
+@@ -172,7 +164,7 @@
+     }
+     child.stderr.on("data", () => {
+     });
+-    const proc = new _PiRpcProcess(child);
++    const proc = new _PiRpcProcess(child, launch.invocationNamespace);
+     try {
+       const state = await proc.getState();
+       const sessionFile = typeof state?.sessionFile === "string" ? state.sessionFile : null;
+@@ -181,21 +173,30 @@
+         const { dirname: dirname3 } = await import("path");
+         mkdirSync2(dirname3(sessionFile), { recursive: true });
+       }
+-    } catch {
++      const commands = await proc.getCommands();
++      if (!Array.isArray(commands?.commands) || !commands.commands.some((command) => command.name === "paperclip-runtime-ready-v1" && command.description === "Paperclip runtime gate v1")) throw new Error("Pi owned runtime extension did not initialize");
++    } catch (error) {
++      proc.dispose("SIGKILL");
++      throw new PiRpcSpawnError("Pi owned runtime extension failed admission", { cause: error });
+     }
+     return proc;
+   }
+   onEvent(handler) {
+     this.eventHandlers.push(handler);
++    if (this.exited) queueMicrotask(() => handler({ type: "paperclip_process_exit" }));
+     return () => {
+       this.eventHandlers = this.eventHandlers.filter((h) => h !== handler);
+     };
+   }
+   dispose(signal = "SIGTERM") {
+-    if (this.child.killed) return;
+-    try {
+-      this.child.kill(signal);
+-    } catch {
++    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
++    try { this.child.stdin.end(); this.child.kill(signal); } catch {}
++    if (signal !== "SIGKILL") {
++      const timer = setTimeout(() => {
++        if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill("SIGKILL");
++      }, 2000);
++      timer.unref();
++      this.child.once("exit", () => clearTimeout(timer));
+     }
+   }
+   /**
+@@ -242,7 +243,7 @@
+     if (!res.success) throw new Error(`pi set_steering_mode failed: ${res.error ?? JSON.stringify(res.data)}`);
+   }
+   async compact(customInstructions) {
+-    const res = await this.request({ type: "compact", customInstructions });
++    const res = await this.request({ type: "compact", customInstructions }, 120000);
+     if (!res.success) throw new Error(`pi compact failed: ${res.error ?? JSON.stringify(res.data)}`);
+     return res.data;
+   }
+@@ -283,17 +284,23 @@
+     await this.writeLine(`${JSON.stringify({ type: "extension_ui_response", ...response })}
+ `);
+   }
+-  request(cmd) {
++  request(cmd, timeoutMs = 30000) {
++    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000) throw new Error("Invalid Pi RPC deadline");
+     const id = crypto.randomUUID();
+     const withId = { ...cmd, id };
+     const line = `${JSON.stringify(withId)}
+ `;
++    if (this.exited) return Promise.reject(this.exited);
+     return new Promise((resolve4, reject) => {
+-      this.pending.set(id, { resolve: resolve4, reject });
+-      void this.writeLine(line).catch((error) => {
+-        this.pending.delete(id);
+-        reject(error);
+-      });
++      const timer = setTimeout(() => { finish(new Error("Pi RPC request timed out")); this.dispose("SIGKILL"); }, timeoutMs);
++      timer.unref();
++      const finish = (error, value) => {
++        if (!this.pending.delete(id)) return;
++        clearTimeout(timer);
++        if (error) reject(error); else resolve4(value);
++      };
++      this.pending.set(id, { resolve: (value) => finish(null, value), reject: (error) => finish(error) });
++      void this.writeLine(line).catch((error) => finish(error));
+     });
+   }
+   writeLine(line) {
+@@ -337,7 +344,7 @@
+     {
+       authMethods: getAuthMethods()
+     },
+-    "Configure an API key or log in with an OAuth provider."
++    "Bind the configured OpenRouter API credential to this Paperclip runtime."
+   );
+ }
+
+@@ -534,6 +541,14 @@
+   const record = value;
+   const command = record?.command ?? record?.cmd ?? record?.args?.command ?? record?.args?.cmd ?? record?.input?.command ?? record?.input?.cmd ?? record?.rawInput?.command ?? record?.rawInput?.cmd ?? record?.toolInput?.command ?? record?.toolInput?.cmd ?? record?.details?.command ?? record?.details?.cmd;
+   return typeof command === "string" && command.trim() ? command : void 0;
++}
++// Standard ACP data survives clients that do not consume terminal metadata.
++// Keep each structured native value whole or explicitly omit it at a byte bound.
++function boundedBashValue(value) {
++  const encoded = JSON.stringify(value);
++  if (encoded === void 0) return void 0;
++  const bytes = Buffer.byteLength(encoded);
++  return bytes <= 65536 ? value : { _meta: { paperclipPi: { omitted: "tool value exceeds 65536 bytes", originalBytes: bytes } } };
+ }
+ function bashResultText(result) {
+   const record = result;
+@@ -714,6 +729,7 @@
+     try {
+       proc = await PiRpcProcess.spawn({
+         cwd: params.cwd,
++        mcpServers: params.mcpServers,
+         piCommand: params.piCommand
+       });
+     } catch (e) {
+@@ -808,6 +824,9 @@
+     this.proc = opts.proc;
+     this.conn = opts.conn;
+     this.fileCommands = opts.fileCommands ?? [];
++    this.uiBridge = new PiUiBridge(this.sessionId, this.conn, this.proc);
++    this.turnUsage = new PiTurnUsage();
++    this.turnEpoch = 0;
+     this.proc.onEvent((ev) => this.handlePiEvent(ev));
+   }
+   setStartupInfo(text) {
+@@ -852,6 +871,7 @@
+   }
+   async cancel() {
+     this.cancelRequested = true;
++    this.uiBridge.cancelAll();
+     if (this.turnQueue.length) {
+       const queued = this.turnQueue.splice(0, this.turnQueue.length);
+       for (const t of queued) t.resolve("cancelled");
+@@ -870,6 +890,8 @@
+     return this.cancelRequested;
+   }
+   emit(update) {
++    const provenance = typeof update.toolCallId === "string" ? this.proc.toolIdentities.provenance(update.toolCallId) : undefined;
++    if (provenance) update = { ...update, _meta: { ...update._meta, paperclipPi: { ...update._meta?.paperclipPi, ...provenance } } };
+     this.lastEmit = this.lastEmit.then(
+       () => this.conn.sessionUpdate({
+         sessionId: this.sessionId,
+@@ -890,6 +912,7 @@
+       kind: "execute",
+       status: params.status,
+       locations: params.locations,
++      rawInput: boundedBashValue(params.args),
+       ...params.includeTerminal ? { content: bashTerminalContent(params.toolCallId) } : {},
+       ...params.includeTerminal ? { _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd) } : {}
+     });
+@@ -903,6 +926,7 @@
+       sessionUpdate: "tool_call_update",
+       toolCallId: params.toolCallId,
+       status: params.status,
++      rawOutput: boundedBashValue(params.result),
+       _meta: {
+         ...delta ? bashTerminalOutputMeta(params.toolCallId, delta) : {},
+         ...params.status === "completed" || params.status === "failed" ? bashTerminalExitMeta(params.toolCallId, bashExitCode(params.result, Boolean(params.isError))) : {}
+@@ -920,12 +944,16 @@
+     this.cancelRequested = false;
+     this.inAgentLoop = false;
+     this.pendingTurn = { resolve: t.resolve, reject: t.reject };
++    const epoch = ++this.turnEpoch;
++    this.turnUsage.reset();
+     this.emit({
+       sessionUpdate: "session_info_update",
+       _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
+     });
+     this.proc.prompt(t.message, t.images).catch((err) => {
+       void this.flushEmits().finally(() => {
++        if (epoch !== this.turnEpoch || !this.pendingTurn) return;
++        this.uiBridge.cancelAll();
+         const authErr = maybeAuthRequiredError(err);
+         if (authErr) {
+           this.pendingTurn?.reject(authErr);
+@@ -946,6 +974,23 @@
+   handlePiEvent(ev) {
+     const type = String(ev.type ?? "");
+     switch (type) {
++      case "paperclip_process_exit": {
++        this.uiBridge.cancelAll();
++        this.pendingTurn?.reject(new Error("Pi provider process exited"));
++        this.pendingTurn = null;
++        for (const turn of this.turnQueue.splice(0)) turn.reject(new Error("Pi provider process exited"));
++        this.turnEpoch += 1;
++        break;
++      }
++      case "message_end": {
++        try { this.turnUsage.accept(ev.message); } catch {
++          this.pendingTurn?.reject(new Error("Pi usage receipt is invalid"));
++          this.pendingTurn = null;
++          this.uiBridge.cancelAll();
++          this.proc.dispose("SIGKILL");
++        }
++        break;
++      }
+       case "message_update": {
+         const ame = ev.assistantMessageEvent;
+         if (ame?.type === "text_delta" && typeof ame.delta === "string") {
+@@ -1047,7 +1092,7 @@
+           if (p) {
+             try {
+               const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p);
+-              snapshotOldText = readFileSync3(abs, "utf8");
++              snapshotOldText = snapshotPiWorkspaceFile(this.cwd, abs);
+               this.fileSnapshots.set(toolCallId, { path: p, oldText: snapshotOldText });
+               if (toolName === "edit") {
+                 for (const needle of getEditOldTexts(args)) {
+@@ -1125,7 +1170,7 @@
+         if (!isError && snapshot) {
+           try {
+             const abs = isAbsolute(snapshot.path) ? snapshot.path : resolvePath(this.cwd, snapshot.path);
+-            const newText = readFileSync3(abs, "utf8");
++            const newText = snapshotPiWorkspaceFile(this.cwd, abs);
+             if (snapshot.oldText === null || newText !== snapshot.oldText) {
+               hasStructuredDiff = true;
+               content = [
+@@ -1154,14 +1199,16 @@
+         break;
+       }
+       case "extension_ui_request": {
+-        void this.handleExtensionUiRequest(ev).catch(() => {
+-          const id = stringProp(ev, "id");
+-          if (!id) {
+-            return;
+-          }
+-          void this.proc.sendExtensionUiResponse({ id, cancelled: true }).catch(() => {
+-          });
++        if (ev.method === "notify") this.emit({
++          sessionUpdate: "session_info_update",
++          _meta: { paperclipPi: { notice: { message: typeof ev.message === "string" ? ev.message.slice(0, 4096) : "Pi notification", level: ev.notifyType } } }
+         });
++        void this.uiBridge.handle(ev).catch(() => {
++          this.emit({ sessionUpdate: "session_info_update", _meta: { paperclipPi: { notice: {
++            message: "Pi structured question is unsupported or invalid; the session was stopped", level: "error"
++          } } } });
++          this.proc.dispose("SIGKILL");
++        });
+         break;
+       }
+       case "auto_retry_start": {
+@@ -1174,28 +1216,31 @@
+       case "auto_retry_end": {
+         this.emit({
+           sessionUpdate: "agent_message_chunk",
+-          content: { type: "text", text: "Retry finished, resuming." }
+-        });
+-        break;
+-      }
+-      case "auto_compaction_start": {
+-        this.emit({
+-          sessionUpdate: "agent_message_chunk",
+           content: {
+             type: "text",
+-            text: "Context nearing limit, running automatic compaction..."
++            text: ev.success === true ? "Retry finished, resuming."
++              : ev.success === false ? "Retry failed; the provider request did not recover."
++              : "Retry finished; the provider did not report an outcome."
+           }
+         });
+         break;
+       }
+-      case "auto_compaction_end": {
+-        this.emit({
+-          sessionUpdate: "agent_message_chunk",
+-          content: {
+-            type: "text",
+-            text: "Automatic compaction finished; context was summarized to continue the session."
+-          }
+-        });
++      case "compaction_start": {
++        this.emit({ sessionUpdate: "agent_message_chunk", content: {
++          type: "text", text: ev.reason === "manual" ? "Compacting context..." : "Context nearing limit, running automatic compaction..."
++        } });
++        break;
++      }
++      case "compaction_end": {
++        (this.pendingTurn ? this.turnUsage : this.manualCompactionUsage)?.acceptCompaction(ev.result);
++        this.emit({ sessionUpdate: "agent_message_chunk", content: {
++          type: "text", text: ev.aborted ? "Context compaction cancelled." : ev.errorMessage ? "Context compaction failed." : "Context compaction finished."
++        } });
++        break;
++      }
++      case "summarization_retry_scheduled": {
++        (this.pendingTurn ? this.turnUsage : this.manualCompactionUsage)?.markIncomplete();
++        this.emit({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Context summarization is retrying a provider request." } });
+         break;
+       }
+       case "agent_start": {
+@@ -1210,9 +1255,12 @@
+         break;
+       }
+       case "agent_settled": {
++        const epoch = this.turnEpoch;
+         void this.flushEmits().finally(() => {
++          if (epoch !== this.turnEpoch || !this.pendingTurn) return;
++          this.uiBridge.cancelAll();
+           const reason = this.cancelRequested ? "cancelled" : "end_turn";
+-          this.pendingTurn?.resolve(reason);
++          this.pendingTurn?.resolve({ stopReason: reason, ...this.turnUsage.response() });
+           this.pendingTurn = null;
+           this.inAgentLoop = false;
+           const next = this.turnQueue.shift();
+@@ -1725,6 +1773,7 @@
+   return process.env.PI_CODING_AGENT_DIR ? resolve3(process.env.PI_CODING_AGENT_DIR) : join4(homedir4(), ".pi", "agent");
+ }
+ function getEnableSkillCommands(cwd) {
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1") return true;
+   const merged = getMergedSettings(cwd);
+   const direct = merged.enableSkillCommands;
+   if (typeof direct === "boolean") return direct;
+@@ -1733,6 +1782,7 @@
+   return true;
+ }
+ function getQuietStartup(cwd) {
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1") return true;
+   const merged = getMergedSettings(cwd);
+   const direct = merged.quietStartup;
+   if (typeof direct === "boolean") return direct;
+@@ -1824,6 +1874,7 @@
+   const out = [];
+   const seen = /* @__PURE__ */ new Set();
+   for (const c of [...a, ...b]) {
++    if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && !["compact", "session", "autocompact"].includes(c.name)) continue;
+     if (seen.has(c.name)) continue;
+     seen.add(c.name);
+     out.push(c);
+@@ -1884,11 +1935,13 @@
+         throw RequestError3.invalidParams(`Unknown sessionId: ${sessionId}`);
+       }
+       const cwd = opts?.cwd ?? stored.cwd;
++      if (cwd !== stored.cwd || !opts) throw RequestError3.invalidParams("Pi recovery requires session/load in the original workspace");
+       let proc;
+       try {
+         proc = await PiRpcProcess.spawn({
+           cwd,
+           sessionPath: stored.sessionFile,
++          mcpServers: opts?.mcpServers ?? [],
+           piCommand: process.env.PI_ACP_PI_COMMAND
+         });
+       } catch (e) {
+@@ -1897,7 +1950,7 @@
+         }
+         throw e;
+       }
+-      const fileCommands = loadSlashCommands(cwd);
++      const fileCommands = [];
+       const session = this.sessions.getOrCreate(sessionId, {
+         cwd,
+         mcpServers: opts?.mcpServers ?? [],
+@@ -1917,6 +1970,7 @@
+     }
+   }
+   async initialize(params) {
++    if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") throw RequestError3.invalidParams("Pi requires a qualified Paperclip launch");
+     const supportedVersion = 1;
+     const requested = params.protocolVersion;
+     return {
+@@ -1933,7 +1987,8 @@
+       }),
+       agentCapabilities: {
+         loadSession: true,
+-        mcpCapabilities: { http: false, sse: false },
++        mcpCapabilities: { http: true, sse: false },
++        _meta: { paperclipPi: PI_ACP_FEATURES },
+         promptCapabilities: {
+           image: true,
+           audio: false,
+@@ -1942,8 +1997,7 @@
+         sessionCapabilities: {
+           // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
+           // Enables a native session picker in clients that support it.
+-          list: {},
+-          delete: {}
++          list: {}
+         }
+       }
+     };
+@@ -1953,7 +2007,7 @@
+       throw RequestError3.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
+     }
+     this.lastSessionCwd = params.cwd;
+-    const fileCommands = loadSlashCommands(params.cwd);
++    const fileCommands = [];
+     const enableSkillCommands = getEnableSkillCommands(params.cwd);
+     const session = await this.sessions.create({
+       cwd: params.cwd,
+@@ -1994,14 +2048,14 @@
+       this.cleanupFailedNewSession(session.sessionId, state);
+       throw RequestError3.authRequired(
+         { authMethods: getAuthMethods() },
+-        "Configure an API key or log in with an OAuth provider."
++        "Bind the configured OpenRouter API credential to this Paperclip runtime."
+       );
+     }
+     if (stateErr && maybeAuthRequiredError(stateErr)) {
+       this.cleanupFailedNewSession(session.sessionId, state);
+       throw RequestError3.authRequired(
+         { authMethods: getAuthMethods() },
+-        "Configure an API key or log in with an OAuth provider."
++        "Bind the configured OpenRouter API credential to this Paperclip runtime."
+       );
+     }
+     const { configOptions, models, modes } = await getSessionConfiguration(session.proc, {
+@@ -2064,34 +2118,27 @@
+   }
+   async prompt(params) {
+     const session = await this.restoreSession(params.sessionId);
++    if (session.manualCompactionUsage) throw RequestError3.invalidParams("Pi context compaction is active");
+     const { message, images } = promptToPiMessage(params.prompt);
+     if (images.length === 0 && message.trimStart().startsWith("/")) {
++      const command = message.trim().split(/\s+/)[0];
++      if (!["/compact", "/session", "/autocompact"].includes(command)) throw RequestError3.invalidParams("Pi slash command is not admitted by Paperclip Runner");
+       const trimmed = message.trim();
+       const space = trimmed.indexOf(" ");
+       const cmd = space === -1 ? trimmed.slice(1) : trimmed.slice(1, space);
+       const argsString = space === -1 ? "" : trimmed.slice(space + 1);
+       const args = parseCommandArgs(argsString);
+       if (cmd === "compact") {
++        if (session.pendingTurn || session.manualCompactionUsage) throw RequestError3.invalidParams("Manual compaction requires an idle session");
+         const customInstructions = args.join(" ").trim() || void 0;
+-        const res = await session.proc.compact(customInstructions);
+-        const r = res && typeof res === "object" ? res : null;
+-        const tokensBefore = typeof r?.tokensBefore === "number" ? r.tokensBefore : null;
+-        const summary = typeof r?.summary === "string" ? r.summary : null;
+-        const headerLines = [
+-          `Compaction completed.${customInstructions ? " (custom instructions applied)" : ""}`,
+-          tokensBefore !== null ? `Tokens before: ${tokensBefore}` : null
+-        ].filter(Boolean);
+-        const text = headerLines.join("\n") + (summary ? `
+-
+-${summary}` : "");
+-        await this.conn.sessionUpdate({
+-          sessionId: session.sessionId,
+-          update: {
+-            sessionUpdate: "agent_message_chunk",
+-            content: { type: "text", text }
+-          }
+-        });
+-        return { stopReason: "end_turn" };
++        const compactionUsage = new PiTurnUsage();
++        session.manualCompactionUsage = compactionUsage;
++        try {
++          const res = await session.proc.compact(customInstructions);
++          compactionUsage.acceptCompaction(res);
++          await session.flushEmits();
++          return { stopReason: "end_turn", ...compactionUsage.response() };
++        } finally { session.manualCompactionUsage = null; }
+       }
+       if (cmd === "session") {
+         const stats = await session.proc.getSessionStats();
+@@ -2432,8 +2479,18 @@
+       }
+     }
+     const result = await session.prompt(message, images);
+-    const stopReason = result === "error" ? session.wasCancelRequested() ? "cancelled" : "end_turn" : result;
+-    return { stopReason };
++    if (result && typeof result === "object") return result;
++    if (result === "error") throw RequestError3.internalError({}, "Pi prompt failed");
++    return { stopReason: result };
++  }
++  async extMethod(method, params) {
++    if (method !== "pi/steer" && method !== "pi/follow_up") throw RequestError3.methodNotFound(method);
++    if (typeof params.sessionId !== "string" || typeof params.message !== "string" || !params.message.trim() || Buffer.byteLength(params.message) > 65536) throw RequestError3.invalidParams("Invalid Pi continuation");
++    const session = this.sessions.maybeGet(params.sessionId);
++    if (!session?.pendingTurn || session.cancelRequested) throw RequestError3.invalidParams("Pi continuation requires an active turn");
++    const response = await session.proc.request({ type: method === "pi/steer" ? "steer" : "follow_up", message: params.message });
++    if (!response.success) throw RequestError3.internalError({}, "Pi continuation was rejected");
++    return { accepted: true, sessionId: session.sessionId, kind: method === "pi/steer" ? "steer" : "follow_up" };
+   }
+   async cancel(params) {
+     const session = this.sessions.maybeGet(params.sessionId);
+@@ -2473,7 +2530,7 @@
+       mcpServers: params.mcpServers
+     });
+     const proc = session.proc;
+-    const fileCommands = loadSlashCommands(params.cwd);
++    const fileCommands = [];
+     this.sessions.closeAllExcept?.(session.sessionId);
+     this.store.upsert({
+       sessionId: params.sessionId,
+@@ -2482,7 +2539,7 @@
+     });
+     const data = await proc.getMessages();
+     const messages = Array.isArray(data?.messages) ? data.messages : [];
+-    for (const m of messages) {
++    for (const [messageIndex, m] of messages.entries()) {
+       const role = String(m?.role ?? "");
+       if (role === "user") {
+         const text = normalizePiMessageText(m?.content);
+@@ -2510,7 +2567,8 @@
+       }
+       if (role === "toolResult") {
+         const toolName = String(m?.toolName ?? "tool");
+-        const toolCallId = String(m?.toolCallId ?? crypto.randomUUID());
++        const historical = piHistoricalToolIdentity(params.sessionId, messageIndex, String(m?.toolCallId ?? ""));
++        const toolCallId = historical.id;
+         const isError = Boolean(m?.isError);
+         const isBash = isBashTool(toolName);
+         if (isBash) {
+@@ -2524,7 +2582,7 @@
+               kind: "execute",
+               status: "completed",
+               content: bashTerminalContent(toolCallId),
+-              _meta: bashTerminalInfoMeta(toolCallId, params.cwd)
++              _meta: { ...bashTerminalInfoMeta(toolCallId, params.cwd), paperclipPi: historical.provenance }
+             }
+           });
+           await this.conn.sessionUpdate({
+@@ -2535,7 +2593,8 @@
+               status: isError ? "failed" : "completed",
+               _meta: {
+                 ...text2 ? bashTerminalOutputMeta(toolCallId, text2) : {},
+-                ...bashTerminalExitMeta(toolCallId, bashExitCode(m, isError))
++                ...bashTerminalExitMeta(toolCallId, bashExitCode(m, isError)),
++                paperclipPi: historical.provenance
+               }
+             }
+           });
+@@ -2549,6 +2608,7 @@
+             title: toolName,
+             kind: toolName === "read" ? "read" : toolName === "write" || toolName === "edit" ? "edit" : "other",
+             status: "completed",
++            _meta: { paperclipPi: historical.provenance },
+             rawInput: null,
+             rawOutput: m
+           }
+@@ -2560,6 +2620,7 @@
+             sessionUpdate: "tool_call_update",
+             toolCallId,
+             status: isError ? "failed" : "completed",
++            _meta: { paperclipPi: historical.provenance },
+             content: text ? [{ type: "content", content: { type: "text", text } }] : null,
+             rawOutput: m
+           }
+@@ -2607,6 +2668,7 @@
+     return response;
+   }
+   async deleteSession(params) {
++    throw RequestError3.methodNotFound("session/delete");
+     const stored = this.store.get(params.sessionId);
+     const piSession = findPiSession(params.sessionId);
+     if (!stored && !piSession) {
+@@ -2828,6 +2890,7 @@
+   return 0;
+ }
+ function buildUpdateNotice() {
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1") return null;
+   try {
+     const piVersion = spawnSync("pi", ["--version"], { encoding: "utf-8" });
+     const installed = (String(piVersion.stdout ?? "").trim() || String(piVersion.stderr ?? "").trim()).replace(
+@@ -2848,6 +2911,7 @@
+   }
+ }
+ function buildStartupInfo(opts) {
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1") return "";
+   void opts.fileCommands;
+   const md = [];
+   try {
+@@ -2980,6 +3044,7 @@
+
+ // src/index.ts
+ if (process.argv.includes("--terminal-login")) {
++  throw new Error("Interactive Pi authentication is not available in Paperclip Runner");
+   const { spawnSync: spawnSync2 } = await import("child_process");
+   const cmd = getPiCommand(process.env.PI_ACP_PI_COMMAND);
+   const res = spawnSync2(cmd, [], {
+@@ -3019,11 +3084,12 @@
+   }
+ });
+ var stream = ndJsonStream(input, output);
+-var agent = new AgentSideConnection((conn) => new PiAcpAgent(conn), stream);
++var ownedPiAgent;
++var agent = new AgentSideConnection((conn) => (ownedPiAgent = new PiAcpAgent(conn)), stream);
+ function shutdown() {
+   try {
+     ;
+-    agent?.agent?.dispose?.();
++    ownedPiAgent?.dispose?.();
+   } catch {
+   }
+   try {
+--- /dev/null
++++ b/dist/paperclip-runtime.js
+@@ -0,0 +1,394 @@
++/** Source for the helper embedded in patches/pi-acp@0.0.33.patch. */
++import { createHash, randomUUID } from "node:crypto";
++import { StringDecoder } from "node:string_decoder";
++import { isAbsolute, relative, resolve, sep } from "node:path";
++import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
++
++const PERMISSION_PREFIX = "paperclip.pi.permission.v1:";
++const PERMISSION_CHOICES = [
++  { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
++  { optionId: "allow_always", name: "Allow for this session", kind: "allow_always" },
++  { optionId: "reject_once", name: "Deny", kind: "reject_once" },
++];
++
++function record(value         )              {
++  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Pi runtime record");
++  return value               ;
++}
++function text(value         , max = 16_384)         {
++  if (typeof value !== "string" || Buffer.byteLength(value) > max) throw new Error("Invalid Pi runtime text");
++  return value;
++}
++
++export const PI_ACP_FEATURES = Object.freeze({
++  version: 1, steering: true, queuedFollowUp: true,
++  questions: ["select", "confirm", "input", "editor"],
++  nativePermissions: true, promptUsage: true, nativePlan: false,
++  pendingRequestRecovery: "live-process-only",
++});
++
++/** One trusted Pi model iteration, not one ACP prompt. Pi resets its own turnIndex
++ * on warm prompts; our ordinal is monotonic for the lifetime of the child. */
++export class PiToolIdentities {
++          ordinal = 0;
++          active = false;
++          poisoned = false;
++          entries = new Map                                                                                  ();
++          namespace        ;
++  constructor(namespace        ) {
++    this.namespace = namespace;
++    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(namespace)) throw new Error("Pi invocation namespace is invalid");
++  }
++          fail(message        )        { this.poisoned = true; throw new Error(message); }
++  begin()       {
++    if (this.poisoned || this.active || this.ordinal >= Number.MAX_SAFE_INTEGER) this.fail("Pi model iteration identity is ambiguous");
++    this.ordinal++; this.active = true; this.entries.clear();
++  }
++  end()       {
++    if (this.poisoned || !this.active) this.fail("Pi model iteration identity is unavailable");
++    this.active = false;
++  }
++  identity(nativeId         )         {
++    if (this.poisoned || this.ordinal === 0) this.fail("Pi model iteration identity is unavailable");
++    let native        ;
++    try { native = text(nativeId, 256); } catch { return this.fail("Pi native tool identity is invalid"); }
++    if (!native) this.fail("Pi native tool identity is missing");
++    const prior = this.entries.get(native);
++    if (prior) return prior.id;
++    if (!this.active || this.entries.size >= 4096) this.fail("Pi tool identity is outside its iteration bound");
++    const id = `pi-${createHash("sha256").update(JSON.stringify([this.namespace, this.ordinal, native])).digest("hex")}`;
++    this.entries.set(native, { id, nativeId: native, claimed: false });
++    return id;
++  }
++  bind(nativeId        , name        , args         , claim = false)         {
++    if (this.poisoned || !this.active) this.fail("Pi tool invocation has no active model iteration");
++    const id = this.identity(nativeId); const entry = this.entries.get(nativeId) ;
++    const canonical = (value         )          => Array.isArray(value) ? value.map(canonical)
++      : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
++    let encoded        ;
++    try { encoded = JSON.stringify([text(name, 256), canonical(args)]); }
++    catch { return this.fail("Pi tool invocation is invalid"); }
++    if (Buffer.byteLength(encoded) > 1_048_576) this.fail("Pi tool invocation is oversized");
++    const fingerprint = createHash("sha256").update(encoded).digest("hex");
++    if ((claim && entry.claimed) || (entry.fingerprint !== undefined && entry.fingerprint !== fingerprint)) this.fail("Pi native tool invocation identity conflict");
++    entry.fingerprint = fingerprint; if (claim) entry.claimed = true;
++    return id;
++  }
++  provenance(id        )                          {
++    for (const entry of this.entries.values()) if (entry.id === id) return { nativeToolCallId: entry.nativeId, modelIteration: this.ordinal, identityScope: "native-model-iteration" };
++    return undefined;
++  }
++  normalize(event             )              {
++    if (event.type === "turn_start") { this.begin(); return event; }
++    if (event.type === "turn_end") { this.end(); return event; }
++    if (["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(String(event.type))) {
++      const native = text(event.toolCallId, 256);
++      const id = event.type === "tool_execution_start" ? this.bind(native, text(event.toolName, 256), event.args, true) : this.identity(native);
++      return { ...event, toolCallId: id };
++    }
++    if (event.type === "message_update" && event.assistantMessageEvent) {
++      const update = record(event.assistantMessageEvent);
++      const normalizeTool = (value         , direct = false)          => {
++        if (!value || typeof value !== "object") return value;
++        const block = record(value);
++        // Empty IDs during initial streaming do not identify an executable call.
++        return (direct || block.type === "toolCall") && typeof block.id === "string" && block.id
++          ? { ...block, id: this.identity(block.id) } : value;
++      };
++      const partial = update.partial && typeof update.partial === "object" ? record(update.partial) : undefined;
++      return { ...event, assistantMessageEvent: { ...update,
++        ...(update.toolCall ? { toolCall: normalizeTool(update.toolCall, true) } : {}),
++        ...(partial && Array.isArray(partial.content) ? { partial: { ...partial, content: partial.content.map((block) => normalizeTool(block)) } } : {}),
++      } };
++    }
++    return event;
++  }
++}
++
++/** Session history is presentation-only and must never acquire a live delivery ID. */
++export function piHistoricalToolIdentity(sessionId        , messageIndex        , nativeId        )                                          {
++  const session = text(sessionId, 1024); const native = text(nativeId, 256);
++  if (!session || !native || !Number.isSafeInteger(messageIndex) || messageIndex < 0) throw new Error("Pi history tool identity is invalid");
++  return { id: `pi-history-${createHash("sha256").update(JSON.stringify([session, messageIndex, native])).digest("hex")}`,
++    provenance: { nativeToolCallId: native, historyMessageIndex: messageIndex, identityScope: "history-display-only" } };
++}
++
++/** Strict LF framing: Unicode line separators inside JSON are ordinary text. */
++export class PiRpcFrames {
++          decoder = new StringDecoder("utf8");
++          pending = "";
++                   receive                              ;
++                   limit        ;
++  constructor(receive                              , limit = 4 * 1024 * 1024) { this.receive = receive; this.limit = limit; }
++  write(chunk            )       {
++    this.pending += this.decoder.write(Buffer.from(chunk));
++    for (;;) {
++      const index = this.pending.indexOf("\n");
++      if (index < 0) break;
++      const line = this.pending.slice(0, index).replace(/\r$/, "");
++      this.pending = this.pending.slice(index + 1);
++      if (Buffer.byteLength(line) > this.limit) throw new Error("Pi RPC frame exceeds its bound");
++      if (line.trim()) this.receive(record(JSON.parse(line)));
++    }
++    if (Buffer.byteLength(this.pending) > this.limit) throw new Error("Pi RPC frame exceeds its bound");
++  }
++  end()       {
++    this.pending += this.decoder.end();
++    if (this.pending.trim()) throw new Error("Pi RPC stream ended inside a frame");
++  }
++}
++
++function requiredFile(environment                   , name        )         {
++  const path = environment[name];
++  if (!path || !isAbsolute(path) || /[\0\r\n]/.test(path)) throw new Error(`Missing verified Pi launch binding: ${name}`);
++  // This checks the handoff shape. The runner command lease verifies all bytes,
++  // retains their directory identity, and owns the subprocess lifetime.
++  if (!lstatSync(path).isFile()) throw new Error(`Invalid verified Pi launch binding: ${name}`);
++  return path;
++}
++function pathArray(raw                    )           {
++  const paths          = JSON.parse(raw ?? "[]");
++  if (!Array.isArray(paths) || paths.length > 128 || paths.some((p) => typeof p !== "string" || !isAbsolute(p) || /[\0\r\n]/.test(p))) throw new Error("Invalid Pi runtime paths");
++  return paths;
++}
++
++/** Provider tool events are untrusted; diff projection cannot read host files. */
++export function snapshotPiWorkspaceFile(cwd        , path        , environment                    = process.env)         {
++  const root = realpathSync(cwd);
++  const logical = resolve(root, path);
++  const physical = realpathSync(logical);
++  const within = (base        , target        )          => {
++    const suffix = relative(base, target);
++    return !isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`);
++  };
++  if (!within(root, logical) || !within(root, physical)) throw new Error("Pi diff escaped its workspace");
++  for (const protectedPath of pathArray(environment.PAPERCLIP_PI_PROTECTED_ROOTS)) {
++    if (within(protectedPath, logical)) throw new Error("Pi diff targets protected state");
++    let protectedPhysical        ;
++    try { protectedPhysical = realpathSync(protectedPath); } catch { continue; }
++    if (within(protectedPhysical, physical)) throw new Error("Pi diff targets protected state");
++  }
++  const fd = openSync(physical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
++  try {
++    const before = fstatSync(fd, { bigint: true });
++    if (!before.isFile() || before.nlink !== 1n || before.size > 4n * 1024n * 1024n) throw new Error("Pi diff file is unsupported");
++    const result = readFileSync(fd, "utf8");
++    const after = fstatSync(fd, { bigint: true });
++    const named = lstatSync(physical, { bigint: true });
++    if (before.ino !== after.ino || before.dev !== after.dev || before.size !== after.size || before.ctimeNs !== after.ctimeNs || named.ino !== before.ino || named.dev !== before.dev || realpathSync(logical) !== physical) throw new Error("Pi diff file changed during capture");
++    return result;
++  } finally { closeSync(fd); }
++}
++
++export function createPiLaunchSpec(
++  params                                                               ,
++  environment                   ,
++)                                                                                           {
++  if (environment.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") throw new Error("Pi requires an isolated runner launch");
++  const command = requiredFile(environment, "PAPERCLIP_PI_NODE_EXECUTABLE");
++  const entrypoint = requiredFile(environment, "PAPERCLIP_PI_ENTRYPOINT");
++  const extension = requiredFile(environment, "PAPERCLIP_PI_EXTENSION_PATH");
++  if (environment.PAPERCLIP_PI_READ_ONLY !== "0" && environment.PAPERCLIP_PI_READ_ONLY !== "1") throw new Error("Pi requires an explicit read-only policy");
++  const readRoots = pathArray(environment.PAPERCLIP_PI_READ_ROOTS);
++  const protectedRoots = pathArray(environment.PAPERCLIP_PI_PROTECTED_ROOTS);
++  const workspace = realpathSync(params.cwd);
++  const suppliedAgentHome = environment.PAPERCLIP_PI_AGENT_HOME;
++  let agentHome                    ;
++  if (suppliedAgentHome !== undefined) {
++    if (!isAbsolute(suppliedAgentHome) || /[\0\r\n]/.test(suppliedAgentHome) || suppliedAgentHome === "/" || !lstatSync(suppliedAgentHome).isDirectory() || realpathSync(suppliedAgentHome) !== suppliedAgentHome) throw new Error("Pi agent files require a canonical registered directory");
++    agentHome = suppliedAgentHome;
++  }
++  const invocationNamespace = randomUUID();
++  const configuration = JSON.stringify({
++    invocationNamespace, workspace, servers: params.mcpServers ?? [],
++    readOnly: environment.PAPERCLIP_PI_READ_ONLY === "1",
++    readRoots, protectedRoots,
++    ...(agentHome ? { agentHome } : {}),
++    instructions: environment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS ?? "",
++  });
++  if (Buffer.byteLength(configuration) > 64 * 1024) throw new Error("Pi launch configuration exceeds its bound");
++  const guard = environment.PAPERCLIP_PI_MODULE_GUARD_PATH === undefined ? []
++    : ["--require", requiredFile(environment, "PAPERCLIP_PI_MODULE_GUARD_PATH")];
++  const args = [...guard, entrypoint, "--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-approve", "--offline", "-e", extension];
++  for (const root of readRoots) args.push("--skill", root);
++  if (params.sessionPath) {
++    const home = environment.PI_CODING_AGENT_DIR;
++    if (!home) throw new Error("Pi session home is missing");
++    const sessionRoot = realpathSync(resolve(home, "sessions"));
++    const sessionPath = realpathSync(params.sessionPath);
++    const suffix = relative(sessionRoot, sessionPath);
++    if (!suffix || isAbsolute(suffix) || suffix === ".." || suffix.startsWith(`..${sep}`) || !lstatSync(params.sessionPath).isFile()) throw new Error("Pi session escaped its private home");
++    args.push("--session", sessionPath);
++  }
++  const env                    = { ...environment, PAPERCLIP_PI_RUNTIME_CONFIGURATION: configuration };
++  // Ambient AGENT_HOME never grants filesystem authority. Only the runner's
++  // authenticated working-copy binding reaches both the model and tool gate.
++  if (agentHome) env.AGENT_HOME = agentHome; else delete env.AGENT_HOME;
++  return { command, args, invocationNamespace, env };
++}
++
++// Same UTF-16 character bound as the canonical question-set title/header/label.
++export const PI_QUESTION_LABEL_MAX_LENGTH = 1_000;
++export function piQuestionLabel(value         )         {
++  if (typeof value !== "string" || !value.trim() || value.length > PI_QUESTION_LABEL_MAX_LENGTH) throw new Error("Pi question label is invalid or oversized");
++  return value;
++}
++
++
++
++
++
++
++
++/** Live promises never become authority to replay an answer after provider death. */
++export class PiUiBridge {
++                   pending = new Map                            ();
++                   seen = new Set        ();
++                   sessionId        ;
++                   connection              ;
++                   process           ;
++  constructor(sessionId        , connection              , process           ) { this.sessionId = sessionId; this.connection = connection; this.process = process; }
++
++  cancelAll()       { for (const value of this.pending.values()) value.cancel(); }
++
++  async handle(event             )                {
++    const id = text(event.id, 256);
++    const method = text(event.method, 64);
++    if (!["select", "confirm", "input", "editor"].includes(method)) return;
++    if (this.seen.has(id)) return;
++    if (this.seen.size >= 4096) throw new Error("Pi UI request history exceeds its bound");
++    this.seen.add(id);
++    let done = false;
++    let timeout                                           ;
++    const finish = async (response             )                => {
++      if (done) return;
++      done = true;
++      if (timeout) clearTimeout(timeout);
++      this.pending.delete(id);
++      await this.process.sendExtensionUiResponse({ id, ...response });
++    };
++    this.pending.set(id, { cancel: () => { void finish({ cancelled: true }).catch(() => {}); } });
++    if (typeof event.timeout === "number" && Number.isFinite(event.timeout)) {
++      timeout = setTimeout(() => { void finish({ cancelled: true }).catch(() => {}); }, Math.max(0, Math.min(event.timeout, 2_147_483_647)));
++      timeout.unref?.();
++    }
++    try {
++      const title = text(event.title ?? "Additional information needed", 65_536);
++      if (method === "select" && title.startsWith(PERMISSION_PREFIX)) {
++        const permission = record(JSON.parse(title.slice(PERMISSION_PREFIX.length)));
++        const toolCallId = text(permission.toolCallId, 256);
++        const toolName = text(permission.toolName, 128);
++        const input = record(permission.input);
++        const result = record(await this.connection.requestPermission({
++          sessionId: this.sessionId,
++          toolCall: { toolCallId, _meta: { paperclipPi: { nativeToolCallId: text(permission.nativeToolCallId, 256), modelIteration: permission.modelIteration } }, title: `Pi ${toolName}`, kind: toolName === "bash" ? "execute" : ["write", "edit"].includes(toolName) ? "edit" : "read", status: "pending", rawInput: input },
++          options: PERMISSION_CHOICES,
++        }));
++        const outcome = record(result.outcome);
++        const selected = outcome.outcome === "selected" ? PERMISSION_CHOICES.find((option) => option.optionId === outcome.optionId) : undefined;
++        await finish(selected ? { value: selected.name } : { cancelled: true });
++        return;
++      }
++      piQuestionLabel(title);
++      const property              = { type: method === "confirm" ? "boolean" : "string", title };
++      if (method === "select") {
++        if (!Array.isArray(event.options) || event.options.length < 1 || event.options.length > 128) throw new Error("Invalid Pi question options");
++        property.enum = event.options.map((option) => piQuestionLabel(option));
++        if (new Set(property.enum            ).size !== event.options.length) throw new Error("Ambiguous Pi question options");
++      }
++      if (method === "input" && typeof event.placeholder === "string") property.description = text(event.placeholder);
++      if (method === "editor" && typeof event.prefill === "string") property.default = text(event.prefill);
++      const result = record(await this.connection.unstable_createElicitation({
++        sessionId: this.sessionId, mode: "form", message: typeof event.message === "string" ? text(event.message) : title,
++        requestedSchema: { type: "object", title, properties: { answer: property }, required: ["answer"] },
++        _meta: { paperclipPi: { version: 1, requestId: id, method } },
++      }));
++      if (result.action !== "accept") { await finish({ cancelled: true }); return; }
++      const answer = record(result.content).answer;
++      if (method === "confirm") {
++        if (typeof answer !== "boolean") throw new Error("Invalid Pi confirmation response");
++        await finish({ confirmed: answer });
++      } else {
++        const value = text(answer, 65_536);
++        if (method === "select" && !(property.enum            ).includes(value)) throw new Error("Invalid Pi question response");
++        await finish({ value });
++      }
++    } catch {
++      if (done) return; // An expired request cannot fail a later live session.
++      await finish({ cancelled: true }).catch(() => {});
++      throw new Error("Pi structured question is unsupported or invalid");
++    }
++  }
++}
++
++/** Sum native usage receipts; preserve missing fields and label catalog pricing. */
++export class PiTurnUsage {
++          seen = new Set        ();
++          total = { inputTokens: 0, outputTokens: 0, cachedReadTokens: 0, cachedWriteTokens: 0, totalTokens: 0 };
++          cost = 0;
++          unknown = new Set                         ();
++          costObserved = false;
++          costIncomplete = false;
++          compactionObserved = false;
++          failed = false;
++          observed = false;
++  reset()       { this.seen.clear(); this.total = { inputTokens: 0, outputTokens: 0, cachedReadTokens: 0, cachedWriteTokens: 0, totalTokens: 0 }; this.cost = 0; this.unknown.clear(); this.costObserved = false; this.costIncomplete = false; this.compactionObserved = false; this.failed = false; this.observed = false; }
++  accept(value         )       {
++    const message = record(value);
++    if (message.role !== "assistant") return;
++    if (!message.usage || typeof message.usage !== "object") {
++      this.failed = message.stopReason === "error";
++      return;
++    }
++    const key = JSON.stringify([message.timestamp, message.id, message.usage, message.content]);
++    if (this.seen.has(key)) return;
++    if (this.seen.size >= 8192) throw new Error("Pi usage receipts exceed their bound");
++    this.seen.add(key);
++    this.failed = message.stopReason === "error";
++    const usage = record(message.usage);
++    const valid = (value         )                  => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
++    const fields = ["inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens"]         ;
++    const numbers = ["input", "output", "cacheRead", "cacheWrite"].map((name) => usage[name]);
++    for (const [index, name] of fields.entries()) {
++      const value = numbers[index];
++      if (valid(value)) { this.total[name] += value; this.observed = true; }
++      else this.unknown.add(name);
++    }
++    const total = valid(usage.totalTokens) ? usage.totalTokens
++      : numbers.every(valid) ? (numbers            ).reduce((sum, value) => sum + value, 0) : undefined;
++    if (valid(total)) this.total.totalTokens += total;
++    else this.unknown.add("totalTokens");
++    const cost = usage.cost && typeof usage.cost === "object" ? record(usage.cost).total : undefined;
++    if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) {
++      this.cost += cost; this.costObserved = true;
++    } else this.costIncomplete = true;
++  }
++
++  markIncomplete()       {
++    for (const name of Object.keys(this.total)) this.unknown.add(name                           );
++    this.costIncomplete = true;
++  }
++
++  acceptCompaction(value         )       {
++    this.compactionObserved = true;
++    const result = value && typeof value === "object" && !Array.isArray(value) ? record(value) : {};
++    if (!result.usage || typeof result.usage !== "object") {
++      // A compaction may consume tokens even if its terminal receipt is absent.
++      // Known assistant counters alone cannot establish the complete turn.
++      this.markIncomplete();
++      return;
++    }
++    const previousFailure = this.failed;
++    this.accept({ role: "assistant", id: "compaction", timestamp: result.firstKeptEntryId,
++      content: [result.tokensBefore, result.summary], usage: result.usage });
++    // A successful summary is not proof that an earlier failed model turn recovered.
++    this.failed = previousFailure;
++  }
++
++  response()              {
++    return {
++      ...(this.observed ? { usage: { ...Object.fromEntries(Object.entries(this.total).filter(([name]) => !this.unknown.has(name                           ))), _meta: { paperclipPi: { provenance: this.compactionObserved ? "assistant_message_and_compaction_receipts" : "assistant_message_receipts", ...(this.costObserved && !this.costIncomplete ? { costUsd: this.cost, costSource: "pi_pricing_estimate" } : {}) } } } } : {}),
++      ...(this.failed ? { _meta: { jetbrains: { air: { version: 1, sessionFailure: { severity: "error", category: "service", title: "Pi provider request failed" } } } } } : {}),
++    };
++  }
++}

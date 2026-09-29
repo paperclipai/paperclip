@@ -68,6 +68,58 @@ describe("Cursor rich notifications", () => {
     const final = await normalize("cursor/update_todos", { toolCallId: "c", merge: false, todos: [{ id: "a", content: "Build", status: "completed" }] });
     expect(final[0]?.payload).toMatchObject({ revision: 3, complete: true, steps: [{ body: "Build", status: "completed" }] });
   });
+  it("bounds a valid detailed snapshot before committing, retaining all identities and statuses", async () => {
+    const normalize = createCursorNotificationNormalizer({ workspacePath: await workspace(), turnId: "large" });
+    const todos = Array.from({ length: 65 }, (_, i) => ({ id: `todo-${i}`, content: `${i}: ` + "x".repeat(3_970), status: i === 64 ? "cancelled" : "pending" }));
+    const request = { toolCallId: "large", merge: false, todos };
+    expect(Buffer.byteLength(JSON.stringify(request))).toBeLessThan(256 * 1024);
+    const events = await normalize("cursor/update_todos", request);
+    for (const event of events) expect(() => validateAcpxRichEvent(event)).not.toThrow();
+    expect(events).toHaveLength(2);
+    expect(events[1]?.payload.category).toBe("cursor_todo_detail_partial");
+    const steps = events[0]!.payload.steps as { stepId: string; body: string; status: string }[];
+    const unbounded = structuredClone(events[0]!);
+    unbounded.payload.steps = steps.map((step, i) => ({ ...step, body: todos[i]!.content + (i === 64 ? "\n(Cancelled)" : "") }));
+    expect(Buffer.byteLength(JSON.stringify(unbounded))).toBeGreaterThan(240 * 1024);
+    expect(() => validateAcpxRichEvent(unbounded)).toThrow("Unsupported ACP rich activity event");
+    expect(steps).toHaveLength(65);
+    expect(new Set(steps.map(step => step.stepId)).size).toBe(65);
+    steps.forEach((step, i) => {
+      expect(step.body.startsWith(`${i}: `)).toBe(true);
+      expect(step.body).toContain("[Further todo detail omitted]");
+      expect(step.status).toBe(i === 64 ? "blocked" : "pending");
+    });
+    expect(steps[64]!.body).toMatch(/\(Cancelled\)$/);
+    const next = await normalize("cursor/update_todos", { toolCallId: "progress", merge: true, todos: [{ ...todos[0], status: "completed" }] });
+    for (const event of next) expect(() => validateAcpxRichEvent(event)).not.toThrow();
+    expect(next[0]!.payload).toMatchObject({ revision: 2, steps: steps.map((step, i) => ({ stepId: step.stepId, status: i === 0 ? "completed" : step.status })) });
+    const small = await normalize("cursor/update_todos", { toolCallId: "replace", merge: false, todos: [todos[0]] });
+    expect(small).toHaveLength(1);
+    expect(small[0]!.payload).toMatchObject({ revision: 3, explanation: null, steps: [{ body: todos[0]!.content }] });
+  });
+
+  it("bounds merged Unicode and escaped detail without poisoning later updates or rejected over-capacity merges", async () => {
+    const normalize = createCursorNotificationNormalizer({ workspacePath: await workspace(), turnId: "merged" });
+    const content = "😀\u0001\\\"".repeat(790);
+    let events;
+    for (let batch = 0; batch < 16; batch++) {
+      const request = { toolCallId: `batch-${batch}`, merge: true, todos: Array.from({ length: 16 }, (_, i) => ({ id: `${batch * 16 + i}`, content, status: "pending" })) };
+      expect(Buffer.byteLength(JSON.stringify(request))).toBeLessThan(256 * 1024);
+      events = await normalize("cursor/update_todos", request);
+      for (const event of events) expect(() => validateAcpxRichEvent(event)).not.toThrow();
+    }
+    const steps = events![0]!.payload.steps as { stepId: string; body: string }[];
+    expect(steps).toHaveLength(256);
+    expect(steps.every(step => step.body.isWellFormed() && step.body.includes("[Further todo detail omitted]"))).toBe(true);
+    await expect(normalize("cursor/update_todos", { toolCallId: "overflow", merge: true, todos: [{ id: "extra", content: "Rejected", status: "pending" }] })).rejects.toThrow("256");
+    // Shrink all but one item through deltas: full retained detail must return,
+    // and the rejected merge must neither increment revision nor add an item.
+    const restored = await normalize("cursor/update_todos", { toolCallId: "shrink", merge: true, todos: Array.from({ length: 255 }, (_, i) => ({ id: `${i + 1}`, content: "Done", status: "completed" })) });
+    expect(restored).toHaveLength(1);
+    expect(() => validateAcpxRichEvent(restored[0]!)).not.toThrow();
+    expect(restored[0]!.payload).toMatchObject({ revision: 17, steps: [{ stepId: steps[0]!.stepId, body: content }, ...Array.from({ length: 255 }, () => ({ body: "Done", status: "completed" }))] });
+  });
+
   it("preserves delegation role/model/task and native duration", async () => {
     const normalize = createCursorNotificationNormalizer({ workspacePath: await workspace(), turnId: "turn" });
     const [event] = await normalize("cursor/task", { toolCallId: "call", description: "Find references", prompt: "Search src", subagentType: { custom: "research" }, model: "model-1", agentId: "child-1", durationMs: 312 });

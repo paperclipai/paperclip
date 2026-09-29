@@ -35,4 +35,3 @@ export async function verifyCopilotInstallation(profile: QualifiedAcpxProfile): 
   // binds the complete platform closure before creating each single-use lease.
   return Object.freeze({ ...native, commandDigest: expected.commandDigest });
 }
-

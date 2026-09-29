@@ -1,0 +1,155 @@
+{
+  "schema": "paperclip.rich-acp-validation-checkpoint.v1",
+  "updatedAt": "2026-09-29T18:52:19.212615+00:00",
+  "qualificationStatus": "pending",
+  "runtimeSource": "bd4cc29c3017ed5e1484423e842fd48e3b2f49f3",
+  "validationSourcePatches": [
+    "60dd81f2a709a8f8b41d7ec7b225230011df1dbd",
+    "2fa4f725eb8d0cd58ee8a1207b8065a664fb2363",
+    "28c82b358e0214f16a0a2cf47006331d89a4d3df",
+    "aa1a4ec328054bcece9637d33729f64cd97df419",
+    "f792c41f9f8bdaca0cc5e2877ed95ed881a7f7bb",
+    "4f2709a611de58b586b122167ca049a19e8d38d0",
+    "1ac2b2299065ce6767c5541f5cda39190bb436e4",
+    "ca28efc2461c43ca4b82822028ad60969e250502",
+    "0759fac2976a49331f65f08c4d9406dc89b8424c"
+  ],
+  "scope": "Credential-free validation of the bd4 runtime plus committed test, documentation, devtool-loader and verification-script repairs. Frozen paid runtime bytes were not changed. Earlier failed attempts remain retained. This checkpoint does not certify paid qualification.",
+  "repositoryBuildTypecheckAndTokens": [
+    {
+      "name": "full-build",
+      "command": [
+        "pnpm",
+        "build"
+      ],
+      "exitCode": 0,
+      "startedAt": "2026-09-29T17:46:17.343584+00:00",
+      "finishedAt": "2026-09-29T17:46:53.273027+00:00",
+      "logSha256": "1ccfe26fcfa853d1f89d0a16e5542cac9074e1a5ac29708763dd73c4072b7efc"
+    },
+    {
+      "name": "full-typecheck",
+      "command": [
+        "pnpm",
+        "-r",
+        "typecheck"
+      ],
+      "exitCode": 0,
+      "startedAt": "2026-09-29T17:46:53.273345+00:00",
+      "finishedAt": "2026-09-29T17:47:32.857318+00:00",
+      "logSha256": "d75eabf0e16eccc769550fbd228fbf30a915d00e4dbdd7ec4f96ec33afacc6ca"
+    },
+    {
+      "name": "final-token-gates",
+      "command": [
+        "pnpm",
+        "check:token-gates"
+      ],
+      "exitCode": 0,
+      "startedAt": "2026-09-29T17:47:32.858014+00:00",
+      "finishedAt": "2026-09-29T17:47:33.697535+00:00",
+      "logSha256": "7e234af112ebd5788a15cde62fc4e27c18997813fd4bfc23d0812d02af1fb33e"
+    }
+  ],
+  "repositoryTests": {
+    "command": [
+      "pnpm",
+      "test:run"
+    ],
+    "exitCode": 1,
+    "passedTests": 11598,
+    "failedTests": 6,
+    "skippedTests": 2640,
+    "passedFiles": 536,
+    "failedFiles": 43,
+    "skippedFiles": 140,
+    "logSha256": "1d5f3789bfeab0461499354c171688ccb82128660bec756e159cbc0580bf7174",
+    "failureClasses": [
+      {
+        "class": "embedded_postgres_bootstrap",
+        "failedCases": 4,
+        "detail": "The four cases fail before assertions at initdb after five attempts. Many other files fail setup or cleanup. This log has generic bootstrap errors; a separate exact-initdb reproduction records semget ENOSPC."
+      },
+      {
+        "class": "unclassified_timeout",
+        "failedCases": 2,
+        "detail": "Authenticated Workspace docs.read times out at 15 seconds; real Git filename snapshot streaming times out at 300 seconds. No passing retry is credited."
+      }
+    ],
+    "completeGreenRun": false
+  },
+  "runnerVerification": {
+    "status": "all_stages_pass_across_retained_retries",
+    "singleUninterruptedVerifyPassed": false,
+    "baseBuildTypecheckReplayTypescriptRustSdk": {
+      "logSha256": "1c3d8ce9bce225ed345ea7567a64065357c26b7853f2ac7585fd9244dfdef9e6",
+      "typescriptPassed": 2533,
+      "typescriptSkipped": 11,
+      "sdkPassed": 22,
+      "note": "The original aggregate invocation stopped at one scenario fixture failure. All preceding build, typecheck, replay, TypeScript, Rust and SDK stages passed; the repaired scenario stage passed below."
+    },
+    "scenarios": {
+      "passed": 537,
+      "skipped": 3,
+      "logSha256": "54a62a3eceff47c4a6c617ed1f3d11b7a49cc8f02f572e8974208b94e951d9f6"
+    },
+    "browser": {
+      "passed": 25,
+      "logSha256": "c2eb80b3b7352b204842b16b2a8284619cefdfd60a329da6d68b903128e76090"
+    },
+    "browserSdk": {
+      "passed": 6,
+      "logSha256": "7c99f3c6e2558952ecbf7126f12be35e5748720a6a6aeba789fa68e245cf8964"
+    },
+    "browserScenarioExplorerAndChat": {
+      "passed": 43,
+      "logSha256": "9880ec250725c7c69a109df764ade0e5b509cd61ebc8a10229a2959d44f327c1",
+      "note": "The first 43-case suite passed; the following issue-thread suite in that same command failed two stale expectations. Its repaired complete retry is separate below."
+    },
+    "browserIssueThread": {
+      "passed": 112,
+      "logSha256": "827bb9f827936eb60c24cabd3064ef332af664770b978031734920d0de44cafb"
+    },
+    "importScannerTests": {
+      "passed": 19,
+      "logSha256": "f0954fe6f478ada7044ebed789c15b9de855b420d4809222441533a0905dc35f"
+    },
+    "importAndPackageGates": {
+      "forbidden": "passed",
+      "tracked": "passed",
+      "packageBoundary": "passed",
+      "receiptsSha256": [
+        "5014d7931025f522ce522e76ee4fb27d7b4c82688c4db1e0f38cea5f41032954",
+        "3e6ba97dfd9d87781c1b3d9fc7b5e7713ea90a25943a0a8c8d6147167bfb1633"
+      ]
+    },
+    "cleanConsumer": {
+      "name": "check:clean-consumers",
+      "startedAt": "2026-09-29T18:48:20.499452+00:00",
+      "finishedAt": "2026-09-29T18:50:25.705111+00:00",
+      "exitCode": 0,
+      "logSha256": "facbaee578adf24b76907c2e36114dca8f1e0389d04672f9fd5903fd6ae77de6"
+    },
+    "docs": {
+      "files": 53,
+      "status": "passed",
+      "logSha256": "75d9bdc5d43cc60d514388e0e17091054d321d1ebebb089203e3563272bece27"
+    },
+    "otherPassedStages": [
+      "check:browser-tokens",
+      "check:numbered-milestones",
+      "check:conformance-parity",
+      "check:replay-parity",
+      "trace:conformance",
+      "replay:fixture",
+      "trace:local-runner"
+    ],
+    "otherStageReceiptSha256": "024be9b0a264f97d46ecaa724e72fed17ffd3c6380303dbfdc6a4596db2d5f56"
+  },
+  "qualificationBlockers": [
+    "Host PostgreSQL semaphore exhaustion; stale-object cleanup awaits user authorization.",
+    "Cursor account spending-limit decision pending.",
+    "Remaining authenticated local/native/Daytona cases and platform coverage; Copilot file startup timeout unresolved.",
+    "Complete infrastructure cost coverage and current final-head CI/review remain required."
+  ]
+}

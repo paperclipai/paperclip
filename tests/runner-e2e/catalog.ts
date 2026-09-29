@@ -1,3 +1,4 @@
+import { piNativeTasks } from "./pi-native-cases.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
 import { accountingTasks } from "./accounting-cases.js";
@@ -1029,6 +1030,13 @@ export const extendedHarnessFileTask: RunnerTaskFixture = {
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
+    id: "pi-native", label: "Pi native boundaries", manualOnly: true,
+    description: "Explicit local Pi native forms, registered agent files and restrictive permission qualification.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "pi"),
+    environments: [localEnvironment], tasks: piNativeTasks, expectedMatrixSize: 3,
+    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion },
+  },
+  {
     id: "extended-harnesses", label: "Extended ACP harnesses", manualOnly: true,
     description: "Explicit candidate qualification through real Paperclip tools, browser interactions, file edits and restart recovery.",
     groups: ["native"], profiles: extendedHarnessProfiles, environments: runnerEnvironments,
@@ -1365,6 +1373,7 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 export function validateRunnerCatalog(): MatrixExecution[] {
   const allProfiles = [...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    ...piNativeTasks,
     extendedHarnessFileTask,
     ...contextIntegrityTasks,
     ...accountingTasks,

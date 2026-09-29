@@ -1,3 +1,4 @@
+import { materializePiDistribution } from "./materialize-pi-distribution.mjs";
 import { materializePinnedCursorDistribution } from "./materialize-cursor-distribution.mjs";
 const CANDIDATES = new Set(["cursor", "copilot", "pi"]);
 
@@ -19,6 +20,7 @@ export function parseProviderPackArguments(args) {
 /** Closed source-owned builder registry; provider branches add their exact pins. */
 export async function materializeCandidateProviderPack({ provider, outputRoot }) {
   if (!CANDIDATES.has(provider)) throw new Error("Unknown candidate provider");
+  if (provider === "pi") return materializePiDistribution({ outputRoot });
   if (provider === "copilot") {
     const { buildPinnedCopilotDistribution } = await import("./build-copilot-distribution.mjs");
     return buildPinnedCopilotDistribution({ outputRoot });

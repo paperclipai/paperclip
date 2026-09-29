@@ -206,6 +206,8 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
       "packages/paperclip-runner/cursor-distributions.json",
       "packages/paperclip-runner/runner/crates",
+      "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
+      "packages/paperclip-runner/scripts/pi-distribution",
       "packages/paperclip-runner/src",
     ]) {
       expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(requiredPath);
@@ -235,6 +237,8 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-runner/package.json",
       "packages/paperclip-runner/src",
       "packages/paperclip-runner/runner/crates",
+      "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
+      "packages/paperclip-runner/scripts/pi-distribution",
     ] as const;
     const options = {
       repositoryRoot: root,
@@ -280,6 +284,12 @@ describe("runner E2E Daytona image contract", () => {
         ),
         'pub const VERSION: &str = "one";\n',
       );
+      await mkdir(path.join(root, "packages/paperclip-runner/scripts/pi-distribution"), { recursive: true });
+      for (const relativePath of [
+        "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
+        "packages/paperclip-runner/scripts/pi-distribution/package.json",
+        "packages/paperclip-runner/scripts/pi-distribution/package-lock.json",
+      ]) await writeFile(path.join(root, relativePath), "version one\n");
       const baseline = await computeDaytonaImageContentId(options);
       const candidate = await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi"] });
       expect(candidate).not.toBe(baseline);
@@ -315,6 +325,9 @@ describe("runner E2E Daytona image contract", () => {
         "pnpm-lock.yaml",
         "packages/paperclip-runner/package.json",
         "packages/paperclip-runner/src/runner.ts",
+        "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
+        "packages/paperclip-runner/scripts/pi-distribution/package.json",
+        "packages/paperclip-runner/scripts/pi-distribution/package-lock.json",
         "packages/paperclip-runner/runner/crates/runner-core/src/lib.rs",
       ]) {
         const absolutePath = path.join(root, relativePath);

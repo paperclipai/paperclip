@@ -257,3 +257,22 @@ cleanup must preserve the original candidate as a conflict. The browser reviews
 current and incoming files and applies the run edits against the reviewed current
 directory hash. All three tasks' runs count toward billing and teardown. The suite
 is explicit-only. No private control-plane hooks or direct database writes are used.
+
+## Pi native boundaries
+
+The explicit-only `pi-native` suite has three local candidate cells and no automatic
+retries. `native-questions` answers the real runner-owned Pi select, confirm, input
+and editor tool through four durable browser cards, reloading before every answer.
+Undisclosed text and independent workspace JSON prove delivery to the same live run.
+Pi's SDK cannot distinguish negative confirmation from dismissal; the expected
+result is explicitly `negative_or_cancelled`, not proof of cancellation.
+
+`agent-files-fresh-run` writes a hidden nonce through native file tools to the
+registered AGENT_HOME, requires a stopped-run save receipt and public managed-file
+readback, then restarts the server and verifies exact bytes from a fresh task. An
+attempted write to an unassigned isolated sibling path must fail without creating
+a file. `restrictive-denial` requires a correlated failed native write and absent
+file under `deny-all`. All runs count toward spend and teardown. Browser reload
+is reconnect evidence only; these cases do not establish provider-death recovery.
+They use public product APIs, real browser answers, and ordinary isolated files;
+no database writes, private hooks, or fabricated provider results are allowed.

@@ -296,7 +296,7 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("eventExpiryDays");
   });
 
-  it.each([1, 2, 3, 4, 5, 6] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
+  it.each([1, 2, 3, 4, 5, 6, 7] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
     const provider = {
       kind: "acpx",
       agent: "pi",
@@ -328,7 +328,7 @@ describe("NativeExecutionInputV1", () => {
       profile: provider.profile,
     });
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
-    for (const unsupportedVersion of [0, 7, 1.5, "6", null]) {
+    for (const unsupportedVersion of [0, 8, 1.5, "7", null]) {
       expect(() => parseNativeExecutionInput({
         ...input,
         session: { ...input.session, driverKind: "acpx_runtime" },

@@ -819,9 +819,6 @@ describe("ACPX runtime host", () => {
     });
     const options = { ...fixture.options, agent: "pi" as const, model,
       permissionMode: "approve-all" as const, providerPolicy: { readOnly: true }, systemInstructions: "Bound instructions" };
-    await expect(AcpxRuntimeHost.open(options, { openRuntime, reportRetainedCleanupFailure: vi.fn() }))
-      .rejects.toThrow("verified candidate distribution is not installed");
-    expect(openRuntime).not.toHaveBeenCalled();
     const host = await AcpxRuntimeHost.open(options, fixture.dependencies({
       verifyInstallation: async () => ({ commandDigest: profile.commandDigest,
         agentServerPackageJsonPath: join(fixture.root, "package.json"), agentRuntimePackageJsonPath: null,

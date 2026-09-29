@@ -1277,3 +1277,24 @@ candidate image and the matching controller-owned provider pack described in
 The separate Runner Evals `extended-harnesses` campaign lives in the private
 `paperclip-evals` repository and grades semantic protocol behavior against the
 mock control plane. Neither suite substitutes for the other.
+
+### Pi native Product fixtures
+
+The separate `pi-native` suite defines three explicit local Pi cells:
+`native-questions`, `agent-files-fresh-run`, and `restrictive-denial`. It uses the
+pinned candidate profile and exact OpenRouter model. It is excluded from `--all`,
+never automatically retries, and retains qualification as pending until live proof.
+Reserve and reconcile each paid cell just as for `extended-harnesses`.
+
+```sh
+pnpm test:e2e:runner -- --list --suite pi-native
+pnpm test:e2e:runner -- --id pi-native.runner-acpx-pi.local.native-questions
+```
+
+Native questions exercise the runner-owned `paperclip_native_question` tool and
+the durable browser form bridge. The existing five extended-harness journeys
+continue to prove semantic Paperclip questions and planning separately. Personal
+file persistence uses two fresh task runs and independent byte checks; restrictive
+denial uses one run and requires both a failed tool receipt and no file effect.
+See [the fixture contract](FIXTURES.md#pi-native-boundaries) for the exact oracles
+and the limits of reconnect evidence.
