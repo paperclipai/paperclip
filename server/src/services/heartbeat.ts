@@ -20891,10 +20891,14 @@ export function heartbeatService(
         includeDescription: false,
       });
       if (issueRef) {
+        // `priority` rides along so adapters can act on the card, not on the
+        // prompt text: the Hermes gateway adapter maps it to the per-run
+        // platform LLM priority (critical/high -> high, medium/low -> normal).
         context.paperclipIssue = {
           id: issueRef.id,
           identifier: issueRef.identifier,
           title: issueRef.title,
+          priority: issueRef.priority,
           description: isConversation(issueContext) ? null : issueRef.description,
           workMode: issueRef.workMode,
         };

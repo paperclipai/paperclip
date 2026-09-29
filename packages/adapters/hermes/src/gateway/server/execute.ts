@@ -320,7 +320,42 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   return lines.filter((line) => line !== null && line !== undefined).join("\n").trim();
 }
 
-function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
+/**
+ * Paperclip card priority -> Hermes per-run platform LLM priority.
+ *
+ * This is the board/runtime contract for `platform_priority` on `POST /v1/runs`.
+ * The gateway ceiling for this workload is `high`, so the client never sends
+ * `critical`: that value stays a review gate on the policy side. Priorities the
+ * adapter does not recognize resolve to null, which means the run sends no
+ * `platform_priority` at all and the provider profile's static
+ * `extra_headers` (`X-Platform-Priority: normal`) keeps applying.
+ */
+export function resolvePlatformPriorityFromIssuePriority(issuePriority: unknown): "normal" | "high" | null {
+  const normalized = nonEmpty(issuePriority)?.toLowerCase() ?? null;
+  if (!normalized) return null;
+  if (normalized === "critical" || normalized === "high") return "high";
+  if (normalized === "medium" || normalized === "low") return "normal";
+  return null;
+}
+
+/**
+ * The card priority as the server published it on the run context
+ * (`context.paperclipIssue.priority`), falling back to the wake payload's issue
+ * block for wake kinds whose snapshot predates that field.
+ */
+function issuePriorityFromContext(ctx: AdapterExecutionContext): string | null {
+  const issue = parseObject(ctx.context.paperclipIssue);
+  const direct = nonEmpty(issue.priority);
+  if (direct) return direct;
+  const wake = parseObject(ctx.context.paperclipWake);
+  return nonEmpty(parseObject(wake.issue).priority);
+}
+
+function buildRunBody(
+  ctx: AdapterExecutionContext,
+  sessionKey: string | null,
+  platformPriority: "normal" | "high" | null,
+): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
@@ -336,6 +371,7 @@ function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): 
     input,
     instructions,
     ...(sessionKey ? { session_id: sessionKey } : {}),
+    ...(platformPriority ? { platform_priority: platformPriority } : {}),
   };
 }
 
@@ -856,7 +892,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runHeaders.Authorization,
     runHeaders["X-Hermes-Session-Key"],
   ]);
-  const body = buildRunBody(ctx, sessionKey);
+  const issuePriority = issuePriorityFromContext(ctx);
+  const platformPriority = resolvePlatformPriorityFromIssuePriority(issuePriority);
+  const body = buildRunBody(ctx, sessionKey, platformPriority);
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
@@ -869,9 +907,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
+      // Board -> runtime priority contract: what the card carried and what this
+      // run actually asks the platform LLM gateway for (null = profile default).
+      issuePriority,
+      platformPriority,
     },
   });
-  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
+  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy}, platformPriority=${platformPriority ?? "profile-default"})\n`);
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   let runId: string | null = null;

@@ -144,6 +144,25 @@ This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
 Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
 with `POST /v1/runs/{run_id}/stop`.
 
+#### Card priority on the run body
+
+The gateway adapter passes the issue priority to Hermes as the optional
+`platform_priority` field of the run body:
+
+| Issue priority | `platform_priority` |
+| --- | --- |
+| `critical` | `high` |
+| `high` | `high` |
+| `medium` | `normal` |
+| `low` | `normal` |
+| missing or unknown | field is omitted |
+
+`critical` is never sent. A high priority is a request to the platform gateway
+for capacity, not a way around its ceiling, so the ceiling stays the top value
+the client may ask for. When the field is omitted, the run keeps the provider
+profile's own `extra_headers`. The adapter writes both the card priority and the
+resolved value into the run metadata, so the run log shows what was asked for.
+
 ### Compatibility with the old gateway package
 
 `@paperclipai/adapter-hermes-gateway` remains as a deprecated compatibility shim

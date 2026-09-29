@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { execute, mapFinalResultForTest, parseSseFramesForTest, resolvePlatformPriorityFromIssuePriority, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 
 function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
@@ -763,5 +763,109 @@ describe("mapFinalResultForTest", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
+  });
+});
+
+describe("platform priority contract", () => {
+  it.each<[string, "high" | "normal"]>([
+    ["critical", "high"],
+    ["high", "high"],
+    ["medium", "normal"],
+    ["low", "normal"],
+    ["HIGH", "high"],
+  ])("maps card priority %s to platform priority %s", (cardPriority, expected) => {
+    expect(resolvePlatformPriorityFromIssuePriority(cardPriority)).toBe(expected);
+  });
+
+  it.each([[null], [undefined], ["urgent"], [""], ["  "], [7]])(
+    "sends nothing for an unrecognized card priority (%s)",
+    (cardPriority) => {
+      expect(resolvePlatformPriorityFromIssuePriority(cardPriority)).toBeNull();
+    },
+  );
+
+  async function createRun(context: Record<string, unknown>) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      new Response(
+        JSON.stringify(
+          String(input).endsWith("/v1/runs")
+            ? { run_id: "run-hermes-1", status: "started" }
+            : { status: "completed", output: "done" },
+        ),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-key", timeoutSec: 5 });
+    ctx.context = context;
+    const metaCalls: Array<{ context?: Record<string, unknown> }> = [];
+    ctx.onMeta = async (meta) => {
+      metaCalls.push(meta as { context?: Record<string, unknown> });
+    };
+    const logs: string[] = [];
+    ctx.onLog = async (_stream, chunk) => {
+      logs.push(chunk);
+    };
+    const result = await execute(ctx);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String(createCall?.[1]?.body)) as Record<string, unknown>;
+    const metaContext = metaCalls.at(-1)?.context;
+    return { result, body, metaContext, logs };
+  }
+
+  it("asks for high priority when the card is high", async () => {
+    const { result, body, metaContext, logs } = await createRun({
+      issueId: "issue-1",
+      paperclipIssue: { id: "issue-1", identifier: "PAP-1", priority: "high" },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(body.platform_priority).toBe("high");
+    expect(metaContext?.issuePriority).toBe("high");
+    expect(metaContext?.platformPriority).toBe("high");
+    expect(logs.join("")).toContain("platformPriority=high");
+  });
+
+  it("never forwards critical, because the gateway ceiling is high", async () => {
+    const { body, metaContext } = await createRun({
+      issueId: "issue-1",
+      paperclipIssue: { id: "issue-1", identifier: "PAP-1", priority: "critical" },
+    });
+
+    expect(body.platform_priority).toBe("high");
+    expect(metaContext?.issuePriority).toBe("critical");
+    expect(metaContext?.platformPriority).toBe("high");
+  });
+
+  it("asks for normal priority on a medium card", async () => {
+    const { body, metaContext } = await createRun({
+      issueId: "issue-1",
+      paperclipIssue: { id: "issue-1", identifier: "PAP-1", priority: "medium" },
+    });
+
+    expect(body.platform_priority).toBe("normal");
+    expect(metaContext?.platformPriority).toBe("normal");
+  });
+
+  it("sends no priority field when the card has none, leaving the profile default in place", async () => {
+    const { body, metaContext, logs } = await createRun({
+      issueId: "issue-1",
+      paperclipIssue: { id: "issue-1", identifier: "PAP-1" },
+    });
+
+    expect(body).not.toHaveProperty("platform_priority");
+    expect(metaContext?.issuePriority).toBeNull();
+    expect(metaContext?.platformPriority).toBeNull();
+    expect(logs.join("")).toContain("platformPriority=profile-default");
+  });
+
+  it("falls back to the wake payload issue block when the run context has no card priority", async () => {
+    const { body } = await createRun({
+      issueId: "issue-1",
+      paperclipWake: { reason: "issue_assigned", issue: { id: "issue-1", priority: "high" } },
+    });
+
+    expect(body.platform_priority).toBe("high");
   });
 });
