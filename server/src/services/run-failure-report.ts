@@ -1,7 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
-import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   collectRunFailureDiagnostics,
   collectRunFailureSecretValues,
@@ -89,9 +88,11 @@ async function captureTerminalRunFailure(
 
     // Resolve registered values before truncation. A failed resolution must
     // not send an incompletely redacted report.
-    const redacted = Array.isArray(run.contextSnapshot?.paperclipSecretRedactions)
-      ? await createRunSecretRedactionRegistry(db).redactForRun(run.companyId, run.id, snapshot)
-      : snapshot;
+    let redacted = snapshot;
+    if (Array.isArray(run.contextSnapshot?.paperclipSecretRedactions)) {
+      const { createRunSecretRedactionRegistry } = await import("./run-secret-redaction.js");
+      redacted = await createRunSecretRedactionRegistry(db).redactForRun(run.companyId, run.id, snapshot);
+    }
     captureRunFailure({
       taskId,
       runId: run.id,

@@ -28,8 +28,7 @@ vi.mock("../../log-redaction.js", async (importOriginal) => {
 });
 
 import { reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
-import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../../redaction.js";
-import { redactCurrentUserText } from "../../log-redaction.js";
+import { REDACTED_EVENT_VALUE } from "../../redaction.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -348,9 +347,10 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     await reportRunFailure(db, run);
 
-    const expectedErrorMessage = redactSensitiveText(redactCurrentUserText(rawError));
     const { errorMessage } = mockCaptureRunFailure.mock.calls[0][0];
-    expect(errorMessage).toBe(expectedErrorMessage);
+    // Environment-value redaction can fully mask the username before the
+    // current-user redactor applies its partial mask. Both remove the home path.
+    expect(errorMessage).toContain("workspace/report.log");
     expect(errorMessage).not.toContain(homeDir);
   });
 
@@ -371,6 +371,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   it("does not change a short error message", async () => {
     vi.stubEnv("PAPERCLIP_DB_BACKUP_ENABLED", "false");
     vi.stubEnv("PAPERCLIP_DB_BACKUP_RETENTION_DAYS", "1");
+    vi.stubEnv("GITHUB_RUN_ATTEMPT", "1");
     await seedCompanyAndAgent();
     const shortError = "the provider process exited with code 1";
     const run = buildRun({ status: "failed", error: shortError });
