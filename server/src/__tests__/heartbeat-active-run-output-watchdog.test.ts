@@ -230,7 +230,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(manager?.status).toBe("idle");
   }
 
-  it("keeps blocked and recovery-origin sources artifact-free", async () => {
+  it.each(["stale_active_run_evaluation", "issue_productivity_review"])("keeps blocked and %s sources artifact-free", async (originKind) => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const blocked = await seedRunningRun({
       now,
@@ -240,7 +240,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     const recursive = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
-      sourceOriginKind: "stale_active_run_evaluation",
+      sourceOriginKind: originKind,
     });
     const { enqueueWakeup, recovery } = createRecovery();
 

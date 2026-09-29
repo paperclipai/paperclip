@@ -37,6 +37,19 @@ describe("adapter session codecs", () => {
     expect(claudeSessionCodec.getDisplayId?.(serialized ?? null)).toBe("claude-session-1");
   });
 
+  it("preserves Claude MCP identity across persistence so resumed turns keep their context", () => {
+    const params = {
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      cwd: "/tmp/workspace",
+      mcpServerIdentity: JSON.stringify([{
+        name: "Paperclip projects",
+        url: "http://localhost:3100/api/mcp/project-tools",
+        connectionId: "paperclip-project-tools",
+      }]),
+    };
+    expect(claudeSessionCodec.deserialize(claudeSessionCodec.serialize(params))).toEqual(params);
+  });
+
   it("preserves claude ACP session params for ACP lane resumes", () => {
     const parsed = claudeSessionCodec.deserialize({
       sessionKey: "paperclip:company:agent:task:fingerprint",

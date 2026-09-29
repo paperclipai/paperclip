@@ -250,6 +250,7 @@ export async function refreshIssueContinuationSummary(input: {
     db
       .select({
         id: issues.id,
+        conversationAgentId: issues.conversationAgentId,
         identifier: issues.identifier,
         title: issues.title,
         description: issues.description,
@@ -262,7 +263,7 @@ export async function refreshIssueContinuationSummary(input: {
     getIssueContinuationSummaryDocument(db, issueId),
   ]);
 
-  if (!issue) return null;
+  if (!issue || issue.conversationAgentId) return null;
   const body = buildContinuationSummaryMarkdown({
     issue,
     run,

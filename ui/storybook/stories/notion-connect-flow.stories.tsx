@@ -130,6 +130,7 @@ function notionConnection(
     name: "Notion",
     uid: "notion-storybook",
     connectionKind: "managed",
+    connectionPurpose: "tool",
     ownership: "dcr",
     transport: "mcp_remote",
     authKind: "oauth",

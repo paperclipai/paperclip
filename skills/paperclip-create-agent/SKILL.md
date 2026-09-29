@@ -21,6 +21,22 @@ If you do not have this permission, escalate to your CEO or board.
 
 ## Workflow
 
+### Choose the API transport
+
+On **Paperclip Runner**, use the advertised Paperclip tools. Use `get_task_context`
+and `list_agents` for identity and team context, then `search_api` to discover the
+configuration, instruction-template, icon, and `agent-hires` endpoints used below.
+Call the discovered operations with `call_api`; the server supplies company and
+authentication context. Read the returned schemas before drafting the hire.
+
+The shell examples below apply to adapters that receive `PAPERCLIP_API_URL` and
+`PAPERCLIP_API_KEY`. Paperclip Runner does not supply those variables. Do not
+search workspace files for a server address or credentials to recreate that path.
+If `search_api` / `call_api` are unavailable, report that hiring requires the
+operator to enable runner API tools for this company. Preserve the proposed hire
+in the conversation; do not claim an agent was created or substitute a temporary
+subagent for the requested permanent hire.
+
 ### 1. Confirm identity and company context
 
 ```sh

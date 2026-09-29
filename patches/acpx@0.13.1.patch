@@ -11,7 +11,7 @@ index 5e2113a..b7b5151 100644
    private setSessionModelThroughConfig;
    private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
-index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766f46ce3db 100644
+index d454fd7..991d21d 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
 @@ -1068,6 +1068,7 @@ function serializeSessionRecordForDisk(record) {
@@ -39,7 +39,20 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766
  const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
-@@ -3135,8 +3135,18 @@ function promotePrefixedAuthEnvironment(env) {
+@@ -3104,10 +3106,10 @@ function authEnvKey(methodId) {
+ 	authEnvKeyCache.set(methodId, key);
+ 	return key;
+ }
+-function readEnvCredential(methodId) {
++function readEnvCredential(methodId, environment = process.env) {
+ 	const key = authEnvKey(methodId);
+ 	if (!key) return;
+-	const value = process.env[key];
++	const value = environment[key];
+ 	if (typeof value === "string" && value.trim().length > 0) return value;
+ }
+ function protectedEnvKey(key) {
+@@ -3135,8 +3137,21 @@ function promotePrefixedAuthEnvironment(env) {
  	}
  	return protectedKeys;
  }
@@ -50,17 +63,20 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766
 +	const prototype = Object.getPrototypeOf(value);
 +	return (prototype === Object.prototype || prototype === null) && Object.values(value).every((entry) => typeof entry === "string");
 +}
-+function buildAgentEnvironment(authCredentials, sessionEnv, spawnEnvironment) {
++function resolveAgentEnvironment(spawnEnvironment) {
 +	let sourceEnvironment = process.env;
 +	if (spawnEnvironment !== void 0) {
 +		sourceEnvironment = spawnEnvironment();
 +		if (!isPlainStringEnvironment(sourceEnvironment)) throw new TypeError("ACPX spawn environment must be a plain record of string values");
 +	}
-+	const env = { ...sourceEnvironment };
++	return sourceEnvironment;
++}
++function buildAgentEnvironment(authCredentials, sessionEnv, spawnEnvironment) {
++	const env = { ...resolveAgentEnvironment(spawnEnvironment) };
  	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
  	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
  		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
-@@ -3178,10 +3188,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
+@@ -3178,10 +3193,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
  	const configCredentials = authCredentials ?? {};
  	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
  }
@@ -73,7 +89,23 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766
  		stdio: [
  			"pipe",
  			"pipe",
-@@ -4216,9 +4226,21 @@ var AcpClient = class {
+@@ -3961,10 +3976,13 @@ function resolveClientCapabilities(params) {
+ 			...params.elicitationModes.includes("url") ? { url: {} } : {}
+ 		} } : {}
+ 	};
+-	if (!params.devinAcp) return baseCapabilities;
++	const typedSessionFailureMeta = {
++		jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } }
++	};
++	if (!params.devinAcp) return { ...baseCapabilities, _meta: typedSessionFailureMeta };
+ 	return {
+ 		...baseCapabilities,
+-		_meta: DEVIN_COMPATIBILITY_CLIENT_CAPABILITIES_META
++		_meta: { ...typedSessionFailureMeta, ...DEVIN_COMPATIBILITY_CLIENT_CAPABILITIES_META }
+ 	};
+ }
+ function hasResponseField(response, field) {
+@@ -4216,9 +4234,21 @@ var AcpClient = class {
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -95,7 +127,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -4253,7 +4275,12 @@ var AcpClient = class {
+@@ -4253,7 +4283,12 @@ var AcpClient = class {
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
@@ -109,7 +141,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -4279,10 +4306,17 @@ var AcpClient = class {
+@@ -4279,10 +4314,17 @@ var AcpClient = class {
  	}
  	async spawnAgentProcess(plan) {
  		const spawnCommand = buildAgentSpawnCommand(plan.spawnCommand, plan.args, process.platform, plan.spawnOptions.env);
@@ -129,7 +161,37 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766
  		try {
  			await waitForSpawn$1(spawnedChild);
  		} catch (error) {
-@@ -5028,6 +5062,12 @@ var AcpClient = class {
+@@ -4422,7 +4464,10 @@ var AcpClient = class {
+ 			const createPromise = this.runConnectionRequest(() => connection.newSession({
+ 				cwd: sessionCwd,
+ 				mcpServers: this.options.mcpServers ?? [],
+-				_meta: buildClaudeCodeOptionsMeta(this.options.sessionOptions, claudeAcp)
++				_meta: this.isGrokBuildAcpCommand()
++					? { rules: typeof this.options.sessionOptions?.systemPrompt === "string"
++						? this.options.sessionOptions.systemPrompt : this.options.sessionOptions?.systemPrompt?.append ?? "" }
++					: buildClaudeCodeOptionsMeta(this.options.sessionOptions, claudeAcp)
+ 			}));
+ 			result = claudeAcp ? await withTimeout(createPromise, resolveClaudeAcpSessionCreateTimeoutMs()) : await createPromise;
+ 		} catch (error) {
+@@ -4864,7 +4909,7 @@ var AcpClient = class {
+ 	}
+ 	selectAuthMethod(methods) {
+ 		for (const method of methods) {
+-			const envCredential = readEnvCredential(method.id);
++			const envCredential = readEnvCredential(method.id, resolveAgentEnvironment(this.options.spawnEnvironment));
+ 			if (envCredential) return {
+ 				methodId: method.id,
+ 				credential: envCredential,
+@@ -4890,7 +4935,7 @@ var AcpClient = class {
+ 	}
+ 	readAgentSpecificEnvCredential(methodId) {
+ 		if (!this.isGrokBuildAcpCommand() || methodId !== "xai.api_key") return;
+-		const value = process.env.XAI_API_KEY;
++		const value = (resolveAgentEnvironment(this.options.spawnEnvironment)).XAI_API_KEY;
+ 		return typeof value === "string" && value.trim().length > 0 ? value : void 0;
+ 	}
+ 	selectAgentManagedAuthMethod(methodId) {
+@@ -5028,6 +5073,12 @@ var AcpClient = class {
  	attachAgentLifecycleObservers(child) {
  		child.once("exit", (exitCode, signal) => {
  			this.recordAgentExit("process_exit", exitCode, signal);
@@ -142,15 +204,56 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766
  		});
  		child.once("close", (exitCode, signal) => {
  			this.recordAgentExit("process_close", exitCode, signal);
-@@ -6518,4 +6547,4 @@ var LiveSessionCheckpoint = class {
- //#endregion
- export { writeSessionRecord as $, PERMISSION_POLICY_ACTIONS as $t, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE as A, TimeoutError as At, getAcpxVersion as B, formatErrorMessage as Bt, mergeSessionOptions as C, PromptInputValidationError as Ct, applyLifecycleSnapshotToRecord as D, promptToDisplayText as Dt, applyConversation as E, parsePromptSource as Et, modelStateFromConfigOptions as F, normalizeAgentName$1 as Ft, findSession as G, toAcpErrorPayload as Gt, DEFAULT_HISTORY_LIMIT as H, normalizeOutputError as Ht, normalizeAgentCommandInput as I, resolveAgentArgv as It, listSessions as J, NON_INTERACTIVE_PERMISSION_POLICIES as Jt, findSessionByDirectoryWalk as K, AUTH_POLICIES as Kt, renderArgvIdentity as L, resolveAgentCommand as Lt, RequestedModelUnsupportedError as M, withTimeout as Mt, assertRequestedModelSupported as N, DEFAULT_AGENT_NAME as Nt, reconcileAgentSessionId as O, textPrompt as Ot, isRequestedModelUnsupportedError as P, listBuiltInAgents as Pt, resolveSessionRecord as Q, PERMISSION_MODES as Qt, runTimedExecFile as R, resolveCanonicalAgentName as Rt, advertisedModelState as S, parsePromptStopReason as St, sessionOptionsFromRecord as T, mergePromptSourceWithText as Tt, absolutePath as U, extractAcpError as Ut, permissionModeSatisfies as V, isRetryablePromptError as Vt, findGitRepositoryRoot as W, isAcpResourceNotFoundError as Wt, normalizeName as X, OUTPUT_ERROR_ORIGINS as Xt, listSessionsForAgent as Y, OUTPUT_ERROR_CODES as Yt, pruneSessions as Z, OUTPUT_FORMATS as Zt, createSessionConversation as _, sessionEventLockPath as _t, applyRequestedModelIfAdvertised as a, measurePerf as at, recordSessionUpdate as b, isAcpJsonRpcMessage as bt, setCurrentModelId as c, setPerfGauge as ct, setDesiredModelId as d, serializeSessionRecordForDisk as dt, SESSION_RECORD_SCHEMA as en, createAtomicWriteTempPath as et, syncAdvertisedModelState as f, normalizeRuntimeSessionId as ft, cloneSessionConversation as g, sessionEventActivePath as gt, cloneSessionAcpxState as h, sessionBaseDir$1 as ht, connectAndLoadSession as i, QueueProtocolError as in, incrementPerfCounter as it, REQUESTED_MODEL_UNSUPPORTED_REASONS as j, withInterrupt as jt, AcpClient as k, InterruptedError as kt, setDesiredConfigOption as l, startPerfTimer as lt, applyConfigOptionsToState as m, defaultSessionEventLog as mt, runPromptTurn as n, AgentSpawnError as nn, formatPerfMetric as nt, currentModelIdFromSetModelResponse as o, recordPerfDuration as ot, applyConfigOptionsToRecord as p, DEFAULT_EVENT_SEGMENT_MAX_BYTES as pt, isoNow$2 as q, EXIT_CODES as qt, withConnectedSession as r, QueueConnectionError as rn, getPerfMetricsSnapshot as rt, clearDesiredConfigOption as s, resetPerfMetrics as st, LiveSessionCheckpoint as t, AcpxOperationalError as tn, assertPersistedKeyPolicy as tt, setDesiredModeId as u, parseSessionRecord as ut, recordClientOperation as v, sessionEventSegmentPath as vt, persistSessionOptions as w, isPromptInput as wt, trimConversationForRuntime as x, parseJsonRpcErrorMessage as xt, recordPromptSubmission as y, extractSessionUpdateNotification as yt, splitCommandLine as z, exitCodeForOutputErrorCode as zt };
-
--//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
-\ No newline at end of file
-+//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
+@@ -6435,6 +6486,27 @@ async function withConnectedSession(options) {
+ //#region src/runtime/engine/prompt-turn.ts
+ const SESSION_REPLY_IDLE_MS = 1e3;
+ const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
++const TYPED_SESSION_FAILURE_CATEGORIES = /* @__PURE__ */ new Set([
++	"connection",
++	"access",
++	"limit",
++	"service",
++	"request",
++	"unknown"
++]);
++function typedTerminalSessionFailureCategory(response) {
++	if (response === null || typeof response !== "object" || Array.isArray(response)) return null;
++	const meta = response._meta;
++	if (meta === null || typeof meta !== "object" || Array.isArray(meta)) return null;
++	const jetbrains = meta.jetbrains;
++	if (jetbrains === null || typeof jetbrains !== "object" || Array.isArray(jetbrains)) return null;
++	const air = jetbrains.air;
++	if (air === null || typeof air !== "object" || Array.isArray(air)) return null;
++	if (!Number.isInteger(air.version) || air.version < 1) return null;
++	const failure = air.sessionFailure;
++	if (failure === null || typeof failure !== "object" || Array.isArray(failure) || failure.severity !== "error") return null;
++	return typeof failure.category === "string" && TYPED_SESSION_FAILURE_CATEGORIES.has(failure.category) ? failure.category : "unknown";
++}
+ async function runPromptTurn(params) {
+ 	try {
+ 		const promptPromise = params.client.prompt(params.sessionId, params.prompt, params.onPromptRequestStarted, params.onElicitation);
+@@ -6444,6 +6516,19 @@ async function runPromptTurn(params) {
+ 			idleMs: SESSION_REPLY_IDLE_MS,
+ 			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
+ 		}).catch(() => {});
++		const terminalFailureCategory = typedTerminalSessionFailureCategory(response);
++		if (terminalFailureCategory !== null) {
++			// Inspect provider text only in memory, before emitting the safe category.
++			const failure = response._meta.jetbrains.air.sessionFailure;
++			try {
++				params.onTerminalSessionFailure?.({
++					category: terminalFailureCategory,
++					...(typeof failure.title === "string" ? { title: failure.title.slice(0, 4096) } : {}),
++					...(typeof failure.details === "string" ? { details: failure.details.slice(0, 4096) } : {})
++				});
++			} catch {}
++			throw new Error(`ACP agent reported a terminal ${terminalFailureCategory} failure.`);
++		}
+ 		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
+ 		return {
+ 			stopReason: response.stopReason,
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index e8102acb03c4c38830ad5ec22f356125eb0423b7..fcb1a1906f587b33ad818389c035f90362b0617e 100644
+index e8102ac..2277321 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -1,7 +1,8 @@
@@ -163,7 +266,15 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..fcb1a1906f587b33ad818389c035f903
  //#region src/agent-registry.d.ts
  declare const DEFAULT_AGENT_NAME = "codex";
  //#endregion
-@@ -141,6 +142,11 @@ type AcpTextDeltaOriginMeta = {
+@@ -44,6 +45,7 @@ type AcpRuntimeTurnAttachment = {
+   data: string;
+ };
+ type AcpRuntimeTurnInput = {
++  onTerminalSessionFailure?: (failure: { category: string; title?: string; details?: string }) => void;
+   handle: AcpRuntimeHandle;
+   text: string;
+   attachments?: AcpRuntimeTurnAttachment[];
+@@ -141,6 +143,11 @@ type AcpTextDeltaOriginMeta = {
    kind?: string;
    source?: string;
  };
@@ -175,7 +286,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..fcb1a1906f587b33ad818389c035f903
  type AcpRuntimeEvent = {
    type: "text_delta";
    text: string;
-@@ -186,6 +192,10 @@ type AcpRuntimeEvent = {
+@@ -186,6 +193,10 @@ type AcpRuntimeEvent = {
     * non-null `input` schema.
     */
    availableCommands?: AcpRuntimeAvailableCommand[];
@@ -186,7 +297,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..fcb1a1906f587b33ad818389c035f903
  } | {
    type: "tool_call";
    text: string;
-@@ -313,6 +323,35 @@ type AcpRuntimeOptions = {
+@@ -313,6 +324,35 @@ type AcpRuntimeOptions = {
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
@@ -222,8 +333,24 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..fcb1a1906f587b33ad818389c035f903
  };
  type AcpFileSessionStoreOptions = {
    stateDir: string;
+@@ -369,6 +409,7 @@ declare class AcpRuntimeManager {
+   private createAndSaveRuntimeRecord;
+   private retainInitializedSessionOwner;
+   startTurn(input: {
++    onTerminalSessionFailure?: (failure: { category: string; title?: string; details?: string }) => void;
+     handle: AcpRuntimeHandle;
+     text: string;
+     attachments?: AcpRuntimeTurnAttachment[];
+@@ -414,6 +455,7 @@ declare class AcpRuntimeManager {
+   private cleanupRuntimeTurn;
+   private finalizeRuntimeTurnRecord;
+   runTurn(input: {
++    onTerminalSessionFailure?: (failure: { category: string; title?: string; details?: string }) => void;
+     handle: AcpRuntimeHandle;
+     text: string;
+     attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d040629cf776b 100644
+index a1f4a70..57117c9 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -270,7 +397,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  function normalizeUsageCost(value) {
  	if (!isRecord(value)) return;
  	const amount = asOptionalFiniteNumber(value.amount);
-@@ -812,7 +826,17 @@ var AcpRuntimeManager = class {
+@@ -812,7 +840,17 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -289,7 +416,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  	}
  	createSessionOwner(input) {
  		const owner = {
-@@ -821,12 +845,16 @@ var AcpRuntimeManager = class {
+@@ -821,12 +859,16 @@ var AcpRuntimeManager = class {
  			pendingSessionUpdates: []
  		};
  		input.client.setEventHandlers({
@@ -306,7 +433,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  		const active = owner.activeTurn;
  		if (active) {
  			const { task, turn } = active;
-@@ -863,6 +891,9 @@ var AcpRuntimeManager = class {
+@@ -863,6 +905,9 @@ var AcpRuntimeManager = class {
  		projection.checkpoint.request();
  	}
  	routeOwnedClientOperation(owner, operation) {
@@ -316,7 +443,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  		const active = owner.activeTurn;
  		if (!active) return;
  		const { task, turn } = active;
-@@ -1008,6 +1062,8 @@ var AcpRuntimeManager = class {
+@@ -1008,6 +1053,8 @@ var AcpRuntimeManager = class {
  		record.closedAt = void 0;
  		record.protocolVersion = owner.client.initializeResult?.protocolVersion;
  		record.agentCapabilities = owner.client.initializeResult?.agentCapabilities;
@@ -325,7 +452,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  		applyLifecycleSnapshotToRecord(record, owner.client.getAgentLifecycleSnapshot());
  	}
  	async finishBufferedOwnerControl(owner, record) {
-@@ -1086,6 +1142,11 @@ var AcpRuntimeManager = class {
+@@ -1086,6 +1133,11 @@ var AcpRuntimeManager = class {
  		record.closed = false;
  		record.closedAt = void 0;
  		this.closingActiveRecords.delete(record.acpxRecordId);
@@ -337,7 +464,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  		await this.options.sessionStore.save(record);
  		return record;
  	}
-@@ -1149,6 +1210,8 @@ var AcpRuntimeManager = class {
+@@ -1149,6 +1201,8 @@ var AcpRuntimeManager = class {
  		this.closingActiveRecords.delete(record.acpxRecordId);
  		record.protocolVersion = client.initializeResult?.protocolVersion;
  		record.agentCapabilities = client.initializeResult?.agentCapabilities;
@@ -346,7 +473,15 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  		applyConfigOptionsToRecord(record, session.sessionResult);
  		const modelApplication = await applyRequestedModelIfAdvertised({
  			client,
-@@ -1469,6 +1532,10 @@ var AcpRuntimeManager = class {
+@@ -1301,6 +1355,7 @@ var AcpRuntimeManager = class {
+ 				client: turn.client,
+ 				sessionId,
+ 				prompt: task.promptInput,
++				onTerminalSessionFailure: task.input.onTerminalSessionFailure,
+ 				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
+ 				conversation: turn.conversation,
+ 				promptMessageId: turn.promptMessageId,
+@@ -1469,6 +1524,10 @@ var AcpRuntimeManager = class {
  			setSessionConfigOption: async (configId, value) => {
  				return (await task.state.activeController.setResolvedSessionConfigOption(configId, value)).response;
  			},
@@ -357,7 +492,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  			setResolvedSessionConfigOption: async (configId, value) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value)
  		};
  	}
-@@ -1575,6 +1642,8 @@ var AcpRuntimeManager = class {
+@@ -1575,6 +1634,8 @@ var AcpRuntimeManager = class {
  		reconcileAgentSessionId(turn.record, turn.record.agentSessionId);
  		turn.record.protocolVersion = turn.client.initializeResult?.protocolVersion;
  		turn.record.agentCapabilities = turn.client.initializeResult?.agentCapabilities;
@@ -366,7 +501,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  		turn.record.acpx = turn.acpxState;
  		applyConversation(turn.record, turn.conversation);
  		applyLifecycleSnapshotToRecord(turn.record, turn.client.getAgentLifecycleSnapshot());
-@@ -1707,6 +1776,17 @@ var AcpRuntimeManager = class {
+@@ -1707,6 +1768,17 @@ var AcpRuntimeManager = class {
  		});
  		await this.options.sessionStore.save(result.record);
  	}
@@ -384,7 +519,23 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2119,6 +2199,14 @@ var AcpxRuntime = class {
+@@ -2055,6 +2127,7 @@ var AcpxRuntime = class {
+ 		const turnPromise = this.getManager().then((manager) => manager.startTurn({
+ 			handle,
+ 			text: input.text,
++			onTerminalSessionFailure: input.onTerminalSessionFailure,
+ 			attachments: input.attachments,
+ 			mode: input.mode,
+ 			sessionMode: state.mode,
+@@ -2087,6 +2160,7 @@ var AcpxRuntime = class {
+ 		yield* (await this.getManager()).runTurn({
+ 			handle,
+ 			text: input.text,
++			onTerminalSessionFailure: input.onTerminalSessionFailure,
+ 			attachments: input.attachments,
+ 			mode: input.mode,
+ 			sessionMode: state.mode,
+@@ -2119,6 +2193,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -399,15 +550,8 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  	async cancel(input) {
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
-@@ -2178,4 +2266,4 @@ function createRuntimeStore(options) {
- //#endregion
- export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
-
--//# sourceMappingURL=runtime.js.map
-\ No newline at end of file
-+//# sourceMappingURL=runtime.js.map
 diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
-index c3da1645235bbea22de3f8484149051cd7dca56b..ad1f2f6c6a7f477e83dc0061e4168c00c23382da 100644
+index c3da164..ab6c1bf 100644
 --- a/dist/session-options-DwRDODlr.d.ts
 +++ b/dist/session-options-DwRDODlr.d.ts
 @@ -1,4 +1,5 @@
@@ -441,7 +585,7 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..ad1f2f6c6a7f477e83dc0061e4168c00
    onAcpMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onAcpOutputMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onSessionUpdate?: (notification: SessionNotification) => void;
-@@ -263,6 +275,7 @@ type SessionRecord = {
+@@ -263,6 +282,7 @@ type SessionRecord = {
    lastAgentDisconnectReason?: string;
    protocolVersion?: number;
    agentCapabilities?: AgentCapabilities;
@@ -449,7 +593,7 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..ad1f2f6c6a7f477e83dc0061e4168c00
    title?: string | null;
    messages: SessionMessage[];
    updated_at: string;
-@@ -295,4 +308,4 @@ type SessionAgentOptions = {
+@@ -295,4 +315,4 @@ type SessionAgentOptions = {
  };
  //#endregion
  export { SessionRecord as _, AcpElicitationHandler as a, AcpElicitationResponse as c, AuthPolicy as d, McpServer$1 as f, PermissionStats as g, PermissionPolicy as h, AcpElicitationContext as i, AcpPermissionDecision as l, PermissionMode as m, SystemPromptOption as n, AcpElicitationMode as o, NonInteractivePermissionPolicy as p, AcpClientOptions as r, AcpElicitationRequest as s, SessionAgentOptions as t, AcpPermissionRequest as u, PromptInput as v };

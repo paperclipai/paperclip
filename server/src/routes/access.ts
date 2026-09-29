@@ -2792,12 +2792,13 @@ export function accessRoutes(
     const token =
       typeof req.query.token === "string" ? req.query.token.trim() : "";
     if (!id || !token) throw notFound("CLI auth challenge not found");
+    if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
     const challenge = await boardAuth.describeCliAuthChallenge(id, token);
     if (!challenge) throw notFound("CLI auth challenge not found");
 
     const isSignedInBoardUser =
       req.actor.type === "board" &&
-      (req.actor.source === "session" || isLocalImplicit(req)) &&
+      (req.actor.source === "session" || req.actor.source === "cloud_tenant" || isLocalImplicit(req)) &&
       Boolean(req.actor.userId);
     const canApprove =
       isSignedInBoardUser &&
@@ -2824,6 +2825,7 @@ export function accessRoutes(
       ) {
         throw unauthorized("Sign in before approving CLI access");
       }
+      if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
 
       const userId = req.actor.userId ?? "local-board";
       const approved = await boardAuth.approveCliAuthChallenge(
@@ -2871,6 +2873,7 @@ export function accessRoutes(
     validate(resolveCliAuthChallengeSchema),
     async (req, res) => {
       const id = (req.params.id as string).trim();
+      if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
       const cancelled = await boardAuth.cancelCliAuthChallenge(id, req.body.token);
       res.json({
         status: cancelled.status,

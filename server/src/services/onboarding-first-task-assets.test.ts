@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 import {
   ONBOARDING_FIRST_TASK_OPENING_INTERVIEW_OPTION_ID,
   ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID,
@@ -68,25 +69,29 @@ describe("buildOnboardingFirstTaskOpeningQuestion", () => {
 });
 
 describe("buildOnboardingFirstTaskBrief", () => {
-  it("assembles the brief with the confirmation proposal when the toggle is off", async () => {
-    const brief = await buildOnboardingFirstTaskBrief({ usePlanProposal: false });
-    expect(brief).toContain("This is the user's first task in Paperclip.");
-    // Step 1 branches on the opening card's two option ids.
-    expect(brief).toContain("Take the path the user picked.");
-    expect(brief).toContain(`\`${ONBOARDING_FIRST_TASK_OPENING_INTERVIEW_OPTION_ID}\` →`);
-    expect(brief).toContain(`\`${ONBOARDING_FIRST_TASK_OPENING_TASK_OPTION_ID}\` →`);
-    // The confirmation form is inlined at the {{proposalStep}} slot.
-    expect(brief).toContain("post ONE request_confirmation that says, in a few lines");
-    expect(brief).not.toContain("{{proposalStep}}");
-    // The plan-form-only wording must not appear.
-    expect(brief).not.toContain("treat it like the plan path");
+  it.each([
+    { usePlanProposal: false, mode: "confirmation" },
+    { usePlanProposal: true, mode: "plan" },
+  ])("invokes the skill with $mode mode without inlining the policy", async ({ usePlanProposal, mode }) => {
+    const brief = await buildOnboardingFirstTaskBrief({ usePlanProposal });
+    expect(brief).toContain("Use the `first-task` skill (/first-task)");
+    expect(brief).toContain("Read its SKILL.md");
+    expect(brief).toContain("subsequent wakes of this task");
+    expect(brief).toContain(`Single-task proposal mode: \`${mode}\`.`);
+    expect(brief).not.toContain("{{");
+    expect(brief).not.toContain("Take the path the user picked.");
+    expect(brief).not.toContain("request_confirmation");
+    expect(brief).not.toContain("request_checkbox_confirmation");
   });
+});
 
-  it("assembles the brief with the plan proposal when the toggle is on", async () => {
-    const brief = await buildOnboardingFirstTaskBrief({ usePlanProposal: true });
-    expect(brief).toContain("treat it like the plan path");
-    expect(brief).not.toContain("post ONE request_confirmation that says, in a few lines");
-    expect(brief).not.toContain("{{proposalStep}}");
+describe("first-task proposal mode policy", () => {
+  it("maps both persisted brief modes to their proposal forms", async () => {
+    const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
+    expect(skill).toContain("`confirmation` means one `request_confirmation`");
+    expect(skill).toContain("`plan` means save a short `plan` document");
+    expect(skill).toContain("`request_checkbox_confirmation` targeting its saved revision");
+    expect(skill).toContain("explicit plan requests regardless of the single-task proposal mode");
   });
 });
 
@@ -97,7 +102,7 @@ describe("chief-of-staff persona", () => {
       organizationName: "Acme",
     });
     expect(persona).toContain("You are Ada, chief of staff for Acme.");
-    expect(persona).toContain("# Hiring and delegation");
+    expect(persona).toContain("# Working with the user");
     expect(persona).not.toContain("{{agentName}}");
     expect(persona).not.toContain("{{organizationName}}");
   });

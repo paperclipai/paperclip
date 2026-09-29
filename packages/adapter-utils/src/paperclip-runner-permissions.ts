@@ -3,7 +3,7 @@ export type PaperclipRunnerProvider =
 
 export type CodexPermissionMode = "never" | "on-request" | "untrusted";
 export type OpenCodePermissionMode = "allow" | "ask" | "deny";
-export type AcpxPermissionMode = "approve-all" | "approve-reads" | "deny-all";
+export type AcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
 
 export type PaperclipRunnerPermissionMode =
   CodexPermissionMode | OpenCodePermissionMode | AcpxPermissionMode;
@@ -68,7 +68,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   opencode: {
     configurable: true,
     configKey: "opencodePermissionMode",
-    defaultMode: "ask",
+    defaultMode: "allow",
     description:
       "Controls OpenCode tool permissions inside the assigned Paperclip environment.",
     options: [
@@ -106,7 +106,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
-    defaultMode: "approve-reads",
+    defaultMode: "approve-all",
     description:
       "Controls ACPX agent operations inside the assigned Paperclip environment.",
     options: [
@@ -116,10 +116,16 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
         description: "Approve ACPX operations without approval pauses.",
       },
       {
-        value: "approve-reads",
-        label: "Conservative (fail closed)",
+        value: "approve-paperclip",
+        label: "Automatic Paperclip actions",
         description:
-          "Delegate ACPX permission requests and fail closed until a verified interactive approval bridge is available.",
+          "Automatically run assigned Paperclip planning and task tools, including reassignment. Company permissions and approval requirements still apply. Other operations require permission.",
+      },
+      {
+        value: "approve-reads",
+        label: "Allow Paperclip reads",
+        description:
+          "Automatically allow assigned Paperclip read tools. Other operations stop with an approval-required message because this runner has no interactive approval handler.",
       },
       {
         value: "deny-all",

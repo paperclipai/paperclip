@@ -54,6 +54,15 @@ function resolveOpenAiBaseUrl(): string {
   return DEFAULT_OPENAI_BASE_URL;
 }
 
+/**
+ * True when Codex model discovery should call a non-default OpenAI-compatible
+ * gateway. Default OpenAI discovery is skipped for the built-in adapter because
+ * api.openai.com returns image/audio/embedding models Codex cannot run.
+ */
+export function hasCustomCodexModelsBaseUrl(): boolean {
+  return resolveOpenAiBaseUrl() !== DEFAULT_OPENAI_BASE_URL;
+}
+
 function resolveBaseUrlFromCodexProviders(): string | null {
   const raw = process.env.PAPERCLIP_CODEX_PROVIDERS?.trim();
   if (!raw) return null;

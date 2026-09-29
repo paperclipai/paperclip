@@ -1462,8 +1462,8 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_membership" });
   });
 
-  it("keeps denying self-gated null-mapped actions for board members", async () => {
-    const company = await createCompany(db, "BoardWakeDenied");
+  it("allows legacy member roles to wake agents while rejecting incomplete task mutation scope", async () => {
+    const company = await createCompany(db, "BoardWake");
     const userId = `user-${randomUUID()}`;
     const targetAgent = await createAgent(db, company.id, { role: "engineer" });
     await db.insert(companyMemberships).values({
@@ -1481,8 +1481,8 @@ describeEmbeddedPostgres("authorization service", () => {
       action: "agent:wake",
       resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
     })).resolves.toMatchObject({
-      allowed: false,
-      reason: "deny_unsupported_action",
+      allowed: true,
+      reason: "allow_simple_company_member",
     });
     const issue = await createIssue(db, company.id, { title: "Wake denied issue" });
     await expect(authorization.decide({
@@ -1747,6 +1747,25 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: true,
       reason: "allow_issue_mention_grant",
     });
+  });
+
+  it.each(["session", "cloud_tenant"] as const)("allows %s operators to start agents, without granting hiring rights", async (source) => {
+    const company = await createCompany(db, "wake");
+    const agent = await createAgent(db, company.id);
+    const userId = await createUser(db);
+    await db.insert(companyMemberships).values({ companyId: company.id,
+      principalType: "user", principalId: userId, status: "active", membershipRole: "operator" });
+    const auth = authorizationService(db);
+    const actor = { type: "board" as const, source, userId, companyIds: [company.id] };
+    const resource = { type: "agent" as const, companyId: company.id, agentId: agent.id };
+    expect(await auth.decide({ actor, action: "agent:wake", resource })).toMatchObject({ allowed: true });
+    expect(await auth.decide({ actor, action: "agents:create", resource: { type: "company", companyId: company.id } })).toMatchObject({ allowed: false });
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(companyMemberships.principalId, userId));
+    expect(await auth.decide({ actor, action: "agent:wake", resource })).toMatchObject({ allowed: false });
+    await db.update(companyMemberships).set({ membershipRole: "operator", status: "suspended" }).where(eq(companyMemberships.principalId, userId));
+    expect(await auth.decide({ actor, action: "agent:wake", resource })).toMatchObject({ allowed: false });
+    const otherCompany = await createCompany(db, "other-wake");
+    expect(await auth.decide({ actor, action: "agent:wake", resource: { ...resource, companyId: otherCompany.id } })).toMatchObject({ allowed: false });
   });
 
   it("limits viewer members to read-only visibility actions", async () => {

@@ -69,9 +69,9 @@ export function buildPermissionsForTrustPreset(
   return {
     ...current,
     trustPreset: DEFAULT_TRUST_PRESET,
-    ...(Object.keys(nextPolicy).length > 0
-      ? { authorizationPolicy: nextPolicy }
-      : { authorizationPolicy: undefined }),
+    // Send an explicit empty policy: undefined disappears in JSON, leaving the
+    // prior low-trust boundary intact when the permissions endpoint merges.
+    authorizationPolicy: nextPolicy,
   };
 }
 

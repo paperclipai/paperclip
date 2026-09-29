@@ -34,7 +34,7 @@ type QueueCommand = (
   type: string,
   payload?: Record<string, unknown>,
   commandId?: string,
-) => { readonly commandId: string; readonly controllerSeq: number };
+) => { readonly commandId: string; readonly controllerSeq: number } | Promise<{ readonly commandId: string; readonly controllerSeq: number }>;
 
 interface NativeQuestionCommandTarget {
   binding: Pick<NativeRunStoreBinding, "companyId" | "issueId" | "runId" | "agentId">;
@@ -203,7 +203,7 @@ async function authorizedNativeRun(
 /** Materialize a canonical runtime input request as the existing task-thread card. */
 export async function projectNativeRuntimeRequest(input: {
   db: Db;
-  binding: NativeRunStoreBinding;
+  binding: Pick<NativeRunStoreBinding, "companyId" | "issueId" | "runId" | "agentId" | "normalizedSessionId" | "runnerSourceInstanceId">;
   event: PrpEvent;
 }): Promise<AskUserQuestionsInteraction | null> {
   if (input.event.eventType !== "runtime_request.created") return null;
@@ -319,7 +319,7 @@ export async function deliverNativeQuestionResponse(
     return "pending";
   }
   try {
-    target.queueCommand(
+    await target.queueCommand(
       "request.resolve",
       { requestId: run.requestId, response: response as unknown as Record<string, unknown> },
       `question_${interaction.id}`,

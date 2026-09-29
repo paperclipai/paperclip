@@ -37,7 +37,7 @@ export function TaskChatRichInput({
   ariaLabelledBy,
   testId = "task-chat-rich-input",
   attachAriaLabel = "Attach image",
-  showImageAttachControls = true,
+  showImageAttachControls = false,
 }: TaskChatRichInputProps) {
   const editorRef = useRef<MarkdownEditorRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);

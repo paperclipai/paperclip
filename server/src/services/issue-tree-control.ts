@@ -714,6 +714,12 @@ export function issueTreeControlService(db: Db) {
     preview: IssueTreeControlPreview;
     resumedPauseHoldIds?: string[];
   }> {
+    if (input.mode === "cancel") {
+      const [conversation] = await db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, rootIssueId), eq(issues.companyId, companyId), sql`${issues.conversationAgentId} is not null`,
+      ));
+      if (conversation) throw unprocessable("Stop the active reply instead of cancelling the persistent conversation");
+    }
     const holdReleasePolicy = normalizeReleasePolicy(input.releasePolicy);
     const holdPreview = await preview(companyId, rootIssueId, {
       mode: input.mode,

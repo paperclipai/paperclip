@@ -352,7 +352,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
     await db
       .update(executionWorkspaces)
-      .set({ sourceIssueId })
+      // Keep delivery eligibility independent of the sweep's JavaScript clock
+      // boundary; database defaultNow() can be a few microseconds newer.
+      .set({ sourceIssueId, updatedAt: new Date("2020-01-01T00:00:00Z") })
       .where(eq(executionWorkspaces.id, executionWorkspaceId));
     if (options.childStatus) {
       await db.insert(issues).values({
@@ -1058,6 +1060,33 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
     expect(workspace?.status).toBe("active");
   });
+
+  it("counts large untracked worktrees without allowing destructive cleanup", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const directory = path.join(seeded.worktreePath, ".worktrees", "task-retry");
+    await fs.mkdir(directory, { recursive: true });
+    for (let offset = 0; offset < 5_000; offset += 100) {
+      await Promise.all(Array.from({ length: 100 }, (_, index) =>
+        fs.writeFile(path.join(directory, `${offset + index}-${"source".repeat(32)}.ts`), "uncommitted\n"),
+      ));
+    }
+
+    const status = await execFileAsync(
+      "git",
+      ["-C", seeded.worktreePath, "status", "--porcelain", "--untracked-files=all"],
+      { maxBuffer: 2 * 1024 * 1024 },
+    );
+    expect(Buffer.byteLength(status.stdout, "utf8")).toBeGreaterThan(1024 * 1024);
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    expect(readiness?.git).toMatchObject({ hasUntrackedFiles: true, untrackedEntryCount: 5_000 });
+    expect(readiness?.warnings).toContain("The workspace has 5000 untracked files.");
+    expect(readiness?.blockingReasons).not.toContain(
+      "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+    );
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  }, 20_000);
 
   it("refuses cleanup when the worktree changes after delivery assessment", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });

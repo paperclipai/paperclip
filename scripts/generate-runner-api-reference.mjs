@@ -10,13 +10,20 @@ for (const line of source.split("\n")) {
   const table = /^\|\s*(GET|POST|PATCH|PUT|DELETE)\s*\|\s*`([^`]+)`\s*\|\s*(.*?)\s*\|/.exec(line);
   if (table) entries[key(table[1], table[2])] = { section, description: table[3] };
 }
-for (const match of source.matchAll(/^(GET|POST|PATCH|PUT|DELETE) (\/api\/[^\s]+)\n(\{[\s\S]*?\n\})/gm)) {
+for (const match of source.matchAll(/^(GET|POST|PATCH|PUT|DELETE) (\/api\/[^\s]+)\n(\{[^\n]*\}|\{\n[\s\S]*?\n\})/gm)) {
   try {
     const body = JSON.parse(match[3]);
     const id = key(match[1], match[2]);
-    entries[id] ??= { section: "Worked example" };
-    (entries[id].examples ??= []).push({ body });
-    entries[id].examples = entries[id].examples.slice(0, 2);
+    // Runtime consumers look up endpoint templates from OpenAPI. Narrative
+    // URLs with literal resource IDs must not create unreachable entries.
+    if (!entries[id]) continue;
+    // Keep examples for each interaction kind / issue disposition, so new
+    // question or waiting examples do not displace existing confirmation flows.
+    const variant = body.kind ?? body.status ?? "";
+    const examples = entries[id].examples ??= [];
+    if (examples.filter(({ body: example }) => (example.kind ?? example.status ?? "") === variant).length < 2) {
+      examples.push({ body });
+    }
   } catch { /* Narrative/pseudocode blocks are not executable examples. */ }
 }
 const destination = resolve(root, "server/src/services/native-runtime/runner-api-reference.ts");

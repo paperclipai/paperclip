@@ -11,6 +11,7 @@ import { ONBOARDING_STORAGE_KEY } from "@/components/OnboardingWizard";
 import { STORYBOOK_COMPANY_ID } from "../fixtures/onboardingDraft";
 import {
   STORYBOOK_SANDBOX_ENVIRONMENT_ID,
+  onboardingFixtureState,
   storybookAuthSignal,
   storybookEnvironmentCapabilities,
   storybookEnvironmentTest,
@@ -113,6 +114,14 @@ function installStorybookApiFixtures() {
     }
 
     if (url.pathname === "/api/companies") {
+      // The wizard's naming step creates a company here and reads its id back;
+      // answering the POST with the list instead gave it an array, and the
+      // walk crashed on the step after. Hand back the fixture company as the
+      // one just created, so the arc can be walked from its first screen.
+      if ((init?.method ?? "GET").toUpperCase() === "POST") {
+        const body = init?.body ? (JSON.parse(String(init.body)) as { name?: string }) : {};
+        return Response.json({ ...storybookCompanies[0], name: body.name ?? storybookCompanies[0]?.name });
+      }
       return Response.json(storybookCompanies);
     }
 
@@ -150,8 +159,12 @@ function installStorybookApiFixtures() {
         // The cloud-tenant shape, and what the onboarding connect step resolves
         // its login environment through: without it the step looks for a local
         // default and never finds the managed sandbox.
-        enableManagedSandboxOnly: true,
+        enableManagedSandboxOnly: onboardingFixtureState.environments !== "local",
       });
+    }
+
+    if (url.pathname === "/api/health") {
+      return Response.json({ deploymentMode: "authenticated", localAiLoginSupported: onboardingFixtureState.environments === "local" });
     }
 
     if (url.pathname === "/api/instance/settings") {
@@ -204,6 +217,7 @@ function installStorybookApiFixtures() {
       /^\/api\/companies\/[^/]+\/adapters\/([^/]+)\/login-sessions(?:\/([^/]+))?(\/cancel)?$/,
     );
     if (adapterLoginMatch) {
+      if (adapterLoginMatch[2] === "active") return new Response(null, { status: 404 });
       const session = {
         sessionId: "adapter-login-storybook",
         environmentId: STORYBOOK_SANDBOX_ENVIRONMENT_ID,
@@ -248,6 +262,9 @@ function installStorybookApiFixtures() {
         expiresAt: null,
         failure: null,
       });
+    }
+    if (/^\/api\/companies\/[^/]+\/setup-token-login-sessions\/active$/.test(url.pathname)) {
+      return new Response(null, { status: 404 });
     }
     if (
       /^\/api\/companies\/[^/]+\/setup-token-login-sessions\/[^/]+$/.test(
@@ -298,7 +315,41 @@ function installStorybookApiFixtures() {
     if (
       /^\/api\/companies\/[^/]+\/claude-oauth-token-status$/.test(url.pathname)
     ) {
-      return new Response(null, { status: 404 });
+      return onboardingFixtureState.savedClaudeLogin
+        ? Response.json({ secretId: "saved-claude-subscription", latestVersion: 1 })
+        : new Response(null, { status: 404 });
+    }
+    if (/^\/api\/companies\/[^/]+\/ai-connections\/local\/attempts$/.test(url.pathname)) {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      return Response.json({ sessionId: "local-storybook", expiresAt: new Date(Date.now() + 1_800_000).toISOString(), command: body.provider === "anthropic"
+        ? "CLAUDE_CONFIG_DIR='/paperclip/login' claude auth login"
+        : "CODEX_HOME='/paperclip/login' codex login --device-auth" });
+    }
+    if (/^\/api\/companies\/[^/]+\/ai-connections\/local\/check$/.test(url.pathname)) {
+      return Response.json({ status: onboardingFixtureState.localLoginStatus });
+    }
+    if (/^\/api\/companies\/[^/]+\/ai-connections\/local$/.test(url.pathname)) {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      if (onboardingFixtureState.localLoginStatus !== "ready") return Response.json({ error: "Finish signing in, then try Connect again." }, { status: 422 });
+      if (onboardingFixtureState.connectPending) await new Promise(() => {});
+      onboardingFixtureState.savedManagedSubscription = body.provider;
+      return Response.json({ connectionId: "managed-storybook", grantId: "grant-storybook" });
+    }
+    if (/^\/api\/companies\/[^/]+\/ai-connections$/.test(url.pathname)) {
+      const provider = onboardingFixtureState.savedManagedSubscription;
+      return init?.method === "POST"
+        ? Response.json({ connectionId: "managed-storybook", grantId: "grant-storybook" })
+        : Response.json({ currentUserId: "user-storybook", connections: provider ? [{
+            id: "managed-storybook", grantId: "grant-storybook", companyId: "company-storybook",
+            provider, method: "subscription", name: provider === "anthropic" ? "My Claude subscription" : "My OpenAI subscription",
+            ownership: "personal", ownerUserId: "user-storybook", status: "connected", isDefault: true,
+          }] : [] });
+    }
+    if (/^\/api\/companies\/[^/]+\/me\/user-secrets$/.test(url.pathname)) {
+      return Response.json(onboardingFixtureState.savedApiKeys ? ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].map((key) => ({
+        definition: { id: key, companyId: "company-storybook", key: `${key}.setup.storybook`, name: key === "ANTHROPIC_API_KEY" ? "My Claude key" : "My OpenAI key", status: "active" },
+        secret: { id: `secret-${key}`, companyId: "company-storybook", scope: "user", status: "active" },
+      })) : []);
     }
 
     // The hire, and the three calls either side of it.
@@ -315,7 +366,18 @@ function installStorybookApiFixtures() {
       /^\/api\/companies\/[^/]+\/adapters\/([^/]+)\/test-environment$/,
     );
     if (testEnvMatch) {
-      return Response.json(storybookEnvironmentTest(testEnvMatch[1]));
+      if (onboardingFixtureState.testPending) await new Promise(() => {});
+      await new Promise(resolve => setTimeout(resolve, onboardingFixtureState.testDelayMs));
+      if (onboardingFixtureState.testFailuresRemaining > 0) {
+        onboardingFixtureState.testFailuresRemaining--;
+        return Response.json({ error: "The provider did not respond. Try connecting again." }, { status: 502 });
+      }
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      const env = body.adapterConfig?.env ?? {};
+      const usesSavedCodex = onboardingFixtureState.savedCodexLogin && env.CODEX_HOME?.secretId === "saved-codex-home";
+      const usesSavedKey = onboardingFixtureState.savedApiKeys && ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].some((key) => env[key]?.type === "user_secret_ref" && env[key]?.key === `${key}.setup.storybook`);
+      const usesSavedClaude = onboardingFixtureState.savedClaudeLogin && env.CLAUDE_CODE_OAUTH_TOKEN?.type === "user_secret_ref" && env.CLAUDE_CODE_OAUTH_TOKEN?.key === "CLAUDE_CODE_OAUTH_TOKEN";
+      return Response.json((body.aiConnection?.provider === onboardingFixtureState.savedManagedSubscription) || usesSavedCodex || usesSavedKey || usesSavedClaude ? { adapterType: testEnvMatch[1], status: "pass", checks: [], testedAt: new Date(0).toISOString() } : storybookEnvironmentTest(testEnvMatch[1]));
     }
     if (/^\/api\/companies\/[^/]+\/agent-hires$/.test(url.pathname)) {
       // `approval: null` on purpose. A hire that returns one sends the wizard
@@ -501,7 +563,7 @@ function installStorybookApiFixtures() {
     if (secretsListMatch) {
       const [, companyId] = secretsListMatch;
       return Response.json(
-        companyId === "company-storybook" ? storybookSecrets : [],
+        companyId === "company-storybook" && onboardingFixtureState.environments !== "local" ? [...storybookSecrets, ...(onboardingFixtureState.savedCodexLogin ? [{ ...storybookSecrets[0], id: "saved-codex-home", key: "codex_home_saved", name: "CODEX_HOME_team-account" }] : [])] : [],
       );
     }
 
@@ -726,7 +788,7 @@ const preview: Preview = {
     (Story, context) => {
       const theme = context.globals.theme === "light" ? "light" : "dark";
       return (
-        <StorybookProviders key={theme} theme={theme}>
+        <StorybookProviders key={`${context.id}:${theme}`} theme={theme}>
           <Story />
         </StorybookProviders>
       );

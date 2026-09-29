@@ -209,7 +209,8 @@ describe("markdown work product review row", () => {
   it("renders an expandable row with explicit raw and download actions", async () => {
     await renderTab();
 
-    expect(expandButton().textContent).toContain("Verification report");
+    expect(container.querySelector("h2")?.textContent).toBe("Verification report");
+    expect(expandButton().textContent).toBe("Read document");
     const raw = container.querySelector('a[title="Open raw"]') as HTMLAnchorElement;
     const download = container.querySelector('a[title="Download"]') as HTMLAnchorElement;
     expect(raw?.getAttribute("href")).toBe(`/api/attachments/${ATTACHMENT_ID}/content`);
@@ -320,14 +321,14 @@ describe("markdown work product review row", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("loose-notes.md");
     });
-    expect(container.textContent).not.toContain("report.md");
+    expect(container.querySelectorAll("article")).toHaveLength(2);
     const looseLink = Array.from(container.querySelectorAll("a")).find(
-      (anchor) => anchor.textContent?.includes("loose-notes.md"),
+      (anchor) => anchor.getAttribute("download") === "loose-notes.md",
     );
-    expect(looseLink?.getAttribute("href")).toBe("/api/attachments/22222222-2222-4222-8222-222222222222/content");
+    expect(looseLink?.getAttribute("href")).toBe("/api/attachments/22222222-2222-4222-8222-222222222222/content?download=1");
   });
 
-  it("keeps non-markdown work products on the raw link row", async () => {
+  it("keeps non-markdown work products on the download row", async () => {
     const contentPath = `/api/attachments/${ATTACHMENT_ID}/content`;
     mockIssuesApi.listWorkProducts.mockResolvedValue([
       makeMarkdownWorkProduct({
@@ -345,15 +346,36 @@ describe("markdown work product review row", () => {
     await renderTab();
 
     await waitForAssertion(() => {
-      const row = container.querySelector('[data-testid="task-chat-rich-work-product-artifact"]');
-      const link = row?.querySelector("a");
+      const row = container.querySelector("article");
+      const link = row?.querySelector("a[download]");
       expect(row?.textContent).toContain("Verification report");
-      expect(link?.getAttribute("href")).toBe(contentPath);
+      expect(link?.textContent).toBe("Download file");
+      expect(link?.getAttribute("href")).toBe(`${contentPath}?download=1`);
     });
     expect(container.querySelector("button[aria-expanded]")).toBeNull();
   });
 
-  it("groups compact rows by producing run and filters by type", async () => {
+  it.each(["image/png", "application/octet-stream"])("renders %s media tiles without duplicates or user uploads", async (contentType) => {
+    const image = { ...makeMarkdownAttachment(), contentType, originalFilename: "cover.png" };
+    const looseImage = { ...image, id: "loose-image", contentPath: "/api/attachments/loose-image/content" };
+    const video = { ...makeMarkdownAttachment(), id: "loose-video", contentType: "application/octet-stream", originalFilename: "clip.mp4", contentPath: "/api/attachments/loose-video/content" };
+    mockIssuesApi.listAttachments.mockResolvedValue([image, video, looseImage, { ...video, id: "user-video", createdByAgentId: null, createdByUserId: "user-1" }]);
+    mockIssuesApi.listWorkProducts.mockResolvedValue([makeMarkdownWorkProduct({
+      title: "Cover artwork",
+      metadata: { attachmentId: ATTACHMENT_ID, contentType, originalFilename: "cover.png", contentPath: image.contentPath, openPath: image.contentPath, downloadPath: `${image.contentPath}?download=1`, byteSize: 64 },
+    })]);
+    await renderTab({}, "Cover artwork");
+    await waitForAssertion(() => {
+      const buttons = container.querySelectorAll('button[aria-label^="View image:"], button[aria-label^="Open video:"]');
+      expect(buttons).toHaveLength(3);
+      expect(container.querySelectorAll("img")).toHaveLength(2);
+      expect(container.querySelectorAll("article")).toHaveLength(3);
+      expect(container.querySelector("video")?.getAttribute("src")).toBe(video.contentPath);
+      expect(container.querySelectorAll("video")).toHaveLength(1);
+    });
+  });
+
+  it("groups rich cards by producing run", async () => {
     const runOne = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const runTwo = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const imagePath = `/api/attachments/${ATTACHMENT_ID}/content`;
@@ -395,18 +417,10 @@ describe("markdown work product review row", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("CodexCoder");
       expect(container.textContent).toContain("DesignCoder");
-      expect(container.querySelector('article[data-variant="compact"]')).not.toBeNull();
+      expect(container.querySelectorAll("article")).toHaveLength(2);
       expect(container.querySelector(`img[src="${imagePath}"]`)).not.toBeNull();
-      expect(container.querySelector('a[aria-label="Open on GitHub: Artifact grouping PR"]')).not.toBeNull();
-      expect(container.querySelector('button[aria-label="Open gallery: Artifacts screenshot"]')).not.toBeNull();
+      expect(container.querySelector('a[href="https://github.com/paperclipai/paperclip/pull/1"]')?.textContent).toContain("Open pull request");
+      expect(container.querySelector('button[aria-label="View image: Artifacts screenshot"]')).not.toBeNull();
     });
-
-    const typeSelect = container.querySelector('select[aria-label="Filter artifacts by type"]') as HTMLSelectElement;
-    await act(async () => {
-      typeSelect.value = "pull_request";
-      typeSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    expect(container.textContent).toContain("Artifact grouping PR");
-    expect(container.textContent).not.toContain("Artifacts screenshot");
   });
 });

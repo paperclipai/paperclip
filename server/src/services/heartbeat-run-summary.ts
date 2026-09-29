@@ -121,6 +121,8 @@ export const LEGACY_WITHHELD_RUN_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
 export const RUN_PRESENTATION_RESOLVER_VERSION = "1";
+export const CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON =
+  "allow_chat_run_presentation";
 
 export type RunPresentationCommentAction = "reuse" | "create" | "none";
 export type { RunPresentationDecision } from "@paperclipai/shared";
@@ -178,6 +180,29 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+export function isExternalChatPresentationContext(
+  contextSnapshot: unknown,
+  verifiedToolReviewChatOrigin = false,
+): boolean {
+  const context = record(contextSnapshot);
+  const wake = record(context.paperclipWake);
+  const source =
+    typeof context.source === "string" ? context.source.trim() : "";
+  // Approvals and Board comments also resume ordinary internal tasks. Only
+  // durable source-run or mirrored-comment proof authorizes an external reply.
+  if (
+    source === "tool_action_review" ||
+    source.startsWith("issue.comment") ||
+    source === "issue.update"
+  )
+    return verifiedToolReviewChatOrigin;
+  return (
+    source.startsWith("chat:") ||
+    context.externalChatContinuation === true ||
+    wake.externalInteractionContinuation === true
+  );
 }
 
 /**
@@ -249,6 +274,32 @@ function hasYieldedSemanticResult(resultJson: Record<string, unknown>) {
   );
 }
 
+function readAcceptedExternalChatResponseWakeSummary(
+  resultJson: Record<string, unknown>,
+  reviewPresentationAuthorized = false,
+  committedResponseAuthorized = false,
+) {
+  const nativeResult = record(resultJson.nativeResult);
+  const continuation = record(nativeResult.continuation);
+  if (
+    resultJson.finalizationPhase !== "committed" ||
+    (!committedResponseAuthorized &&
+      resultJson.finalizationReasonCode !== "external_chat_response_waiting" &&
+      !(
+        reviewPresentationAuthorized &&
+        resultJson.finalizationReasonCode === "governed_response_waiting"
+      )) ||
+    nativeResult.schema !== "paperclip.run_result.v1" ||
+    nativeResult.reportedWorkDisposition !== "yielded" ||
+    continuation.kind !== "response_wake" ||
+    !readCommentText(continuation.summary) ||
+    !readCommentText(continuation.idempotencyKey)
+  ) {
+    return null;
+  }
+  return readCommentText(nativeResult.summary);
+}
+
 export function projectHistoricalHeartbeatRunComment(
   body: string,
   resultJson: Record<string, unknown> | null | undefined,
@@ -315,7 +366,15 @@ function decision(
  */
 export function resolveHeartbeatRunResponse(input: {
   resultJson: Record<string, unknown> | null | undefined;
+  /** Server-owned conversation finalization, after normal governance checks. */
+  conversationTurnFinished?: boolean;
   existingComment?: { id: string; body?: string | null } | null;
+  preferFinalResponseOverExistingComment?: boolean;
+  externalChatResponseWakeSummaryAuthorized?: boolean;
+  /** Server-only proof of the exact accepted response after durable status
+   * finalization. Never read this capability from provider/context JSON. */
+  externalChatCommittedResponseWakeSummaryAuthorized?: boolean;
+  externalChatReviewResponseSummaryAuthorized?: boolean;
   finalAgentMessage?: {
     text: string;
     sourceEventId: string | null;
@@ -323,6 +382,138 @@ export function resolveHeartbeatRunResponse(input: {
     reasonCode?: string;
   } | null;
 }): ResolvedHeartbeatRunResponse {
+  const resultJson = record(input.resultJson);
+  const finalAgentText = readCommentText(input.finalAgentMessage?.text);
+  const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
+  const compatibleTerminalAssistant =
+    input.finalAgentMessage?.channel === "unknown";
+  const resolveCompletedUpstreamResponse = () => {
+    if (
+      explicitProviderFinal &&
+      finalAgentText &&
+      !isStructuredSemanticResultText(finalAgentText)
+    ) {
+      return {
+        text: finalAgentText,
+        decision: decision("final_agent_message", {
+          sourceEventId: input.finalAgentMessage?.sourceEventId,
+          commentAction: "create",
+          reasonCodes: [
+            input.finalAgentMessage?.reasonCode ??
+              "latest_non_empty_completed_final_agent_message",
+          ],
+        }),
+      } satisfies ResolvedHeartbeatRunResponse;
+    }
+
+    const adapterFinal = readMarkedAdapterFinalResponse(resultJson);
+    if (adapterFinal) {
+      return {
+        text: adapterFinal,
+        decision: decision("adapter_final_response", {
+          commentAction: "create",
+          reasonCodes: ["adapter_output_marked_final"],
+        }),
+      } satisfies ResolvedHeartbeatRunResponse;
+    }
+
+    if (
+      compatibleTerminalAssistant &&
+      finalAgentText &&
+      !isStructuredSemanticResultText(finalAgentText)
+    ) {
+      return {
+        text: finalAgentText,
+        decision: decision("final_agent_message", {
+          sourceEventId: input.finalAgentMessage?.sourceEventId,
+          commentAction: "create",
+          reasonCodes: [
+            input.finalAgentMessage?.reasonCode ??
+              "latest_non_empty_completed_terminal_assistant_message",
+          ],
+        }),
+      } satisfies ResolvedHeartbeatRunResponse;
+    }
+
+    const semanticSummary = readAcceptedSemanticSummary(resultJson);
+    if (semanticSummary) {
+      return {
+        text: semanticSummary,
+        decision: decision("semantic_result_summary", {
+          commentAction: "create",
+          reasonCodes: ["accepted_semantic_result_summary"],
+        }),
+      } satisfies ResolvedHeartbeatRunResponse;
+    }
+
+    const legacyText =
+      readCommentText(resultJson.summary) ??
+      readCommentText(resultJson.result) ??
+      readCommentText(resultJson.message);
+    if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
+      return {
+        text: legacyText,
+        decision: decision("adapter_final_response", {
+          commentAction: "create",
+          reasonCodes: ["legacy_adapter_summary_compatibility"],
+        }),
+      } satisfies ResolvedHeartbeatRunResponse;
+    }
+    return null;
+  };
+
+  if (input.preferFinalResponseOverExistingComment === true) {
+    if (hasYieldedSemanticResult(resultJson)) {
+      const responseWakeSummary =
+        input.externalChatResponseWakeSummaryAuthorized === true
+          ? readAcceptedExternalChatResponseWakeSummary(
+              resultJson,
+              input.externalChatReviewResponseSummaryAuthorized === true,
+              input.externalChatCommittedResponseWakeSummaryAuthorized === true,
+            )
+          : null;
+      if (responseWakeSummary) {
+        return {
+          text: responseWakeSummary,
+          decision: decision("semantic_result_summary", {
+            commentAction: "create",
+            reasonCodes: [
+              "accepted_external_chat_response_wake_summary",
+              "external_chat_final_precedence",
+            ],
+          }),
+        };
+      }
+      return {
+        text: null,
+        decision: decision("none", {
+          commentAction: "none",
+          reasonCodes: ["yielded_control_plane_wait"],
+        }),
+      };
+    }
+    const upstream = resolveCompletedUpstreamResponse();
+    if (upstream) {
+      return {
+        ...upstream,
+        decision: {
+          ...upstream.decision,
+          reasonCodes: [
+            ...upstream.decision.reasonCodes,
+            "external_chat_final_precedence",
+          ],
+        },
+      };
+    }
+    return {
+      text: null,
+      decision: decision("none", {
+        commentAction: "none",
+        reasonCodes: ["external_chat_final_response_unavailable"],
+      }),
+    };
+  }
+
   const existingText = readCommentText(input.existingComment?.body);
   if (input.existingComment && existingText) {
     return {
@@ -335,12 +526,11 @@ export function resolveHeartbeatRunResponse(input: {
     };
   }
 
-  const resultJson = record(input.resultJson);
   // A governed wait is not a completed assistant turn. Provider adapters may
   // still emit terminal-looking prose while the control plane is yielding for
   // an interaction; keep that prose in activity and let the durable
   // interaction own the visible waiting state.
-  if (hasYieldedSemanticResult(resultJson)) {
+  if (hasYieldedSemanticResult(resultJson) && !input.conversationTurnFinished) {
     return {
       text: null,
       decision: decision("none", {
@@ -350,81 +540,13 @@ export function resolveHeartbeatRunResponse(input: {
     };
   }
 
-  const finalAgentText = readCommentText(input.finalAgentMessage?.text);
-  const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
-  const compatibleTerminalAssistant =
-    input.finalAgentMessage?.channel === "unknown";
-  if (
-    explicitProviderFinal &&
-    finalAgentText &&
-    !isStructuredSemanticResultText(finalAgentText)
-  ) {
-    return {
-      text: finalAgentText,
-      decision: decision("final_agent_message", {
-        sourceEventId: input.finalAgentMessage?.sourceEventId,
-        commentAction: "create",
-        reasonCodes: [
-          input.finalAgentMessage?.reasonCode ??
-            "latest_non_empty_completed_final_agent_message",
-        ],
-      }),
-    };
-  }
-
-  const adapterFinal = readMarkedAdapterFinalResponse(resultJson);
-  if (adapterFinal) {
-    return {
-      text: adapterFinal,
-      decision: decision("adapter_final_response", {
-        commentAction: "create",
-        reasonCodes: ["adapter_output_marked_final"],
-      }),
-    };
-  }
-
-  if (
-    compatibleTerminalAssistant &&
-    finalAgentText &&
-    !isStructuredSemanticResultText(finalAgentText)
-  ) {
-    return {
-      text: finalAgentText,
-      decision: decision("final_agent_message", {
-        sourceEventId: input.finalAgentMessage?.sourceEventId,
-        commentAction: "create",
-        reasonCodes: [
-          input.finalAgentMessage?.reasonCode ??
-            "latest_non_empty_completed_terminal_assistant_message",
-        ],
-      }),
-    };
-  }
-
-  const semanticSummary = readAcceptedSemanticSummary(resultJson);
-  if (semanticSummary) {
-    return {
-      text: semanticSummary,
-      decision: decision("semantic_result_summary", {
-        commentAction: "create",
-        reasonCodes: ["accepted_semantic_result_summary"],
-      }),
-    };
-  }
+  const upstream = resolveCompletedUpstreamResponse();
+  if (upstream) return upstream;
 
   const legacyText =
     readCommentText(resultJson.summary) ??
     readCommentText(resultJson.result) ??
     readCommentText(resultJson.message);
-  if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
-    return {
-      text: legacyText,
-      decision: decision("adapter_final_response", {
-        commentAction: "create",
-        reasonCodes: ["legacy_adapter_summary_compatibility"],
-      }),
-    };
-  }
 
   return {
     text: null,
@@ -452,22 +574,38 @@ export function findHeartbeatRunCompletionComment<T extends { id: string }>(
     return comments[0] ?? null;
   }
 
-  const progressCommentIds = new Set<string>();
+  const generatedCommentIds = new Set<string>();
   for (const receipt of Object.values(receipts)) {
     if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
       continue;
     const receiptRecord = receipt as Record<string, unknown>;
-    if (receiptRecord.operationId !== "report_progress") continue;
     const result = receiptRecord.result;
     if (!result || typeof result !== "object" || Array.isArray(result))
       continue;
-    const commentId = (result as Record<string, unknown>).commentId;
-    if (typeof commentId === "string" && commentId.length > 0) {
-      progressCommentIds.add(commentId);
+    const receiptResult = result as Record<string, unknown>;
+    if (receiptRecord.operationId === "report_progress") {
+      const commentId = receiptResult.commentId;
+      if (typeof commentId === "string" && commentId.length > 0) {
+        generatedCommentIds.add(commentId);
+      }
+    } else if (
+      receiptRecord.operationId === "register_deliverable" &&
+      typeof receiptResult.attachmentId === "string" &&
+      receiptResult.commandId === `deliverable-prepared:${receiptResult.attachmentId}` &&
+      ["applied", "duplicate"].includes(String(receiptResult.disposition)) &&
+      Array.isArray(receiptResult.entityRefs)
+    ) {
+      // File preparation binds an attachment to a generated comment. That
+      // receipt is not the agent's final answer. Use the server-issued entity
+      // references, never the comment's wording, to exclude its comment from
+      // final-response deduplication. The attachment and binding stay intact.
+      for (const ref of receiptResult.entityRefs) {
+        if (typeof ref === "string") generatedCommentIds.add(ref);
+      }
     }
   }
 
   return (
-    comments.find((comment) => !progressCommentIds.has(comment.id)) ?? null
+    comments.find((comment) => !generatedCommentIds.has(comment.id)) ?? null
   );
 }

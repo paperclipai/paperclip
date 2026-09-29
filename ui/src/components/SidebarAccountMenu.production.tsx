@@ -12,7 +12,9 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useSignOut } from "@/hooks/useSignOut";
+import { useStagingCommit } from "@/hooks/useStagingCommit";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -106,10 +108,12 @@ export function SidebarAccountMenu({
   open: controlledOpen,
   onOpenChange,
 }: SidebarAccountMenuProps) {
+  const isCloud = Boolean(useCloudInstance());
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const open = controlledOpen ?? internalOpen;
+  const stagingCommit = useStagingCommit(open);
   const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -172,6 +176,18 @@ export function SidebarAccountMenu({
               <div className="min-w-0 flex-1 pt-1">
                 <h2 className="truncate text-base font-semibold text-foreground">{displayName}</h2>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
+                {stagingCommit ? (
+                  <a
+                    className="block truncate font-mono text-(length:--text-micro) leading-(--profile-popover-meta-line-height) text-muted-foreground hover:underline focus-visible:underline"
+                    href={`https://github.com/paperclipai/paperclip/commit/${stagingCommit}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`View commit ${stagingCommit} on GitHub`}
+                    title={stagingCommit}
+                  >
+                    SHA {stagingCommit.slice(0, 7)}
+                  </a>
+                ) : null}
               </div>
             </div>
 
@@ -227,7 +243,7 @@ export function SidebarAccountMenu({
           </div>
         </PopoverContent>
         </Popover>
-        {!rail ? (
+        {!rail && !isCloud ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <a

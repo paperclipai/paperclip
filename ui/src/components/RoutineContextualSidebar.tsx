@@ -13,10 +13,6 @@ import {
 import { routinesApi } from "@/api/routines";
 import { queryKeys } from "@/lib/queryKeys";
 import { useParams } from "@/lib/router";
-import {
-  auditSectionHref,
-  routineAuditHref,
-} from "@/pages/audit/audit-navigation";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 import { SidebarNavItem } from "./SidebarNavItem";
 
@@ -27,6 +23,8 @@ export const ROUTINE_DETAIL_VIEWS = [
   "delivery",
   "secrets",
   "history",
+  "runs",
+  "activity",
 ] as const;
 
 export type RoutineDetailView = (typeof ROUTINE_DETAIL_VIEWS)[number];
@@ -39,7 +37,7 @@ export type RoutineContextualNavItem = {
 
 export const ROUTINE_CONTEXTUAL_NAV_ITEMS: readonly RoutineContextualNavItem[] = [
   { view: "overview", label: "Overview", icon: LayoutDashboard },
-  { view: "triggers", label: "Schedule", icon: CalendarClock },
+  { view: "triggers", label: "Triggers", icon: CalendarClock },
   { view: "variables", label: "Variables", icon: Braces },
   { view: "delivery", label: "Delivery", icon: Send },
   { view: "secrets", label: "Secrets", icon: KeyRound },
@@ -53,30 +51,13 @@ export function routineDetailHref(routineId: string, view: RoutineDetailView = "
   return `/routines/${routineId}/${view}`;
 }
 
-export function routineRunsAuditHref(routineId: string) {
-  return auditSectionHref("runs", {
-    entityType: "routine",
-    entityId: routineId,
-  });
-}
-
-export function routineActivityAuditHref(routineId: string) {
-  return routineAuditHref(routineId);
-}
-
-/**
- * Canonical landing/legacy resolver used by the page and available to the
- * shell. Detail configuration stays local; immutable operational history
- * lives in scoped Audit.
- */
+/** Keep routine configuration and operations in the routine detail shell. */
 export function resolveRoutineDetailDestination(input: {
   routineId: string;
   section?: string | null;
   legacyTab?: string | null;
 }) {
   const requested = input.legacyTab ?? input.section;
-  if (requested === "runs") return routineRunsAuditHref(input.routineId);
-  if (requested === "activity") return routineActivityAuditHref(input.routineId);
   if (isRoutineDetailView(requested)) return routineDetailHref(input.routineId, requested);
   return routineDetailHref(input.routineId, "overview");
 }
@@ -120,16 +101,16 @@ export function RoutineContextualSidebar({
         </div>
 
         <p className="px-4 pb-1 pt-5 text-(length:--text-nano) font-mono font-medium uppercase tracking-widest text-muted-foreground/60">
-          Audit
+          Operate
         </p>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem
-            to={routineRunsAuditHref(routineId)}
+            to={routineDetailHref(routineId, "runs")}
             label="Runs"
             icon={Play}
           />
           <SidebarNavItem
-            to={routineActivityAuditHref(routineId)}
+            to={routineDetailHref(routineId, "activity")}
             label="Activity"
             icon={Activity}
           />

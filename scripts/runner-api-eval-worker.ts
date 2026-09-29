@@ -1,3 +1,4 @@
+import { AGENT_CHAT_DIRECTIVE } from "../server/src/services/agent-conversations.js";
 /** JSONL worker for the companion paperclip-evals API suite. Never selects cases or retries. */
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, realpathSync } from "node:fs";
@@ -65,7 +66,7 @@ try {
     const isOpenRouter = OPENROUTER_MODELS.has(request.model);
     const provider = isOpenRouter ? "opencode" : request.model === "claude-sonnet-5" ? "acpx" : "codex";
     let providerVersion: string | null = null;
-    const fixture = await server.fixture({ mode: request.mode, apiToolsEnabled: request.arm !== "baseline", reset: true, connectionScenario: request.connectionScenario });
+    const fixture = await server.fixture({ mode: request.mode, apiToolsEnabled: request.arm !== "baseline", reset: true, conversation: request.conversation === true, connectionScenario: request.connectionScenario });
     const initialState = await fixture.snapshot();
     const substitutions = Object.fromEntries(Object.entries(fixture).filter(([, value]) => typeof value === "string"));
     const expand = (value: any): any => typeof value === "string" ? value.replace(/\{\{(\w+)\}\}/g, (_, key) => String(substitutions[key] ?? (() => { throw new Error(`Unknown fixture variable ${key}`); })())) : Array.isArray(value) ? value.map(expand) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, expand(entry)])) : value;
@@ -99,7 +100,7 @@ try {
         if (!request.reservationId || request.maxCostUsd !== 0.5 || !["gpt-5.6-luna", "claude-sonnet-5", ...OPENROUTER_MODELS].includes(request.model)) throw new Error("Paid attempt requires ledger reservation and qualified model");
         if (isOpenRouter) {
           providerVersion = execFileSync(resolve("packages/paperclip-runner/node_modules/opencode-ai/bin/opencode.exe"), ["--version"], { encoding: "utf8" }).trim();
-          if (providerVersion !== "1.18.29") throw new Error("OpenCode profile requires version 1.18.29");
+          if (providerVersion !== "1.18.32") throw new Error("OpenCode profile requires version 1.18.32");
         }
         const providerEnvironment = isOpenRouter ? openRouterEnvironment() : request.model === "claude-sonnet-5" ? (() => {
             const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -129,7 +130,7 @@ try {
           completionContract: { revision: "runner-api-eval-v1", criterionIds: ["objective"] },
           config: { ...createSkilllessCodexThreadConfig(fixture.workspace), model_reasoning_effort: "low" },
           permissions: "paperclip-runner-workspace-only", runtimeWorkspaceRoots: [fixture.workspace], approvalPolicy: "never",
-          baseInstructions: "You are operating a disposable real Paperclip company. Use the provided tools to do the user's task. Do not use shell, network, skills, or credentials. Stop when the requested work is verified. " + (request.arm === "baseline" ? "" : "Prefer available dedicated tools. Only use search_api and call_api when no dedicated tool supports the required operation or parameters. Do not search before ordinary dedicated tool use.") + "\n" + CONNECTION_INTENT_AGENT_GUIDANCE,
+          baseInstructions: "You are operating a disposable real Paperclip company. Use the provided tools to do the user's task. Do not use shell, network, skills, or credentials. Stop when the requested work is verified. " + (request.arm === "baseline" ? "" : "Prefer available dedicated tools. Only use search_api and call_api when no dedicated tool supports the required operation or parameters. Do not search before ordinary dedicated tool use.") + "\n" + CONNECTION_INTENT_AGENT_GUIDANCE + (request.conversation ? "\n" + AGENT_CHAT_DIRECTIVE : ""),
           dynamicTools: definitions, experimentalRawEvents: true, persistExtendedHistory: true,
         });
         if (request.preflight) {

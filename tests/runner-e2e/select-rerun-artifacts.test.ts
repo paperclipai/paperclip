@@ -160,6 +160,37 @@ function singletonSelectionInput(paths: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("runner E2E workflow rerun artifact selection", () => {
+
+  it.each(["before", "after"])("ignores a queued placeholder %s a started replacement without hiding its failure", async order => {
+    const paths = await fixture();
+    await addArtifact({ root: paths.artifactRoot, executionId: RERUN, workflowAttempt: 1, status: "passed" });
+    const latest = await addArtifact({ root: paths.artifactRoot, executionId: RERUN, workflowAttempt: 2, status: "failed" });
+    const input = singletonSelectionInput(paths);
+    const jobs = input.jobs.jobs.map(job => ({ ...job, status: "completed" }));
+    const placeholder = { ...jobs.find(job => job.run_attempt === 2)!, status: "queued" };
+    if (order === "before") jobs.unshift(placeholder); else jobs.push(placeholder);
+    const selected = await selectRerunArtifacts({ ...input, jobs: { ...input.jobs, jobs } });
+    expect(selected).toEqual([{ executionId: RERUN, workflowAttempt: 2, artifactName: latest.artifactName }]);
+    const evidence = JSON.parse(await readFile(path.join(paths.selectedRoot, latest.artifactName, latest.campaignName, "results", "attempt-1", "result.json"), "utf8"));
+    expect(evidence.status).toBe("failed");
+  });
+
+  it.each(["completed", "in_progress", "unknown", "queued"])("still rejects ambiguous duplicate %s jobs", async status => {
+    const paths = await fixture();
+    const input = singletonSelectionInput(paths);
+    const jobs = input.jobs.jobs.map(job => ({ ...job, status }));
+    jobs.push({ ...jobs.find(job => job.run_attempt === 2)! });
+    await expect(selectRerunArtifacts({ ...input, jobs: { ...input.jobs, jobs } })).rejects.toThrow("contains duplicate job");
+  });
+
+  it("does not fall back to an older pass when the latest job is only queued", async () => {
+    const paths = await fixture();
+    await addArtifact({ root: paths.artifactRoot, executionId: RERUN, workflowAttempt: 1, status: "passed" });
+    const input = singletonSelectionInput(paths);
+    const jobs = input.jobs.jobs.map(job => ({ ...job, status: job.run_attempt === 2 ? "queued" : "completed" }));
+    expect(await selectRerunArtifacts({ ...input, jobs: { ...input.jobs, jobs } })).toEqual([]);
+  });
+
   it("accepts the v8 flattened layout for one expected artifact", async () => {
     const paths = await fixture();
     const latest = await addArtifact({

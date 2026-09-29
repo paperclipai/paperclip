@@ -149,11 +149,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
-  const existingPermission = isPlainObject(existingConfig.permission)
-    ? existingConfig.permission
-    : {};
   const notes = [
-    "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+    "Injected runtime OpenCode config with permission=allow for all tools and connections.",
   ];
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
@@ -207,10 +204,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   const nextConfig: Record<string, unknown> = {
     ...existingConfig,
-    permission: {
-      ...existingPermission,
-      external_directory: "allow",
-    },
+    permission: "allow",
   };
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;
@@ -239,4 +233,24 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },
   };
+}
+
+/** Managed credentials must never leave host-only homes in a remote process. */
+export function prepareManagedOpenCodeRemoteHomes(input: {
+  env: Record<string, string>;
+  config: Record<string, unknown>;
+  runtimeRootDir: string | null | undefined;
+  runId: string;
+  configDir?: string;
+}): void {
+  if (!input.config.managedAiConnection) return;
+  if (!input.runtimeRootDir) throw new Error("Managed OpenCode authentication requires an isolated remote runtime directory.");
+  const home = path.posix.join(input.runtimeRootDir, "managed-auth", input.runId);
+  Object.assign(input.env, {
+    HOME: home,
+    XDG_CONFIG_HOME: input.configDir ?? path.posix.join(home, "config"),
+    XDG_DATA_HOME: path.posix.join(home, "data"),
+    XDG_CACHE_HOME: path.posix.join(home, "cache"),
+    XDG_STATE_HOME: path.posix.join(home, "state"),
+  });
 }

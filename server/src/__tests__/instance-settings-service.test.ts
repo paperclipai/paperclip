@@ -7,6 +7,15 @@ import {
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
+  it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
+    for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
+      expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
+    }
+    const enabled = applyExperimentalSettingsPatch({}, { enableChatConnectors: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled))).enableChatConnectors).toBe(true);
+    const disabled = applyExperimentalSettingsPatch(enabled, { enableChatConnectors: false });
+    expect(disabled).toMatchObject({ enableApps: true, enableChatConnectors: false });
+  });
   it("ignores retired experimental flags without resetting current settings", () => {
     expect(normalizeExperimentalSettings({
       enableEnvironments: true,
@@ -28,9 +37,14 @@ describe("instance settings service", () => {
       enableNativeRunner: false,
       enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: false,
       enableStreamlinedLeftNavigation: true,
       enableStreamlinedUi: true,
       enableApps: true,
+    enableMcpAggregators: true,
+      enableAgentChat: false,
+      enableChatConnectors: false,
+      enableMemoryConnectors: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableExternalObjects: false,

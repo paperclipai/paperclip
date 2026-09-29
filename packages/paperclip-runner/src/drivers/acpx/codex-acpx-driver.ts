@@ -42,6 +42,7 @@ import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.j
 import {
   canonicalProviderEventsFromAcpxRuntimeEvent,
   createAcpxToolEventNormalizer,
+  createGrokMessageNormalizer,
 } from "../../provider-events.js";
 import {
   canonicalRunnerToolName,
@@ -134,6 +135,8 @@ export interface CodexAcpxDriverOptions {
   managedCodexCredentialSourcePath?: string;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: (call: CodexAcpxDynamicToolCall) => Promise<unknown>;
+  /** Server-owned task completion validation, shared with Codex tool calls. */
+  completionFeedback?: (result: PrpStructuredRunResult) => Promise<string>;
   now?: () => Date;
 }
 
@@ -433,7 +436,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         workingDirectory: input.workingDirectory,
         agent: this.#options.agent ?? "codex",
         model: this.#options.model,
-        permissionMode: this.#options.permissionMode ?? "approve-reads",
+        permissionMode: this.#options.permissionMode ?? "approve-all",
         systemInstructions: this.#options.systemInstructions,
         environment: this.#options.environment,
         managedCodexCredentialSourcePath:
@@ -462,6 +465,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         agent: this.#options.agent ?? "codex",
         input,
         dynamicToolHandler: this.#options.dynamicToolHandler,
+        completionFeedback: this.#options.completionFeedback,
         now: this.#options.now ?? (() => new Date()),
         closeSettlementTimeoutMs: this.#closeSettlementTimeoutMs,
         maxBufferedEvents: this.#maxBufferedEvents,
@@ -705,6 +709,7 @@ class CodexAcpxSession implements HarnessSession {
   readonly #agent: QualifiedAcpxAgent;
   readonly #input: OpenHarnessSessionInput;
   readonly #dynamicToolHandler?: CodexAcpxDriverOptions["dynamicToolHandler"];
+  readonly #completionFeedback?: CodexAcpxDriverOptions["completionFeedback"];
   readonly #now: () => Date;
   readonly #closeSettlementTimeoutMs: number;
   readonly #maxBufferedEvents: number;
@@ -736,6 +741,7 @@ class CodexAcpxSession implements HarnessSession {
   } | null = null;
   #usage: Record<string, unknown> | null = null;
   #assistantText = "";
+  #assistantMessageId: string | null = null;
   #closed = false;
   #closingStarted = false;
   #eventStreamClosed = false;
@@ -761,6 +767,7 @@ class CodexAcpxSession implements HarnessSession {
     agent: QualifiedAcpxAgent;
     input: OpenHarnessSessionInput;
     dynamicToolHandler?: CodexAcpxDriverOptions["dynamicToolHandler"];
+    completionFeedback?: CodexAcpxDriverOptions["completionFeedback"];
     now: () => Date;
     closeSettlementTimeoutMs: number;
     maxBufferedEvents: number;
@@ -777,6 +784,7 @@ class CodexAcpxSession implements HarnessSession {
     this.#agent = input.agent;
     this.#input = structuredClone(input.input);
     this.#dynamicToolHandler = input.dynamicToolHandler;
+    this.#completionFeedback = input.completionFeedback;
     this.#now = input.now;
     this.#closeSettlementTimeoutMs = input.closeSettlementTimeoutMs;
     this.#maxBufferedEvents = input.maxBufferedEvents;
@@ -846,6 +854,7 @@ class CodexAcpxSession implements HarnessSession {
     const turnId = `turn-${randomBytes(12).toString("hex")}`;
     this.#activeTurnId = turnId;
     this.#assistantText = "";
+    this.#assistantMessageId = null;
     this.#emit("turn.submitted", { text: input.message.text }, { turnId });
     this.#emit("turn.accepted", { turnId }, { turnId });
     this.#emit("turn.started", { status: "inProgress" }, { turnId });
@@ -1051,6 +1060,32 @@ class CodexAcpxSession implements HarnessSession {
         claimsLaterTurn &&
         this.#pendingSemanticTransfer?.fingerprint === fingerprint &&
         this.#pendingSemanticTransfer.turnId === turnId;
+      let feedback = "Completion report accepted. Task status is committed after this turn and workspace finalization finish.";
+      if (this.#semanticFingerprint === null || (claimsLaterTurn && !repeatsPendingTransfer)) {
+        try {
+          feedback = await this.#completionFeedback?.(validation.result) ?? feedback;
+        } catch (error) {
+          this.#emit(
+            "run.result.rejected",
+            {
+              result: validation.result,
+              reason: error instanceof Error ? error.message : String(error),
+              recovery: { required: true, recoverable: true },
+            },
+            { turnId, itemId: call.callId },
+          );
+          return {
+            accepted: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+        if (this.#activeTurnId !== turnId) {
+          return {
+            accepted: false,
+            error: "The turn ended while checking completion. The result was not accepted.",
+          };
+        }
+      }
       if (
         this.#semanticFingerprint === null ||
         (claimsLaterTurn && !repeatsPendingTransfer)
@@ -1083,7 +1118,7 @@ class CodexAcpxSession implements HarnessSession {
           this.#semanticTurnId = turnId;
         }
       }
-      return { accepted: true };
+      return { accepted: true, feedback };
     }
     if (!this.#dynamicToolHandler) {
       throw new Error(`Unsupported Paperclip operation ${tool}`);
@@ -1323,8 +1358,10 @@ class CodexAcpxSession implements HarnessSession {
       let index = 0;
       const normalizeToolEvent =
         createAcpxToolEventNormalizer<AcpRuntimeEvent>();
+      const normalizeMessage = this.#agent === "grok"
+        ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
       for await (const event of turn.events) {
-        this.#mapRuntimeEvent(normalizeToolEvent(event), turnId, ++index);
+        this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(event)), turnId, ++index);
       }
       const result = await turn.result;
       this.#cancelPendingRuntimeRequests("provider turn settled", turnId);
@@ -1509,6 +1546,9 @@ class CodexAcpxSession implements HarnessSession {
       const isReasoning =
         event.stream === "thought" || event.tag === "agent_thought_chunk";
       if (!isReasoning) {
+        const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
+        if (messageId && this.#assistantMessageId && messageId !== this.#assistantMessageId) this.#assistantText = "";
+        if (messageId) this.#assistantMessageId = messageId;
         this.#assistantText = boundedText(
           `${this.#assistantText}${output}`,
           256 * 1024,
@@ -1871,7 +1911,7 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
     !/^sha256:[a-f0-9]{64}$/.test(identity.profileDigest) ||
     !/^sha256:[a-f0-9]{64}$/.test(identity.workspaceDigest) ||
     (identity.permissionMode !== undefined &&
-      !["approve-all", "approve-reads", "deny-all"].includes(
+      !["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(
         identity.permissionMode,
       )) ||
     !validProviderLifetimeFenceCandidates(

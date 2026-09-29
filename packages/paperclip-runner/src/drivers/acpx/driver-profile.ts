@@ -12,9 +12,10 @@ import {
   type QualifiedAcpxAgent,
 } from "./qualified-profiles.js";
 
-const ACPX_AGENTS = ["claude", "codex"] as const;
+const ACPX_AGENTS = ["claude", "codex", "grok"] as const;
 const ACPX_PERMISSION_MODES = [
   "approve-all",
+  "approve-paperclip",
   "approve-reads",
   "deny-all",
 ] as const;
@@ -36,8 +37,8 @@ export function acpxCapabilities(
       plan: agent === "pi" ? "unsupported" : "available",
       tool_execution: "available",
       model_identity: "available",
-      review: "available",
-      provider_notice: "available",
+      review: agent === "grok" ? "unsupported" : "available",
+      provider_notice: agent === "grok" ? "unsupported" : "available",
       artifact: "policy_disabled",
     }),
     steering: false,
@@ -45,7 +46,7 @@ export function acpxCapabilities(
     structuredResult: true,
     read: true,
     reconciliation: true,
-    usage: true,
+    usage: agent !== "grok",
     dynamicTools: true,
     runtimeRequestResolution: true,
     runtimeRequestHandoff: true,
@@ -95,7 +96,7 @@ export function validateAcpxDriverConfig(
     return invalid(
       "agent",
       "invalid_agent",
-      "ACPX agent must be claude or codex.",
+      "ACPX agent must be claude, codex, or grok.",
     );
   }
   const model = text(config.model);
@@ -114,7 +115,7 @@ export function validateAcpxDriverConfig(
     return invalid(
       "permissionMode",
       "invalid_permission_mode",
-      "ACPX permission mode must be approve-all, approve-reads, or deny-all.",
+      "ACPX permission mode must be approve-all, approve-paperclip, approve-reads, or deny-all.",
     );
   }
 
@@ -143,6 +144,7 @@ function isPermissionMode(value: string): value is NativeAcpxPermissionMode {
 }
 
 function displayAgent(agent: QualifiedAcpxAgent): string {
+  if (agent === "grok") return "Grok Build";
   if (agent === "pi") return "Pi";
   if (agent === "claude") return "Claude";
   return "Codex";

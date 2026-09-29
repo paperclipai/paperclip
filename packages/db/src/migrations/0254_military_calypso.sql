@@ -1,0 +1,3 @@
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_execution_status_delivery_idx" ON "heartbeat_runs" USING btree ("execution_status_delivery_id") WHERE "heartbeat_runs"."execution_status_delivery_id" is not null;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_execution_control_deadline_idx" ON "heartbeat_runs" USING btree ("execution_control_deadline_at") WHERE "heartbeat_runs"."execution_control_deadline_at" is not null;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "native_run_finalizations_control_deadline_idx" ON "native_run_finalizations" USING btree ("control_deadline_at") WHERE "native_run_finalizations"."control_deadline_at" is not null;

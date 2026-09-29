@@ -15,7 +15,7 @@ vi.mock("@/lib/router", () => ({
 }));
 
 vi.mock("@/lib/sentry", () => ({
-  captureBrowserException: (error: unknown) => captureBrowserExceptionMock(error),
+  captureBrowserException: (...args: unknown[]) => captureBrowserExceptionMock(...args),
 }));
 
 function Boom(): never {
@@ -52,7 +52,9 @@ describe("RouteErrorBoundary", () => {
     });
 
     expect(captureBrowserExceptionMock).toHaveBeenCalledTimes(1);
-    expect(captureBrowserExceptionMock).toHaveBeenCalledWith(expect.any(Error));
+    expect(captureBrowserExceptionMock).toHaveBeenCalledWith(expect.any(Error), {
+      boundary: "route", componentStack: expect.stringContaining("Boom"),
+    });
     expect(
       Array.from(container.querySelectorAll("button")).some(
         (button) => button.textContent === "Go back",

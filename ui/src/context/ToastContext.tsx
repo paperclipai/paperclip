@@ -193,6 +193,10 @@ export function useOptionalToastActions() {
   return useContext(ToastActionsContext);
 }
 
+export function useOptionalToastState() {
+  return useContext(ToastStateContext);
+}
+
 export function useToast() {
   const toasts = useToastState();
   const actions = useToastActions();

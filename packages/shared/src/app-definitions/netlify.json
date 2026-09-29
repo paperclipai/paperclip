@@ -8,7 +8,8 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "/brands/apps/netlify.svg"
+    "logoUrl": "/brands/apps/netlify.svg",
+    "darkLogoUrl": "/brands/apps/netlify-dark.svg"
   },
   "urlPatterns": [
     "https://netlify-mcp.netlify.app/*"

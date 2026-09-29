@@ -11,9 +11,11 @@ import {
   type AdapterExecutionTarget,
   type PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
-import type { GitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { disposeGitWorkspaceSnapshot, type GitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import {
   directorySnapshotSha256,
+  disposeDirectorySnapshot,
+  openDirectorySnapshot,
   parseDirectorySnapshot,
   serializeDirectorySnapshot,
   type DirectorySnapshot,
@@ -23,11 +25,14 @@ import type {
   WorkspaceDurableSeedPaths,
   WorkspaceInboundMode,
 } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+import { assertWorkspaceManifestDiskSpace, isPathManifest, manifestFileSha256, readManifestRecords, type PathManifest, type WorkspacePaths } from "@paperclipai/adapter-utils/workspace-manifest";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { parseObject } from "../../adapters/utils.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 
-const DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v1";
+const LEGACY_DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v1";
+const DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v2";
+type DescriptorSchema = typeof DESCRIPTOR_SCHEMA | typeof LEGACY_DESCRIPTOR_SCHEMA;
 const STAMP_SCHEMA = "paperclip.native-workspace-stamp/v1";
 const STATE_ROOT_NAME = "native-workspace-sync";
 const DESCRIPTOR_NAME = "descriptor";
@@ -42,7 +47,7 @@ export type NativeWorkspaceResourceDisposition =
   "keep_running" | "stop_and_retain" | "destroy";
 
 interface NativeWorkspaceSyncDescriptor {
-  schema: typeof DESCRIPTOR_SCHEMA;
+  schema: DescriptorSchema;
   binding: {
     runId: string;
     companyId: string;
@@ -67,7 +72,7 @@ interface NativeWorkspaceSyncDescriptor {
 }
 
 export interface NativeWorkspaceSyncReference {
-  schema: typeof DESCRIPTOR_SCHEMA;
+  schema: DescriptorSchema;
   state: NativeWorkspaceSyncState;
   descriptorSha256: string;
   baselineSha256: string;
@@ -82,7 +87,7 @@ export interface NativeWorkspaceSyncReference {
 export interface PreparedNativeWorkspaceSync {
   mode: WorkspaceInboundMode;
   reference: NativeWorkspaceSyncReference;
-  restoreWorkspace(): Promise<void>;
+  restoreWorkspace(assertOwnership?: () => Promise<void>): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -258,7 +263,7 @@ async function writeDescriptor(
     await fs.rm(tempPath, { force: true }).catch(() => undefined);
   }
   return {
-    schema: DESCRIPTOR_SCHEMA,
+    schema: descriptor.schema,
     state: descriptor.state,
     descriptorSha256,
     baselineSha256: descriptor.baselineSha256,
@@ -276,7 +281,7 @@ export function readNativeWorkspaceSyncReference(
 ): NativeWorkspaceSyncReference | null {
   const candidate = parseObject(value);
   if (
-    candidate.schema !== DESCRIPTOR_SCHEMA ||
+    (candidate.schema !== DESCRIPTOR_SCHEMA && candidate.schema !== LEGACY_DESCRIPTOR_SCHEMA) ||
     (candidate.state !== "prepared" && candidate.state !== "finalized") ||
     typeof candidate.descriptorSha256 !== "string" ||
     !/^[0-9a-f]{64}$/.test(candidate.descriptorSha256) ||
@@ -299,7 +304,7 @@ export function readNativeWorkspaceSyncReference(
     return null;
   }
   return {
-    schema: DESCRIPTOR_SCHEMA,
+    schema: candidate.schema,
     state: candidate.state,
     descriptorSha256: candidate.descriptorSha256,
     baselineSha256: candidate.baselineSha256,
@@ -320,40 +325,99 @@ export function readNativeWorkspaceSyncReference(
   };
 }
 
+function validManifestShape(value: unknown): value is PathManifest {
+  const record = parseObject(value);
+  return record.kind === "path_manifest" && record.version === 1 && typeof record.filePath === "string"
+    && typeof record.category === "string" && ["overlay", "deleted", "ignored", "baseline"].includes(record.category)
+    && typeof record.count === "number" && Number.isSafeInteger(record.count) && record.count >= 0;
+}
+
+function* gitManifests(snapshot: GitWorkspaceSnapshot | null): Generator<PathManifest> {
+  if (!snapshot) return;
+  for (const paths of [snapshot.overlayPaths, snapshot.deletedPaths, snapshot.ignoredPaths]) if (isPathManifest(paths)) yield paths;
+  for (const repo of snapshot.repositories ?? []) yield* gitManifests(repo.snapshot);
+}
+
+async function verifyManifest(runId: string, manifest: PathManifest): Promise<void> {
+  const directory = descriptorDirectory(runId);
+  const name = path.basename(manifest.filePath);
+  const match = /^manifest\.([0-9a-f]{64})\.sqlite$/.exec(name);
+  if (!match || manifest.filePath !== path.join(directory, name)) throw new Error("native_workspace_sync_manifest_path_invalid");
+  for (const dir of [path.dirname(directory), directory]) {
+    const stat = await fs.lstat(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("native_workspace_sync_manifest_root_invalid");
+  }
+  if (await manifestFileSha256(manifest.filePath) !== match[1]) throw new Error("native_workspace_sync_manifest_digest_mismatch");
+  // Verify every record before consumers can mutate a workspace on recovery.
+  for (const _record of readManifestRecords(manifest)) { /* bounded validation */ }
+}
+
+async function persistSnapshotManifests(runId: string, snapshot: NonNullable<PreparedAdapterExecutionTargetRuntime["workspaceSyncSnapshot"]>): Promise<void> {
+  const baseline = serializeDirectorySnapshot(snapshot.baseline);
+  const manifests = function* () {
+    if (baseline.version === 2) {
+      yield baseline.entries;
+      if (baseline.ignoredPaths && isPathManifest(baseline.ignoredPaths)) yield baseline.ignoredPaths;
+    }
+    yield* gitManifests(snapshot.gitSnapshot);
+  };
+  const copies = new Map<string, string>();
+  for (const manifest of manifests()) {
+    const oldPath = manifest.filePath;
+    const previous = copies.get(oldPath);
+    if (previous) { manifest.filePath = previous; continue; }
+    // A shared reference may already have been updated by the baseline.
+    if (path.dirname(oldPath) === descriptorDirectory(runId)) continue;
+    const temporary = path.join(descriptorDirectory(runId), `manifest.${randomUUID()}.tmp`);
+    try {
+      const sourceStat = await fs.lstat(oldPath);
+      if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw new Error("native_workspace_sync_manifest_invalid");
+      assertWorkspaceManifestDiskSpace(descriptorDirectory(runId), sourceStat.size);
+      await fs.copyFile(oldPath, temporary);
+      await fs.chmod(temporary, 0o600);
+      const digest = await manifestFileSha256(temporary);
+      const target = path.join(descriptorDirectory(runId), `manifest.${digest}.sqlite`);
+      await fs.rename(temporary, target);
+      copies.set(oldPath, target);
+      manifest.filePath = target;
+    } finally { await fs.rm(temporary, { force: true }); }
+  }
+  // Ownership tracks original scratch directories, never the new durable path.
+  await disposeDirectorySnapshot(snapshot.baseline);
+  await disposeGitWorkspaceSnapshot(snapshot.gitSnapshot);
+}
+
 function parseGitSnapshot(
   value: unknown,
+  nested = false,
 ): GitWorkspaceSnapshot | null | undefined {
   if (value === null) return null;
   const candidate = parseObject(value);
-  const paths = [
-    candidate.overlayPaths,
-    candidate.deletedPaths,
-    candidate.ignoredPaths,
-  ];
-  if (
-    typeof candidate.headCommit !== "string" ||
-    (candidate.branchName !== null &&
-      typeof candidate.branchName !== "string") ||
-    !paths.every(
-      (entries) =>
-        Array.isArray(entries) &&
-        entries.every(
-          (entry) =>
-            typeof entry === "string" &&
-            !path.posix.isAbsolute(entry) &&
-            !path.win32.isAbsolute(entry) &&
-            !entry.split(/[\\/]/).some((segment) => segment === ".."),
-        ),
-    )
-  ) {
-    return undefined;
+  const paths = [candidate.overlayPaths, candidate.deletedPaths, candidate.ignoredPaths];
+  if (typeof candidate.headCommit !== "string" || (candidate.branchName !== null && typeof candidate.branchName !== "string")
+    || !paths.every((entries) => validManifestShape(entries) || (Array.isArray(entries) && entries.every((entry) =>
+      typeof entry === "string" && entry.length > 0 && !entry.includes("\0") && !path.posix.isAbsolute(entry) && !path.win32.isAbsolute(entry)
+      && !entry.split(/[\\/]/).some((segment) => segment === ".." || segment === "."))))) return undefined;
+  const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
+  if (candidate.repositories !== undefined) {
+    if (nested || !Array.isArray(candidate.repositories)) return undefined;
+    const seen = new Set<string>();
+    for (const raw of candidate.repositories) {
+      const repo = parseObject(raw);
+      if (typeof repo.path !== "string" || !/^\.paperclip-repositories\/[a-zA-Z0-9_-]+$/.test(repo.path) || seen.has(repo.path)) return undefined;
+      const snapshot = parseGitSnapshot(repo.snapshot, true);
+      if (!snapshot) return undefined;
+      seen.add(repo.path);
+      repositories.push({ path: repo.path, snapshot });
+    }
   }
   return {
     headCommit: candidate.headCommit,
     branchName: candidate.branchName as string | null,
-    overlayPaths: [...(candidate.overlayPaths as string[])],
-    deletedPaths: [...(candidate.deletedPaths as string[])],
-    ignoredPaths: [...(candidate.ignoredPaths as string[])],
+    overlayPaths: candidate.overlayPaths as WorkspacePaths,
+    deletedPaths: candidate.deletedPaths as WorkspacePaths,
+    ignoredPaths: candidate.ignoredPaths as WorkspacePaths,
+    ...(repositories.length ? { repositories } : {}),
   };
 }
 
@@ -398,8 +462,20 @@ async function readDescriptor(input: {
   const parsed = JSON.parse(body) as unknown;
   const candidate = parseObject(parsed);
   const binding = parseObject(candidate.binding);
-  const baseline = parseDirectorySnapshot(candidate.baseline);
+  const rawBaseline = parseObject(candidate.baseline);
+  let baseline: DirectorySnapshot | null;
+  if (candidate.schema === DESCRIPTOR_SCHEMA && rawBaseline.version === 2
+    && Array.isArray(rawBaseline.exclude) && rawBaseline.exclude.every((entry) => typeof entry === "string")
+    && validManifestShape(rawBaseline.entries) && rawBaseline.entries.category === "baseline"
+    && (rawBaseline.ignoredPaths === undefined || validManifestShape(rawBaseline.ignoredPaths))) {
+    await verifyManifest(input.runId, rawBaseline.entries);
+    if (validManifestShape(rawBaseline.ignoredPaths)) await verifyManifest(input.runId, rawBaseline.ignoredPaths);
+    baseline = openDirectorySnapshot(rawBaseline as unknown as Extract<SerializedDirectorySnapshot, { version: 2 }>);
+  } else {
+    baseline = parseDirectorySnapshot(candidate.baseline);
+  }
   const gitSnapshot = parseGitSnapshot(candidate.gitSnapshot);
+  for (const manifest of gitManifests(gitSnapshot ?? null)) await verifyManifest(input.runId, manifest);
   const rawSeed =
     candidate.seed === null || candidate.seed === undefined
       ? null
@@ -433,7 +509,7 @@ async function readDescriptor(input: {
         ? null
         : undefined;
   if (
-    candidate.schema !== DESCRIPTOR_SCHEMA ||
+    (candidate.schema !== DESCRIPTOR_SCHEMA && candidate.schema !== LEGACY_DESCRIPTOR_SCHEMA) ||
     (candidate.state !== "prepared" && candidate.state !== "finalized") ||
     !baseline ||
     gitSnapshot === undefined ||
@@ -453,6 +529,7 @@ async function readDescriptor(input: {
     directorySnapshotSha256(baseline) !== candidate.baselineSha256 ||
     typeof candidate.createdAt !== "string" ||
     !Number.isFinite(Date.parse(candidate.createdAt)) ||
+    candidate.schema !== input.reference.schema ||
     candidate.state !== input.reference.state ||
     finalHostSha256 === undefined ||
     finalHostSha256 !== input.reference.finalHostSha256 ||
@@ -469,7 +546,7 @@ async function readDescriptor(input: {
   }
   return {
     descriptor: {
-      schema: DESCRIPTOR_SCHEMA,
+      schema: candidate.schema,
       binding: {
         runId: binding.runId as string,
         companyId: binding.companyId,
@@ -695,16 +772,21 @@ async function finalizePreparedRuntime(input: {
   target: Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
   runtime: PreparedAdapterExecutionTargetRuntime;
   descriptor: NativeWorkspaceSyncDescriptor;
+  assertOwnership?: () => Promise<void>;
 }): Promise<NativeWorkspaceSyncReference> {
   await input.runtime.restoreWorkspace();
+  await input.assertOwnership?.();
   const finalSnapshot =
     await import("@paperclipai/adapter-utils/workspace-restore-merge").then(
       ({ captureDirectorySnapshot }) =>
         captureDirectorySnapshot(input.descriptor.binding.localCwd, {
           exclude: input.runtime.workspaceSyncSnapshot?.baseline.exclude ?? [],
+          ignoredPaths: input.runtime.workspaceSyncSnapshot?.baseline.ignoredPaths,
+          diskBacked: true,
         }),
     );
   const finalHostSha256 = directorySnapshotSha256(finalSnapshot);
+  await disposeDirectorySnapshot(finalSnapshot);
   const stamp = finalizedWorkspaceStamp({
     descriptor: input.descriptor,
     hostSha256: finalHostSha256,
@@ -716,6 +798,7 @@ async function finalizePreparedRuntime(input: {
     finalizedAt: new Date().toISOString(),
     finalHostSha256,
   };
+  await input.assertOwnership?.();
   const reference = await writeDescriptor(finalizedDescriptor);
   await persistRunReference(input.db, input.runId, reference);
   await persistLeaseStamp({
@@ -743,6 +826,13 @@ export async function prepareNativeWorkspaceSync(input: {
   }
   const target = input.target;
   const providerLeaseId = providerLeaseIdFor({ target, lease: input.lease });
+  // Reattachment may never seed a replacement sandbox over a still-live run.
+  if (input.restartRecovery?.kind === "reattach_remote_runner" &&
+      (input.restartRecovery.runId !== input.runId ||
+       input.restartRecovery.remote.providerLeaseId !== providerLeaseId ||
+       input.restartRecovery.remote.remoteCwd !== target.remoteCwd)) {
+    throw new Error("native_remote_recovery_lease_mismatch");
+  }
   const run = await input.db
     .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)
@@ -754,12 +844,13 @@ export async function prepareNativeWorkspaceSync(input: {
     parseObject(run.runnerProfileJson).nativeWorkspaceSync,
   );
 
-  let runtime: PreparedAdapterExecutionTargetRuntime;
+  let runtime: PreparedAdapterExecutionTargetRuntime | undefined;
   let descriptor: NativeWorkspaceSyncDescriptor;
   let mode: WorkspaceInboundMode = "host_current";
   const seedPaths = durableSeedPaths(input.runId);
   await ensurePrivateDirectory(descriptorDirectory(input.runId));
 
+  try {
   if (existingReference) {
     const existing = await readDescriptor({
       runId: input.runId,
@@ -865,6 +956,7 @@ export async function prepareNativeWorkspaceSync(input: {
     }
     const snapshot = runtime.workspaceSyncSnapshot;
     if (!snapshot) throw new Error("native_workspace_sync_snapshot_missing");
+    await persistSnapshotManifests(input.runId, snapshot);
     const now = new Date().toISOString();
     const workspaceArchiveSha256 = await sha256File(
       seedPaths.workspaceArchivePath,
@@ -895,6 +987,7 @@ export async function prepareNativeWorkspaceSync(input: {
     };
   }
 
+  const preparedRuntime = runtime;
   let reference = await writeDescriptor(descriptor);
   await persistRunReference(input.db, input.runId, reference);
   let restorePromise: Promise<void> | null = null;
@@ -903,14 +996,15 @@ export async function prepareNativeWorkspaceSync(input: {
     get reference() {
       return reference;
     },
-    restoreWorkspace: async () => {
+    restoreWorkspace: async (assertOwnership) => {
       if (!restorePromise) {
         restorePromise = finalizePreparedRuntime({
           db: input.db,
           runId: input.runId,
           target,
-          runtime,
+          runtime: preparedRuntime,
           descriptor,
+          assertOwnership,
         })
           .then((finalizedReference) => {
             reference = finalizedReference;
@@ -922,14 +1016,20 @@ export async function prepareNativeWorkspaceSync(input: {
       }
       await restorePromise;
     },
-    cleanup: () => cleanupNativeWorkspaceSync(input.runId),
+    cleanup: async () => { await preparedRuntime.cleanupWorkspaceSnapshot?.(); await cleanupNativeWorkspaceSync(input.runId); },
   };
+  } catch (error) {
+    await runtime?.cleanupWorkspaceSnapshot?.();
+    if (!existingReference) await cleanupNativeWorkspaceSync(input.runId);
+    throw error;
+  }
 }
 
 export async function resumeNativeWorkspaceSync(input: {
   db: Db;
   runId: string;
   target: AdapterExecutionTarget;
+  assertOwnership?: () => Promise<void>;
 }): Promise<boolean> {
   if (input.target.kind !== "remote" || input.target.transport !== "sandbox") {
     throw new Error("workspace_sync_out_unrecoverable");
@@ -954,6 +1054,7 @@ export async function resumeNativeWorkspaceSync(input: {
   ) {
     throw new Error("workspace_sync_out_unrecoverable");
   }
+  await input.assertOwnership?.();
   if (
     existing.descriptor.state === "finalized" &&
     existing.descriptor.finalHostSha256
@@ -988,6 +1089,7 @@ export async function resumeNativeWorkspaceSync(input: {
     target: input.target,
     runtime,
     descriptor: existing.descriptor,
+    assertOwnership: input.assertOwnership,
   });
   return true;
 }
@@ -1000,6 +1102,7 @@ export const nativeWorkspaceSyncInternals = {
   descriptorPath,
   legacyDescriptorPath,
   durableSeedPaths,
+  persistSnapshotManifests,
   writeDescriptor,
   readDescriptor,
   readReference: readNativeWorkspaceSyncReference,

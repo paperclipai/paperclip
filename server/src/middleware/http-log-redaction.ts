@@ -10,4 +10,20 @@ export const HTTP_LOG_REDACT_PATHS = [
   'req.headers["x-csrf-token"]',
   'req.headers["x-xsrf-token"]',
   'req.headers["x-api-key"]',
+  // Cloud proxy credentials and signed assertions authorize tenant access.
+  'req.headers["x-paperclip-cloud-tenant-token"]',
+  'req.headers["x-paperclip-cloud-session-id"]',
+  'req.headers["x-paperclip-cloud-runtime-identity"]',
+  'req.headers["x-paperclip-cloud-control"]',
+  // Runtime GitHub capabilities authorize credential acquisition for a live run.
+  'req.headers["x-paperclip-github-capability"]',
+  // Telegram's optional webhook verification header is a reusable bearer
+  // secret sent on every provider callback.
+  'req.headers["x-telegram-bot-api-secret-token"]',
+  // The structured failure logger adds a sanitized request-body copy under
+  // `reqBody`. Keep the standard connector credential envelope covered again
+  // at the final serialization boundary in case a future custom serializer
+  // bypasses the recursive redactor.
+  "reqBody.credentials",
+  "errorContext.details.credentials",
 ] as const;

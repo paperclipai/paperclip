@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "slug": "cognee",
+  "name": "Cognee",
+  "description": "Build and recall shared graph memory from documents and conversations.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/cognee.png"
+  },
+  "urlPatterns": [
+    "https://*.aws.cognee.ai/*"
+  ],
+  "docsUrl": "https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp",
+  "setupPrerequisite": {
+    "title": "Cognee Cloud and a local runtime",
+    "description": "Use your Cognee Cloud tenant API URL and key. Paperclip's runtime host needs uv installed to run the official Cognee MCP client. Public deployments require a trusted MCP runtime host.",
+    "actionLabel": "Open Cognee API keys",
+    "actionUrl": "https://platform.cognee.ai/api-keys"
+  },
+  "methods": [
+    {
+      "key": "cloud-local",
+      "transport": "local_stdio",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Connect your Cloud tenant through the official Cognee MCP client.",
+      "defaults": {
+        "templateKey": "paperclip.cognee-cloud"
+      },
+      "guidanceMd": "Copy the API Base URL and create an API key on Cognee's API Keys page. Use a Cloud workspace with an active subscription. Paperclip uses its bundled Cloud client; no extra runtime installation is required.",
+      "riskTier": "S3",
+      "label": "Connect Cognee Cloud",
+      "credentialFields": [
+        {
+          "key": "COGNEE_BASE_URL",
+          "label": "API Base URL",
+          "type": "text",
+          "required": true,
+          "secret": false,
+          "placeholder": "https://your-tenant.aws.cognee.ai",
+          "validation": {
+            "pattern": "^https://[a-zA-Z0-9-]+\\.aws\\.cognee\\.ai/?$",
+            "maxLength": 255
+          },
+          "helperMd": "Copy API Base URL from Cognee's API Keys page."
+        },
+        {
+          "key": "COGNEE_API_KEY",
+          "label": "Cognee API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Cognee API key",
+          "secret": true,
+          "helperMd": "Create a key in Cognee → API Keys. The key is shown once."
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "COGNEE_API_KEY"
+      },
+      "consoleLinks": {
+        "keys": "https://platform.cognee.ai/api-keys",
+        "docs": "https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp"
+      }
+    }
+  ]
+}

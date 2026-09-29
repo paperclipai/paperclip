@@ -57,6 +57,88 @@ describe("review-path recovery", () => {
     expect(duplicate).toEqual({ kind: "skip", reason: "review-path recovery wake already exists" });
   });
 
+  it.each(["chat:slack", "chat:slack:recovery", "chat:discord"])(
+    "retains the admitted message batch for %s without inheriting authorization",
+    (source) => {
+      const decision = decideIssueReviewPathRecovery({
+        issueId: "issue-1",
+        sourceRunId: "run-1",
+        assigneeAgentId: "agent-1",
+        contextSnapshot: {
+          issueId: "issue-1",
+          source,
+          wakeCommentIds: ["comment-1", "comment-2", "comment-1"],
+          wakeCommentId: "stale-comment",
+          commentId: "stale-comment",
+          paperclipHarnessCheckedOut: true,
+          paperclipExternalChatExecutionBound: true,
+          paperclipWake: { checkedOutByHarness: true },
+          sessionId: "old-session",
+          instruction: "old instruction",
+        },
+        reviewAttention: stalled,
+        existingWake: false,
+      });
+      expect(decision.kind).toBe("enqueue");
+      if (decision.kind !== "enqueue") return;
+      expect(decision.contextSnapshot).toMatchObject({
+        issueId: "issue-1",
+        source,
+        wakeReason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
+        wakeCommentIds: ["comment-1", "comment-2"],
+        wakeCommentId: "comment-2",
+        commentId: "comment-2",
+      });
+      for (const key of [
+        "paperclipHarnessCheckedOut",
+        "paperclipExternalChatExecutionBound",
+        "paperclipWake",
+        "sessionId",
+      ]) expect(decision.contextSnapshot).not.toHaveProperty(key);
+      expect(decision.contextSnapshot.instruction).not.toBe("old instruction");
+    },
+  );
+
+  it.each([undefined, null, "comment-1", [], [null, 1, " "]])(
+    "does not invent an admitted message batch from invalid input %j",
+    (wakeCommentIds) => {
+      const decision = decideIssueReviewPathRecovery({
+        issueId: "issue-1",
+        sourceRunId: "run-1",
+        assigneeAgentId: "agent-1",
+        contextSnapshot: {
+          source: "chat:slack",
+          wakeCommentIds,
+          wakeCommentId: "unproven-comment",
+        },
+        reviewAttention: stalled,
+        existingWake: false,
+      });
+      expect(decision.kind).toBe("enqueue");
+      if (decision.kind !== "enqueue") return;
+      expect(decision.contextSnapshot.source).toBe("chat:slack");
+      expect(decision.contextSnapshot).not.toHaveProperty("wakeCommentIds");
+      expect(decision.contextSnapshot).not.toHaveProperty("wakeCommentId");
+    },
+  );
+
+  it.each(["issue.comment", "chat:agentmail", "chat:agentmail:recovery"])(
+    "does not carry a chat batch for unsupported source %s",
+    (source) => {
+      const decision = decideIssueReviewPathRecovery({
+        issueId: "issue-1",
+        sourceRunId: "run-1",
+        assigneeAgentId: "agent-1",
+        contextSnapshot: { source, wakeCommentIds: ["comment-1"] },
+        reviewAttention: stalled,
+        existingWake: false,
+      });
+      expect(decision.kind).toBe("enqueue");
+      if (decision.kind !== "enqueue") return;
+      expect(decision.contextSnapshot).not.toHaveProperty("wakeCommentIds");
+    },
+  );
+
   it("does not requeue when the bounded recovery run also ends pathless", () => {
     const decision = decideIssueReviewPathRecovery({
       issueId: "issue-1",

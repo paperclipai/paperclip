@@ -26,7 +26,7 @@ list, not a disposition — they are never exposed as tools. See
 [capability disposition](capability-disposition.md) and
 [authorization and exposure](capability-authorization-and-exposure.md).
 
-The catalog holds **37 tools**: 14 always-agent tools and 23 optional tools
+The catalog holds **39 tools**: 14 always-agent tools and 25 optional tools
 across 10 groups.
 
 <!-- These counts are drift-checked against src/tools/capability-semantic-tool-catalog.ts
@@ -39,17 +39,17 @@ by src/catalog/catalog-docs.test.ts; update the catalog, not the numbers. -->
 `finish_task`, `block_task`, `request_review`, `write_document`,
 `request_human_input`, `register_deliverable`, `inspect_operation_result`.
 
-### Optional tools (23), by group
+### Optional tools (25), by group
 
 | Group | Tools |
 | --- | --- |
 | discovery | `search_tasks`, `list_agents`, `list_projects`, `list_goals` |
-| delegation_dependencies | `create_task`, `set_dependencies` |
+| delegation_dependencies | `create_task`, `reassign_task`, `set_dependencies` |
 | governance | `list_approvals`, `request_approval`, `decide_approval`, `comment_on_approval` |
 | cases | `list_cases`, `upsert_case` |
 | workspace_runtime | `get_workspace_runtime`, `control_workspace_service` |
 | routines | `list_routines`, `manage_routine` |
-| company_skills | `list_company_skills`, `sync_company_skills` |
+| company_skills | `create_skill`, `list_company_skills`, `sync_company_skills` |
 | secrets | `list_secret_metadata`, `read_secret_value` |
 | portability_admin | `export_company`, `administer_company` |
 | test_escape_hatch | `generic_api_request` |
@@ -96,3 +96,26 @@ that every optional group is present.
 - [Authorization and exposure](capability-authorization-and-exposure.md)
 - [Mock ControlPlanePort](capability-mock-control-plane-port.md)
 - [Eval conformance](capability-eval-conformance.md)
+
+## Reassigning existing tasks
+
+`reassign_task` moves another existing company task to an eligible agent. Read
+`search_tasks` first and send the observed `expectedAssigneeActorId` (nullable)
+and `expectedStatusVersion`, the new `assigneeActorId`, a handoff `reason`, and a
+stable `idempotencyKey`. It requires `delegation:tasks:assign` and production
+`tasks:assign` authorization in standard mode. The same task retains its
+documents, dependencies, scope, priority, and history.
+
+The old execution and any live goal must stop before ownership changes. Active
+work returns to todo; backlog and blocked work retain their status and are not
+started. An audited reassignment stop does not create a recovery blocker or
+retry the outgoing run when it ends without a semantic completion result.
+Assignment changes advance the observed version, including ordinary
+API changes, to reject stale handoffs. A durable audit receipt makes retries
+idempotent across caller runs; retrying after failed dispatch repairs the wake
+with a stable key and an owner/status/version guard.
+
+The current caller task, conversations, human-assigned tasks, completed or
+cancelled tasks, and pending reviews cannot be reassigned with this tool. Use
+`create_task` to delegate new work from the current task. A stop failure or
+concurrent ownership change fails without applying the handoff.

@@ -1,3 +1,4 @@
+import { liveRunResultFeedback } from "./run-result-feedback.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
@@ -628,7 +629,7 @@ export function assertCapabilityLiveSessionSnapshot(
   }
   if (provider === "acpx") {
     const agent = config.acpxAgent;
-    if (agent !== "pi" && agent !== "claude" && agent !== "codex") {
+    if (agent !== "pi" && agent !== "claude" && agent !== "codex" && agent !== "grok") {
       throw new Error("capability_live_checkpoint_corrupt: invalid config.acpxAgent");
     }
     const expected = resolveQualifiedAcpxProfile(agent, text(config.requestedModel));
@@ -924,7 +925,7 @@ export class CapabilityLiveSessionService {
               ? "aws_agentcore_harness_api"
           : input.provider === "acpx" ? "acpx_runtime" : "codex_app_server",
         providerVersion: input.provider === "opencode"
-          ? "1.18.29"
+          ? "1.18.32"
           : input.provider === "claude_managed"
             ? input.managedProfile!.agentVersion
             : input.provider === "aws_agentcore"
@@ -1550,7 +1551,6 @@ export class CapabilityLiveSession {
     // Arm the provider timeout only after bounded preflight succeeds. The
     // admission token excludes concurrent sends before this point.
     const terminal = this.#armTurnWaiter();
-    void terminal.catch(() => undefined);
     try {
       response = await admission.transport.request("turn/start", {
         threadId: this.#providerThreadId,
@@ -1660,7 +1660,8 @@ export class CapabilityLiveSession {
     }
     await this.#captureTurnUsage(
       result.turnId,
-      result.status !== "completed" || options.allowMissingUsage === true,
+      result.status !== "completed" || options.allowMissingUsage === true ||
+        (this.#config.provider === "acpx" && this.#config.acpxAgent === "grok"),
     );
     await this.#persist();
     await this.#afterTurnSettled();
@@ -1784,6 +1785,10 @@ export class CapabilityLiveSession {
         totalKeys: Object.keys(total).sort(),
       })}`);
     }
+    // Grok 1.0.13 does not report verified token/cost measurements. Do not
+    // synthesize a zero receipt from the fallback when nothing was observed.
+    if (this.#config.provider === "acpx" && this.#config.acpxAgent === "grok" &&
+        (captured?.reported ?? captured?.raw ?? captured?.terminal) == null && Object.keys(total).length === 0) return;
     const finalUsage = selectedWithReportedCost ?? cumulativeFallback;
     await this.recordUsage({
       receiptId: `${turnId}:usage`,
@@ -1996,7 +2001,7 @@ export class CapabilityLiveSession {
 
   #armTurnWaiter(): Promise<Omit<CapabilityLiveTurnResult, "snapshot">> {
     if (this.#turnWaiter !== null) throw new Error("Capability live session already has a turn waiter");
-    return new Promise<Omit<CapabilityLiveTurnResult, "snapshot">>((resolve, reject) => {
+    const terminal = new Promise<Omit<CapabilityLiveTurnResult, "snapshot">>((resolve, reject) => {
       const timer = setTimeout(() => {
         const waiter = this.#turnWaiter;
         this.#turnWaiter = null;
@@ -2011,6 +2016,13 @@ export class CapabilityLiveSession {
       }, this.#config.turnTimeoutMs);
       this.#turnWaiter = { resolve, reject, timer, assistantText: "", draftId: null };
     });
+    // A caller may await this promise only after another `await` of its own
+    // (see `reconcileActiveTurn`). The timer above can reject before that
+    // point, so attach a no-op handler here, at creation, on every call
+    // site. `.catch()` returns a new promise; the original stays rejected
+    // and a later `await terminal` still observes it.
+    terminal.catch(() => undefined);
+    return terminal;
   }
 
   /** Interrupts and durably reconciles a checkpointed active turn after restart. */
@@ -2383,7 +2395,8 @@ export class CapabilityLiveSession {
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         baseInstructions:
-          this.#transportOptions.baseInstructions ?? LIVE_BASE_INSTRUCTIONS,
+          [this.#transportOptions.baseInstructions ?? LIVE_BASE_INSTRUCTIONS,
+            `For native paperclip_finish/paperclip_block reports, completionContract=${JSON.stringify(LIVE_COMPLETION_CONTRACT)}. This report does not change mock task state; use the exposed semantic tools for task changes.`].join("\n"),
         persistExtendedHistory: true,
       });
       const resumedThread = record(resumed.thread);
@@ -2409,7 +2422,8 @@ export class CapabilityLiveSession {
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         approvalPolicy: "never",
         baseInstructions:
-          this.#transportOptions.baseInstructions ?? LIVE_BASE_INSTRUCTIONS,
+          [this.#transportOptions.baseInstructions ?? LIVE_BASE_INSTRUCTIONS,
+            `For native paperclip_finish/paperclip_block reports, completionContract=${JSON.stringify(LIVE_COMPLETION_CONTRACT)}. This report does not change mock task state; use the exposed semantic tools for task changes.`].join("\n"),
         completionContract: LIVE_COMPLETION_CONTRACT,
         dynamicTools: [
           ...tools.map(dynamicToolSpec),
@@ -2504,6 +2518,13 @@ export class CapabilityLiveSession {
         success: false,
         contentItems: [{ type: "inputText", text: "Tool call was outside the active Capability thread and turn." }],
       };
+    }
+    const runResult = liveRunResultFeedback(operationId, request.params.arguments, LIVE_COMPLETION_CONTRACT.revision);
+    if (runResult) {
+      this.#appendEvidence("tool_call", turnId, { callId, operationId, input: jsonValue(request.params.arguments), beforeRevision: this.#port.snapshot().revision });
+      this.#appendEvidence("tool_result", turnId, { callId, operationId, result: jsonValue(runResult), beforeRevision: this.#port.snapshot().revision, afterRevision: this.#port.snapshot().revision });
+      await this.#persist();
+      return this.#codexToolResponse(runResult);
     }
     if (operationId === DISCOVER_TOOL) {
       const args = record(request.params.arguments);

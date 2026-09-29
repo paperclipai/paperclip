@@ -1,3 +1,4 @@
+import { AgentAvatar } from "./AgentAvatar";
 import { Link } from "@/lib/router";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { deriveInitials } from "./Identity";
@@ -40,7 +41,8 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
     ? (heartbeatAgentId ? entityNameMap.get(`agent:${heartbeatAgentId}`) : null)
     : entityNameMap.get(`${event.entityType}:${event.entityId}`);
 
-  const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`);
+  const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`)
+    ?? (event.entityType === "issue" && typeof event.details?.issueTitle === "string" ? event.details.issueTitle : undefined);
 
   const link = isHeartbeatEvent && heartbeatAgentId
     ? `/agents/${heartbeatAgentId}/runs/${event.entityId}`
@@ -53,27 +55,48 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const inner = (
     <div className="space-y-2">
-      <div className="flex items-center gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <Avatar size="xs">
-            {actorAvatarUrl && <AvatarImage src={actorAvatarUrl} alt={actorName} />}
+      <div className="flex items-start gap-2 @xl:grid @xl:grid-cols-(--dashboard-activity-list-columns) @xl:items-baseline">
+        {event.actorType === "agent" ? (
+          <AgentAvatar agent={actor} name={actorName} size={24} className="@xl:self-center" />
+        ) : (
+          <Avatar size="sm" aria-hidden="true" className="@xl:self-center">
+            {actorAvatarUrl && <AvatarImage src={actorAvatarUrl} alt="" />}
             <AvatarFallback>{deriveInitials(actorName)}</AvatarFallback>
           </Avatar>
-          <p className="min-w-0 flex-1 truncate">
-            <span>{actorName}</span>
-            <span className="text-muted-foreground"> {verb} </span>
-            {name && <span className="font-medium">{name}</span>}
-            {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
-          </p>
+        )}
+        <div className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
+          <div className="flex min-w-0 items-baseline gap-2 @xl:contents">
+            <p className="flex h-6 min-w-0 flex-1 items-center gap-1.5">
+              <span className="max-w-1/2 shrink-0 truncate" title={`${actorName} ${verb}`}>
+                <span>{actorName}</span>{" "}
+                <span className="text-muted-foreground">{verb}</span>
+              </span>
+              {event.entityType === "issue" ? (
+                <span className="min-w-0 flex-1 truncate" title={entityTitle}>{entityTitle}</span>
+              ) : (
+                <span className="min-w-0 flex-1 truncate">
+                  {name && <span className="font-medium">{name}</span>}
+                  {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
+                </span>
+              )}
+            </p>
+            <span className="ml-auto shrink-0 truncate text-right font-mono text-(length:--text-micro) text-muted-foreground @xl:w-(--dashboard-list-id-width)">
+              {event.entityType === "issue" ? name : null}
+            </span>
+          </div>
+          <div className="flex min-h-6 min-w-0 items-center @xl:contents">
+            <span className="ml-auto w-(--dashboard-list-time-width) shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground">
+              {timeAgo(event.createdAt)}
+            </span>
+          </div>
         </div>
-        <span className="text-xs text-muted-foreground shrink-0">{timeAgo(event.createdAt)}</span>
       </div>
       <IssueReferenceActivitySummary event={event} />
     </div>
   );
 
   const classes = cn(
-    "px-4 py-2 text-sm",
+    "dashboard-list-row text-sm",
     link && "cursor-pointer hover:bg-accent/50 transition-colors",
     className,
   );

@@ -351,7 +351,7 @@ function isDigest(value: unknown): value is string {
 function isPermissionMode(value: unknown): value is NativeAcpxPermissionMode {
   return (
     typeof value === "string" &&
-    ["approve-all", "approve-reads", "deny-all"].includes(value)
+    ["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(value)
   );
 }
 

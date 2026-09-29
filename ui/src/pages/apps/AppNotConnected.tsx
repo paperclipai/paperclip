@@ -117,9 +117,6 @@ export function AppNotConnected() {
   if (activeConnection) {
     return <Navigate to={appTabHref(activeConnection.id, activeTab)} replace />;
   }
-  if (activeTab === "services") {
-    return <Navigate to={appApplicationTabHref(applicationId, "permissions")} replace />;
-  }
 
   const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
   const logoEntry = (appSourceSlug

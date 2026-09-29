@@ -1,4 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   type InteractionResolverGovernance,
@@ -6,7 +7,11 @@ import {
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useOptionalToastActions } from "../context/ToastContext";
 import { useCloudInstance } from "../hooks/useCloudInstance";
+import { resolveCompanyArchiveDeparture } from "../lib/company-selection";
+import { cloudPortfolioManageUrl } from "../lib/cloudLinks";
+import { navigateTopLevel } from "@/lib/browserNavigation";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
@@ -34,9 +39,12 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const toastActions = useOptionalToastActions();
+  const cloud = useCloudInstance();
   // Managed instances derive the task ID prefix from the company name, so a
   // rename here also renumbers the existing task IDs.
-  const isCloudManaged = Boolean(useCloudInstance());
+  const isCloudManaged = Boolean(cloud);
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -134,16 +142,44 @@ export function CompanySettings() {
   }
 
   const archiveMutation = useMutation({
-    mutationFn: ({
-      companyId,
-      nextCompanyId
-    }: {
-      companyId: string;
-      nextCompanyId: string | null;
-    }) => companiesApi.archive(companyId).then(() => ({ nextCompanyId })),
-    onSuccess: async ({ nextCompanyId }) => {
-      if (nextCompanyId) {
-        setSelectedCompanyId(nextCompanyId);
+    mutationFn: ({ companyId }: { companyId: string }) =>
+      companiesApi.archive(companyId),
+    onSuccess: async (_result, { companyId }) => {
+      // Never stay on the archived company's settings: the only visible
+      // change would be the archive button going inert. Leave for wherever
+      // still makes sense (another active company, the Cloud portfolio, or
+      // the companies list), with a toast naming what happened.
+      const archived = companies.find((company) => company.id === companyId);
+      const archivedName = archived?.name ?? "Organization";
+      const departure = resolveCompanyArchiveDeparture({
+        archivedCompanyId: companyId,
+        companies,
+        cloudPortfolioUrl: cloudPortfolioManageUrl(cloud?.cloudBaseUrl),
+      });
+      if (departure.kind === "cloud_portfolio") {
+        // The whole organization is on its way to being archived by the
+        // control plane; a full navigation to the Cloud portfolio replaces
+        // this document, so cache invalidation below would never run.
+        navigateTopLevel(departure.url);
+        return;
+      }
+      if (departure.kind === "company") {
+        toastActions?.pushToast({
+          title: `${archivedName} is archived`,
+          body: `Switched to ${departure.company.name}.`,
+          tone: "info",
+          dedupeKey: `company-archive-departure:${companyId}`,
+        });
+        setSelectedCompanyId(departure.company.id);
+        navigate(`/${departure.company.issuePrefix}/dashboard`, { replace: true });
+      } else {
+        toastActions?.pushToast({
+          title: `${archivedName} is archived`,
+          body: "You can unarchive it from this list.",
+          tone: "info",
+          dedupeKey: `company-archive-departure:${companyId}`,
+        });
+        navigate(`/${archived?.issuePrefix ?? ""}/companies`, { replace: true });
       }
       await queryClient.invalidateQueries({
         queryKey: queryKeys.companies.all
@@ -358,16 +394,7 @@ export function CompanySettings() {
                   `Archive organization "${selectedCompany.name}"? It will be hidden from the sidebar.`
                 );
                 if (!confirmed) return;
-                const nextCompanyId =
-                  companies.find(
-                    (company) =>
-                      company.id !== selectedCompanyId &&
-                      company.status !== "archived"
-                  )?.id ?? null;
-                archiveMutation.mutate({
-                  companyId: selectedCompanyId,
-                  nextCompanyId
-                });
+                archiveMutation.mutate({ companyId: selectedCompanyId });
               }}
             >
               {archiveMutation.isPending

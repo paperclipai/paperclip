@@ -1,0 +1,15 @@
+-- Create referenced composite keys before the generated foreign keys.
+ALTER TABLE "agents" ADD CONSTRAINT "agents_company_id_uq" UNIQUE("company_id","id");--> statement-breakpoint
+ALTER TABLE "chat_deliveries" ADD CONSTRAINT "chat_deliveries_company_id_uq" UNIQUE("company_id","id");--> statement-breakpoint
+ALTER TABLE "issue_comments" ADD CONSTRAINT "issue_comments_company_id_uq" UNIQUE("company_id","id");--> statement-breakpoint
+ALTER TABLE "chat_actions" ADD CONSTRAINT "chat_actions_company_delivery_fk" FOREIGN KEY ("company_id","delivery_id") REFERENCES "public"."chat_deliveries"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_actions" ADD CONSTRAINT "chat_actions_company_conversation_fk" FOREIGN KEY ("company_id","conversation_id") REFERENCES "public"."chat_conversations"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_actions" ADD CONSTRAINT "chat_actions_company_principal_fk" FOREIGN KEY ("company_id","principal_id") REFERENCES "public"."chat_external_principals"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_conversations" ADD CONSTRAINT "chat_conversations_company_issue_fk" FOREIGN KEY ("company_id","issue_id") REFERENCES "public"."issues"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_endpoints" ADD CONSTRAINT "chat_endpoints_company_agent_fk" FOREIGN KEY ("company_id","assigned_agent_id") REFERENCES "public"."agents"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_message_links" ADD CONSTRAINT "chat_message_links_company_endpoint_fk" FOREIGN KEY ("company_id","endpoint_id") REFERENCES "public"."chat_endpoints"("company_id","id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_message_links" ADD CONSTRAINT "chat_message_links_company_delivery_fk" FOREIGN KEY ("company_id","delivery_id") REFERENCES "public"."chat_deliveries"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_message_links" ADD CONSTRAINT "chat_message_links_company_publication_fk" FOREIGN KEY ("company_id","publication_id") REFERENCES "public"."chat_publications"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_message_links" ADD CONSTRAINT "chat_message_links_company_comment_fk" FOREIGN KEY ("company_id","comment_id") REFERENCES "public"."issue_comments"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_publications" ADD CONSTRAINT "chat_publications_company_issue_fk" FOREIGN KEY ("company_id","issue_id") REFERENCES "public"."issues"("company_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "chat_publications" ADD CONSTRAINT "chat_publications_company_comment_fk" FOREIGN KEY ("company_id","comment_id") REFERENCES "public"."issue_comments"("company_id","id") ON DELETE no action ON UPDATE no action;

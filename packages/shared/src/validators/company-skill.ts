@@ -360,6 +360,7 @@ export const companySkillProjectScanResultSchema = z.object({
 });
 
 export const companySkillCreateSchema = z.object({
+  idempotencyKey: z.string().min(1).max(240).optional(),
   folderId: z.string().guid().nullable().optional(),
   name: z.string().min(1),
   slug: z.string().min(1).nullable().optional(),

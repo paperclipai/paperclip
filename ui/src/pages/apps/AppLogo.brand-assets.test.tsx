@@ -25,6 +25,30 @@ describe("AppLogo local brand assets", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([undefined, "/brands/apps/notion.svg"])("keeps same-artwork local branding authoritative over a remote dark logo (%s)", async (darkAsset) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ schemaVersion: 1, providers: [{
+        slug: "notion", provider: "Notion", localAsset: "/brands/apps/notion.svg", darkAsset,
+      }] }),
+    }));
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AppLogo name="Notion" size={28} className="border" logoUrl="https://remote.example/light.svg" darkLogoUrl="https://remote.example/stale-dark.svg" />);
+    });
+    const images = Array.from(container.querySelectorAll("img"));
+    expect(images.map((image) => image.getAttribute("src"))).toEqual(["/brands/apps/notion.svg"]);
+    expect(images[0]?.alt).toBe("");
+    const wrapper = images[0]!.parentElement!;
+    expect(wrapper.className).toContain("rounded-lg bg-muted");
+    expect(wrapper.className).toContain("border");
+    expect(wrapper.style.width).toBe("28px");
+    expect(wrapper.style.height).toBe("28px");
+    await act(async () => { images[0]!.dispatchEvent(new Event("error")); });
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toBe("N");
+  });
+
   it("loads the manifest and renders its light and dark provider assets", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

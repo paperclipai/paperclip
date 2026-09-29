@@ -8,7 +8,7 @@ import { AppErrorBoundary } from "./AppErrorBoundary";
 const captureBrowserExceptionMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/sentry", () => ({
-  captureBrowserException: (error: unknown) => captureBrowserExceptionMock(error),
+  captureBrowserException: (...args: unknown[]) => captureBrowserExceptionMock(...args),
 }));
 
 function BoomRender(): never {
@@ -36,6 +36,7 @@ describe("AppErrorBoundary", () => {
   afterEach(() => {
     consoleErrorSpy.mockRestore();
     container.remove();
+    document.documentElement.classList.remove("translated-ltr");
     captureBrowserExceptionMock.mockClear();
   });
 
@@ -50,7 +51,9 @@ describe("AppErrorBoundary", () => {
     });
 
     expect(captureBrowserExceptionMock).toHaveBeenCalledTimes(1);
-    expect(captureBrowserExceptionMock).toHaveBeenCalledWith(expect.any(Error));
+    expect(captureBrowserExceptionMock).toHaveBeenCalledWith(expect.any(Error), {
+      boundary: "app", componentStack: expect.stringContaining("BoomRender"),
+    });
     expect(
       Array.from(container.querySelectorAll("button")).some(
         (button) => button.textContent === "Reload page",
@@ -118,5 +121,46 @@ describe("AppErrorBoundary", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("preserves the original DOM insertion error and its failing component", () => {
+    function BrokenDomInsertion() {
+      useEffect(() => {
+        document.createElement("div").insertBefore(
+          document.createElement("span"), document.createElement("span"),
+        );
+      }, []);
+      return null;
+    }
+    const root = createRoot(container);
+    act(() => root.render(<AppErrorBoundary><BrokenDomInsertion /></AppErrorBoundary>));
+    expect(captureBrowserExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "NotFoundError" }),
+      { boundary: "app", componentStack: expect.stringContaining("BrokenDomInsertion") },
+    );
+    expect(container.textContent).toContain("Paperclip hit an error");
+    act(() => root.unmount());
+  });
+
+  it("reports the component when translation replaces a React-owned insertion anchor", () => {
+    function TranslatedStatus({ showIcon }: { showIcon: boolean }) {
+      return <div data-testid="translated-status">{showIcon && <span aria-hidden="true" />}Ready</div>;
+    }
+    const root = createRoot(container);
+    act(() => root.render(<AppErrorBoundary><TranslatedStatus showIcon={false} /></AppErrorBoundary>));
+    const parent = container.querySelector('[data-testid="translated-status"]')!;
+    // Translation replaces the text node; React still holds that old node as
+    // the insertion anchor when it later adds a sibling before the text.
+    const translated = document.createElement("font");
+    translated.textContent = "Translated status";
+    parent.replaceChild(translated, parent.firstChild!);
+    document.documentElement.classList.add("translated-ltr");
+    act(() => root.render(<AppErrorBoundary><TranslatedStatus showIcon /></AppErrorBoundary>));
+    expect(captureBrowserExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "NotFoundError" }),
+      { boundary: "app", componentStack: expect.stringContaining("TranslatedStatus") },
+    );
+    expect(container.textContent).toContain("Reload page");
+    act(() => root.unmount());
   });
 });

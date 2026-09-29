@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "slug": "executor",
+  "name": "Executor",
+  "description": "Use the tools exposed by your Executor MCP connection.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "/brands/apps/executor.png"
+  },
+  "urlPatterns": [
+    "https://executor.sh/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "dcr",
+        "customer"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {},
+      "guidanceMd": "Paste your Executor MCP URL. Sign in if required, or add a token or headers under Advanced authentication.",
+      "riskTier": "S3",
+      "label": "Connect MCP server",
+      "consoleLinks": {
+        "docs": "https://executor.sh/docs/mcp-proxy"
+      }
+    }
+  ],
+  "docsUrl": "https://executor.sh/docs/mcp-proxy"
+}

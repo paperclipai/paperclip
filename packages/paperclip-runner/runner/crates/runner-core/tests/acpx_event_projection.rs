@@ -79,6 +79,23 @@ fn projects_authorized_tools_with_exact_durable_correlation() {
 }
 
 #[test]
+fn projects_reserved_completion_tool_input_for_server_feedback_roundtrip() {
+    let events = project(AcpxProviderStateEvent::ToolCall {
+        call_id: "finish-1".to_owned(),
+        operation_id: "paperclip_finish".to_owned(),
+        input: json!({"reportedWorkDisposition":"needs_review"}),
+    });
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "semantic_tool.input");
+    assert_eq!(
+        events[0].payload["semantic_tool"]["operationId"],
+        "paperclip_finish"
+    );
+    assert_eq!(events[0].payload["semantic_tool"]["callId"], "finish-1");
+}
+
+#[test]
 fn keeps_durable_correlation_separate_from_the_active_provider_turn() {
     let mut context = context();
     context.provider_turn_id = Some("provider-turn-1".to_owned());
@@ -288,7 +305,10 @@ fn projects_assistant_terminal_and_diagnostic_events_fail_closed() {
             "text":"Done",
         }),
     }));
-    assert_eq!(streamed[0].payload["itemId"], "item-1");
+    assert!(streamed[0].payload["itemId"]
+        .as_str()
+        .unwrap()
+        .starts_with("acpx-assistant-"));
     assert_eq!(
         streamed[0].payload["providerItemId"],
         "opaque-provider-message"
@@ -299,7 +319,10 @@ fn projects_assistant_terminal_and_diagnostic_events_fail_closed() {
         text: "Done".to_owned(),
     });
     assert_eq!(assistant[0].event_type, "item.completed");
-    assert_eq!(assistant[0].payload["itemId"], "item-1");
+    assert_eq!(
+        assistant[0].payload["itemId"],
+        streamed[0].payload["itemId"]
+    );
     assert_eq!(assistant[0].payload["channel"], "final");
 
     for (status, expected) in [
@@ -551,4 +574,25 @@ fn runtime_request_projection_preserves_durable_identity_boundaries() {
     .unwrap();
     let semantic_validator = jsonschema::validator_for(&semantic_schema).unwrap();
     assert!(semantic_validator.is_valid(&semantic[0].payload["semantic_tool"]));
+}
+
+#[test]
+fn recovery_preserves_the_preceding_provider_turn_answer() {
+    let first = project(AcpxProviderStateEvent::AssistantMessage {
+        turn_id: "turn-1".to_owned(),
+        text: "Useful answer".to_owned(),
+    });
+    let mut recovery = context();
+    recovery.provider_turn_id = Some("recovery-turn".to_owned());
+    let second = project_acpx_state_event(
+        &recovery,
+        &AcpxProviderStateEvent::AssistantMessage {
+            turn_id: "recovery-turn".to_owned(),
+            text: "Recovery update".to_owned(),
+        },
+    )
+    .unwrap();
+    assert_ne!(first[0].payload["itemId"], second[0].payload["itemId"]);
+    assert_eq!(first[0].payload["text"], "Useful answer");
+    assert_eq!(second[0].payload["text"], "Recovery update");
 }

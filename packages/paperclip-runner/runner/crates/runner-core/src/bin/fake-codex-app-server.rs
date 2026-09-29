@@ -59,9 +59,13 @@ fn send_split_event_burst(state: &FakeState) -> io::Result<()> {
     }))
 }
 
-fn finish_split_event_burst(state: &FakeState) -> io::Result<()> {
+fn finish_split_event_burst_with_send(
+    state: &FakeState,
+    count: usize,
+    mut send: impl FnMut(Value) -> io::Result<()>,
+) -> io::Result<()> {
     let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
-    for index in 0..48 {
+    for index in 0..count {
         send(json!({
             "method": "item/agentMessage/delta",
             "params": {
@@ -75,20 +79,73 @@ fn finish_split_event_burst(state: &FakeState) -> io::Result<()> {
     Ok(())
 }
 
-fn load_state(path: &Path) -> FakeState {
-    fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| FakeState {
+fn finish_split_event_turn_with_send(
+    state_path: &Path,
+    state: &mut FakeState,
+    count: usize,
+    lifecycle: Option<&str>,
+    mut send: impl FnMut(Value) -> io::Result<()>,
+) -> io::Result<()> {
+    if lifecycle == Some("settled-before-output") {
+        // This explicit fixture mode models completed work whose output is
+        // still blocked in the pipe. Keep the original turn identity for all
+        // suffix and terminal frames, but persist completion before any send.
+        let suffix_state = state.clone();
+        let mut suffix_sent = false;
+        return finish_turn_with_send(state_path, state, "completed", |message| {
+            if !suffix_sent {
+                finish_split_event_burst_with_send(&suffix_state, count, &mut send)?;
+                suffix_sent = true;
+            }
+            send(message)
+        });
+    }
+    finish_split_event_burst_with_send(state, count, &mut send)?;
+    if lifecycle == Some("active-after-output") {
+        // Adversarial counterpart: no completion claim or durable settlement.
+        // A later physical stop must not authorize this reported active turn.
+        return Ok(());
+    }
+    finish_turn_with_send(state_path, state, "completed", send)
+}
+
+fn load_state(path: &Path) -> io::Result<FakeState> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(FakeState {
             thread_id: "codex-thread-1".to_owned(),
             active_turn_id: None,
             next_turn: 0,
             goal: None,
-        })
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 fn save_state(path: &Path, state: &FakeState) -> io::Result<()> {
-    fs::write(path, serde_json::to_vec_pretty(state)?)
+    save_state_with_write(path, state, |path, bytes| {
+        let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })
+}
+
+fn save_state_with_write(
+    path: &Path,
+    state: &FakeState,
+    write: impl FnOnce(&Path, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    // A stopped fake provider must leave either the previous complete counter
+    // or the next complete counter, never a truncated file that looks fresh.
+    // Unique sibling files also keep delayed interrupt writers independent.
+    let temporary = path.with_file_name(format!(".fake-codex-state-{}.tmp", uuid::Uuid::new_v4()));
+    let bytes = serde_json::to_vec_pretty(state)?;
+    let saved = write(&temporary, &bytes).and_then(|()| fs::rename(&temporary, path));
+    if saved.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    saved
 }
 
 fn log_call(path: Option<&Path>, method: &str) -> io::Result<()> {
@@ -250,13 +307,26 @@ mod tests {
 }
 
 fn finish_turn(state_path: &Path, state: &mut FakeState, status: &str) -> io::Result<()> {
+    finish_turn_with_send(state_path, state, status, send)
+}
+
+fn finish_turn_with_send(
+    state_path: &Path,
+    state: &mut FakeState,
+    status: &str,
+    mut send: impl FnMut(Value) -> io::Result<()>,
+) -> io::Result<()> {
     let turn_id = state
         .active_turn_id
         .clone()
         .unwrap_or_else(|| "provider-turn-1".to_owned());
+    // Terminal visibility permits the supervisor to stop this process at once.
+    // Persist the fixture's settled state before publishing that permission.
+    state.active_turn_id = None;
+    save_state(state_path, state)?;
     send(json!({
         "method": "item/completed",
-        "params": {"item": {
+        "params": {"threadId": state.thread_id, "turnId": turn_id, "item": {
             "id": "message-1",
             "type": "agentMessage",
             "status": "completed",
@@ -277,8 +347,7 @@ fn finish_turn(state_path: &Path, state: &mut FakeState, status: &str) -> io::Re
         "method": "turn/completed",
         "params": {"turn": {"id": turn_id, "status": status}}
     }))?;
-    state.active_turn_id = None;
-    save_state(state_path, state)
+    Ok(())
 }
 
 fn emit_ambiguous_turn_evidence(
@@ -307,10 +376,10 @@ fn emit_ambiguous_turn_evidence(
     }
 }
 
-fn emit_ambiguous_turn_item() -> io::Result<()> {
+fn emit_ambiguous_turn_item(state: &FakeState) -> io::Result<()> {
     send(json!({
         "method": "item/completed",
-        "params": {"item": {
+        "params": {"threadId": state.thread_id, "item": {
             "id": "replacement-message-before-terminal",
             "type": "agentMessage",
             "status": "completed",
@@ -525,9 +594,23 @@ fn send_runtime_request_flood(
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let state_path =
-        PathBuf::from(argument(&args, "--state-file").ok_or("--state-file is required")?);
+    let state_path = if args
+        .iter()
+        .any(|value| value == "--state-file-in-codex-home")
+    {
+        PathBuf::from(std::env::var("CODEX_HOME")?).join("fake-codex-state.json")
+    } else {
+        PathBuf::from(argument(&args, "--state-file").ok_or("--state-file is required")?)
+    };
+    let reject_missing_resume_state = args
+        .iter()
+        .any(|value| value == "--require-existing-resume-state")
+        && !state_path.exists();
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
+    let request_log = argument(&args, "--request-log").map(PathBuf::from);
+    if args.iter().any(|value| value == "--record-process-start") {
+        log_call(call_log.as_deref(), "process-start")?;
+    }
     let emit_question = args.iter().any(|value| value == "--emit-question");
     let emit_runtime_question = args.iter().any(|value| value == "--runtime-question");
     let emit_opencode_proxy_runtime_question = args
@@ -536,6 +619,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
     let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
+    let split_event_suffix_count = argument(&args, "--split-event-suffix-count")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(48);
+    if !(1..=4096).contains(&split_event_suffix_count) {
+        return Err("split event suffix count must be between 1 and 4096".into());
+    }
+    let split_event_suffix_lifecycle = argument(&args, "--split-event-suffix-lifecycle");
+    if split_event_suffix_lifecycle
+        .as_deref()
+        .is_some_and(|value| {
+            !emit_split_event_burst
+                || !matches!(value, "settled-before-output" | "active-after-output")
+        })
+    {
+        return Err(
+            "split event suffix lifecycle requires an explicit supported split-burst mode".into(),
+        );
+    }
     let require_skill_instructions = args
         .iter()
         .any(|value| value == "--include-skill-instructions");
@@ -648,6 +750,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--omit-ambiguous-turn-started");
     let fail_after_thread_read = args.iter().any(|value| value == "--fail-after-thread-read");
     let fail_first_interrupt = args.iter().any(|value| value == "--fail-first-interrupt");
+    let ignore_repeated_interrupt = args
+        .iter()
+        .any(|value| value == "--ignore-repeated-interrupt");
     let accept_interrupt_without_terminal_once = args
         .iter()
         .any(|value| value == "--accept-interrupt-without-terminal-once");
@@ -691,6 +796,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--question-before-failed-turn");
     let fail_turn_immediately = args.iter().any(|value| value == "--fail-turn-immediately");
     let reuse_question_id = args.iter().any(|value| value == "--reuse-question-id");
+    let descendant_notifications = args
+        .iter()
+        .any(|value| value == "--descendant-notifications");
     let pre_response_notification = args
         .iter()
         .any(|value| value == "--notification-before-response");
@@ -726,15 +834,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    let mut state = load_state(&state_path);
+    let mut state = load_state(&state_path)?;
     let mut turn_start_count = 0_u64;
     let mut interrupt_count = 0_u64;
     let mut delayed_interrupt_terminal_scheduled = false;
     let mut answered_questions = 0u8;
     let mut replayed_completed_tool_calls = 0_u64;
+    let mut rejected_helper_requests = 0_u8;
 
     for line in io::stdin().lock().lines() {
         let message: Value = serde_json::from_str(&line?)?;
+        if message.get("method").is_none()
+            && message
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("helper-request-"))
+        {
+            if message.pointer("/result/success") != Some(&json!(false))
+                && message.get("error").is_none()
+            {
+                return Err("helper request was granted root authority".into());
+            }
+            rejected_helper_requests += 1;
+            log_call(call_log.as_deref(), "helper-request:rejected")?;
+            if rejected_helper_requests == 3 {
+                send(
+                    json!({"id":"tool-request-1", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"root-after-helper", "tool":"get_task_context", "arguments":{}
+                    }}),
+                )?;
+            }
+            continue;
+        }
         if message.get("method").is_none()
             && message
                 .get("id")
@@ -783,8 +915,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if message.pointer("/result/success") != Some(&json!(true)) {
                 return Err("split event burst semantic tool failed".into());
             }
-            finish_split_event_burst(&state)?;
-            finish_turn(&state_path, &mut state, "completed")?;
+            finish_split_event_turn_with_send(
+                &state_path,
+                &mut state,
+                split_event_suffix_count,
+                split_event_suffix_lifecycle.as_deref(),
+                send,
+            )?;
             continue;
         }
         if message.get("method").is_none() && message.get("id") == Some(&json!("tool-request-1")) {
@@ -854,12 +991,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
         log_call(call_log.as_deref(), method)?;
+        log_call(request_log.as_deref(), &serde_json::to_string(&message)?)?;
+        if require_skill_instructions
+            && matches!(method, "thread/start" | "thread/resume")
+            && message.pointer("/params/config/skills.include_instructions") != Some(&json!(true))
+        {
+            return Err("thread request omitted skills.include_instructions=true".into());
+        }
         let id = message.get("id").cloned();
         match method {
-            "initialize" => send(json!({
+            "initialize" => {
+                if args
+                    .iter()
+                    .any(|value| value == "--require-startup-spawn-receipt")
+                {
+                    let receipt: Value = serde_json::from_slice(&fs::read(
+                        state_path.with_file_name("codex-provider-state.json"),
+                    )?)?;
+                    if receipt.pointer("/startupAttempt/phase") != Some(&json!("spawned"))
+                        || receipt.pointer("/startupAttempt/processId")
+                            != Some(&json!(std::process::id()))
+                    {
+                        return Err(
+                            "initialize arrived before durable exact-child spawn receipt".into(),
+                        );
+                    }
+                }
+                send(json!({
                 "id": id,
                 "result": {"user": {"sessionId": "codex-account-session"}}
-            }))?,
+                }))?;
+            }
             "initialized" => {}
             "thread/start" => {
                 if require_external_sandbox
@@ -914,6 +1076,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "thread/resume" => {
+                if reject_missing_resume_state {
+                    send(json!({"id": id, "error": {
+                        "code": -32600,
+                        "message": "no rollout found for thread id"
+                    }}))?;
+                    continue;
+                }
+                if args
+                    .iter()
+                    .any(|arg| arg == "--require-lightweight-history")
+                    && message.pointer("/params/excludeTurns") != Some(&json!(true))
+                {
+                    return Err("thread/resume must exclude turns".into());
+                }
                 if require_external_sandbox
                     && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
                         || message.pointer("/params/permissions").is_some())
@@ -942,6 +1118,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
                 }))?;
+                if args.iter().any(|arg| arg == "--resume-usage-snapshot")
+                    && state.active_turn_id.is_none()
+                    && state.next_turn > 0
+                {
+                    for _ in 0..2 {
+                        send(json!({"method": "thread/tokenUsage/updated", "params": {
+                            "threadId": state.thread_id, "turnId": format!("provider-turn-{}", state.next_turn),
+                            "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                        }}))?;
+                    }
+                }
+                if descendant_notifications {
+                    // Restoration must retain lineage without a replay of thread/started.
+                    send(json!({"method": "turn/completed", "params": {
+                        "threadId": "descendant-299", "turnId": "child-turn", "status": "completed"
+                    }}))?;
+                }
                 if emit_tool_call_on_resume {
                     if let Some(turn_id) = state.active_turn_id.as_deref() {
                         send(json!({
@@ -958,7 +1151,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            "thread/turns/list" => {
+                if args
+                    .iter()
+                    .any(|arg| arg == "--require-lightweight-history")
+                    && message.pointer("/params/itemsView") != Some(&json!("notLoaded"))
+                {
+                    return Err("turn metadata must not hydrate items".into());
+                }
+                if args.iter().any(|arg| arg == "--repeat-history-cursor")
+                    || (args.iter().any(|arg| arg == "--paginated-history")
+                        && message.pointer("/params/cursor").is_none_or(Value::is_null))
+                {
+                    send(json!({"id": id, "result": {"data": [], "nextCursor": "next-page"}}))?;
+                    continue;
+                }
+                let turns = state.active_turn_id.as_ref()
+                    .map(|turn_id| vec![json!({"id": turn_id, "status": "inProgress", "items": [], "itemsView": "notLoaded"})])
+                    .unwrap_or_default();
+                send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
+            }
             "thread/read" => {
+                if descendant_notifications
+                    && message.pointer("/params/threadId").and_then(Value::as_str)
+                        == Some("descendant-1")
+                {
+                    send(json!({"id": id, "result": {"thread": {
+                        "id": "descendant-1", "parentThreadId": state.thread_id
+                    }}}))?;
+                    continue;
+                }
+                if args
+                    .iter()
+                    .any(|arg| arg == "--require-lightweight-history")
+                    && message.pointer("/params/includeTurns") != Some(&json!(false))
+                {
+                    return Err("thread/read must not hydrate turns".into());
+                }
                 let turns = state
                     .active_turn_id
                     .as_ref()
@@ -966,7 +1195,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_default();
                 send(json!({
                     "id": id,
-                    "result": {"thread": {"id": state.thread_id, "turns": turns}}
+                    "result": {"thread": {"id": state.thread_id, "status": {"type": if state.active_turn_id.is_some() { "active" } else { "idle" }}, "turns": turns}}
                 }))?;
                 if fail_after_thread_read {
                     return Err("configured failure after thread read".into());
@@ -978,10 +1207,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "id": id,
                 "error": {"code": -32004, "message": "goal feature disabled by provider policy"}
             }))?,
-            "thread/goal/get" => send(json!({
-                "id": id,
-                "result": {"goal": state.goal}
-            }))?,
+            "thread/goal/get" => {
+                send(json!({"id": id, "result": {"goal": state.goal}}))?;
+                if args
+                    .iter()
+                    .any(|value| value == "--idle-protocol-failure-on-goal-probe")
+                {
+                    send(json!({"method": "turn/completed", "params": {
+                        "threadId": "foreign-idle-thread", "turnId": "never-started-idle-turn", "status": "completed"
+                    }}))?;
+                }
+                if args
+                    .iter()
+                    .any(|value| value == "--idle-descendant-overflow-on-goal-probe")
+                {
+                    send(json!({"method": "thread/started", "params": {"thread": {
+                        "id": "descendant-overflow",
+                        "parentThreadId": state.thread_id
+                    }}}))?;
+                }
+            }
             "thread/goal/set" => {
                 if reject_goal_set {
                     send(json!({
@@ -1175,7 +1420,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if malformed_error_second_turn_start && turn_start_count == 2 {
                     if hold_ambiguous_second_turn_after_item {
-                        emit_ambiguous_turn_item()?;
+                        emit_ambiguous_turn_item(&state)?;
                     }
                     send(json!({"id": id, "error": {}}))?;
                     if emits_ambiguous_turn_evidence
@@ -1196,7 +1441,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "result": {"turn": {"status": "inProgress"}}
                     }))?;
                     if hold_ambiguous_second_turn_after_item {
-                        emit_ambiguous_turn_item()?;
+                        emit_ambiguous_turn_item(&state)?;
                         continue;
                     }
                     if emits_ambiguous_turn_evidence
@@ -1226,6 +1471,78 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if args.iter().any(|value| value == "--account-notifications") {
+                    send(json!({"method":"account/updated", "params":{
+                        "authMode":"chatgpt", "planType":"pro"
+                    }}))?;
+                    send(json!({"method":"account/login/completed", "params":{
+                        "loginId":"fixture-login", "success":true, "error":null
+                    }}))?;
+                }
+                if args.iter().any(|value| value == "--helper-tool-requests") {
+                    if !args.iter().any(|value| value == "--foreign-helper-tool") {
+                        send(json!({"method":"item/completed", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "item":{"id":"spawn-helper", "type":"collabAgentToolCall",
+                                "tool":"spawnAgent", "status":"completed",
+                                "senderThreadId":state.thread_id, "receiverThreadIds":["helper-thread"]}
+                        }}))?;
+                    }
+                    for (index, tool) in ["get_task_context", "paperclip_finish"].iter().enumerate()
+                    {
+                        send(
+                            json!({"id":format!("helper-request-{index}"), "method":"item/tool/call", "params":{
+                                "threadId":"helper-thread", "turnId":"helper-turn",
+                                "callId":format!("helper-call-{index}"), "tool":tool, "arguments":{}
+                            }}),
+                        )?;
+                    }
+                    send(
+                        json!({"id":"helper-request-question", "method":"item/tool/requestUserInput", "params":{
+                            "threadId":"helper-thread", "turnId":"helper-turn", "itemId":"helper-question",
+                            "questions":[]
+                        }}),
+                    )?;
+                    continue;
+                }
+                if descendant_notifications {
+                    // Real Codex announces a child's MCP startup before its
+                    // thread/started notification establishes parent lineage.
+                    send(json!({"method":"mcpServer/startupStatus/updated","params":{
+                        "threadId":"descendant-0", "name":"paperclip", "status":"starting", "error":null
+                    }}))?;
+                    // Codex can announce a helper through the root's spawn receipt
+                    // before emitting any thread/started notification for that helper.
+                    send(json!({"method": "item/completed", "params": {
+                        "threadId": state.thread_id, "turnId": provider_turn_id,
+                        "item": {"id": "spawn-first-child", "type": "collabAgentToolCall",
+                            "tool": "spawnAgent", "status": "completed",
+                            "senderThreadId": state.thread_id,
+                            "receiverThreadIds": ["descendant-0"]}
+                    }}))?;
+                    send(json!({"method": "turn/started", "params": {
+                        "threadId": "descendant-0", "turnId": "first-child-turn"
+                    }}))?;
+                    // A helper turn may arrive before either spawn completion or thread/started.
+                    send(json!({"method": "turn/started", "params": {
+                        "threadId": "descendant-1", "turnId": "second-child-turn"
+                    }}))?;
+                    for index in 2..300 {
+                        send(json!({"method": "thread/started", "params": {"thread": {
+                            "id": format!("descendant-{index}"),
+                            "parentThreadId": state.thread_id
+                        }}}))?;
+                    }
+                    send(json!({"method": "turn/completed", "params": {
+                        "threadId": "descendant-299", "turnId": "child-turn", "status": "completed"
+                    }}))?;
+                }
+                if args.iter().any(|value| value == "--descendant-overflow") {
+                    send(json!({"method": "thread/started", "params": {"thread": {
+                        "id": "descendant-overflow",
+                        "parentThreadId": state.thread_id
+                    }}}))?;
+                }
                 if fail_after_second_turn_start && turn_start_count == 2 {
                     return Err("configured failure after second turn start".into());
                 } else if fail_turn_immediately {
@@ -1379,6 +1696,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if emit_post_completion_passive_statuses {
                         for notification in [
                             json!({
+                                "method": "thread/tokenUsage/updated",
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id,
+                                    "tokenUsage": {"total": {"inputTokens": 120, "outputTokens": 12},
+                                        "last": {"inputTokens": 20, "outputTokens": 2}}}
+                            }),
+                            json!({
                                 "method": "remoteControl/status/changed",
                                 "params": {"status": "disabled", "environmentId": null}
                             }),
@@ -1392,11 +1715,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }),
                             json!({
                                 "method": "rawResponseItem/completed",
-                                "params": {"item": {"id": "raw-tail", "type": "reasoning"}}
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "item": {"id": "raw-tail", "type": "reasoning"}}
                             }),
                             json!({
                                 "method": "rawResponse/completed",
-                                "params": {"response": {"id": "response-tail"}}
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "response": {"id": "response-tail"}}
                             }),
                             json!({
                                 "method": "thread/goal/updated",
@@ -1482,6 +1805,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "turn/interrupt" => {
                 interrupt_count += 1;
+                if ignore_repeated_interrupt && interrupt_count > 1 {
+                    continue;
+                }
                 if fail_first_interrupt && interrupt_count == 1 {
                     send(json!({
                         "id": id,
@@ -1546,5 +1872,186 @@ fn main() -> ExitCode {
             eprintln!("fake-codex-app-server: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod state_persistence_tests {
+    use super::*;
+
+    struct StateFixture(PathBuf);
+
+    impl StateFixture {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("fake-codex-state-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn path(&self) -> PathBuf {
+            self.0.join("state.json")
+        }
+    }
+
+    impl Drop for StateFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn active_state() -> FakeState {
+        FakeState {
+            thread_id: "test-thread".to_owned(),
+            active_turn_id: Some("provider-turn-1".to_owned()),
+            next_turn: 1,
+            goal: None,
+        }
+    }
+
+    #[test]
+    fn failed_partial_state_write_preserves_the_previous_turn_counter() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let previous = active_state();
+        save_state(&path, &previous).unwrap();
+        let previous_bytes = fs::read(&path).unwrap();
+        let mut next = previous.clone();
+        next.next_turn = 2;
+        let failure = save_state_with_write(&path, &next, |target, _| {
+            fs::write(target, b"{")?;
+            Err(io::Error::other("injected interrupted fixture write"))
+        });
+        assert!(failure.is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous_bytes);
+        assert_eq!(load_state(&path).unwrap().next_turn, 1);
+        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn malformed_existing_state_does_not_reset_the_provider_turn_counter() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        assert_eq!(load_state(&path).unwrap().next_turn, 0);
+        fs::write(&path, b"{").unwrap();
+        assert!(load_state(&path).is_err());
+    }
+
+    #[test]
+    fn terminal_notification_observes_already_persisted_settled_state() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let mut state = active_state();
+        save_state(&path, &state).unwrap();
+        let mut terminal_count = 0;
+        finish_turn_with_send(&path, &mut state, "completed", |message| {
+            if message.get("method").and_then(Value::as_str) == Some("turn/completed") {
+                let persisted = load_state(&path)?;
+                assert_eq!(persisted.next_turn, 1);
+                assert!(persisted.active_turn_id.is_none());
+                assert_eq!(
+                    message.pointer("/params/turn/id"),
+                    Some(&json!("provider-turn-1"))
+                );
+                terminal_count += 1;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(terminal_count, 1);
+    }
+
+    #[test]
+    fn settled_split_suffix_persists_before_output_even_when_the_first_write_fails() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let mut state = active_state();
+        save_state(&path, &state).unwrap();
+        let failure = finish_split_event_turn_with_send(
+            &path,
+            &mut state,
+            1024,
+            Some("settled-before-output"),
+            |message| {
+                assert_eq!(message["method"], "item/agentMessage/delta");
+                assert_eq!(message["params"]["turnId"], "provider-turn-1");
+                let persisted = load_state(&path)?;
+                assert!(persisted.active_turn_id.is_none());
+                assert_eq!(persisted.next_turn, 1);
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "injected suffix write failure",
+                ))
+            },
+        );
+        assert_eq!(failure.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        assert!(load_state(&path).unwrap().active_turn_id.is_none());
+    }
+
+    #[test]
+    fn active_split_suffix_retains_the_original_work_without_a_terminal_claim() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let mut state = active_state();
+        save_state(&path, &state).unwrap();
+        let original = fs::read(&path).unwrap();
+        let mut messages = Vec::new();
+        finish_split_event_turn_with_send(
+            &path,
+            &mut state,
+            1024,
+            Some("active-after-output"),
+            |message| {
+                messages.push(message);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(messages.len(), 1024);
+        assert!(messages
+            .iter()
+            .all(|message| message["method"] == "item/agentMessage/delta"
+                && message["params"]["turnId"] == "provider-turn-1"));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(state.active_turn_id.as_deref(), Some("provider-turn-1"));
+        assert_eq!(state.next_turn, 1);
+    }
+
+    #[test]
+    fn settled_split_suffix_keeps_the_original_identity_and_terminal_after_all_output() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let mut state = active_state();
+        state.active_turn_id = Some("provider-turn-7".to_owned());
+        state.next_turn = 7;
+        save_state(&path, &state).unwrap();
+        let mut messages = Vec::new();
+        finish_split_event_turn_with_send(
+            &path,
+            &mut state,
+            1024,
+            Some("settled-before-output"),
+            |message| {
+                assert!(load_state(&path)?.active_turn_id.is_none());
+                messages.push(message);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(messages.len(), 1027);
+        assert!(messages[..1024]
+            .iter()
+            .all(|message| message["method"] == "item/agentMessage/delta"
+                && message["params"]["turnId"] == "provider-turn-7"));
+        assert_eq!(messages.last().unwrap()["method"], "turn/completed");
+        assert_eq!(
+            messages.last().unwrap()["params"]["turn"]["id"],
+            "provider-turn-7"
+        );
+        assert_eq!(
+            messages.last().unwrap()["params"]["turn"]["status"],
+            "completed"
+        );
+        assert_eq!(load_state(&path).unwrap().next_turn, 7);
     }
 }

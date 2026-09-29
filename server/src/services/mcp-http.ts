@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 // Helpers for talking to remote MCP servers over the Streamable HTTP transport.
 //
 // The MCP Streamable HTTP spec requires the client to advertise that it accepts
@@ -14,6 +15,13 @@
 /** The Accept header value required by the MCP Streamable HTTP transport. */
 export const MCP_HTTP_ACCEPT = "application/json, text/event-stream";
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+export class McpHttpResponseError extends Error {
+  constructor(readonly reason: "invalid_json" | "malformed_response" | "too_large", message: string) {
+    super(message);
+    this.name = "McpHttpResponseError";
+  }
+}
 
 /**
  * Default headers for an MCP Streamable HTTP JSON-RPC POST. Caller-supplied
@@ -33,6 +41,7 @@ export class McpHttpInitializationError extends Error {
     message: string,
     readonly stage: "initialize" | "initialized_notification",
     readonly status: number | null,
+    readonly response?: Response,
   ) {
     super(message);
     this.name = "McpHttpInitializationError";
@@ -40,9 +49,8 @@ export class McpHttpInitializationError extends Error {
 }
 
 /**
- * Establish the short-lived Streamable HTTP session needed by stateful MCP
- * servers. The returned headers belong only to the caller's next request; no
- * session id is persisted with the connection or shared across operations.
+ * Establish a Streamable HTTP session. Callers may retain protocol headers in
+ * the in-memory cache scoped to the connection and effective credential identity.
  */
 export async function initializeMcpHttpSession(input: {
   send: (init: RequestInit) => Promise<Response>;
@@ -68,14 +76,12 @@ export async function initializeMcpHttpSession(input: {
       `Remote MCP initialization returned HTTP ${initializeResponse.status}`,
       "initialize",
       initializeResponse.status,
+      initializeResponse,
     );
   }
   let payload: unknown;
   try {
-    payload = parseMcpHttpResponseBody(
-      await initializeResponse.text(),
-      initializeResponse.headers.get("content-type"),
-    );
+    payload = await readMcpHttpResponse(initializeResponse, `${input.requestId}-initialize`);
   } catch {
     throw new McpHttpInitializationError("Remote MCP initialization returned an invalid response", "initialize", null);
   }
@@ -83,6 +89,7 @@ export async function initializeMcpHttpSession(input: {
     ? (payload as { result?: unknown }).result
     : null;
   const resultRecord = result && typeof result === "object" ? result as Record<string, unknown> : null;
+  if (!resultRecord) throw new McpHttpInitializationError("Remote MCP initialization failed", "initialize", null);
   const protocolVersion = typeof resultRecord?.protocolVersion === "string" && resultRecord.protocolVersion
     ? resultRecord.protocolVersion
     : MCP_PROTOCOL_VERSION;
@@ -165,4 +172,98 @@ export function parseMcpHttpResponseBody(bodyText: string, contentType: string |
   if (sawData) return firstParsed;
   if (lastError) throw lastError;
   throw new SyntaxError("MCP SSE response contained no data events");
+}
+
+/** Read until the response for this request arrives, without waiting for an SSE
+ * connection to close. Notifications and responses for other IDs are ignored. */
+export async function readMcpHttpResponse(
+  response: Response,
+  requestId: string | number,
+  options: { maxBytes?: number; onRequest?: (message: Record<string, unknown>) => Promise<void> } = {},
+): Promise<unknown> {
+  const maxBytes = options.maxBytes ?? 8 * 1024 * 1024;
+  const isStream = response.headers.get("content-type")?.toLowerCase().includes("text/event-stream");
+  const reader = response.body?.getReader();
+  // Injected HTTP transports can expose a buffered text response rather than a
+  // Web ReadableStream. Keep the same size and message-ID checks for both forms.
+  if (!reader) {
+    const body = await response.text();
+    if (Buffer.byteLength(body, "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
+    return readMcpHttpResponse(new Response(body, {
+      headers: { "content-type": response.headers.get("content-type") ?? "application/json" },
+    }), requestId, options);
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let bytes = 0;
+  const parse = (text: string): unknown => {
+    try { return JSON.parse(text); }
+    catch { throw new McpHttpResponseError("invalid_json", "MCP response contained invalid JSON"); }
+  };
+  const inspect = async (message: unknown): Promise<unknown | undefined> => {
+    if (!message || typeof message !== "object") return undefined;
+    const record = message as Record<string, unknown>;
+    if (record.id === requestId && ("result" in record || "error" in record)) return record;
+    if ("method" in record && "id" in record) await options.onRequest?.(record);
+    return undefined;
+  };
+  const event = async (value: string) => {
+    const data = value.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
+    if (!data) return undefined;
+    return inspect(parse(data));
+  };
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      bytes += value?.byteLength ?? 0;
+      if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
+      buffer += decoder.decode(value, { stream: !done });
+      if (isStream) {
+        // Normalize CRLF after concatenating chunks, including split CR/LF pairs.
+        buffer = buffer.replace(/\r\n/g, "\n");
+        let boundary: number;
+        while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+          const result = await event(buffer.slice(0, boundary));
+          buffer = buffer.slice(boundary + 2);
+          if (result !== undefined) return result;
+        }
+      }
+      if (done) break;
+    }
+    const result = isStream ? await event(buffer) : await inspect(parse(buffer));
+    if (result !== undefined) return result;
+    throw new McpHttpResponseError("malformed_response", "MCP response did not contain the requested message ID");
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
+const sessions = new Map<string, { headers: Record<string, string>; expiresAt: number }>();
+const initializing = new Map<string, Promise<Record<string, string>>>();
+const SESSION_TTL_MS = 30 * 60_000;
+
+/** Cache only protocol headers; credential hashes and scope separate every
+ * connection and effective identity. Never cache a tool call or replay a write. */
+export async function getMcpHttpSession(input: Parameters<typeof initializeMcpHttpSession>[0] & { scope: string }) {
+  const key = `${input.scope}:${createHash("sha256").update(JSON.stringify(Object.entries(input.headers ?? {}).sort())).digest("hex")}`;
+  const cached = sessions.get(key);
+  if (cached && cached.expiresAt > Date.now()) return { ...input.headers, ...cached.headers };
+  const pending = initializing.get(key);
+  if (pending) return pending;
+  const promise = initializeMcpHttpSession(input).then((headers) => {
+    if (initializing.get(key) !== promise) throw new Error("MCP connection changed while initializing; reconnect before calling tools");
+    for (const [id, value] of sessions) if (value.expiresAt <= Date.now()) sessions.delete(id);
+    if (sessions.size >= 1000) sessions.delete(sessions.keys().next().value!);
+    const protocolHeaders = Object.fromEntries(Object.entries(headers).filter(([name]) => ["mcp-session-id", "mcp-protocol-version"].includes(name.toLowerCase())));
+    sessions.set(key, { headers: protocolHeaders, expiresAt: Date.now() + SESSION_TTL_MS });
+    return headers;
+  }).finally(() => { if (initializing.get(key) === promise) initializing.delete(key); });
+  initializing.set(key, promise);
+  return promise;
+}
+
+export function forgetMcpHttpSessions(connectionId: string) {
+  for (const key of sessions.keys()) if (key.startsWith(`${connectionId}:`)) sessions.delete(key);
+  for (const key of initializing.keys()) if (key.startsWith(`${connectionId}:`)) initializing.delete(key);
 }

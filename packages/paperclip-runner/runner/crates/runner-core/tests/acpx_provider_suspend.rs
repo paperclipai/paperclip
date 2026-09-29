@@ -27,6 +27,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
         system_instructions: "Complete the supplied task.".to_owned(),
+        runtime_context: serde_json::Value::Null,
         tool_set: AuthorizedToolSet {
             schema: "paperclip.runner.authorized-tools.v1".to_owned(),
             schema_version: 1,

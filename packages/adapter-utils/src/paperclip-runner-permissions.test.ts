@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   PAPERCLIP_RUNNER_DEFAULT_MODELS,
+  paperclipRunnerTransitionConfig,
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerModel,
   resolvePaperclipRunnerPermissionMode,
@@ -16,13 +17,25 @@ describe("Paperclip Runner permission defaults", () => {
     expect(resolvePaperclipRunnerPermissionMode("codex", "untrusted")).toBe("never");
   });
 
-  it("uses interactive defaults for dormant non-Codex providers", () => {
+  it("defaults Claude and OpenCode to full auto", () => {
     expect(resolvePaperclipRunnerPermissionMode("opencode", undefined)).toBe(
-      "ask",
+      "allow",
     );
     expect(resolvePaperclipRunnerPermissionMode("acpx", undefined)).toBe(
-      "approve-reads",
+      "approve-all",
     );
+  });
+
+  it.each(["approve-paperclip", "approve-reads", "deny-all", "approve-all"])("preserves explicit Claude %s settings", (mode) => {
+    expect(resolvePaperclipRunnerPermissionMode("acpx", mode)).toBe(mode);
+  });
+
+  it.each([
+    ["claude_local", "acpxPermissionMode", "approve-all"],
+    ["codex_local", "codexPermissionMode", "never"],
+    ["opencode_local", "opencodePermissionMode", "allow"],
+  ])("uses full auto when converting %s to the new runner", (adapter, key, value) => {
+    expect(paperclipRunnerTransitionConfig(adapter, undefined)).toMatchObject({ [key]: value });
   });
 
   it("recognizes only exact provider identifiers", () => {

@@ -251,9 +251,20 @@ export function codexToolAcceptsDisposition(
     return disposition === "blocked";
   }
   if (tool === CODEX_COMPLETION_TOOL_NAME) {
-    return disposition === "done" || disposition === "needs_review";
+    return disposition === "done" || disposition === "needs_review" || disposition === "yielded";
   }
   return false;
+}
+
+export function codexToolAcceptsResult(
+  tool: string,
+  result: PrpStructuredRunResult,
+): boolean {
+  if (!codexToolAcceptsDisposition(tool, result.reportedWorkDisposition)) {
+    return false;
+  }
+  return result.reportedWorkDisposition !== "yielded"
+    || result.continuation?.kind === "response_wake";
 }
 
 export function redactCodexValue(value: unknown, depth = 0): unknown {

@@ -1,3 +1,4 @@
+import { withAgentAppearance } from "@paperclipai/shared";
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -479,10 +480,10 @@ export function createSecretProposalsService(db: Db) {
 
   async function enrich(proposal: Proposal) {
     const [proposer, target, originIssue, secret, secretProposal] = await Promise.all([
-      db.select({ id: agents.id, name: agents.name, icon: agents.icon }).from(agents)
+      db.select({ id: agents.id, name: agents.name, icon: agents.icon, appearance: agents.appearance }).from(agents)
         .where(eq(agents.id, proposal.proposedByAgentId)).then((rows) => rows[0] ?? null),
       proposal.targetId
-        ? db.select({ id: agents.id, name: agents.name, icon: agents.icon }).from(agents)
+        ? db.select({ id: agents.id, name: agents.name, icon: agents.icon, appearance: agents.appearance }).from(agents)
             .where(eq(agents.id, proposal.targetId)).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
       proposal.originIssueId
@@ -510,8 +511,8 @@ export function createSecretProposalsService(db: Db) {
       ...safe,
       secretName: secret?.name ?? null,
       secretProposalName: secretProposal?.proposedName ?? null,
-      proposedBy: proposer,
-      target,
+      proposedBy: withAgentAppearance(proposer),
+      target: target ? withAgentAppearance(target) : null,
       originIssue,
     };
   }

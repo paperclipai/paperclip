@@ -1,4 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import Ajv2020 from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
@@ -10,8 +15,47 @@ import {
   parsePaperclipNativeExecution,
 } from "./native-execution.js";
 import { PAPERCLIP_RUNNER_BUILD_METADATA } from "./build-metadata.js";
+import { serializeCapabilityGeneratedSemanticContracts } from "../semantic-tools/provider-neutral.js";
 
 describe("paperclip-runner/native-execution/v1", () => {
+  it("refreshes a stale seeded catalog and its manifest with one semantic generator invocation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-semantic-generator-"));
+    const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
+    const run = promisify(execFile);
+    try {
+      await cp(join(packageRoot, "protocol"), join(root, "protocol"), { recursive: true });
+      await mkdir(join(root, "scripts"));
+      for (const script of ["generate-semantic-contracts.mjs", "generate-protocol-manifest.mjs", "protocol-contract.mjs"]) {
+        await cp(join(packageRoot, "scripts", script), join(root, "scripts", script));
+      }
+      await symlink(join(packageRoot, "node_modules"), join(root, "node_modules"), "dir");
+      await writeFile(join(root, "package.json"), JSON.stringify({ type: "module" }));
+      await mkdir(join(root, "dist/semantic-tools"), { recursive: true });
+      await mkdir(join(root, "dist/evals"), { recursive: true });
+      await mkdir(join(root, "generated/capability"), { recursive: true });
+      // Materialize current source exports without requiring a previous package build.
+      await writeFile(join(root, "dist/semantic-tools/provider-neutral.js"),
+        `export const serializeCapabilityGeneratedSemanticContracts = () => ${JSON.stringify(serializeCapabilityGeneratedSemanticContracts())};`);
+      await writeFile(join(root, "dist/evals/build-metadata.js"),
+        `export const PAPERCLIP_RUNNER_BUILD_METADATA = ${JSON.stringify(PAPERCLIP_RUNNER_BUILD_METADATA)};`);
+      const fixturePath = join(root, "protocol/fixtures/evals/native-execution-seeded.json");
+      const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+      fixture.runner.catalogSha256 = `sha256:${"0".repeat(64)}`;
+      await writeFile(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`);
+      // Leave a stale manifest even if the restored fixture bytes happen to match the original.
+      await writeFile(join(root, "protocol/manifest.json"), "{}\n");
+      const generator = join(root, "scripts/generate-semantic-contracts.mjs");
+      await expect(run(process.execPath, [generator, "--check"])).rejects.toThrow();
+      await run(process.execPath, [generator]);
+      expect(JSON.parse(await readFile(fixturePath, "utf8")).runner.catalogSha256)
+        .toBe(PAPERCLIP_RUNNER_BUILD_METADATA.semanticCatalog.sha256);
+      await run(process.execPath, [generator, "--check"]);
+      await run(process.execPath, [join(root, "scripts/generate-protocol-manifest.mjs"), "--check"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the shipped seeded fixture valid against the published JSON Schema", async () => {
     const ajv = new Ajv2020({ allErrors: true, strict: false });
     for (const schema of Object.values(prpSchemaBundle)) ajv.addSchema(schema);

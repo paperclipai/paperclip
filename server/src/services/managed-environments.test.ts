@@ -171,6 +171,7 @@ describe("applyManagedEnvironments", () => {
       provider: "daytona",
       config: { target: "us" },
       stockVersion: "2026.720.0",
+      platformFullyManaged: true,
     });
     // The frozen parsed config must not leak into the service (the row's
     // config is mutated downstream when the provider key is forced in).
@@ -346,6 +347,7 @@ describe("applyManagedEnvironments", () => {
       provider: "daytona",
       config: { target: "us" },
       stockVersion: "2026.720.0",
+      platformFullyManaged: true,
     });
     expect(handle.off).toHaveBeenCalledTimes(1);
   });

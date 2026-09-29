@@ -28,9 +28,13 @@ Old Overview URLs and saved Overview preferences redirect to Configuration.
 
 No schema migration is required. Selected repositories are normal project workspaces
 with `metadata.githubRepositoryId`. Existing manual `repoUrl` workspaces remain
-editable through Configuration and the workspace API. One workspace remains primary;
-additional repositories do not change the existing runtime workspace-selection or
-responsible-user credential rules. A repository selection never delegates credentials.
+editable through Configuration and the workspace API. One workspace remains primary.
+Tasks materialize the other distinct repositories as editable checkouts inside their
+workspace, including when no local folders are configured. Local execution and sandbox
+staging use the same layout; sandbox restore preserves each repository's Git history.
+See [Project Repository Checkouts](DEVELOPING.md#project-repository-checkouts) for paths,
+ignore rules, and reuse behavior. Responsible-user credential rules still apply.
+A repository selection never delegates credentials.
 
 ## Discovery and setup
 

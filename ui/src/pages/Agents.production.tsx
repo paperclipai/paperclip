@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
@@ -13,7 +14,6 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
-import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
@@ -403,7 +403,7 @@ export function Agents() {
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={agent.status} />
+          <AgentAvatar agent={agent} size={32} />
         )}
         secondaryRow={
           builtInCluster ? (
@@ -442,22 +442,6 @@ export function Agents() {
               <span className="w-20 flex justify-end">
                 <AgentStatusBadge status={agent.status} />
               </span>
-              {/* Row actions mirror the agent detail page; stop the click
-                  from bubbling to the row link so buttons don't navigate.
-                  Hidden on mobile so the agent name keeps room to render. */}
-              <div
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-              >
-                <AgentActionButtons
-                  agent={agent}
-                  companyId={selectedCompanyId}
-                  runLabel="Run Heartbeat"
-                  showStatus={false}
-                />
-              </div>
               <StarToggle
                 size="row"
                 starred={agentStarred}
@@ -672,7 +656,7 @@ function OrgTreeNode({
         {hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={node.status} />
+          <AgentAvatar agent={agent ?? node} size={24} />
         )}
         <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
           {/* Name floor + `truncate` keeps the primary identifier readable; the

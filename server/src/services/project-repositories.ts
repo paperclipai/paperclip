@@ -40,3 +40,19 @@ export function resolveProjectRepositorySelection(
     throw unprocessable("A selected GitHub repository is no longer available. Refresh repositories and try again.");
   });
 }
+
+/** Register an existing GitHub URL without assuming it is in the connection catalog.
+ * No fetch or credential sharing: execution uses the normal repository access policy.
+ */
+export function normalizeProjectRepositoryUrl(value: string): { fullName: string; url: string } {
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { throw unprocessable("Repository URL must be an HTTPS GitHub repository URL"); }
+  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com" || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw unprocessable("Repository URL must be an HTTPS GitHub repository URL without credentials, query, or fragment");
+  }
+  const path = parsed.pathname.replace(/\/$/, "").replace(/\.git$/, "");
+  if (!/^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(path) || path.split("/").some(part => part === "." || part === "..")) {
+    throw unprocessable("Repository URL must identify a GitHub owner and repository");
+  }
+  return { fullName: path.slice(1), url: `https://github.com${path}` };
+}

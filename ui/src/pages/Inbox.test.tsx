@@ -108,6 +108,10 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({ pushToast: vi.fn() }),
+}));
+
 vi.mock("../context/DialogContext", () => ({
   useDialogActions: () => ({ openNewIssue: vi.fn() }),
 }));
@@ -809,7 +813,10 @@ describe("Inbox toolbar", () => {
         </QueryClientProvider>,
       );
     });
-    await vi.waitFor(() => expect(container.textContent).toContain("Workspace-aware task"));
+    // Workspace metadata resolves independently of the task list.
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Aurora");
+    });
 
     const taskRow = container.querySelector('[data-slot="task-row"]');
     const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');

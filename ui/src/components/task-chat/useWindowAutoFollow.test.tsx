@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWindowAutoFollow } from "./useWindowAutoFollow";
+import { TaskChatScrollNavigation } from "./scroll-navigation";
 
 function Host({ contentKey, enabled }: { contentKey: unknown; enabled: boolean }) {
   useWindowAutoFollow(contentKey, enabled);
@@ -79,6 +80,40 @@ describe("useWindowAutoFollow", () => {
     flushSync(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  it("reapplies same-task targets and POP positions on mobile without remounting", async () => {
+    vi.stubGlobal("scrollTo", (options: ScrollToOptions) => setWindowScrollY(Math.min(1200, options.top ?? 0)));
+    function MobileThread() {
+      useWindowAutoFollow("unchanged", true);
+      return <div data-testid="task-chat-thread">{[100, 500].map((top, index) => (
+        <div key={index} id={`mobile-comment-${index}`} data-thread-anchor={`mobile-comment-${index}`} ref={(node) => {
+          if (node) node.getBoundingClientRect = () => ({ top: top - window.scrollY, bottom: top + 100 - window.scrollY, height: 100 } as DOMRect);
+        }}>Comment {index}</div>
+      ))}</div>;
+    }
+    const navigate = (key: string, hash: string, restore = false) => flushSync(() => root.render(
+      <TaskChatScrollNavigation.Provider value={{ key, hash, restore }}><MobileThread /></TaskChatScrollNavigation.Provider>,
+    ));
+    navigate("mobile-entry-one", "#mobile-comment-0");
+    const thread = container.firstElementChild;
+    expect(window.scrollY).toBe(100);
+    await scrollWindowTo(150);
+    navigate("mobile-entry-two", "#mobile-comment-1");
+    expect(container.firstElementChild).toBe(thread);
+    expect(window.scrollY).toBe(500);
+    navigate("mobile-entry-one", "#mobile-comment-0", true);
+    expect(window.scrollY).toBe(150);
+    navigate("mobile-entry-one", "#mobile-comment-1", true);
+    expect(window.scrollY).toBe(500);
+  });
+
+  it("owns browser restoration only while the mobile thread is enabled", () => {
+    window.history.scrollRestoration = "auto";
+    render(0);
+    expect(window.history.scrollRestoration).toBe("manual");
+    render(0, false);
+    expect(window.history.scrollRestoration).toBe("auto");
   });
 
   it("scrolls the window to the bottom on mount", () => {

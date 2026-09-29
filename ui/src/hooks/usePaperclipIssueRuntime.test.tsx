@@ -3,7 +3,11 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AppendMessage, ExternalStoreAdapter, ThreadMessage } from "@assistant-ui/react";
+import type {
+  AppendMessage,
+  ExternalStoreAdapter,
+  ThreadMessage,
+} from "@assistant-ui/react";
 import { usePaperclipIssueRuntime } from "./usePaperclipIssueRuntime";
 
 const { useExternalStoreRuntimeMock } = vi.hoisted(() => ({
@@ -25,7 +29,14 @@ function HookHarness({
 }: {
   messages: readonly ThreadMessage[];
   isRunning: boolean;
-  onSend: (options: { body: string; reopen?: boolean; reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null } }) => Promise<void>;
+  onSend: (options: {
+    body: string;
+    reopen?: boolean;
+    reassignment?: {
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    };
+  }) => Promise<void>;
   onCancel?: (() => Promise<void>) | undefined;
 }) {
   usePaperclipIssueRuntime({
@@ -77,6 +88,40 @@ describe("usePaperclipIssueRuntime", () => {
     useExternalStoreRuntimeMock.mockReset();
   });
 
+  it("forwards explicit upload selection separately from Markdown content", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const onSend = vi.fn(async () => {});
+    act(() =>
+      root.render(
+        <HookHarness messages={[]} isRunning={false} onSend={onSend} />,
+      ),
+    );
+    const calls = useExternalStoreRuntimeMock.mock.calls as unknown as Array<
+      [ExternalStoreAdapter<ThreadMessage>]
+    >;
+    const adapter = calls.at(-1)![0];
+    const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    const message = createAppendMessage("Inspect the uploaded file");
+    message.runConfig = { custom: { attachmentIds: [id], reopen: true } };
+    await adapter.onNew?.(message);
+    expect(onSend).toHaveBeenLastCalledWith({
+      body: "Inspect the uploaded file",
+      reopen: true,
+      reassignment: undefined,
+      attachmentIds: [id],
+    });
+    await adapter.onNew?.(
+      createAppendMessage(`[old](/api/attachments/${id}/content)`),
+    );
+    expect(onSend).toHaveBeenLastCalledWith({
+      body: `[old](/api/attachments/${id}/content)`,
+      reopen: undefined,
+      reassignment: undefined,
+    });
+    act(() => root.unmount());
+  });
+
   it("keeps the external-store adapter stable across unrelated rerenders", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -95,9 +140,8 @@ describe("usePaperclipIssueRuntime", () => {
       );
     });
 
-    const runtimeCalls = useExternalStoreRuntimeMock.mock.calls as unknown as Array<
-      [ExternalStoreAdapter<ThreadMessage>]
-    >;
+    const runtimeCalls = useExternalStoreRuntimeMock.mock
+      .calls as unknown as Array<[ExternalStoreAdapter<ThreadMessage>]>;
     expect(runtimeCalls.length).toBeGreaterThanOrEqual(1);
     const firstAdapter = runtimeCalls[0]![0];
     expect(firstAdapter).toBeTruthy();
@@ -138,8 +182,13 @@ describe("usePaperclipIssueRuntime", () => {
     document.body.appendChild(container);
     const root = createRoot(container);
     const onSend = vi.fn(async () => {});
-    const firstMessages: ThreadMessage[] = [createUserMessage("message-1", "hello")];
-    const secondMessages: ThreadMessage[] = [...firstMessages, createAssistantMessage("message-2", "world")];
+    const firstMessages: ThreadMessage[] = [
+      createUserMessage("message-1", "hello"),
+    ];
+    const secondMessages: ThreadMessage[] = [
+      ...firstMessages,
+      createAssistantMessage("message-2", "world"),
+    ];
 
     act(() => {
       root.render(
@@ -151,9 +200,8 @@ describe("usePaperclipIssueRuntime", () => {
       );
     });
 
-    const runtimeCalls = useExternalStoreRuntimeMock.mock.calls as unknown as Array<
-      [ExternalStoreAdapter<ThreadMessage>]
-    >;
+    const runtimeCalls = useExternalStoreRuntimeMock.mock
+      .calls as unknown as Array<[ExternalStoreAdapter<ThreadMessage>]>;
     expect(runtimeCalls.length).toBeGreaterThanOrEqual(1);
     const firstAdapter = runtimeCalls[0]![0];
 

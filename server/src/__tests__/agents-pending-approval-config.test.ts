@@ -99,6 +99,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
         budgetMonthlyCents: 1234,
         metadata: { source: "hire-form" },
         agentId: pending.id,
+        appearance: pending.appearance,
       },
       decisionNote: null,
       decidedByUserId: null,
@@ -143,6 +144,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
 
     await expect(agentSvc.getById(pending.id)).resolves.toMatchObject({
       status: "idle",
+      appearance: pending.appearance,
       name: "Pending Coder",
       role: "engineer",
       title: "Software Engineer",

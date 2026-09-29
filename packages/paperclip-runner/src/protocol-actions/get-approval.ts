@@ -29,7 +29,7 @@ export const getApprovalAction = {
   },
   "documentation": {
     "title": "Get approval",
-    "description": "Read one mock approval without protected data.",
+    "description": "Read one approval without protected data.",
     "note": "Live-only single-approval read; the scenario suite covers approvals through list_approvals."
   },
   "examples": {
@@ -52,7 +52,7 @@ export const getApprovalAction = {
       "operationId": "get_approval",
       "version": 1,
       "title": "Get approval",
-      "description": "Read one mock approval without protected data.",
+      "description": "Read one approval without protected data.",
       "exposure": "optional",
       "requiredClaims": [
         "governance:approvals:read"
@@ -68,7 +68,7 @@ export const getApprovalAction = {
         "properties": {
           "approvalId": {
             "type": "string",
-            "description": "Mock approval id.",
+            "description": "Approval id.",
             "minLength": 1,
             "maxLength": 200
           }

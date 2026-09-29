@@ -34,7 +34,7 @@ export { environments } from "./environments.js";
 export { environmentLeases } from "./environment_leases.js";
 export { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
 export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
-export { adapterAuthSessions } from "./adapter_auth_sessions.js";
+export { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES } from "./adapter_auth_sessions.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
@@ -48,8 +48,22 @@ export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
 export { connectionEventDeliveries } from "./connection_event_deliveries.js";
+export {
+  chatEndpoints,
+  chatEndpointResources,
+  chatExternalPrincipals,
+  chatIdentityLinks,
+  chatConversations,
+  chatDeliveries,
+  chatPublications,
+  chatMessageLinks,
+  chatActions,
+  chatAgentRoutes,
+  chatEndpointLeases,
+  chatSdkState,
+} from "./chat_channels.js";
 export { issueRelations } from "./issue_relations.js";
-export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
+export { routines, routineRevisions, routineTriggers, routineWebhookTestReceipts, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
 export {
   cases,
@@ -101,6 +115,7 @@ export {
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
+export { runnerApiResponseReservations } from "./runner_api_response_reservations.js";
 export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
@@ -187,3 +202,12 @@ export { runIdentityContexts } from "./run_identity_contexts.js";
 export { connectionIntentDeliveries } from "./connection_intent_deliveries.js";
 
 export { toolActionDeliveries } from "./tool_action_deliveries.js";
+export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";
+export { chatDiscordCommandOwners } from "./chat_discord_command_owners.js";
+export { chatTelegramDraftIds } from "./chat_telegram_draft_ids.js";
+export { chatGitHubConfigurations, chatGitHubRegistrations, chatGitHubReviews } from "./chat_github.js";
+
+export { aiConnectionDefaults } from "./ai_connection_defaults.js";
+export { aiProviderDefaults } from "./ai_provider_defaults.js";
+export * from "./email.js";
+export { announcementDismissals, announcementPublications } from "./announcement_dismissals.js";

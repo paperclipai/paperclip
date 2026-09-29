@@ -3,13 +3,26 @@
   "configurations": [
     {
       "name": "paperclip",
+      "port": 3121,
+      "url": "http://localhost:3121"
+    },
+    {
+      "name": "storybook",
       "runtimeExecutable": "/bin/sh",
       "runtimeArgs": [
         "-c",
-        "TMPDIR=/tmp pnpm dev"
+        "PAPERCLIP_STORYBOOK_API_URL=http://localhost:3121 pnpm --filter @paperclipai/ui exec storybook dev -p 6016 -c storybook/.storybook --no-open --ci"
       ],
-      "port": 3108,
-      "autoPort": true
+      "port": 6016
+    },
+    {
+      "name": "cloud-web",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/tonio/Projects/paperclip-cloud/.worktrees/deploy-stack-master/web && npx vite --port 4173 --strictPort"
+      ],
+      "port": 4173
     }
   ]
 }

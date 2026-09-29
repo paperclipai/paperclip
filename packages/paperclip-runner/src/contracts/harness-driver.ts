@@ -453,7 +453,7 @@ export interface AcpxSessionIdentity {
   requestedModel: string;
   effectiveModel: string;
   /** Missing on legacy snapshots; those used the historical approve-reads behavior. */
-  permissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  permissionMode?: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
@@ -461,6 +461,8 @@ export type PersistedHarnessProviderIdentity = AcpxSessionIdentity;
 
 export interface PersistedHarnessSession {
   driverKind: string;
+  /** Execution-host startup root, revalidated before a cold provider launch. */
+  workingDirectory?: string;
   driverSessionId: string;
   providerSessionId?: string | null;
   runId?: string;
@@ -468,6 +470,7 @@ export interface PersistedHarnessSession {
   activeTurnId?: string | null;
   semanticResult?: PersistedHarnessSemanticResult | null;
   terminalTurns?: PersistedHarnessTurnTerminal[];
+  codexUsageBaseline?: { baseline: Record<string, number>; latest: Record<string, number> };
   /** A result-less terminal task may spend this fail-closed one-shot recovery allowance. */
   dispositionOnlyRecoveryConsumed?: boolean;
   /** Exact accepted provider turn that spent the disposition-only allowance. */
@@ -501,6 +504,8 @@ export interface HarnessSession {
   attachRun?(input: { runId: string }): Promise<void> | void;
   startTurn(input: {
     message: NativeUserMessage;
+    /** Set by orchestration only after successful provider-session recovery. */
+    continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
   }): Promise<{
     turnId: string;

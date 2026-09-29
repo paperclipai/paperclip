@@ -302,8 +302,9 @@ keys before they deploy a binary that enables the Cloud connector.
 Gmail uses the same credential ownership choice as the rest of the Apps setup:
 
 - **Just me** stores the Gmail credential on the connecting user's grant.
-- **Any human in the company** stores it on the default organization grant so a
-  deliberately shared mailbox or Workspace account can back company-wide use.
+- **Any human in the organization** stores it on the default organization grant
+  so a deliberately shared mailbox or Workspace account can back
+  organization-wide use.
 - The disclosure states that Gmail access can search/read mail and create
   drafts. Sending mail is not enabled.
 - A user grant does not automatically authorize an agent. The user must also
@@ -314,6 +315,20 @@ Gmail uses the same credential ownership choice as the rest of the Apps setup:
 - Draft creation and label changes require **Ask first**.
 - Trash, spam, destructive label changes, newly discovered tools, nested
   execution, and any future send tool remain blocked until separately reviewed.
+
+## Broker rejection diagnostics
+
+A rejected connector request includes its operation, HTTP status, and an
+allowlisted broker reason in the server error. For example,
+`RETURN_ORIGIN_NOT_ENROLLED` means the callback origin is not enrolled for that
+instance. Compare the current page/configured origin with the instance's enrolled
+origins; do not bypass origin checks or copy credentials to a different instance.
+
+Unknown codes, malformed bodies, oversized responses, and stalled diagnostic
+reads produce `UNKNOWN_BROKER_ERROR`. This is not proof of any specific rejection
+cause. Diagnostics read at most 4 KiB within 500 ms and retain no raw response
+messages, URLs, tokens, authorization state, or instance/customer identifiers.
+The existing error code, status, authorization, and retry behavior are unchanged.
 
 ## Verification checklist
 

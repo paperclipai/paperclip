@@ -30,7 +30,11 @@ test("project creation and repository configuration persist on a short mobile vi
   expect(legacy.ok()).toBe(true);
   await page.setViewportSize({ width: 390, height: 420 });
   await page.goto(`/${company.issuePrefix}/projects/${project.id}/overview`);
-  await expect(page).toHaveURL(/\/configuration$/);
+  // The legacy overview route redirects first to configuration and then to
+  // the canonical project key. Editing between those redirects loses the
+  // draft when the project query switches keys and remounts the form.
+  expect(project.urlKey).toBeTruthy();
+  await expect(page).toHaveURL((url) => url.pathname === `/${company.issuePrefix}/projects/${project.urlKey}/configuration`);
   await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveCount(0);
   const section = page.getByRole("region", { name: "Repositories", exact: true });
   await expect(section.getByText("org/repo-40", { exact: true })).toBeVisible();

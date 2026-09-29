@@ -119,6 +119,7 @@ fn build_metadata() -> serde_json::Value {
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
+        "durableSessionCapabilities": ["unlimited_runtime", "connection_lease_renewal"],
         "nativeExecutionVersion": 1,
         "harnessDriverVersion": 1,
         "prp": {
@@ -330,7 +331,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
         reconnect_delay: duration("--reconnect-delay-ms", 250)?,
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
-        max_runtime: duration("--max-runtime-ms", 60 * 60 * 1000)?,
+        max_runtime: duration("--max-runtime-ms", 0)?,
     };
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
     run_durable_runner(config, ticket, executor)
@@ -398,6 +399,10 @@ mod tests {
         let metadata = build_metadata();
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
+        assert_eq!(
+            metadata["durableSessionCapabilities"],
+            json!(["unlimited_runtime", "connection_lease_renewal"])
+        );
         assert_eq!(
             metadata["prpTransportModes"],
             json!(["dial_ws_loopback", "dial_wss", "listen_ws"])

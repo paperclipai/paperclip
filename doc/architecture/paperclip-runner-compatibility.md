@@ -44,6 +44,50 @@ The server must not fall back from a selected `paperclip_runner` start to
 `codex_local`. A configuration or rollout error must be visible. Silent fallback
 would hide the runtime that executed the task.
 
+## Remote Codex version window
+
+Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.157.0`**.
+The install pin remains `0.156.0`. A sandbox image can therefore use an older
+compatible Codex without failing startup or installing another copy.
+
+The minimum is fixed at **`0.149.0`** until maintainers deliberately change it.
+It is not a rolling one-month support window. The official
+[`@openai/codex` publication history](https://registry.npmjs.org/@openai/codex)
+records `0.149.0` on 2026-08-20, `0.153.4` on 2026-09-04, and `0.156.0` on
+2026-09-22. See also the [Codex changelog](https://learn.chatgpt.com/docs/changelog).
+This is an explicit compatibility window, not a claim that every Codex minor
+release follows a backward-compatible protocol.
+
+- Stable patch releases within the window are accepted. Alpha, dev, custom
+  builds, malformed output, older releases, and the next minor release are rejected.
+- A compatible difference from the install pin produces one diagnostic per
+  version during backend preparation, rather than stopping the task.
+- The same check applies to discovered, explicitly staged, and npm-installed
+  remote Codex executables, including the final executable after linking.
+- For an incompatible image, the existing
+  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.156.0` configuration
+  allows installation of the pinned runtime. Without that configuration,
+  startup reports the supported range and the remediation.
+- Runner binary contracts, required runner capabilities, artifact digests,
+  provider-pack manifests, and runtime permission checks are unchanged.
+  This window does not relax the separate ACP provider-pack qualification.
+
+When qualifying newer Codex releases, review the upper bound in
+`server/src/services/native-runtime/codex-runtime-compatibility.ts`. Updating
+the install pin or upper bound does not raise the minimum. Raising `0.149.0`
+requires a separate, explicit maintainer decision and compatibility evidence.
+Do not derive eligibility from the current date or fetch release metadata
+during startup: an idle installation must not become incompatible merely
+because time passed.
+
+Qualification on 2026-09-22 used the actual macOS ARM64 `0.149.0` and `0.156.0`
+app-server binaries with a local deterministic Responses API fixture. Both
+passed initialization, thread creation with a dynamic tool, a tool-call/result
+round trip, turn completion, and thread resume. This verifies the tested
+protocol path; it is not a live model, Linux sandbox, or exhaustive feature test.
+Version-boundary and remote artifact-preparation regressions are covered by
+`codex-runtime-compatibility.test.ts` and `native-session-executor.test.ts`.
+
 ## Direct adapter boundary
 
 This rule applies to every built-in and plugin direct adapter. It includes:

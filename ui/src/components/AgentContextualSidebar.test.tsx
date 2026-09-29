@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { AgentContextualSidebar } from "./AgentContextualSidebar";
+import { queryKeys } from "@/lib/queryKeys";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
@@ -33,6 +34,16 @@ vi.mock("./SidebarNavItem", () => ({
 }));
 
 describe("AgentContextualSidebar", () => {
+  it.each([false, true])("shows agent Channels only when chat connectors are enabled (%s)", (enabled) => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: enabled });
+    const markup = renderToStaticMarkup(<QueryClientProvider client={client}><MemoryRouter>
+      <AgentContextualSidebar agentRef="agent" agentId="agent-1" agentName="Agent" />
+    </MemoryRouter></QueryClientProvider>);
+    expect(markup.includes('href="/agents/agent/channels"')).toBe(enabled);
+    expect(markup).toContain('href="/agents/agent/tools"');
+    client.clear();
+  });
   it("renders local definition/runtime/governance links and scoped Audit links", () => {
     const queryClient = new QueryClient();
     const markup = renderToStaticMarkup(

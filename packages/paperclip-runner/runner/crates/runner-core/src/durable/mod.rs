@@ -11,10 +11,13 @@ use sha2::{Digest, Sha256};
 
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
-pub use runner::{run_durable_runner, CommandExecution, CommandExecutor, PolledEvent};
+pub use runner::{
+    run_durable_runner, CommandExecution, CommandExecutor, PolledEvent,
+    TerminalDeliveryReconciliation,
+};
 pub(crate) use state::{
-    create_private_temporary_file, open_private_regular_file, redact_text, sanitize_value,
-    verify_private_directory,
+    create_private_temporary_file, open_private_regular_file, redact_text,
+    sanitize_semantic_tool_input, sanitize_value, verify_private_directory,
 };
 pub use state::{
     Command, CommandDisposition, DurableState, DurableStateStore, EventPriority,
@@ -191,6 +194,7 @@ pub struct DurableRunnerConfig {
     pub max_frame_bytes: usize,
     pub reconnect_delay: Duration,
     pub reconnect_grace: Option<Duration>,
+    /// Zero disables the total process lifetime limit.
     pub max_runtime: Duration,
 }
 
@@ -242,11 +246,6 @@ impl DurableRunnerConfig {
                 "transport frame limit must be between 1 KiB and 16 MiB",
             ));
         }
-        if self.max_runtime.is_zero() {
-            return Err(DurableRunnerError::invalid(
-                "durable runner max runtime must be non-zero",
-            ));
-        }
         if self.reconnect_delay.is_zero() || self.reconnect_delay > Duration::from_secs(60) {
             return Err(DurableRunnerError::invalid(
                 "reconnect delay must be between one millisecond and 60 seconds",
@@ -255,11 +254,6 @@ impl DurableRunnerConfig {
         if self.reconnect_grace.is_some_and(|grace| grace.is_zero()) {
             return Err(DurableRunnerError::invalid(
                 "reconnect grace must be non-zero when configured",
-            ));
-        }
-        if self.max_runtime > Duration::from_secs(7 * 24 * 60 * 60) {
-            return Err(DurableRunnerError::invalid(
-                "durable runner max runtime must not exceed seven days",
             ));
         }
         if let Some(profile) = self.acpx_launch_profile.as_ref() {

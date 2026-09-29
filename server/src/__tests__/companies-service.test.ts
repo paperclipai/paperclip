@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   activityLog,
@@ -24,6 +24,15 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+// Observe the Cloud lifecycle doorbell without any network: the real
+// implementation is env-gated (a no-op off Cloud), so these tests assert
+// WHEN the service rings it, not what the ring does.
+const notifyCloudSpy = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../services/cloud-lifecycle-sync.js", () => ({
+  isCloudPinnedPrimaryCompany: () => false,
+  notifyCloudOfPrimaryCompanyLifecycleChange: notifyCloudSpy,
+}));
+
 import { companyService } from "../services/companies.js";
 import { deriveIssuePrefixBase } from "../services/issue-prefix.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
@@ -807,6 +816,38 @@ describeEmbeddedPostgres("companyService", () => {
       ));
     expect(archiveActivity).toHaveLength(1);
     expect(archiveActivity[0]).toMatchObject({ details: { agentsPaused: 1, runsCancelled: 0 } });
+  });
+
+  it("rings the Cloud lifecycle doorbell exactly on archived-boundary transitions", async () => {
+    notifyCloudSpy.mockClear();
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Doorbell Test Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const svc = companyService(db);
+    const actor = { actorType: "user" as const, actorId: "test-user", agentId: null, runId: null };
+
+    // A plain edit never rings.
+    await svc.update(companyId, { name: "Doorbell Test Co (renamed)" }, actor);
+    expect(notifyCloudSpy).not.toHaveBeenCalled();
+
+    // archive() rings once; re-archiving (no transition) does not.
+    await svc.archive(companyId, actor);
+    expect(notifyCloudSpy).toHaveBeenCalledTimes(1);
+    expect(notifyCloudSpy).toHaveBeenLastCalledWith(companyId);
+    await svc.archive(companyId, actor);
+    expect(notifyCloudSpy).toHaveBeenCalledTimes(1);
+
+    // Unarchiving through update() rings again.
+    await svc.update(companyId, { status: "active" }, actor);
+    expect(notifyCloudSpy).toHaveBeenCalledTimes(2);
+
+    // update() into archived rings too (the status-patch archive path).
+    await svc.update(companyId, { status: "archived" }, actor);
+    expect(notifyCloudSpy).toHaveBeenCalledTimes(3);
   });
 
   it("runs the archive cascade when update() transitions a paused company to archived", async () => {

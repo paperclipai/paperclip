@@ -9,6 +9,7 @@ import {
 } from "@paperclipai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
+import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
   logActivity,
@@ -237,6 +238,11 @@ export async function commitToolActionReview(
     }
     return updated;
   });
+  // A rejection writes the invocation's terminal `denied` status inside the
+  // transaction above; emit only after that commit. Approvals stay in-flight
+  // and reach their terminal status in the gateway execution paths.
+  if (input.decision === "rejected")
+    void emitConnectionInvoked(db, source.invocationId);
   for (const publication of publications) publishActivity(publication);
   return result;
 }

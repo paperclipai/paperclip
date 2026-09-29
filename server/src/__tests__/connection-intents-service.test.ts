@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  aiProviderDefaults,
   agentWakeupRequests,
   issueComments,
   companies,
@@ -352,6 +353,43 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       state: "needs_user_action",
       connectionId: null,
     });
+  });
+
+  it("only advertises GitHub tool methods in search and setup options", async () => {
+    const service = connectionIntentService(db);
+    const search = await service.search(claims, "github");
+    const github = search.results.find((result) => result.service === "github");
+    expect(github).toEqual(
+      expect.objectContaining({
+        methods: [
+          expect.objectContaining({
+            key: "mcp-key",
+            label: "Personal access token (advanced)",
+            auth: "api_key",
+          }),
+        ],
+      }),
+    );
+    expect(github?.methods.map((method) => method.key)).not.toContain(
+      "chat-agent",
+    );
+
+    await expect(service.request(claims, "discord")).rejects.toThrow(
+      "is not available",
+    );
+
+    const request = await service.request(claims, "github");
+    const setup = await service.setupOptions(request.interactionId!);
+    expect(setup.service.methods).toEqual([
+      expect.objectContaining({
+        key: "mcp-key",
+        label: "Personal access token (advanced)",
+        auth: "api_key",
+      }),
+    ]);
+    expect(setup.service.methods.map((method) => method.key)).not.toContain(
+      "chat-agent",
+    );
   });
 
   it("serializes OAuth intent completion behind addressed-user membership revocation", async () => {
@@ -755,4 +793,56 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(service.search(claims, "notion"))
       .rejects.toThrow("no longer active");
   });
+  it("keeps runtime authentication separate from obsolete Anthropic tool requests", async () => {
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const aiRunId = randomUUID();
+    const binding = { provider: "anthropic", method: "subscription", mode: "responsible_user" } as const;
+    await db.insert(agents).values({ id: agentId, companyId, name: "AI Agent", adapterType: "claude_local", runtimeConfig: { aiConnection: binding } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "AI authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: aiRunId, companyId, agentId, status: "running", responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId } });
+    const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: "ai-intent-fixture", name: "AI intent fixture", type: "mcp_http", metadata: { sourceTemplateKey: "anthropic" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: app!.id, name: "Personal Claude API", uid: `ai-${randomUUID()}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "anthropic", ai: { provider: "anthropic", method: "api_key" } } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: claims.responsible_user_id, createdByUserId: claims.responsible_user_id }).returning();
+    await db.insert(aiProviderDefaults).values({ companyId, userId: claims.responsible_user_id!, provider: "anthropic", grantId: grant!.id });
+    const aiClaims = { ...claims, sub: agentId, run_id: aiRunId };
+    const service = connectionIntentService(db);
+    await expect(service.request(aiClaims, "anthropic")).rejects.toMatchObject({
+      status: 422,
+      message: "Connection service anthropic is not available",
+    });
+    // Preserve an intent created before the obsolete REST method was removed.
+    // It must neither alias the AI request nor accept an AI account as tools.
+    const toolRequest = await issueThreadInteractionService(db).createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload: {
+          version: 1,
+          serviceSlug: "anthropic",
+          serviceName: "Anthropic",
+          serviceLogoUrl: null,
+          requestingAgentId: agentId,
+          requestingAgentName: "AI Agent",
+          phase: "requested",
+        },
+        sourceRunId: aiRunId,
+        addresseeUserId: claims.responsible_user_id!,
+        idempotencyKey: `connection-intent:${aiRunId}:${claims.responsible_user_id}:anthropic`,
+      },
+    );
+    const aiRequest = await service.request(aiClaims, "anthropic", { purpose: "ai" });
+    expect(aiRequest.state).toBe("needs_user_action");
+    expect(aiRequest.interactionId).not.toBe(toolRequest.id);
+    expect((await service.setupOptions(aiRequest.interactionId!)).aiConnection).toEqual(binding);
+    expect((await service.setupOptions(aiRequest.interactionId!)).aiRepair?.connection).toMatchObject({ id: connection!.id, method: "api_key" });
+    expect((await service.setupOptions(toolRequest.id)).existingConnections).toEqual([]);
+    await expect(service.complete(toolRequest.id, connection!.id, claims.responsible_user_id!)).rejects.toThrow("cannot satisfy");
+    await expect(service.complete(aiRequest.interactionId!, connection!.id, claims.responsible_user_id!)).resolves.toMatchObject({ status: "accepted" });
+    expect((await service.request(aiClaims, "anthropic", { purpose: "ai" })).state).toBe("ready");
+    await expect(service.request(aiClaims, "anthropic")).rejects.toMatchObject({ status: 422 });
+    expect((await service.search(aiClaims, "openrouter")).results.some(result => result.service === "openrouter")).toBe(false);
+  });
+
+
 });

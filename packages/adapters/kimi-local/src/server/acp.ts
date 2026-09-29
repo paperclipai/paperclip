@@ -36,7 +36,7 @@ export type KimiExecutionEngine = "cli" | "acp";
 export interface KimiEngineSelection {
   engine: KimiExecutionEngine;
   explicit: boolean;
-  fallbackReason?: string;
+  unavailableReason?: string;
 }
 
 type KimiEngineResolutionInput =
@@ -65,15 +65,15 @@ export async function resolveKimiExecutionEngineForRun(
   input: KimiEngineResolutionInput,
 ): Promise<KimiEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
-  if (selection.explicit || selection.engine !== "acp") return selection;
+  // Engine availability must never change the agent's execution or permission contract.
+  if (selection.engine === "cli") return selection;
+  const unavailable = (reason: string): KimiEngineSelection => ({
+    ...selection,
+    unavailableReason: `${reason} Repair the ACP setup, or explicitly set engine=cli to use the CLI engine.`,
+  });
 
-  const fallbackReason = await defaultKimiAcpFallbackReason(input);
-  if (!fallbackReason) return selection;
-  return { engine: "cli", explicit: false, fallbackReason };
-}
-
-export function formatKimiAcpFallbackMessage(reason: string): string {
-  return `[paperclip] Kimi ACP default unavailable; falling back to Kimi CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`;
+  const reason = await kimiAcpUnavailableReason(input);
+  return reason ? unavailable(reason) : selection;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
@@ -243,7 +243,7 @@ function sandboxTargetHasProcessSessionBridge(
   return target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
 }
 
-async function defaultKimiAcpFallbackReason(
+async function kimiAcpUnavailableReason(
   input: KimiEngineResolutionInput,
 ): Promise<string | null> {
   const target = readAdapterExecutionTarget({
@@ -257,7 +257,7 @@ async function defaultKimiAcpFallbackReason(
     return "Kimi ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsKimiAcpMinimum()) {
-    return `Node ${process.version} does not satisfy Kimi ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
+    return `Node ${process.version} (${process.execPath}) does not satisfy Kimi ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
   const command = resolveKimiAcpCommand(input.config);
   if (!(await commandIsResolvable(command, resolveConfigPath(input.config), input))) {
@@ -322,7 +322,7 @@ export async function testKimiAcpEnvironment(
     level: nodeVersionMeetsKimiAcpMinimum() ? "info" : "error",
     message: nodeVersionMeetsKimiAcpMinimum()
       ? `Node ${process.version} satisfies ACP runtime requirements.`
-      : `Node ${process.version} does not satisfy ACP runtime requirements.`,
+      : `Node ${process.version} (${process.execPath}) does not satisfy ACP runtime requirements.`,
     hint: nodeVersionMeetsKimiAcpMinimum()
       ? undefined
       : `Run Kimi ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,

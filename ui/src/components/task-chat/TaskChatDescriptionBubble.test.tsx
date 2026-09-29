@@ -80,7 +80,7 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     expect(bubble).not.toBeNull();
     expect(bubble?.getAttribute("data-author")).toBe("human");
     expect(bubble?.className).toContain("items-end");
-    expect(bubble?.querySelector('[data-testid="task-chat-agent-avatar"]')).toBeNull();
+    expect(bubble?.querySelector('[data-slot="agent-avatar"]')).toBeNull();
     const body = bubble?.querySelector(".bg-\\(--liveness-blue\\)");
     expect(body).not.toBeNull();
     expect(body?.textContent).toContain("Ship the widget by");
@@ -94,7 +94,7 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     const bubble = container.querySelector('[data-testid="task-chat-description-bubble"]');
     expect(bubble?.getAttribute("data-author")).toBe("agent");
     expect(bubble?.className).toContain("items-start");
-    expect(bubble?.querySelector('[data-testid="task-chat-agent-avatar"]')).not.toBeNull();
+    expect(bubble?.querySelector('[data-slot="agent-avatar"]')).not.toBeNull();
     expect(bubble?.textContent).toContain("CEO");
     expect(bubble?.querySelector(".bg-\\(--bubble-agent\\)")).not.toBeNull();
     expect(bubble?.querySelector(".bg-\\(--liveness-blue\\)")).toBeNull();

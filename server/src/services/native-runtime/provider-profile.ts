@@ -9,12 +9,13 @@ import {
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
 
-export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.29" as const;
+export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.32" as const;
 export const DEFAULT_OPENCODE_RUNNER_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;
 
 export const QUALIFIED_ACPX_RUNNER_MODELS = {
+  grok: "grok-4.7",
   claude: "claude-sonnet-5",
   codex: "gpt-5.6-sol",
 } as const;
@@ -109,7 +110,7 @@ export type PaperclipRunnerNativeProviderInput =
       provider: "acpx";
       model: string;
       acpxAgent: QualifiedPaperclipRunnerAcpxAgent;
-      acpxPermissionMode: "approve-all" | "approve-reads" | "deny-all";
+      acpxPermissionMode: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
     };
 
 export class PaperclipRunnerProviderProfileError extends Error {
@@ -404,7 +405,7 @@ export function resolvePaperclipRunnerProviderProfile(
   }
 
   const acpxAgent = config.acpxAgent ?? "claude";
-  if (acpxAgent !== "claude" && acpxAgent !== "codex") {
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
       "Paperclip Runner ACPX requires the qualified Claude or Codex agent profile; Pi is not available.",
@@ -476,7 +477,7 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       acpxPermissionMode: resolvePaperclipRunnerPermissionMode(
         "acpx",
         config.acpxPermissionMode,
-      ) as "approve-all" | "approve-reads" | "deny-all",
+      ) as "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all",
     };
   }
   if (profile.provider === "claude_managed") {

@@ -53,8 +53,9 @@ function makeProject(overrides: Partial<Project> = {}): Project {
   } as unknown as Project;
 }
 
-function primedClient() {
+function primedClient(hiddenSettings: string[] = []) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(queryKeys.health, { hiddenSettings });
   client.setQueryData(queryKeys.instance.experimentalSettings, { enableIsolatedWorkspaces: true });
   return client;
 }
@@ -74,10 +75,10 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(project: Project, onFieldUpdate: (field: string, data: Record<string, unknown>) => void) {
+function render(project: Project, onFieldUpdate: (field: string, data: Record<string, unknown>) => void, hiddenSettings: string[] = []) {
   act(() => {
     root.render(
-      <QueryClientProvider client={primedClient()}>
+      <QueryClientProvider client={primedClient(hiddenSettings)}>
         <TooltipProvider>
           <ProjectProperties project={project} onFieldUpdate={onFieldUpdate} getFieldSaveState={() => "idle"} onArchive={noop} />
         </TooltipProvider>
@@ -107,7 +108,8 @@ describe("ProjectProperties — shared workspace concurrency select", () => {
       vi.fn(),
     );
     expect(concurrencySelect().value).toBe("serialize");
-    expect(container.textContent).toContain("Runs always take turns in the shared project workspace");
+    expect(container.textContent).toContain("Sandbox runs take turns in the shared project workspace");
+    expect(container.textContent).toContain("Local/SSH folders allow concurrent runs");
   });
 
   it("writes the picked value onto executionWorkspacePolicy when changed", () => {
@@ -126,4 +128,13 @@ describe("ProjectProperties — shared workspace concurrency select", () => {
       }),
     );
   });
+});
+
+it("hides project isolation controls without rewriting its policy", () => {
+  const onFieldUpdate = vi.fn();
+  render(makeProject(), onFieldUpdate, ["workspaces.isolation"]);
+  expect(container.textContent).not.toContain("Execution Workspaces");
+  expect(container.textContent).not.toContain("Enable isolated task checkouts");
+  expect(container.querySelector('select[aria-label="Shared workspace concurrency"]')).toBeNull();
+  expect(onFieldUpdate).not.toHaveBeenCalled();
 });

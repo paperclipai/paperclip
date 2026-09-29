@@ -82,6 +82,40 @@ describe("applyManagedExperimentalOverlay", () => {
 });
 
 describe("instanceSettingsService managed overlay", () => {
+  it.each([{}, { enableMcpAggregators: false }])("keeps aggregators on with legacy stored and managed values: %j", async (stored) => {
+    const { db } = stubDb(settingsRow({ ...stored, enableChatConnectors: true }));
+    const service = instanceSettingsService(db, { runtimeEnv: managedEnv(JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "legacy", features: { enableMcpAggregators: false }, plugins: { autoInstall: [] },
+    })) });
+    expect(await service.getExperimental()).toMatchObject({ enableMcpAggregators: true, enableChatConnectors: true, managedKeys: {} });
+    expect(await service.updateExperimental({ enableMcpAggregators: false })).toMatchObject({ experimental: { enableMcpAggregators: true, enableChatConnectors: true } });
+  });
+
+  it("persists chat connector opt-in and reads it back after service reconstruction", async () => {
+    const row = settingsRow({});
+    const { db, persistedSets } = stubDb(row);
+    const service = instanceSettingsService(db, { runtimeEnv: {} });
+    expect((await service.getExperimental()).enableChatConnectors).toBe(false);
+    for (const enabled of [true, false]) {
+      const updated = await service.updateExperimental({ enableChatConnectors: enabled });
+      Object.assign(row, persistedSets.at(-1));
+      expect(updated.experimental.enableChatConnectors).toBe(enabled);
+      const restored = await instanceSettingsService(db, { runtimeEnv: {} }).getExperimental();
+      expect(restored).toMatchObject({ enableApps: true, enableChatConnectors: enabled });
+    }
+  });
+
+  it("overlays the managed chat connector gate without changing stored data", async () => {
+    const { db, persistedSets } = stubDb(settingsRow({ enableChatConnectors: true }));
+    const service = instanceSettingsService(db, { runtimeEnv: managedEnv(JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "test", features: { enableChatConnectors: false }, plugins: { autoInstall: [] },
+    })) });
+    expect(await service.getExperimental()).toMatchObject({
+      enableChatConnectors: false,
+      managedKeys: { enableChatConnectors: { managed: true, managedBy: "paperclip-cloud" } },
+    });
+    expect(persistedSets).toHaveLength(0);
+  });
   it("fails closed at construction on a malformed managed config", () => {
     const { db } = stubDb(settingsRow({}));
     expect(() => instanceSettingsService(db, { runtimeEnv: managedEnv("{bad") })).toThrow(

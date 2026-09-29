@@ -241,9 +241,9 @@ export function parseEvalSessionRequest(value: unknown): EvalSessionRequest {
   if (
     acpxAgent !== undefined &&
     acpxAgent !== "codex" &&
-    acpxAgent !== "claude"
+    acpxAgent !== "claude" && acpxAgent !== "grok"
   ) {
-    throw new Error("eval-session acpxAgent must be codex or claude");
+    throw new Error("eval-session acpxAgent must be codex, claude, or grok");
   }
   if (provider !== "acpx" && acpxAgent !== undefined) {
     throw new Error("eval-session acpxAgent requires provider acpx");

@@ -4,7 +4,10 @@ import type { AdapterRuntimeEvent } from "../../adapters/index.js";
 import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import type { StartupTraceContextHandle } from "../../instrumentation.js";
 import {
+  buildNativeHeartbeatPreparationSpans,
+  buildNativeWakeIngressSpan,
   createNativeRunTrace,
+  nativeRunPreparationStarts,
   recordFailedSkillPreparation,
   NATIVE_RUN_SPAN_EVENT_TYPE,
   NATIVE_RUN_TRACE_SCHEMA_VERSION,
@@ -63,6 +66,174 @@ function createRecordingTraceContext(): {
 }
 
 describe("native runner performance trace", () => {
+  it.each([7_200_000, 10_800_000])(
+    "times the current answer after %i ms without charging prior questions or human wait",
+    async (answeredAtMs) => {
+      const original = {
+        id: "original-comment",
+        createdAt: new Date(1_000).toISOString(),
+      };
+      const ingress = buildNativeWakeIngressSpan({
+        runCreatedAtMs: answeredAtMs + 10,
+        wakeComments: [original],
+        attestedQuestionResponseAtMs: answeredAtMs,
+      });
+      expect(ingress).toEqual({
+        name: "question_response.to_run_created",
+        parentName: "task.run",
+        startedAtMs: answeredAtMs,
+        endedAtMs: answeredAtMs + 10,
+      });
+      const starts = nativeRunPreparationStarts(
+        [
+          ingress!,
+          ...buildNativeHeartbeatPreparationSpans({
+            runCreatedAtMs: answeredAtMs + 10,
+            runStartedAtMs: answeredAtMs + 20,
+            attemptStartedAtMs: answeredAtMs + 30,
+            environmentAcquireStartedAtMs: answeredAtMs + 40,
+            environmentRealizeEndedAtMs: answeredAtMs + 50,
+            nativeDispatchAtMs: answeredAtMs + 60,
+          }),
+        ],
+        answeredAtMs + 60,
+      );
+      expect(starts).toEqual({
+        runStartedAtMs: answeredAtMs,
+        preparationStartedAtMs: answeredAtMs + 30,
+      });
+      const events: AdapterRuntimeEvent[] = [];
+      const trace = createNativeRunTrace({
+        runId: "answer-run",
+        startedAtMs: starts.runStartedAtMs,
+        traceContext: createRecordingTraceContext().traceContext,
+        onEvent: async (event) => {
+          events.push(event);
+        },
+      });
+      const clock = vi
+        .spyOn(Date, "now")
+        .mockReturnValue(answeredAtMs + 19_000);
+      try {
+        await trace.finish("ok");
+      } finally {
+        clock.mockRestore();
+      }
+      expect(
+        events.find((event) => event.payload?.span === "task.run.measured")
+          ?.payload,
+      ).toMatchObject({ durationMs: 19_000 });
+      expect(original.createdAt).toBe(new Date(1_000).toISOString());
+    },
+  );
+
+  it("preserves ordinary and retry comment ingress and ignores caller answer timestamps", () => {
+    const wakeComments = [
+      { createdAt: new Date(2_000).toISOString(), answeredAtMs: 50_000 },
+      { createdAt: "invalid", answeredAtMs: 60_000 },
+      {
+        createdAt: new Date(1_000).toISOString(),
+        externalChatQuestionResponse: { answeredAtMs: 70_000 },
+      },
+    ];
+    expect(
+      buildNativeWakeIngressSpan({
+        runCreatedAtMs: 3_000,
+        wakeComments,
+        attestedQuestionResponseAtMs: null,
+      }),
+    ).toEqual({
+      name: "comment.to_run_created",
+      parentName: "task.run",
+      startedAtMs: 1_000,
+      endedAtMs: 3_000,
+    });
+    expect(
+      buildNativeWakeIngressSpan({
+        runCreatedAtMs: 3_000,
+        wakeComments: [{ answeredAtMs: 1 }],
+        attestedQuestionResponseAtMs: null,
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    { label: "initial", attemptStartedAtMs: 2_000 },
+    { label: "same-run resume after host sleep", attemptStartedAtMs: 985_000 },
+  ])(
+    "keeps $label preparation attempt-local while retaining run wall time",
+    async ({ attemptStartedAtMs }) => {
+      const events: AdapterRuntimeEvent[] = [];
+      const { traceContext, spans: recordedSpans } =
+        createRecordingTraceContext();
+      const historicalSpans = [
+        {
+          name: "comment.to_run_created",
+          startedAtMs: 900,
+          endedAtMs: 1_000,
+        },
+        ...buildNativeHeartbeatPreparationSpans({
+          runCreatedAtMs: 1_000,
+          runStartedAtMs: 2_000,
+          attemptStartedAtMs,
+          environmentAcquireStartedAtMs: attemptStartedAtMs + 20,
+          environmentRealizeEndedAtMs: attemptStartedAtMs + 30,
+          nativeDispatchAtMs: attemptStartedAtMs + 40,
+        }),
+      ];
+      const beforeEnvironment = historicalSpans.find(
+        (span) => span.name === "heartbeat.prepare_before_environment",
+      )!;
+      expect(beforeEnvironment.endedAtMs - beforeEnvironment.startedAtMs).toBe(
+        20,
+      );
+      expect(
+        historicalSpans.find((span) => span.name === "heartbeat.queue"),
+      ).toMatchObject({
+        startedAtMs: 1_000,
+        endedAtMs: 2_000,
+      });
+      const starts = nativeRunPreparationStarts(
+        historicalSpans,
+        attemptStartedAtMs + 40,
+      );
+      expect(starts).toEqual({
+        runStartedAtMs: 900,
+        preparationStartedAtMs: attemptStartedAtMs,
+      });
+      const trace = createNativeRunTrace({
+        runId: "same-run",
+        startedAtMs: starts.runStartedAtMs,
+        traceContext,
+        onEvent: async (event) => {
+          events.push(event);
+        },
+      });
+      const prepare = trace.start("task.prepare", {
+        parentName: "task.run",
+        startedAtMs: starts.preparationStartedAtMs,
+      });
+      await trace.end(prepare, { endedAtMs: attemptStartedAtMs + 50 });
+      const clock = vi
+        .spyOn(Date, "now")
+        .mockReturnValue(attemptStartedAtMs + 100);
+      try {
+        await trace.finish("ok");
+      } finally {
+        clock.mockRestore();
+      }
+      expect(
+        events.find((event) => event.payload?.span === "task.prepare")?.payload,
+      ).toMatchObject({
+        durationMs: 50,
+        startOffsetMs: attemptStartedAtMs - 900,
+      });
+      expect(recordedSpans[0]?.attributes["paperclip.task.run.wall_ms"]).toBe(
+        attemptStartedAtMs + 100 - 900,
+      );
+    },
+  );
+
   it("persists measured spans with bounded run-relative timing", async () => {
     const events: AdapterRuntimeEvent[] = [];
     const trace = createNativeRunTrace({

@@ -46,6 +46,14 @@ Agent `adapterConfig.env` values must be `{type:"secret_ref", secretId,
 version:"latest"}` objects supplied to the factory. A fixture source containing
 a raw secret-looking value is rejected by catalog validation.
 
+The manual Grok subscription profile uses `GROK_AUTH_JSON` as an explicit login
+fixture. It does not put this credential in agent configuration or substitute an
+API key. Setup seeds a new company-scoped Grok home inside the disposable instance
+with mode 0700 and an exclusive mode-0600 auth file. Setup rejects redirected,
+occupied, or nonisolated homes. Production runner discovery and refresh operate on
+that company login; teardown destroys it after the remote environment is removed.
+This fixture tests subscription execution, not the interactive browser login flow.
+
 ## Environments
 
 An `EnvironmentFixture` declares driver/provider, credential requirements,
@@ -100,7 +108,7 @@ canonical Plan revision, capture its pending UI, approve in the browser, and
 prove exactly two successful runs. `warm_three_turn` provides exactly two
 browser follow-up messages, preserves one project/execution-workspace scope,
 verifies host file contents after every turn, and finishes within three
-ten-minute turn deadlines.
+ten-minute turn deadlines. Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
 
 Every selected case runs in its own isolated Paperclip process, and independent
 cases may run concurrently. Follow-up turns inside one case retain their shared
@@ -122,6 +130,11 @@ the complete-catalog size, and credential-free unit tests in the same change.
 Paid tests never silently skip a missing credential or unsupported artifact.
 
 ## New Paperclip object fixtures
+
+The explicit-only `lifecycle-baseline` suite reuses this registry and existing
+continuation, chat and governed-action flows. Its narrative pairs require actual
+agent/run-attributed comments or exact visible responses. See
+[the live baseline contract](LIFECYCLE-BASELINE.md) for selectors and proof boundaries.
 
 Register new objects in `live-fixtures.ts` with explicit dependencies in
 `FixtureRegistry`. Setup must use a public API. Teardown runs in reverse order
@@ -154,3 +167,69 @@ pnpm test:e2e:runner -- --list
 
 Then run the narrowest paid cell that exercises the fixture. A full matrix is a
 manual or scheduled campaign, not a PR requirement.
+
+
+## Persistent chat fixtures
+
+`chat-cases.ts` defines the eight-case `agent-chat` suite; `chat-flow.ts` drives the
+production composer, plan revision/approval controls, questions, reset command,
+and project cards. Keep its 28 local cells intentional. `expectedRunCount`
+counts provider turns, including cancelled and handed-off task runs, but excludes
+synthetic `/new` runs. Assertions must inspect all company runs because ordinary
+issue lists exclude the source conversation. `assertChatHandoff` rejects missing
+projects/plans, chat children, wrong assignees, and execution before plan commit.
+
+Retained `api-state.json`, `chat-handoff.json`, and plan-revision evidence
+include persisted comments, session generations, run context and logs, project
+workspaces, task documents, and ordering. They pass through the normal sanitizer.
+Screenshots are allowlisted to the exact disposable agent chat. Cleanup cancels
+all active runs in the isolated company, including handed-off work; usage from
+failed and cancelled runs must not disappear from campaign totals.
+
+
+Warm three-turn continuity grades the exact workspace file after each turn,
+task completion, and sandbox/session identity. It also requires a visible
+persisted final reply with each turn marker once and in order. It does not
+grade exact final-reply wording; the hello
+and continuation fixtures retain those exact-response checks. This separates
+workspace persistence failures from model response-format variance.
+
+`chat-hardening.ts` adds the explicit-only `agent-chat-hardening` journeys. Use
+the ordinary public APIs to seed source documents and blockers. Keep the answer
+out of the user's status/review request. Grade the exact source values, latest
+blocker, preserved task identities, worker-authored output, and real executions.
+The status request asks for JSON so the grader can distinguish the current
+blocker from a historical mention and compare active-run count separately from
+task status. The request must not reveal those expected values.
+Capture the source after seeding and compare every field in the public issue
+update contract, plus labels, dependencies, and dedicated-endpoint settings.
+Derived inbound references may change when the chat legitimately cites a task.
+The lost-acknowledgement probe may interrupt only the fixture browser's own
+comment request after the real server has committed it. Retain its request ID
+and replay that same request through the public API after restarting the server.
+Never fabricate tool results or repair task state after a failed assertion.
+
+`chat-stories.ts` seeds an ordinary file wait in the isolated agent's actual
+home workspace; native Codex intentionally cannot see arbitrary host temp files.
+The observed run workspace must match the fixture location. This is a deterministic interruption
+boundary. The real provider command writes the readiness file and waits at most
+two minutes. The harness must persist the next browser message while the same
+run is active before supplying the brief. Always release the wait in `finally`.
+Save boundary observations independently of the final outcome. The final answer
+must recover a brief reference absent from both prompts; the revision oracle
+also reads the actual conversation plan. Fixture setup never enables native API
+tools for this suite. Do not describe its prepared-agent settings case as a
+production onboarding qualification.
+
+The `agent-chat-qualification` local fixtures use public APIs to seed two workers
+and a task with a saved plan, or read-only tasks with contradictory historical
+comments. Ordinary Node file waits in the isolated agent workspace establish
+observable active execution; no provider output or database outcome is fabricated.
+A worker-crash case sends SIGKILL only to a positively identified running native
+worker PID, then uses the production Retry button. Each gate is released in a
+finally block. Source facts and boundary state are retained with the attempt.
+The lifecycle suite also includes two legacy disposition-repair probes. Their
+first provider turn intentionally omits task disposition, and their second turn
+must be an automatic, causally bound repair that records completion. They use
+public task comments/status APIs and run-detail evidence; no private runtime
+hooks or database mutations are used by the fixture.

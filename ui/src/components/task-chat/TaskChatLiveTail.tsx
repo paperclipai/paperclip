@@ -3,26 +3,16 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import type { TaskChatItem, TaskChatRuntimeRequestDecision, TaskChatRuntimeRequestItem } from "./task-chat-model";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
-import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
+import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatThinking } from "./TaskChatThinking";
-import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
-import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { buildTurnTimelineRows } from "./transcript-adapter";
 
 /**
- * Live-tail body for the experimental chat-style view (PAP-463, Workstream C1
- * of PAP-458).
- *
- * Renders the in-flight run's streaming transcript as the SAME clean rows the
- * settled thread uses — tool cards (with diffs) and the streamed reply markdown
- * — instead of the verbatim `RunTranscriptView` debug viewer that the live tail
- * used since `e4f3d7733`. The items come from `transcriptToTaskChatItems`, which
- * already drops the debug plumbing (init / stdout / stderr / system / user /
- * result), so none of `RunTranscriptView`'s noise can reach the thread: no INIT
- * row, no "N LOG LINES" / "N SYSTEM MESSAGES" banners, no raw stdout/JSON dumps,
- * no "Streaming" chip, no uppercase "USED TERMINAL" cards. The status pill above
- * this body (`TaskChatLiveRunPill`) owns the run-status affordance.
+ * Live body for legacy runner transcripts. The adapter drops debug plumbing;
+ * the same activity group as the native runner shows one rolling current row
+ * with friendly tool labels and explicitly expandable history. The status pill
+ * above this body (`TaskChatLiveRunPill`) owns the run-status affordance.
  *
  * Stable assistant and runtime-request boundaries compact the rows into an
  * ordered turn timeline. Commentary remains readable above the activity group
@@ -102,27 +92,9 @@ function renderTailRow(
       return <TaskChatThinking key={item.id} item={item} />;
     case "activity_phase":
       return (
-        <TaskChatActivityPhase
+        <TaskChatRunnerActivityGroup
           key={item.id}
           item={item}
-          defaultOpen={item.items.some(
-            (child) =>
-              child.kind === "thinking" &&
-              child.lines.some((line) => line.trim().length > 0),
-          )}
-          childrenClassName="relative ml-2.5 pl-6"
-          showChildRail
-          renderChild={(child) => child.kind === "tool"
-            ? <TaskChatToolCard item={child} />
-            : child.kind === "thinking"
-              ? <TaskChatThinking item={child} />
-              : child.kind === "marker"
-                ? <TaskChatMarker item={child} />
-                : child.kind === "protocol"
-                  ? child.surface === "runtime_request"
-                    ? <TaskChatProtocolCard item={child} onRuntimeRequestDecision={onRuntimeRequestDecision} />
-                    : <TaskChatProtocolActivityRow item={child} />
-                  : <TaskChatUsageReadout item={child} />}
         />
       );
     case "protocol":

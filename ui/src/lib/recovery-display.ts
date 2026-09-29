@@ -48,9 +48,22 @@ export const RECOVERY_CHIP_DEFAULT_TONE: Record<
  * the parent views that list it as a blocker never disagree about whether recovery is
  * quietly running or actually needs a human.
  */
-export type RecoveryDisplayInput = Pick<IssueRecoveryAction, "status" | "kind" | "outcome"> &
+export type RecoveryDisplayInput = Pick<
+  IssueRecoveryAction,
+  "status" | "kind" | "outcome"
+> &
   Partial<
-    Pick<IssueRecoveryAction, "wakePolicy" | "evidence" | "attemptCount" | "maxAttempts" | "timeoutAt">
+    Pick<
+      IssueRecoveryAction,
+      | "cause"
+      | "ownerType"
+      | "wakePolicy"
+      | "evidence"
+      | "attemptCount"
+      | "maxAttempts"
+      | "timeoutAt"
+      | "nativeRunActivity"
+    >
   >;
 
 export function deriveRecoveryDisplayState(
@@ -58,9 +71,7 @@ export function deriveRecoveryDisplayState(
   context?: RecoveryLivenessContext,
 ): RecoveryDisplayState {
   if (action.status === "resolved") return "resolved";
-  if (action.status === "escalated") return "escalated";
   if (action.status === "cancelled") return "resolved";
-  if (action.kind === "active_run_watchdog") return "observe_only";
   // A bounded retry lineage still holding a durable path is work the server will do on its
   // own. Shouting "recovery needed" over it would ask a human to fix something nobody has to
   // fix yet, so the calm tone is reserved for a lane with an attempt genuinely still coming.
@@ -72,7 +83,22 @@ export function deriveRecoveryDisplayState(
     attemptCount: action.attemptCount,
     maxAttempts: action.maxAttempts,
     timeoutAt: action.timeoutAt,
+    nativeRunActivity: action.nativeRunActivity,
   }, context);
+  // An explicit board retry may retain its old owner/budget while the exact
+  // native run is already making progress. Actual activity wins over that
+  // historical repair state, but a merely scheduled board retry does not.
+  if (lineage?.lane === "native_run" && lineage.liveRunId) return "in_progress";
+  if (action.status === "escalated") return "escalated";
+  if (action.kind === "active_run_watchdog") {
+    // Native finalization shares the watchdog kind, but resumes a failed
+    // coordinator rather than observing a live agent turn. Preserve board
+    // ownership and only describe recovery as active while its retry is live.
+    if (action.ownerType === "board") return "needed";
+    if (lineage) return lineage.hasDurablePath ? "in_progress" : "needed";
+    if (action.cause?.startsWith("native_")) return "needed";
+    return "observe_only";
+  }
   if (lineage && lineage.lane !== "board" && lineage.hasDurablePath) return "in_progress";
   if (action.outcome === "delegated") return "in_progress";
   return "needed";
@@ -82,6 +108,7 @@ export function deriveActiveRecoveryDisplayState(
   action: RecoveryDisplayInput,
   context?: RecoveryLivenessContext,
 ): ActiveRecoveryDisplayState | null {
+  if (action.cause === "native_workspace_sync_out_unsafe_archive") return null;
   const state = deriveRecoveryDisplayState(action, context);
   return state === "resolved" ? null : state;
 }

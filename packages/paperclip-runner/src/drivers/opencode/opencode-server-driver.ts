@@ -73,7 +73,7 @@ import { nativeMcpLaunchBinding } from "../native-mcp.js";
 import { materializeNativeRuntimeSkills } from "../runtime-context-materializer.js";
 
 export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
-export const QUALIFIED_OPENCODE_VERSION = "1.18.29" as const;
+export const QUALIFIED_OPENCODE_VERSION = "1.18.32" as const;
 export const QUALIFIED_OPENCODE_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 
@@ -89,6 +89,7 @@ export interface OpenCodeServerDriverOptions {
   model: string;
   permissionMode?: "allow" | "ask" | "deny";
   taskEnvelope?: CodexTaskEnvelope;
+  conversationMode?: "task" | "prepared";
   runnerInstanceId?: string;
   command?: string;
   /** Inherited runner-owned executable descriptor duplicated into the child. */
@@ -337,6 +338,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
             createCodexTaskEnvelope({
               objective: "Complete the supplied task.",
             }),
+          conversationMode: this.#options.conversationMode,
           systemInstructions:
             this.#options.systemInstructions ??
             CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -422,6 +424,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #semanticResultProviderMessageId: string | null = null;
   #lastNonTerminalToolSourceSeq = 0;
   #usage: Record<string, unknown> | null = null;
+  readonly #conversationMode: "task" | "prepared";
   #sendFullContext: boolean;
   #closed = false;
   #abort = new AbortController();
@@ -435,6 +438,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     workingDirectory: string;
     runnerInstanceId: string;
     model: string;
+    conversationMode?: "task" | "prepared";
     taskEnvelope: CodexTaskEnvelope;
     systemInstructions: string;
     dynamicToolHandler?: DynamicToolHandler;
@@ -450,11 +454,12 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#workingDirectory = input.workingDirectory;
     this.#runnerInstanceId = input.runnerInstanceId;
     this.#model = input.model;
+    this.#conversationMode = input.conversationMode ?? "task";
     this.#taskEnvelope = input.taskEnvelope;
     this.#systemInstructions = input.systemInstructions;
     this.#dynamicToolHandler = input.dynamicToolHandler;
     this.#now = input.now;
-    this.#sendFullContext = input.snapshot === null;
+    this.#sendFullContext = input.snapshot === null && this.#conversationMode !== "prepared";
     this.#sourceSequence = input.snapshot?.lastSourceSequence ?? 0;
     this.#activeTurnId = input.snapshot?.activeTurnId ?? null;
     const restored = input.snapshot?.semanticResult ?? null;
@@ -887,53 +892,71 @@ class OpenCodeHarnessSession implements HarnessSession {
       { turnId, itemId: call.callId },
     );
     if (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME) {
-      const validation = validatePrpStructuredRunResult(call.arguments);
-      if (!validation.ok) throw new Error("Invalid semantic result");
-      if (
-        (tool === PRP_BLOCK_TOOL_NAME &&
-          validation.result.reportedWorkDisposition !== "blocked") ||
-        (tool === PRP_COMPLETION_TOOL_NAME &&
-          validation.result.reportedWorkDisposition === "blocked")
-      )
-        throw new Error(
-          "Semantic result disposition does not match the terminal tool",
-        );
-      if (
-        validation.result.completionClaim.contractRevision !==
-        this.#taskEnvelope.completionContract.revision
-      ) {
-        throw new Error(
-          "Semantic result completion contract revision does not match",
-        );
-      }
-      const fingerprint = canonicalJson(validation.result);
-      if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
-        throw new Error("A different semantic result was already committed");
-      if (!this.#resultFingerprint) {
-        this.#result = structuredClone(validation.result);
-        this.#resultFingerprint = fingerprint;
-        this.#resultCallId = call.callId;
-        this.#resultTurnId = turnId;
-        this.#semanticResultTextBoundary = this.#completedTextParts.length;
-        this.#emit("run.result.proposed", validation.result, {
-          turnId,
-          itemId: call.callId,
-        });
-      }
-      this.#emit(
-        "item.completed",
-        {
-          kind: "dynamicToolCall",
-          item: {
-            type: "tool_result",
-            id: call.callId,
-            tool_use_id: call.callId,
-            result: "Semantic completion accepted.",
+      try {
+        const validation = validatePrpStructuredRunResult(call.arguments);
+        if (!validation.ok) throw new Error("Invalid semantic result");
+        if (
+          (tool === PRP_BLOCK_TOOL_NAME &&
+            validation.result.reportedWorkDisposition !== "blocked") ||
+          (tool === PRP_COMPLETION_TOOL_NAME &&
+            validation.result.reportedWorkDisposition === "blocked")
+        )
+          throw new Error(
+            "Semantic result disposition does not match the terminal tool",
+          );
+        if (
+          validation.result.completionClaim.contractRevision !==
+          this.#taskEnvelope.completionContract.revision
+        ) {
+          throw new Error(
+            "Semantic result completion contract revision does not match",
+          );
+        }
+        const expectedIds = this.#taskEnvelope.completionContract.criteria.map((criterion) => criterion.id);
+        const receivedIds = validation.result.completionClaim.criteria.map((criterion) => criterion.criterionId);
+        if (receivedIds.length !== expectedIds.length || new Set(receivedIds).size !== receivedIds.length || receivedIds.some((id) => !expectedIds.includes(id))) {
+          // Reject at the tool boundary so the provider can repair its claim.
+          // Emitting a bad result here kills runnerd's strict outer validation.
+          throw new Error(`Semantic result criteria must contain exactly these criterionIds, once each: ${JSON.stringify(expectedIds)}. Keep contractRevision ${JSON.stringify(this.#taskEnvelope.completionContract.revision)}.`);
+        }
+        const fingerprint = canonicalJson(validation.result);
+        if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
+          throw new Error("A different semantic result was already committed");
+        if (!this.#resultFingerprint) {
+          this.#result = structuredClone(validation.result);
+          this.#resultFingerprint = fingerprint;
+          this.#resultCallId = call.callId;
+          this.#resultTurnId = turnId;
+          this.#semanticResultTextBoundary = this.#completedTextParts.length;
+          this.#emit("run.result.proposed", validation.result, {
+            turnId,
+            itemId: call.callId,
+          });
+        }
+        this.#emit(
+          "item.completed",
+          {
+            kind: "dynamicToolCall",
+            item: {
+              type: "tool_result",
+              id: call.callId,
+              tool_use_id: call.callId,
+              result: "Semantic completion accepted.",
+            },
           },
-        },
-        { turnId, itemId: call.callId },
-      );
-      return { accepted: true };
+          { turnId, itemId: call.callId },
+        );
+        return { accepted: true };
+      } catch (error) {
+        // A rejected semantic call still completes its tool activity item.
+        // Otherwise a later question can appear to have an in-flight tool.
+        this.#emit("item.completed", {
+          kind: "dynamicToolCall",
+          item: { type: "tool_result", id: call.callId, tool_use_id: call.callId,
+            is_error: true, error: error instanceof Error ? error.message : String(error) },
+        }, { turnId, itemId: call.callId });
+        throw error;
+      }
     }
     if (!this.#dynamicToolHandler)
       throw new Error("Unsupported Paperclip operation");

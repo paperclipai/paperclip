@@ -2,9 +2,41 @@ import { describe, expect, it } from "vitest";
 import {
   PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
   classifyAdapterFailureForRecovery,
+  classifyContinuationFailure,
 } from "./service.js";
+import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it("uses a typed ACP quota reset without needing the provider's original message", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "ACP agent reported a terminal limit failure.",
+      resultJson: {
+        errorFamily: "provider_quota",
+        retryNotBefore: "2026-07-15T21:30:00.000Z",
+        providerQuotaRetryNotBefore: "2026-07-15T21:30:00.000Z",
+      },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-07-15T21:30:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it("uses the existing backoff for a typed ACP quota failure with no reset timestamp", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "ACP agent reported a terminal limit failure.",
+      resultJson: { errorFamily: "provider_quota" },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("classifies usage-limit messages and parses the provider reset time", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({
@@ -99,6 +131,22 @@ describe("classifyAdapterFailureForRecovery", () => {
       error: "Provider quota exceeded while waiting for a downstream service.",
       resultJson: null,
     })).toBeNull();
+  });
+
+  it("routes unavailable engines to a configuration blocker instead of retrying", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_engine_unavailable",
+      error: "Node v22.22.2 does not satisfy Codex ACP's Node >=24.11.0 prerequisite.",
+      resultJson: null,
+    })).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyContinuationFailure({ errorCode: "adapter_engine_unavailable" } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+    expect(legacyExecutionNeedsReconciliation({
+      runtimeMode: "legacy",
+      status: "failed",
+      errorCode: "adapter_engine_unavailable",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    })).toBe(false);
   });
 
   it("does not treat a generic capacity limit as provider quota", () => {

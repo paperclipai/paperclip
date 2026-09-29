@@ -1,0 +1,597 @@
+import {
+  Router,
+  type Request as ExpressRequest,
+  type Response as ExpressResponse,
+} from "express";
+import { z } from "zod";
+import { githubChatManagementService } from "../services/chat-github-management.js";
+import { updateGitHubChatConfigurationSchema } from "@paperclipai/shared";
+import type { Db } from "@paperclipai/db";
+import {
+  CHAT_PROVIDERS,
+  configureChatEndpointSchema,
+  inspectPhotonProjectSchema,
+  confirmChatIdentityLinkSchema,
+  createChatEndpointSchema,
+  createChatIdentityLinkIntentSchema,
+  isUuidLike,
+  publishChatPublicationSchema,
+  replaceChatEndpointResourcesSchema,
+  resolveChatActionSchema,
+  resolveChatPublicationSchema,
+  updateChatEndpointSchema,
+  type ChatProvider,
+} from "@paperclipai/shared";
+import { validate } from "../middleware/validate.js";
+import {
+  chatChannelService,
+  type ChatChannelService,
+  type ChatChannelServiceOptions,
+} from "../services/chat-channels.js";
+import { accessService } from "../services/access.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { recordChatWebhookStage } from "../services/chat-webhook-diagnostics.js";
+import {
+  createInviteRateLimiter,
+  type InviteRateLimiter,
+} from "../services/invite-rate-limit.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+} from "./authz.js";
+import {
+  badRequest,
+  forbidden,
+  HttpError,
+  tooManyRequests,
+} from "../errors.js";
+
+type ChatChannelRouteOptions = ChatChannelServiceOptions & {
+  service?: ChatChannelService;
+};
+
+type ChatWebhookRouteOptions = {
+  rateLimiter?: InviteRateLimiter;
+};
+
+const CHAT_WEBHOOK_RATE_LIMIT_WINDOW_MS = 60_000;
+const CHAT_WEBHOOK_RATE_LIMIT_MAX_REQUESTS = 600;
+
+function endpointId(req: ExpressRequest): string {
+  return req.params.endpointId as string;
+}
+
+function actorUserId(req: ExpressRequest): string | null {
+  const actor = getActorInfo(req);
+  return actor.actorType === "user" ? actor.actorId : null;
+}
+
+async function assertEndpointAccess(
+  req: ExpressRequest,
+  res: ExpressResponse,
+  service: ChatChannelService,
+): Promise<boolean> {
+  assertBoard(req);
+  const endpoint = await getAccessibleResource(
+    req,
+    res,
+    service.get(endpointId(req)).catch((error) => {
+      if (error instanceof HttpError && error.status === 404) return null;
+      throw error;
+    }),
+    "Chat endpoint not found",
+  );
+  return endpoint !== null;
+}
+
+export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
+  const router = Router();
+  const service = options.service ?? chatChannelService(db, options);
+  const access = accessService(db);
+  const github = githubChatManagementService(db, options.fetch);
+
+  async function assertIdentityLinkAccess(req: ExpressRequest): Promise<string> {
+    assertBoard(req);
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    // Enforce rollout here: invited nonmembers cannot read the board's
+    // experimental-settings API. A private token never bypasses this gate.
+    if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors) {
+      throw forbidden("Chat connectors are not enabled on this instance");
+    }
+    return userId;
+  }
+
+  async function assertConnectionManager(
+    req: ExpressRequest,
+    companyId: string,
+  ) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
+      return;
+    const userId = req.actor.userId;
+    if (
+      userId &&
+      (await access.hasPermission(
+        companyId,
+        "user",
+        userId,
+        "tools:manage_connections",
+      ))
+    )
+      return;
+    throw forbidden("Missing permission: tools:manage_connections");
+  }
+
+  async function assertEndpointManagementAccess(
+    req: ExpressRequest,
+    res: ExpressResponse,
+  ): Promise<boolean> {
+    if (!(await assertEndpointAccess(req, res, service))) return false;
+    const endpoint = await service.get(endpointId(req));
+    await assertConnectionManager(req, endpoint.companyId);
+    return true;
+  }
+
+  router.get("/companies/:companyId/chat-endpoints", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await service.list(companyId));
+  });
+
+  router.post(
+    "/companies/:companyId/chat-endpoints",
+    validate(createChatEndpointSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertConnectionManager(req, companyId);
+      res
+        .status(201)
+        .json(await service.create(companyId, req.body, actorUserId(req)));
+    },
+  );
+
+  router.get("/chat-endpoints/:endpointId", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    res.json(await service.get(endpointId(req)));
+  });
+
+  const githubUser = (req: ExpressRequest) => {
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("Sign in to your Paperclip account to set up this bot");
+    return userId;
+  };
+  router.get("/chat-endpoints/:endpointId/github/configuration", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await github.configuration(endpointId(req), githubUser(req)));
+  });
+  router.put("/chat-endpoints/:endpointId/github/configuration", validate(updateGitHubChatConfigurationSchema), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await github.saveConfiguration(endpointId(req), req.body, githubUser(req)));
+  });
+  router.post("/chat-endpoints/:endpointId/github/verify", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await github.verification(endpointId(req)));
+  });
+  router.put("/chat-endpoints/:endpointId/github/progress", validate(z.object({ stage: z.enum(["connect", "install", "repositories", "verify", "identity", "behavior", "test"]) }).strict()), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await service.saveGitHubSetupProgress(endpointId(req), req.body.stage));
+  });
+  router.get("/chat-endpoints/:endpointId/github/reviews", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    res.json(await github.reviews(endpointId(req)));
+  });
+  router.get("/chat-endpoints/:endpointId/github/personal-connections", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    res.json(await github.personalConnections(endpointId(req), githubUser(req)));
+  });
+  router.post("/chat-endpoints/:endpointId/github/identity", validate(z.object({ connectionId: z.string().uuid(), confirmedGithubUserId: z.string().regex(/^[1-9][0-9]*$/).optional() }).strict()), async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    res.json(await github.identity(endpointId(req), req.body.connectionId, githubUser(req), req.body.confirmedGithubUserId));
+  });
+  router.post("/chat-endpoints/:endpointId/github/people/lookup", validate(z.object({ login: z.string().min(1).max(44) }).strict()), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await github.lookupPerson(req.body.login));
+  });
+  router.post("/chat-endpoints/:endpointId/github/registration", validate(z.object({ name: z.string().trim().min(1).max(34) }).strict()), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    res.json(await service.startGitHubRegistration(endpointId(req), githubUser(req), req.body.name));
+  });
+  router.post("/chat-endpoints/:endpointId/github/app", validate(z.object({ appId: z.string().regex(/^[1-9][0-9]*$/), privateKey: z.string().min(1).max(32000), webhookSecret: z.string().min(16).max(1024) }).strict()), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await service.storeGitHubApp(endpointId(req), githubUser(req), req.body));
+  });
+  router.post("/chat-endpoints/:endpointId/github/repositories/refresh", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await service.refreshGitHubRepositories(endpointId(req), githubUser(req)));
+  });
+
+  router.patch(
+    "/chat-endpoints/:endpointId",
+    validate(updateChatEndpointSchema),
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      res.json(
+        await service.update(endpointId(req), req.body, actorUserId(req)),
+      );
+    },
+  );
+
+  router.post("/chat-endpoints/:endpointId/photon/inspect", validate(inspectPhotonProjectSchema), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    res.json(await service.inspectPhoton(endpointId(req), req.body));
+  });
+
+  router.post(
+    "/chat-endpoints/:endpointId/setup",
+    validate(configureChatEndpointSchema),
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      res.json(
+        await service.configure(endpointId(req), req.body, actorUserId(req)),
+      );
+    },
+  );
+
+  router.post("/chat-endpoints/:endpointId/setup-secret", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    res
+      .status(201)
+      .json(
+        await service.generateSetupSecret(endpointId(req), actorUserId(req)),
+      );
+  });
+
+  router.post("/chat-endpoints/:endpointId/test", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await service.test(endpointId(req)));
+  });
+
+  router.post("/chat-endpoints/:endpointId/finish", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    res.json(await service.finishSlackSetup(endpointId(req), userId));
+  });
+  router.get("/chat-endpoints/:endpointId/test-status", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    res.set("Cache-Control", "no-store");
+    res.json(await service.setupTestStatus(endpointId(req), userId));
+  });
+
+  router.get("/chat-endpoints/:endpointId/resources", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    res.json(await service.listResources(endpointId(req)));
+  });
+
+  router.put(
+    "/chat-endpoints/:endpointId/resources",
+    validate(replaceChatEndpointResourcesSchema),
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      res.json(
+        await service.replaceResources(
+          endpointId(req),
+          req.body.resources,
+          actorUserId(req),
+        ),
+      );
+    },
+  );
+
+  router.get("/chat-endpoints/:endpointId/principals", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    res.json(await service.listPrincipals(endpointId(req)));
+  });
+
+  router.post(
+    "/chat-endpoints/:endpointId/principals/:principalId/link-intent",
+    validate(createChatIdentityLinkIntentSchema),
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      res
+        .status(201)
+        .json(
+          await service.createLinkIntent(
+            endpointId(req),
+            req.params.principalId as string,
+            req.body.expiresInSeconds,
+          ),
+        );
+    },
+  );
+
+  router.delete(
+    "/chat-endpoints/:endpointId/principals/:principalId/link",
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      await service.revokeLink(
+        endpointId(req),
+        req.params.principalId as string,
+      );
+      res.status(204).end();
+    },
+  );
+
+  router.post(
+    "/chat-identity-links/confirm",
+    validate(confirmChatIdentityLinkSchema),
+    async (req, res) => {
+      const userId = await assertIdentityLinkAccess(req);
+      res.json(await service.confirmIdentityLink(req.body.token, userId));
+    },
+  );
+
+  router.post("/chat-identity-links/request-access", validate(confirmChatIdentityLinkSchema), async (req, res) => {
+    const userId = await assertIdentityLinkAccess(req);
+    res.json(await service.requestIdentityAccess(req.body.token, userId, req.ip ?? "unknown"));
+  });
+
+  router.get("/chat-identity-links/preview", async (req, res) => {
+    const userId = await assertIdentityLinkAccess(req);
+    const token = typeof req.query.token === "string" ? req.query.token : "";
+    if (token.length < 32 || token.length > 4096)
+      throw badRequest("A valid identity-link token is required");
+    res.set("Cache-Control", "no-store");
+    const invitation = await service.previewIdentityLink(token, userId).catch((error) => {
+      if (error instanceof HttpError && error.status === 422) return null;
+      throw error;
+    });
+    // A link privately issued to a signed Slack sender is an invitation to
+    // request membership. Other link intents retain company-access checks.
+    const preview = invitation?.selfService ? invitation : await getAccessibleResource(
+      req, res, Promise.resolve(invitation), "Identity-link request not found",
+    );
+    if (!preview) return;
+    res.json(preview);
+  });
+
+  router.get("/chat-endpoints/:endpointId/conversations", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    res.json(await service.listConversations(endpointId(req)));
+  });
+
+  router.get("/chat-endpoints/:endpointId/activity", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    if (req.query.limit !== undefined || req.query.cursor !== undefined) {
+      if ((req.query.limit !== undefined && (typeof req.query.limit !== "string" || !/^\d+$/.test(req.query.limit)))
+        || (req.query.cursor !== undefined && typeof req.query.cursor !== "string")) throw badRequest("Invalid activity pagination parameters");
+      res.json(await service.listActivityPage(endpointId(req), req.query.limit === undefined ? 25 : Number(req.query.limit), req.query.cursor as string | undefined));
+    } else {
+      res.json(await service.listActivity(endpointId(req)));
+    }
+  });
+
+  router.post(
+    "/chat-endpoints/:endpointId/deliveries/:deliveryId/replay",
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      await service.replayDelivery(
+        endpointId(req),
+        req.params.deliveryId as string,
+      );
+      res.status(204).end();
+    },
+  );
+
+  router.post(
+    "/chat-endpoints/:endpointId/publications/:publicationId/replay",
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      await service.replayPublication(
+        endpointId(req),
+        req.params.publicationId as string,
+      );
+      res.status(204).end();
+    },
+  );
+
+  router.post(
+    "/chat-endpoints/:endpointId/publications/:publicationId/resolve",
+    validate(resolveChatPublicationSchema),
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      const userId = actorUserId(req);
+      if (!userId) throw badRequest("A board user is required");
+      await service.resolvePublication(
+        endpointId(req),
+        req.params.publicationId as string,
+        req.body.action,
+        userId,
+        req.body.fileTransfer,
+      );
+      res.status(204).end();
+    },
+  );
+
+  router.post(
+    "/chat-endpoints/:endpointId/actions/:actionId/resolve",
+    validate(resolveChatActionSchema),
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      const userId = actorUserId(req);
+      if (!userId) throw badRequest("A board user is required");
+      await service.resolveAction(
+        endpointId(req),
+        req.params.actionId as string,
+        req.body.action,
+        userId,
+      );
+      res.status(204).end();
+    },
+  );
+
+  router.post(
+    "/chat-endpoints/:endpointId/conversations/:conversationId/publications",
+    validate(publishChatPublicationSchema),
+    async (req, res) => {
+      if (!(await assertEndpointAccess(req, res, service))) return;
+      if ("commentId" in req.body) {
+        res
+          .status(201)
+          .json(
+            await service.publishComment(
+              endpointId(req),
+              req.params.conversationId as string,
+              req.body.commentId,
+            ),
+          );
+        return;
+      }
+      const userId = actorUserId(req);
+      if (!userId) throw badRequest("A board user is required");
+      res
+        .status(201)
+        .json(
+          await service.publishBoardMessage(
+            endpointId(req),
+            req.params.conversationId as string,
+            req.body.body,
+            req.body.idempotencyKey,
+            userId,
+            req.body.attachmentIds,
+          ),
+        );
+    },
+  );
+
+  router.get(
+    "/chat-endpoints/:endpointId/conversations/:conversationId/publications/:publicationId/status",
+    async (req, res) => {
+      if (
+        ![
+          endpointId(req),
+          req.params.conversationId,
+          req.params.publicationId,
+        ].every((id) => typeof id === "string" && isUuidLike(id))
+      ) {
+        throw badRequest(
+          "Valid endpoint, conversation, and publication IDs are required",
+        );
+      }
+      if (!(await assertEndpointAccess(req, res, service))) return;
+      res.json(
+        await service.getPublicationBatchStatus(
+          endpointId(req),
+          req.params.conversationId as string,
+          req.params.publicationId as string,
+        ),
+      );
+    },
+  );
+
+  router.get("/issues/:issueId/chat-binding", async (req, res) => {
+    assertBoard(req);
+    const issueId = req.params.issueId as string;
+    if (issueId !== issueId.trim() || !isUuidLike(issueId)) {
+      throw badRequest("Task ID must be a UUID");
+    }
+    const binding = await service.getIssueBinding(issueId);
+    if (binding) {
+      const endpoint = await getAccessibleResource(
+        req,
+        res,
+        service.get(binding.endpointId).catch((error) => {
+          if (error instanceof HttpError && error.status === 404) return null;
+          throw error;
+        }),
+        "Issue not found",
+      );
+      if (!endpoint) return;
+    }
+    res.json(binding);
+  });
+
+  return router;
+}
+
+function standardRequest(req: ExpressRequest): Request {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (Array.isArray(value))
+      value.forEach((entry) => headers.append(name, entry));
+    else if (value !== undefined) headers.set(name, value);
+  }
+  const host = req.get("host") ?? "localhost";
+  const protocol = req.protocol || "https";
+  const capturedBody = (req as ExpressRequest & { rawBody?: Buffer }).rawBody;
+  const rawBody =
+    capturedBody ??
+    (Buffer.isBuffer(req.body)
+      ? req.body
+      : Buffer.from(JSON.stringify(req.body ?? {})));
+  return new Request(`${protocol}://${host}${req.originalUrl}`, {
+    method: req.method,
+    headers,
+    body:
+      req.method === "GET" || req.method === "HEAD"
+        ? undefined
+        : new Uint8Array(rawBody),
+  });
+}
+
+async function writeStandardResponse(response: Response, res: ExpressResponse) {
+  response.headers.forEach((value, name) => {
+    if (
+      !["content-encoding", "content-length", "transfer-encoding"].includes(
+        name.toLowerCase(),
+      )
+    ) {
+      res.setHeader(name, value);
+    }
+  });
+  const body = Buffer.from(await response.arrayBuffer());
+  res.status(response.status).send(body);
+}
+
+/** Provider-authenticated ingress. Mount outside the board mutation guard. */
+export function chatWebhookRoutes(
+  service: ChatChannelService,
+  options: ChatWebhookRouteOptions = {},
+) {
+  const router = Router();
+  const rateLimiter =
+    options.rateLimiter ??
+    createInviteRateLimiter({
+      windowMs: CHAT_WEBHOOK_RATE_LIMIT_WINDOW_MS,
+      maxRequests: CHAT_WEBHOOK_RATE_LIMIT_MAX_REQUESTS,
+    });
+  router.post("/api/chat-webhooks/:publicId/:provider", async (req, res) => {
+    recordChatWebhookStage("handler_started");
+    // Provider signatures are intentionally verified inside Chat SDK, but an
+    // attacker should not receive an unbounded cryptographic/JSON-processing
+    // budget. `req.ip` follows Express's configured trusted-proxy boundary;
+    // the public endpoint id also keeps unrelated bots from sharing a bucket.
+    const limit = rateLimiter.consume(
+      `${req.params.publicId}:${req.ip || req.socket?.remoteAddress || "unknown"}`,
+    );
+    res.setHeader("X-RateLimit-Limit", String(limit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(limit.remaining));
+    if (!limit.allowed) {
+      res.setHeader("Retry-After", String(limit.retryAfterSeconds));
+      throw tooManyRequests("Too many chat webhook requests", {
+        retryAfterSeconds: limit.retryAfterSeconds,
+      });
+    }
+    const provider = req.params.provider as ChatProvider;
+    if (!CHAT_PROVIDERS.includes(provider) || provider === "agentmail")
+      throw badRequest("Unsupported chat provider");
+    const response = await service.handleWebhook(
+      req.params.publicId as string,
+      provider,
+      standardRequest(req),
+    );
+    recordChatWebhookStage("response_ready");
+    await writeStandardResponse(response, res);
+  });
+  return router;
+}

@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "slug": "youcom",
+  "name": "You.com",
+  "description": "Connect You.com's provider-hosted MCP server.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/youcom.svg",
+    "darkLogoUrl": "/brands/apps/youcom-dark.svg"
+  },
+  "urlPatterns": [
+    "https://api.you.com/*"
+  ],
+  "docsUrl": "https://you.com/docs/build-with-agents/mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://api.you.com/mcp"
+      },
+      "guidanceMd": "Connect You.com in the browser. A You.com account for browser sign-in, or a You.com API key from you.com/platform for higher rate limits; a keyless free profile is also available.",
+      "riskTier": "S2",
+      "label": "Sign in with You.com",
+      "consoleLinks": {
+        "docs": "https://you.com/docs/build-with-agents/mcp-server"
+      },
+      "warnings": [
+        "A You.com account for browser sign-in, or a You.com API key from you.com/platform for higher rate limits; a keyless free profile is also available."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://api.you.com/mcp"
+      },
+      "guidanceMd": "Use a customer-created You.com key. A You.com account for browser sign-in, or a You.com API key from you.com/platform for higher rate limits; a keyless free profile is also available.",
+      "riskTier": "S2",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "You.com API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your You.com API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://you.com/docs/build-with-agents/mcp-server",
+        "docs": "https://you.com/docs/build-with-agents/mcp-server"
+      },
+      "warnings": [
+        "A You.com account for browser sign-in, or a You.com API key from you.com/platform for higher rate limits; a keyless free profile is also available."
+      ]
+    },
+    {
+      "key": "mcp-free",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Connect without an account for limited, rate-capped web search.",
+      "defaults": {
+        "serverUrl": "https://api.you.com/mcp?profile=free"
+      },
+      "guidanceMd": "Use the keyless free profile. You.com limits the free profile to a reduced read-only tool set.",
+      "riskTier": "S2",
+      "label": "Use the free profile",
+      "consoleLinks": {
+        "docs": "https://you.com/docs/build-with-agents/mcp-server"
+      },
+      "warnings": [
+        "The free profile is keyless and exposes a reduced read-only tool set with You.com rate limits."
+      ]
+    }
+  ]
+}

@@ -27,7 +27,7 @@ export const listDocumentsAction = {
   },
   "documentation": {
     "title": "List task documents",
-    "description": "List revisioned documents on the active mock task.",
+    "description": "List revisioned documents on the active task.",
     "note": null
   },
   "examples": {
@@ -48,7 +48,7 @@ export const listDocumentsAction = {
       "operationId": "list_documents",
       "version": 1,
       "title": "List task documents",
-      "description": "List revisioned documents on the active mock task.",
+      "description": "List revisioned documents on the active task.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [

@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type Context,
   type ReactNode,
 } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -46,7 +47,11 @@ interface CompanyContextValue {
 
 const STORAGE_KEY = "paperclip.selectedCompanyId";
 
-const CompanyContext = createContext<CompanyContextValue | null>(null);
+// A refresh can replace consumers before a mounted provider is replaced. Keep
+// their context identity in Vite's per-module data; never store account state.
+const CompanyContext: Context<CompanyContextValue | null> =
+  import.meta.hot?.data?.companyContext ?? createContext<CompanyContextValue | null>(null);
+if (import.meta.hot?.data) import.meta.hot.data.companyContext = CompanyContext;
 
 export function resolveBootstrapCompanySelection(input: {
   companies: Array<Pick<Company, "id">>;

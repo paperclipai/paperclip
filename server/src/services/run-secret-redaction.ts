@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
@@ -7,6 +7,8 @@ import { getSecretProvider } from "../secrets/provider-registry.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 
 const REGISTRY_KEY = "paperclipSecretRedactions";
+// Project only the registry: run contexts can contain megabytes of prompt data.
+const registrySnapshot = sql`jsonb_build_object('paperclipSecretRedactions', ${heartbeatRuns.contextSnapshot} -> 'paperclipSecretRedactions')`;
 
 type RegistryEntry = {
   fingerprintSha256: string;
@@ -70,14 +72,14 @@ export function createRunSecretRedactionRegistry(db: Db) {
   }
 
   async function valuesForRun(companyId: string, runId: string) {
-    const rows = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+    const rows = await db.select({ contextSnapshot: registrySnapshot })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
     return valuesForRuns(rows);
   }
 
   async function valuesForIssue(companyId: string, issueId: string) {
-    const rows = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+    const rows = await db.select({ contextSnapshot: registrySnapshot })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, companyId),
@@ -115,6 +117,27 @@ export function createRunSecretRedactionRegistry(db: Db) {
           })
           .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
       });
+    },
+    redactForRuns: async <T extends { id: string }>(companyId: string, runs: T[]): Promise<T[]> => {
+      if (runs.length === 0) return [];
+      const rows = await db.select({ id: heartbeatRuns.id, contextSnapshot: registrySnapshot })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runs.map((run) => run.id))));
+      // Resolve each encrypted value once per request, but apply only each run's
+      // own registry. Do not retain plaintext secrets across requests.
+      const resolved = new Map<string, Promise<string>>();
+      const valuesByRun = new Map(await Promise.all(rows.map(async (row) => {
+        const values = await Promise.all(registryEntries(row.contextSnapshot).map((entry) => {
+          let value = resolved.get(entry.fingerprintSha256);
+          if (!value) {
+            value = provider.resolveVersion({ material: entry.material, externalRef: null });
+            resolved.set(entry.fingerprintSha256, value);
+          }
+          return value;
+        }));
+        return [row.id, values.sort((a, b) => b.length - a.length)] as const;
+      })));
+      return runs.map((run) => redactRegisteredSecretValues(run, valuesByRun.get(run.id) ?? []));
     },
     redactForRun: async <T>(companyId: string, runId: string, value: T): Promise<T> =>
       redactRegisteredSecretValues(value, await valuesForRun(companyId, runId)),

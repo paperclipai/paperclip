@@ -98,6 +98,18 @@ describe("docker-entrypoint.sh", () => {
     expect(calls).toContain("gosu node echo ENTRYPOINT-CMD-RAN");
   });
 
+  it.each([false, true])("skips remapping a cloud identity while preserving volume repair (mismatch: %s)", async (homeMismatch) => {
+    installStubs({ uid: 0, gid: 0, nodeUid: 1001, nodeGid: 1001, homeMismatch });
+
+    const { stdout, calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
+    expect(calls).not.toContain("usermod");
+    expect(calls).not.toContain("groupmod");
+    expect(calls.includes(`chown -R node:node ${stubDir}`)).toBe(homeMismatch);
+    expect(calls).toContain("gosu node echo ENTRYPOINT-CMD-RAN");
+  });
+
   it("chowns a root-owned home before gosu even with the default UID/GID (fresh volume mount)", async () => {
     // A freshly mounted volume arrives root-owned and shadows the image's
     // build-time chown; with no remap requested the old entrypoint dropped

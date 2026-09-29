@@ -1,3 +1,5 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
@@ -6,7 +8,6 @@ import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -15,7 +16,6 @@ import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
-import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
@@ -194,6 +194,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
 export type AgentsView = "list" | "org";
 
 export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
+  const agentChat = useAgentChatEnabled();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -210,15 +211,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   useEffect(() => {
     setView(streamlinedUiEnabled ? initialView : "org");
   }, [initialView, streamlinedUiEnabled]);
-
-  const { data: boardAccess } = useQuery({
-    queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
-  });
-  const canUseProviderTrace =
-    boardAccess?.source === "local_implicit" ||
-    boardAccess?.isInstanceAdmin === true;
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
@@ -409,34 +401,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={agent.status} />
+          <AgentAvatar agent={agent} size={32} />
         )}
-        secondaryRow={
-          <div className="flex flex-col gap-2">
-            {builtInCluster && (
-              <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
-                {builtInCluster}
-              </div>
-            )}
-            {/* Actions have their own wrapping line, so names keep their width. */}
-            <div
-              className="pt-1"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-            >
-              <AgentActionButtons
-                agent={agent}
-                companyId={selectedCompanyId}
-                runLabel="Run Heartbeat"
-                showStatus={false}
-                canRunWithProviderTrace={canUseProviderTrace}
-                className="flex flex-wrap items-center gap-2"
-              />
-            </div>
+        secondaryRow={builtInCluster && (
+          <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
+            {builtInCluster}
           </div>
-        }
+        )}
         meta={
           <div className="flex items-center gap-3">
             {builtInCluster && (
@@ -456,6 +427,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         metaSpacerClassName="hidden @5xl:block"
         trailing={
           <div className="flex items-center gap-3">
+            {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>Chat</Button>}
             <div className="hidden sm:flex items-center gap-3">
               {liveRunByAgent.has(agent.id) && (
                 <LiveRunIndicator
@@ -665,7 +637,7 @@ function OrgTreeNode({
         {hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={node.status} />
+          <AgentAvatar agent={agent ?? node} size={24} />
         )}
         <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
           {/* Name floor + `truncate` keeps the primary identifier readable; the

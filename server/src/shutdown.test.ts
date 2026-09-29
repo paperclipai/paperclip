@@ -169,6 +169,73 @@ describe("finalizeServerShutdown", () => {
     );
   });
 
+  it("waits for pending run-failure reports before the database stop and the Sentry flush", async () => {
+    const order: string[] = [];
+    const release = deferred();
+    const drainPendingRunFailureReports = vi.fn(async () => {
+      order.push("runFailureReports:start");
+      await release.promise;
+      order.push("runFailureReports:settled");
+    });
+    const closeDatabase = vi.fn(async () => {
+      order.push("database:close");
+    });
+    const shutdownSentry = vi.fn(async () => {
+      order.push("sentry:flush");
+    });
+
+    const finalize = finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices: vi.fn(async () => undefined),
+      drainPendingRunFailureReports,
+      closeDatabase,
+      stopEmbeddedPostgres: null,
+      shutdownInstrumentation: vi.fn(async () => undefined),
+      shutdownSentry,
+      log: stubLogger(),
+    });
+
+    await vi.waitFor(() => expect(drainPendingRunFailureReports).toHaveBeenCalledOnce());
+    expect(closeDatabase).not.toHaveBeenCalled();
+    expect(shutdownSentry).not.toHaveBeenCalled();
+
+    release.resolve();
+    await finalize;
+
+    expect(order).toEqual([
+      "runFailureReports:start",
+      "runFailureReports:settled",
+      "database:close",
+      "sentry:flush",
+    ]);
+  });
+
+  it("logs a failed run-failure report drain and still stops the database and exits", async () => {
+    const drainError = new Error("drain failed");
+    const drainPendingRunFailureReports = vi.fn(async () => {
+      throw drainError;
+    });
+    const closeDatabase = vi.fn(async () => undefined);
+    const log = stubLogger();
+
+    await finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices: vi.fn(async () => undefined),
+      drainPendingRunFailureReports,
+      closeDatabase,
+      stopEmbeddedPostgres: null,
+      shutdownInstrumentation: vi.fn(async () => undefined),
+      shutdownSentry: vi.fn(async () => undefined),
+      log,
+    });
+
+    expect(closeDatabase).toHaveBeenCalledOnce();
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: drainError, signal: "SIGTERM" }),
+      "run-failure report drain failed",
+    );
+  });
+
   it("skips the database stop when no embedded PostgreSQL runs in this process", async () => {
     const shutdownAppServices = vi.fn(async () => undefined);
     const shutdownInstrumentation = vi.fn(async () => undefined);

@@ -419,6 +419,7 @@ export interface CompanySkillProjectScanResult {
 }
 
 export interface CompanySkillCreateRequest {
+  idempotencyKey?: string;
   folderId?: string | null;
   name: string;
   slug?: string | null;

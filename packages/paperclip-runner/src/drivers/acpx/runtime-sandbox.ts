@@ -28,6 +28,7 @@ import {
 } from "node:path";
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
+import { claudePaperclipPermissionRules } from "./permission-policy.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import {
   resolveAcpxRuntimeRoot,
@@ -324,6 +325,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
   binding: AcpxRecoveryBinding;
   agent: QualifiedAcpxAgent;
   environment?: NodeJS.ProcessEnv;
+  /** Public operations on the runner-owned Paperclip MCP bridge only. */
+  tools?: readonly Readonly<Record<string, unknown>>[];
 }): Promise<AcpxRuntimeSandbox> {
   const expectedRoot = input.binding.runtimeRoot;
   if (resolve(expectedRoot) !== expectedRoot) {
@@ -366,6 +369,42 @@ export async function prepareAcpxRuntimeSandbox(input: {
     workspaceRecordPath,
     `${input.binding.workspacePath}\n`,
   );
+  if (input.agent === "claude") {
+    // ACP otherwise rewrites exact IDs (including user-entered model IDs) to
+    // picker aliases such as "sonnet". Its supported availableModels setting
+    // preserves our requested ID through selection and model verification.
+    await writePrivateFile(
+      join(agentHomeDirectory, "settings.json"),
+      `${JSON.stringify({
+        model: input.binding.requestedModel,
+        availableModels: [input.binding.requestedModel],
+        ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
+          ? { permissions: { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) } }
+          : {}),
+      })}\n`,
+    );
+  }
+  if (input.agent === "grok") {
+    // Native project rules merge with global rules. Ask rules win over project
+    // allows, keeping operation approval at the runner's authenticated boundary.
+    await writePrivateFile(join(agentHomeDirectory, "config.toml"), [
+      "[permission]",
+      'ask = ["Bash", "Read", "Edit", "Grep", "MCPTool", "WebFetch", "WebSearch"]',
+      "[ui]", 'permission_mode = "ask"',
+      "[compat.claude]", "hooks = false", "mcps = false",
+      "[compat.cursor]", "hooks = false", "mcps = false",
+      "[managed_mcps]", "enabled = false", "gateway_tools_enabled = false",
+      "[toolset.bash]", "login_shell_capture = false",
+      "[shell_environment_policy]", 'exclude = ["XAI_API_KEY"]',
+      "[subagents]", "enabled = false",
+      "[workflows]", "enabled = false",
+      "[goal]", "enabled = false", "",
+    ].join("\n"));
+    // Always-approve may otherwise be enabled by compatible project settings.
+    // Even approve-all runs use one host decision per requested operation.
+    await writePrivateFile(join(agentHomeDirectory, "requirements.toml"),
+      "[ui]\ndisable_bypass_permissions_mode = true\n");
+  }
   if (input.agent === "pi") {
     await writePrivateFile(
       join(agentHomeDirectory, "settings.json"),
@@ -410,6 +449,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     XDG_CACHE_HOME: cacheDirectory,
     PAPERCLIP_ACPX_PROFILE: input.agent,
     PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+    ...(input.agent === "grok" ? { GROK_HOME: agentHomeDirectory, NO_BROWSER: "1", GROK_DISABLE_AUTOUPDATER: "1" } : {}),
     ...(input.agent === "pi"
       ? {
           PI_CODING_AGENT_DIR: agentHomeDirectory,

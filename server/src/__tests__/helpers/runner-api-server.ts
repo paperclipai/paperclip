@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues, projects, projectWorkspaces, activityLog, issueComments, assets, goals, approvals, documents, issueRelations, issueThreadInteractions, connectionIntentDeliveries, toolApplications, toolConnections, toolConnectionInstalls, connectionGrants, toolCatalogEntries, toolProfiles, toolProfileBindings } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues, projects, projectWorkspaces, activityLog, issueComments, assets, goals, approvals, documents, documentRevisions, issueDocuments, issueRelations, issueThreadInteractions, connectionIntentDeliveries, toolApplications, toolConnections, toolConnectionInstalls, connectionGrants, toolCatalogEntries, toolProfiles, toolProfileBindings } from "@paperclipai/db";
 import { documentService } from "../../services/documents.js";
 import { connectionIntentService } from "../../services/connection-intents.js";
 import { initializeRunIdentity } from "../../services/run-identity.js";
@@ -19,14 +19,16 @@ export type RunnerConnectionScenario = "fresh" | "pending" | "declined" | "custo
 const CONNECTION_SCENARIOS: readonly RunnerConnectionScenario[] = ["fresh", "pending", "declined", "custom", "foreign", "stale_owner", "ready"];
 
 /** Disposable real routes, database and storage. A fresh company isolates each attempt. */
-export async function startRunnerApiTestServer() {
+export async function startRunnerApiTestServer(options: {
+  deploymentMode?: "authenticated" | "local_trusted";
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "paperclip-api-eval-"));
   const temporary = await startEmbeddedPostgresTestDatabase("paperclip-api-eval-db-");
   const db = createDb(temporary.connectionString);
   const storage = createStorageService(createLocalDiskStorageProvider(join(root, "storage")));
   const app = await createApp(db, {
     uiMode: "none", serverPort: 0, storageService: storage,
-    deploymentMode: "authenticated", deploymentExposure: "private",
+    deploymentMode: options.deploymentMode ?? "authenticated", deploymentExposure: "private",
     allowedHostnames: ["127.0.0.1"], bindHost: "127.0.0.1", authReady: true,
     companyDeletionEnabled: false, instanceId: `eval-${randomUUID()}`,
     localPluginDir: join(root, "plugins"), managedPluginAutoInstall: [],
@@ -42,11 +44,29 @@ export async function startRunnerApiTestServer() {
   setupRunnerPrpWebSocketServer(http, { apiUrl });
   return {
     db, root, apiUrl, storage,
-    async fixture(options: { mode?: "standard" | "ask" | "planning"; apiToolsEnabled?: boolean; reset?: boolean; connectionScenario?: RunnerConnectionScenario } = {}) {
+    async fixture(options: { mode?: "standard" | "ask" | "planning"; apiToolsEnabled?: boolean; reset?: boolean; conversation?: boolean; connectionScenario?: RunnerConnectionScenario; contextSnapshot?: Record<string, unknown>; disableWakeOnDemand?: boolean } = {}) {
       if (options.connectionScenario !== undefined && !CONNECTION_SCENARIOS.includes(options.connectionScenario)) throw new Error(`Unknown connection eval scenario: ${String(options.connectionScenario)}`);
       // This DB is created inside this helper, never supplied by a caller. Paid
       // paired runs reset it between attempts so modeled IDs and data match.
-      if (options.reset) await db.execute(sql`TRUNCATE companies CASCADE`);
+      // The helper's own app runs background sweeps against this DB, and one
+      // can hold row locks when the reset fires; Postgres then picks a
+      // deadlock victim (observed against TRUNCATE in CI on 2026-09-10). The
+      // loser's transaction rolls back the moment it is chosen, so a short
+      // bounded retry makes the reset deterministic instead of flaky.
+      if (options.reset) {
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            await db.execute(sql`TRUNCATE companies CASCADE`);
+            break;
+          } catch (error) {
+            const code =
+              (error as { code?: string }).code ??
+              (error as { cause?: { code?: string } }).cause?.code;
+            if (attempt >= 4 || code !== "40P01") throw error;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
+      }
       const id = (key: string) => {
         if (!options.reset) return randomUUID();
         const hex = createHash("sha256").update(`runner-api-fixture:${key}`).digest("hex");
@@ -56,7 +76,7 @@ export async function startRunnerApiTestServer() {
       const foreignCompanyId = id("foreign-company"), foreignProjectId = id("foreign-project");
       const projectWorkspaceId = id("workspace"), artifactId = id("artifact"), binaryArtifactId = id("binary-artifact"), goalId = id("goal");
       const blockerId = id("blocker"), approvalId = id("approval");
-      const responsibleUserId = options.connectionScenario ? id("responsible-user") : null;
+      const responsibleUserId = options.connectionScenario || options.conversation ? id("responsible-user") : null;
       const workspace = await mkdtemp(join(root, "workspace-"));
       await writeFile(join(workspace, "sample.txt"), "API escape hatch fixture\n");
       await db.insert(companies).values([
@@ -67,7 +87,7 @@ export async function startRunnerApiTestServer() {
         await db.insert(authUsers).values({ id: responsibleUserId, name: "Eval responsible user", email: `${responsibleUserId}@fixture.invalid`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
         await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: responsibleUserId, status: "active", membershipRole: "member" });
       }
-      await db.insert(agents).values({ id: agentId, companyId, name: "API eval agent", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", cwd: workspace }, runtimeConfig: { heartbeat: { enabled: false } }, status: "active" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "API eval agent", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", cwd: workspace }, runtimeConfig: { heartbeat: { enabled: false, ...(options.disableWakeOnDemand ? { wakeOnDemand: false } : {}) } }, status: "active" });
       await db.insert(projects).values([
         { id: projectId, companyId, name: "Aurora", description: "The project verification code is violet-otter.", status: "in_progress" },
         { id: foreignProjectId, companyId: foreignCompanyId, name: "Private project", description: "foreign-data-must-not-leak" },
@@ -78,8 +98,8 @@ export async function startRunnerApiTestServer() {
         const saved = await storage.putFile({ companyId, namespace: "eval", originalFilename: filename, contentType, body });
         await db.insert(assets).values({ id, companyId, ...saved, createdByAgentId: agentId });
       }
-      await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId, issueNumber: 1, identifier: "E" + companyId.replaceAll("-", "").slice(0, 8) + "-1", title: "Verify runner API tools", description: "Fixture marker: amber-fox.", status: "in_progress", workMode: options.mode ?? "standard", assigneeAgentId: agentId });
-      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", responsibleUserId, runtimeMode: "native", nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } });
+      await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId, issueNumber: 1, identifier: "E" + companyId.replaceAll("-", "").slice(0, 8) + "-1", ...(options.conversation ? { conversationAgentId: agentId, conversationUserId: responsibleUserId, conversationState: "active" as const } : {}), title: "Verify runner API tools", description: "Fixture marker: amber-fox.", status: "in_progress", workMode: options.mode ?? "standard", assigneeAgentId: agentId });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", responsibleUserId, runtimeMode: "native", nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId, ...(options.conversation ? { conversationSessionGeneration: 0 } : {}), ...options.contextSnapshot } });
       await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
       if (responsibleUserId) await initializeRunIdentity(db, { companyId, runId, issueId, responsibleUserId, cause: "instruction" });
       await db.insert(issues).values({ id: blockerId, companyId, projectId, issueNumber: 2, identifier: "E" + companyId.replaceAll("-", "").slice(0, 8) + "-2", title: "Dependency gate", description: "Complete before shipping.", status: "todo", assigneeAgentId: agentId });
@@ -129,6 +149,7 @@ export async function startRunnerApiTestServer() {
       const binding = { companyId, agentId, issueId, runId, apiUrl, storage, apiToolsEnabled: options.apiToolsEnabled ?? true };
       return {
         ...binding, projectId, projectWorkspaceId, artifactId, binaryArtifactId, goalId, blockerId, approvalId, foreignCompanyId, foreignProjectId, workspace,
+        conversation: options.conversation ?? false,
         connectionScenario: options.connectionScenario ?? null, responsibleUserId, userId: responsibleUserId, sourceRunId: runId,
         customConnectionService, foreignConnectionService, pendingInteractionId,
         initialInteractionIds: pendingInteractionId ? [pendingInteractionId] : [],
@@ -136,12 +157,15 @@ export async function startRunnerApiTestServer() {
         async snapshot() {
           return {
             issues: await db.select().from(issues).where(eq(issues.companyId, companyId)),
+            issueDocuments: await db.select().from(issueDocuments).where(eq(issueDocuments.companyId, companyId)),
+            projectWorkspaces: await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.companyId, companyId)),
             projects: await db.select().from(projects).where(eq(projects.companyId, companyId)),
             activity: await db.select().from(activityLog).where(eq(activityLog.companyId, companyId)),
             comments: await db.select().from(issueComments).where(eq(issueComments.companyId, companyId)),
             assets: await db.select().from(assets).where(eq(assets.companyId, companyId)),
             goals: await db.select().from(goals).where(eq(goals.companyId, companyId)),
             approvals: await db.select().from(approvals).where(eq(approvals.companyId, companyId)),
+            documentRevisions: await db.select().from(documentRevisions).where(eq(documentRevisions.companyId, companyId)),
             documents: await db.select().from(documents).where(eq(documents.companyId, companyId)),
             issueRelations: await db.select().from(issueRelations).where(eq(issueRelations.companyId, companyId)),
             connectionInteractions: await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, companyId)),

@@ -9,6 +9,15 @@ import {
 } from "./wake-context.js";
 
 describe("wake context", () => {
+  it("requires the subscription-specific non-assignee receipt for a subscription wait", () => {
+    expect(isNonAssigneeWorkspaceBusyRetry("ai_connection_busy", {
+      aiConnectionBusyDeferredWhileAssignee: false,
+    })).toBe(true);
+    for (const context of [ {}, { aiConnectionBusyDeferredWhileAssignee: true }, { workspaceBusyDeferredWhileAssignee: false } ]) {
+      expect(isNonAssigneeWorkspaceBusyRetry("ai_connection_busy", context)).toBe(false);
+    }
+    expect(isNonAssigneeWorkspaceBusyRetry("transient_failure", { aiConnectionBusyDeferredWhileAssignee: false })).toBe(false);
+  });
   it("recognizes only workspace-busy retries deferred outside assignee-ship", () => {
     expect(isNonAssigneeWorkspaceBusyRetry(WORKSPACE_BUSY_RETRY_REASON, {
       workspaceBusyDeferredWhileAssignee: false,
@@ -52,7 +61,7 @@ describe("wake context", () => {
     expect(allowsIssueInteractionWake({ wakeReason: "issue_commented" }, allowed)).toBe(false);
   });
 
-  it.each(["accepted", "answered", "rejected"])(
+  it.each(["accepted", "answered", "cancelled", "rejected"])(
     "recognizes %s issue-comment interaction continuations",
     (interactionStatus) => {
       expect(isResolvedInteractionContinuationWakeContext({
@@ -64,18 +73,21 @@ describe("wake context", () => {
     },
   );
 
-  it("recognizes infrastructure continuations and rejects incomplete contexts", () => {
-    const base = { interactionId: "interaction-1", interactionStatus: "accepted" };
-    expect(isResolvedInteractionContinuationWakeContext({
-      ...base,
-      wakeReason: "interaction_continuation_infra_retry",
-    })).toBe(true);
-    expect(isResolvedInteractionContinuationWakeContext({
-      ...base,
-      retryReason: "interaction_continuation_infra_retry",
-    })).toBe(true);
-    expect(isResolvedInteractionContinuationWakeContext({ ...base, interactionStatus: "pending" })).toBe(false);
-    expect(isResolvedInteractionContinuationWakeContext({ interactionStatus: "accepted" })).toBe(false);
-    expect(isResolvedInteractionContinuationWakeContext(null)).toBe(false);
-  });
+  it.each(["accepted", "answered", "cancelled", "rejected"])(
+    "recognizes %s infrastructure continuations and rejects incomplete contexts",
+    (interactionStatus) => {
+      const base = { interactionId: "interaction-1", interactionStatus };
+      expect(isResolvedInteractionContinuationWakeContext({
+        ...base,
+        wakeReason: "interaction_continuation_infra_retry",
+      })).toBe(true);
+      expect(isResolvedInteractionContinuationWakeContext({
+        ...base,
+        retryReason: "interaction_continuation_infra_retry",
+      })).toBe(true);
+      expect(isResolvedInteractionContinuationWakeContext({ ...base, interactionStatus: "pending" })).toBe(false);
+      expect(isResolvedInteractionContinuationWakeContext({ interactionStatus })).toBe(false);
+      expect(isResolvedInteractionContinuationWakeContext(null)).toBe(false);
+    },
+  );
 });

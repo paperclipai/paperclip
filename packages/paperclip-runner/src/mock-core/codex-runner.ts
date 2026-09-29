@@ -111,6 +111,17 @@ function dispositionIssues(
         message: "blocked requires an unsatisfied objective, blocker details, and blocking remaining work",
       });
     }
+  } else if (result.reportedWorkDisposition === "yielded") {
+    if (
+      result.blocker !== undefined ||
+      result.continuation?.kind !== "response_wake"
+    ) {
+      issues.push({
+        code: "invalid_disposition",
+        path: "/reportedWorkDisposition",
+        message: "yielded requires a response_wake continuation and must not include a blocker",
+      });
+    }
   } else {
     issues.push({
       code: "invalid_disposition",

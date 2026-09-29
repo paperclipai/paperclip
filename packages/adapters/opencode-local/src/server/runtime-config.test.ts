@@ -31,10 +31,12 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
 }
 
 describe("prepareOpenCodeRuntimeConfig", () => {
-  it("injects an external_directory allow rule by default", async () => {
+  it("allows all tools and connected tools by default", async () => {
     const configHome = await makeConfigHome({
       permission: {
         read: "allow",
+        bash: "ask",
+        "mcp__example__write": "deny",
       },
       theme: "system",
     });
@@ -54,10 +56,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     ) as Record<string, unknown>;
     expect(runtimeConfig).toMatchObject({
       theme: "system",
-      permission: {
-        read: "allow",
-        external_directory: "allow",
-      },
+      permission: "allow",
     });
 
     await prepared.cleanup();
@@ -92,7 +91,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
     expect(runtimeConfig).toMatchObject({
-      permission: { read: "allow", external_directory: "allow" },
+      permission: "allow",
       provider: providers,
     });
     expect(prepared.notes.some((n) => n.includes("bifrost"))).toBe(true);

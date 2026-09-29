@@ -658,6 +658,11 @@ export async function applyRunnerGoalPrpEvent(
   ].includes(event.eventType)) return null;
   const payload = asRecord(event.payload) ?? {};
   const changed = await db.transaction(async (tx) => {
+    const [issue] = await tx.select().from(issues).where(and(eq(issues.id, binding.issueId), eq(issues.companyId, binding.companyId))).for("update");
+    if (issue?.conversationAgentId) {
+      const [run] = event.sourceRunId ? await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, event.sourceRunId)) : [];
+      if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return null;
+    }
     await tx.insert(agentTaskSessions).values({
       companyId: binding.companyId,
       agentId: binding.agentId,

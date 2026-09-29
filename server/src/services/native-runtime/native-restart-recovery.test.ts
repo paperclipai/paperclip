@@ -8,10 +8,71 @@ import {
 } from "./native-restart-recovery.js";
 
 describe("native restart recovery classification", () => {
+  it("does not reopen a failed checkpoint or reset an exhausted provider budget", () => {
+    const evidence = {
+      runnerPidAlive: false,
+      runnerGroupAlive: false,
+      processStartMatches: false,
+      hasCheckpoint: true,
+      hasProviderEvidence: true,
+    };
+    expect(
+      classifyNativeRunnerRecoveryEvidence({
+        ...evidence,
+        checkpointFailed: true,
+      }),
+    ).toMatchObject({
+      claimKind: null,
+      reason: "provider_checkpoint_permanently_failed",
+    });
+    expect(
+      classifyNativeRunnerRecoveryEvidence({ ...evidence, providerAttempt: 3 }),
+    ).toMatchObject({
+      claimKind: null,
+      reason: "execution_recovery_budget_exhausted",
+    });
+  });
   it("keeps controller-only recovery out of the provider retry budget", () => {
     expect(nextNativeProviderAttempt(2, "reattach_existing_runner")).toBe(2);
-    expect(nextNativeProviderAttempt(2, "bootstrap_incomplete")).toBe(2);
+    expect(nextNativeProviderAttempt(2, "reattach_remote_runner")).toBe(2);
+    expect(nextNativeProviderAttempt(2, "bootstrap_incomplete")).toBe(3);
     expect(nextNativeProviderAttempt(2, "resume_dead_runner")).toBe(3);
+  });
+
+  it("verifies remote ownership in the sandbox instead of interpreting its PIDs locally", () => {
+    const evidence = {
+      remoteSandbox: true,
+      runnerPidAlive: true,
+      runnerGroupAlive: true,
+      processStartMatches: false,
+      knownProviderProcessAlive: true,
+      knownProviderProcessIdentityAmbiguous: true,
+      hasCheckpoint: true,
+      checkpointIdentityMatches: true,
+      hasProviderEvidence: true,
+      providerAttempt: 3,
+    };
+    expect(classifyNativeRunnerRecoveryEvidence(evidence).claimKind).toBe(
+      "reattach_remote_runner",
+    );
+    expect(
+      classifyNativeRunnerRecoveryEvidence({
+        ...evidence,
+        checkpointIdentityMatches: false,
+      }).claimKind,
+    ).toBeNull();
+    expect(
+      classifyNativeRunnerRecoveryEvidence({
+        ...evidence,
+        checkpointFailed: true,
+      }).claimKind,
+    ).toBeNull();
+    expect(
+      classifyNativeRunnerRecoveryEvidence({
+        ...evidence,
+        hasCheckpoint: false,
+      }).claimKind,
+    ).toBeNull();
   });
 
   it.each([
@@ -202,6 +263,7 @@ describe("native controller takeover fencing", () => {
         }),
         now,
         isProcessAlive,
+        readProcessStartedAt: async () => recordedStart,
       }),
     ).resolves.toEqual({ allowed: false, reason: "controller_still_alive" });
     expect(isProcessAlive).toHaveBeenCalledWith(123);

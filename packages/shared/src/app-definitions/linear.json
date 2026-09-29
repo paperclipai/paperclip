@@ -8,7 +8,8 @@
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "/brands/apps/linear.svg"
+    "logoUrl": "/brands/apps/linear.svg",
+    "darkLogoUrl": "/brands/apps/linear-dark.svg"
   },
   "urlPatterns": [
     "https://mcp.linear.app/*"

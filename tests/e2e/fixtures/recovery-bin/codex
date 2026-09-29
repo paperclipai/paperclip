@@ -1,0 +1,3 @@
+#!/bin/sh
+export PAPERCLIP_RECOVERY_FIXTURE=1
+exec node "$(dirname "$0")/../in-feed-codex.mjs" "$@"

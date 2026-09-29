@@ -8,10 +8,10 @@ import {
   asString,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
+  selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
-  selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
+  paperclipWakeCommentsArePromptOwned,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
@@ -272,15 +272,17 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
     Boolean(nonEmpty(ctx.runtime?.sessionId));
-  const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
-  const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
-    // The task-context markdown is the authoritative brief on this lane; keep
-    // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: Boolean(taskMarkdown),
+  const { taskContextNote: taskMarkdown, wakePrompt } = selectPaperclipPromptSections(ctx.context, {
+    resumedSession,
+    // Hermes gateway owns the execution contract below; retain the old
+    // gateway prompt shape and avoid adding a second contract on resume.
+    includeExecutionContract: false,
   });
-  const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
-    omitIssueDescription: Boolean(taskMarkdown),
-  });
+  const wakePayloadJson = paperclipWakeCommentsArePromptOwned(ctx.context)
+    ? null
+    : stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
+        omitIssueDescription: Boolean(taskMarkdown),
+      });
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
   const lines = [
@@ -293,7 +295,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
     ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
     "",
-    ...(isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
+    ...(ctx.context.conversationMode === true || isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
       ? []
       : [
           "Execution contract:",
@@ -322,7 +324,10 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
 function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
-  const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  const configuredInput = nonEmpty(payloadTemplate.input);
+  const input = configuredInput && ctx.context.conversationMode === true
+    ? `${configuredInput}\n\n${buildInput(ctx, paperclipApiUrl)}`
+    : configuredInput ?? buildInput(ctx, paperclipApiUrl);
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??

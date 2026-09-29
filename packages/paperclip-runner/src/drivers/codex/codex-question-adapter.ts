@@ -78,7 +78,7 @@ export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | 
   ) {
     return "user_input";
   }
-  if (method === "mcpServer/elicitation/request") return "elicitation";
+  if (method === "mcpServer/elicitation/request" || method === "elicitation/create") return "elicitation";
   return null;
 }
 
@@ -89,6 +89,7 @@ export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | 
  * degrading back to the legacy textarea presentation.
  */
 export function hasCodexQuestionForm(method: string, params: Record<string, unknown>): boolean {
+  if (method === "elicitation/create") return "questionSet" in params;
   if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
     return "questions" in params;
   }
@@ -266,6 +267,7 @@ export function normalizeCodexQuestionSet(
   params: Record<string, unknown>,
   responseContext: CodexQuestionResponseContext,
 ): PaperclipQuestionSet | null {
+  if (method === "elicitation/create") return parsePaperclipQuestionSet(params.questionSet);
   if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
     if (!Array.isArray(params.questions) || params.questions.length === 0) return null;
     if (params.questions.length > 64) throw new Error("Codex question form exceeds 64 questions");
@@ -550,6 +552,9 @@ export function runtimeRequestResponse(
   resolution: HarnessRuntimeRequestResolution,
   responseContext: CodexQuestionResponseContext,
 ): Record<string, unknown> {
+  // The durable transport sends this canonical resolution to the ACPX sidecar,
+  // which owns conversion back to the original provider form values.
+  if (request.method === "elicitation/create") return structuredClone(resolution);
   if (
     request.requestKind === "command_approval" ||
     request.requestKind === "file_approval"

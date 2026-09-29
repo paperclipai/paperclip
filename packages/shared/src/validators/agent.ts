@@ -1,3 +1,5 @@
+import { agentAppearanceSchema } from "../agent-appearance.js";
+import { aiConnectionBindingSchema } from "../ai-connections.js";
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
@@ -60,6 +62,7 @@ export const createAgentInstructionsBundleSchema = z.object({
 });
 
 export const agentRuntimeConfigSchema = z.object({
+  aiConnection: aiConnectionBindingSchema.optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
@@ -78,6 +81,7 @@ export const createAgentSchema = z.object({
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
+  appearance: agentAppearanceSchema.optional(),
   reportsTo: z.string().guid().optional().nullable(),
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
@@ -129,6 +133,9 @@ export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
 export const createAgentHireSchema = createAgentSchema.extend({
   sourceIssueId: z.string().guid().optional().nullable(),
   sourceIssueIds: z.array(z.string().guid()).optional(),
+  // Agent-authored hires may explicitly request the caller's native runner
+  // settings. The server consumes this intent; it is never an agent column.
+  inheritRuntimeFrom: z.literal("caller").optional(),
 });
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
@@ -211,18 +218,26 @@ export const agentMineInboxQuerySchema = z.object({
 export type AgentMineInboxQuery = z.infer<typeof agentMineInboxQuerySchema>;
 
 export const wakeAgentSchema = z.object({
-  source: z.enum(["timer", "assignment", "on_demand", "automation"]).optional().default("on_demand"),
+  source: z
+    .enum(["timer", "assignment", "on_demand", "automation"])
+    .optional()
+    .default("on_demand"),
   triggerDetail: z.enum(["manual", "ping", "callback", "system"]).optional(),
   reason: z.string().optional().nullable(),
+  /** Select an exact failed run; its chat request and actor are server-derived. */
+  failedRunId: z.string().uuid().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),
   ),
-  debug: z.object({
-    providerTrace: z.literal("raw"),
-  }).strict().optional(),
+  debug: z
+    .object({
+      providerTrace: z.literal("raw"),
+    })
+    .strict()
+    .optional(),
 });
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
@@ -234,6 +249,9 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  aiConnection: aiConnectionBindingSchema.optional(),
+  /** Saved agent whose redacted environment entries are restored for this probe. */
+  agentId: z.string().guid().optional(),
   /** One-shot provider keys for a probe. Never persist these in agent config. */
   testCredentials: z.object({
     ANTHROPIC_API_KEY: z.string().max(16384),

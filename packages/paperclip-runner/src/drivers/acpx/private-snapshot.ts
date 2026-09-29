@@ -55,6 +55,7 @@ export async function createAcpxPrivateSnapshot(
   executable: FileHandle | null,
 ): Promise<AcpxPrivateSnapshot> {
   sourceRoots = await Promise.all(sourceRoots.map((root) => realpath(root)));
+  const executableIdentity = executable ? await executable.stat({ bigint: true }) : null;
   const sourceIdentities = await Promise.all(
     sourceRoots.map((root) => lstat(root, { bigint: true })),
   );
@@ -116,6 +117,8 @@ export async function createAcpxPrivateSnapshot(
         throw new Error("ACPX package directory changed during snapshot");
       return;
     }
+    // The separately pinned native binary is copied below with its own bound.
+    if (before.isFile() && executableIdentity && before.dev === executableIdentity.dev && before.ino === executableIdentity.ino) return;
     if (!before.isFile() || before.size > 16n * 1024n * 1024n)
       throw new Error("ACPX module must be a bounded regular file");
     bytesCopied += Number(before.size);

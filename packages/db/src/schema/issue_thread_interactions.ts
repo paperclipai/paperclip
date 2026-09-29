@@ -39,6 +39,7 @@ export const issueThreadInteractions = pgTable(
       .notNull()
       .default("requested"),
     idempotencyKey: text("idempotency_key"),
+    originCommentIds: jsonb("origin_comment_ids").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     sourceCommentId: uuid("source_comment_id").references(() => issueComments.id, { onDelete: "set null" }),
     sourceIdentityContextId: uuid("source_identity_context_id"),
     sourceRunId: uuid("source_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),

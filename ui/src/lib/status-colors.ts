@@ -252,6 +252,7 @@ export const agentStatusVarDefault = "--status-agent-idle";
 
 /** Task/issue status → base-hue CSS var (drives both the chip and the icon). */
 export const taskStatusVar: Record<string, string> = {
+  idle: "--status-task-backlog",
   backlog: "--status-task-backlog",
   todo: "--status-task-todo",
   in_progress: "--status-task-in_progress",
@@ -270,6 +271,7 @@ export const taskStatusVarDefault = "--status-task-backlog";
  * shape recoloured blue, so it maps to its own var.
  */
 export const taskStatusIconVar: Record<string, string> = {
+  idle: "--status-task-icon-backlog",
   backlog: "--status-task-icon-backlog",
   todo: "--status-task-icon-todo",
   in_progress: "--status-task-icon-in_progress",

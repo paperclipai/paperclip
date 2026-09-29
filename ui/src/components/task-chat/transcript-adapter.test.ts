@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
+import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import {
   assembleThreadItems,
   attachSettledTurns,
@@ -32,8 +33,192 @@ import type {
   TaskChatTurnItem,
 } from "./task-chat-model";
 import { providerActivityPresentation } from "./task-chat-activity-presentation";
+import { nativeRunEventsToTranscript } from "../transcript/native-run-events";
 
 const TS = "2026-07-31T12:00:00.000Z";
+
+describe("accepted native response-wake answers", () => {
+  const runId = "native-response-wake";
+  const summary =
+    "**Before release**\n- Test and rehearse rollback.\n\n**During release**\n- Deploy incrementally and watch errors.\n\n**After release**\n- Verify workflows and record follow-ups.";
+  function fixture(mode = "accepted") {
+    const result = {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary,
+      completionClaim: { objectiveSatisfied: true, remainingWork: [] },
+      attentionRequests:
+        mode === "attention" ? [{ kind: "ask_user_questions" }] : [],
+      continuation: {
+        kind: mode === "question" ? "interaction" : "response_wake",
+        idempotencyKey: mode === "blank_key" ? " " : "next-exact-input",
+      },
+      evidence: [],
+      verification: [],
+      artifacts: [],
+    };
+    const event = (
+      seq: number,
+      eventType: string,
+      payload: Record<string, unknown>,
+    ) =>
+      ({
+        id: seq,
+        companyId: "company-1",
+        agentId: "agent-1",
+        stream: "system",
+        level: "info",
+        color: null,
+        message: null,
+        runId,
+        seq,
+        eventType,
+        createdAt: new Date(TS),
+        payload: {
+          prpEvent: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            runId,
+            eventType,
+            sourceEventId: `response-${seq}`,
+            sourceKind:
+              eventType === "run.result.accepted" ||
+              eventType === "run.terminal"
+                ? "control_plane"
+                : "runner",
+            sourceInstanceId: "runner-1",
+            sourceSeq: seq,
+            normalizedSessionId: "session-1",
+            emittedAt: TS,
+            payload,
+          },
+        },
+      }) satisfies HeartbeatRunEvent;
+    const accepted = event(3, "run.result.accepted", { result });
+    if (mode === "mismatched_run")
+      accepted.payload.prpEvent.runId = "other-run";
+    if (mode === "forged_kind")
+      accepted.payload.prpEvent.eventType = "item.completed";
+    if (mode === "missing_source") accepted.payload.prpEvent.sourceEventId = "";
+    const events = [
+      event(1, "item.completed", {
+        kind: "agentMessage",
+        channel: "progress",
+        item: {
+          id: "preamble",
+          type: "agentMessage",
+          channel: "progress",
+          text: "I’m providing the requested checklist and leaving the task open.",
+        },
+      }),
+      event(2, "run.result.proposed", result),
+      ...(mode === "proposed" ? [] : [accepted]),
+      ...(mode === "nonterminal"
+        ? []
+        : [
+            event(4, "run.terminal", {
+              schema: "paperclip.prp.terminal.v1",
+              turnTerminalState: "completed",
+              runTerminalState:
+                mode === "failed_terminal" ? "failed" : "succeeded",
+              reportedWorkDisposition: "yielded",
+            }),
+          ]),
+      ...(mode === "provider_final"
+        ? [
+            event(5, "item.completed", {
+              kind: "agentMessage",
+              channel: "final",
+              item: {
+                id: "other-final",
+                type: "agentMessage",
+                channel: "final",
+                text: "Provider commentary is not the accepted checklist.",
+              },
+            }),
+          ]
+        : []),
+    ];
+    const entries = nativeRunEventsToTranscript(events);
+    return transcriptToTaskChatItems(entries, { runId, running: false });
+  }
+
+  it.each(["accepted", "provider_final"])(
+    "renders the exact accepted response-wake summary instead of commentary: %s",
+    (mode) => {
+      expect(
+        paperclipRunnerFinalResponse(fixture(mode), { runId }),
+      ).toMatchObject({
+        text: summary,
+        channel: "final",
+      });
+    },
+  );
+
+  it.each([
+    "proposed",
+    "mismatched_run",
+    "forged_kind",
+    "missing_source",
+    "question",
+    "attention",
+    "blank_key",
+    "nonterminal",
+    "failed_terminal",
+  ])("keeps %s evidence out of the response-wake final exception", (mode) => {
+    expect(
+      paperclipRunnerFinalResponse(fixture(mode), { runId }),
+    ).toBeUndefined();
+  });
+
+  it("does not grant the exception to another run or a live fallback", () => {
+    expect(
+      paperclipRunnerFinalResponse(fixture(), { runId: "other-run" }),
+    ).toBeUndefined();
+    expect(
+      paperclipRunnerFinalResponse(fixture(), { runId, allowFallback: false }),
+    ).toBeUndefined();
+  });
+});
+
+describe("completion tool feed visibility", () => {
+  it("keeps the full bounded notice text available when expanded", () => {
+    const summary = `${"Configuration context. ".repeat(30)}Use the project settings to fix this.`;
+    const [notice] = transcriptToTaskChatItems([{
+      kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+      status: "informational", title: "Provider notice", summary,
+      payload: { noticeId: "long-notice", summary },
+    }], { runId: "notice", running: false });
+    expect(notice.kind === "protocol" && notice.surface === "provider_activity" &&
+      notice.details.find((detail) => detail.label === "Summary")?.value).toBe(summary);
+  });
+
+  it("keeps completion events inspectable but hides both tool representations from live and settled feed activity", () => {
+    for (const running of [true, false]) {
+      const entries: TranscriptEntry[] = [
+        { kind: "tool_call", ts: TS, toolUseId: "legacy-finish", name: "paperclip_finish", input: {} },
+        ...["paperclip_finish", "search_tasks"].map((name) => ({
+          kind: "provider_activity" as const, ts: TS, family: "tool_execution" as const,
+          eventType: running ? "tool.execution.started" : "tool.execution.completed",
+          status: running ? "running" as const : "completed" as const,
+          title: "Tool execution", summary: name,
+          payload: { executionId: name, name, transport: "dynamic" },
+        })),
+        { kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+          status: "informational", title: "Provider notice", summary: "Repository is not trusted",
+          payload: { noticeId: "notice", summary: "Repository is not trusted" } },
+      ];
+      const parsed = transcriptToTaskChatItems(entries, { runId: "finish-visibility", running });
+      expect(parsed).toHaveLength(4);
+      const activity = paperclipRunnerActivityItems(parsed);
+      expect(activity).toHaveLength(2);
+      expect(JSON.stringify(activity)).not.toContain("paperclip_finish");
+      expect(JSON.stringify(activity)).toContain("search_tasks");
+      expect(JSON.stringify(activity)).toContain("Repository is not trusted");
+      expect(paperclipRunnerTimelineItems(parsed)).toEqual(activity);
+    }
+  });
+});
 
 describe("omitProgressRepeatedByResponseAcrossSegments", () => {
   const progress = (id: string, text: string): TaskChatItem => ({

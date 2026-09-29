@@ -17,6 +17,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueRecoveryActions,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
@@ -94,8 +95,6 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   }, 30_000);
 
   afterEach(async () => {
-    vi.clearAllMocks();
-    runningProcesses.clear();
     // Dependency reconciliation heals missing wakes by enqueuing an
     // on-demand wake, which dispatches a heartbeat run fire-and-forget (see
     // startNextQueuedRunForAgent → executeRun in the heartbeat service). That
@@ -105,6 +104,8 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     // insert can land between the events delete and the heartbeat_runs delete and
     // trip the run_events → runs foreign key.
     await heartbeatService(db).drainActiveRunExecutions();
+    vi.clearAllMocks();
+    runningProcesses.clear();
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(costEvents);
@@ -113,6 +114,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
+    await db.delete(issueRecoveryActions);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -544,6 +546,108 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         blockerIssueIds: [blockerIssueId],
       }),
     });
+  });
+
+  async function seedExecutionWait(status: "active" | "resolved" = "resolved") {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId: fixture.companyId, sourceIssueId: fixture.blockedIssueId,
+      kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: fixture.agentId,
+      cause: "legacy_execution_requires_reconciliation", status,
+      evidence: status === "resolved" ? { automaticRecovery: { replay: "blocked" } } : {},
+      fingerprint: randomUUID(), nextAction: "Check the stopped execution before resuming.",
+    }).returning();
+    return { ...fixture, action: action! };
+  }
+
+  it.each(["active", "resolved"] as const)("keeps repeated wakes behind a %s execution hold run-free, then resumes once", async (status) => {
+    const { companyId, agentId, blockedIssueId, action } = await seedExecutionWait(status);
+    const heartbeat = heartbeatService(db);
+    // Different producers and wake keys must not create new attempts or notices.
+    await Promise.all(Array.from({ length: 6 }, (_, i) => heartbeat.wakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
+      requestedByActorType: "system", requestedByActorId: "wait-regression",
+      idempotencyKey: `producer-${i}`, payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId },
+    })));
+    for (let i = 0; i < 3; i++) {
+      // Recreate the service to prove the wait is durable across scheduler restarts.
+      expect((await heartbeatService(db).reconcileResolvedDependencyWakes()).healed).toBe(0);
+    }
+    const waits = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toMatchObject({
+      status: "skipped", runId: null, reason: "execution_reconciliation_required", coalescedCount: 8,
+      payload: { issueId: blockedIssueId, executionWait: { recoveryActionId: action.id } },
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(0);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted"),
+    ))).toHaveLength(0);
+
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockedIssueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Finished the dependency-ready task.", provider: "test", model: "test-model" };
+    });
+    await db.update(issueRecoveryActions).set({ status: "resolved", evidence: {} }).where(eq(issueRecoveryActions.id, action.id));
+    expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(1);
+    expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(0);
+    await heartbeat.drainActiveRunExecutions();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks every gate after an execution hold clears", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId, action } = await seedExecutionWait();
+    const wake = () => heartbeatService(db).wakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
+      requestedByActorType: "system", requestedByActorId: "wait-regression",
+      payload: { issueId: blockedIssueId }, contextSnapshot: { issueId: blockedIssueId },
+    });
+    await wake();
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, blockerIssueId));
+    await db.update(issueRecoveryActions).set({ evidence: {} }).where(eq(issueRecoveryActions.id, action.id));
+    await wake();
+    await wake();
+    const waits = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(waits).toHaveLength(2);
+    expect(waits.find((row) => row.reason === "issue_dependencies_blocked")?.coalescedCount).toBe(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(0);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerIssueId));
+    expect((await heartbeatService(db).reconcileResolvedDependencyWakes()).healed).toBe(1);
+  });
+
+  it("preserves distinct comments through a hold and adopts them on the next eligible wake", async () => {
+    const { companyId, agentId, blockedIssueId, action } = await seedExecutionWait();
+    const heartbeat = heartbeatService(db);
+    const commentIds: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const [comment] = await db.insert(issueComments).values({
+        companyId, issueId: blockedIssueId, authorUserId: "board-user", body: `Follow-up ${i}`,
+      }).returning();
+      commentIds.push(comment!.id);
+      expect(await heartbeat.wakeup(agentId, {
+        source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+        requestedByActorType: "user", requestedByActorId: "board-user",
+        payload: { issueId: blockedIssueId, commentId: comment!.id },
+        contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_commented", wakeCommentId: comment!.id },
+      })).toBeNull();
+    }
+    const deferred = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(deferred).toHaveLength(2);
+    expect(deferred.every((row) => row.status === "deferred_issue_execution" && row.runId === null)).toBe(true);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(0);
+    await db.update(issueRecoveryActions).set({ evidence: {} }).where(eq(issueRecoveryActions.id, action.id));
+    const resumed = await heartbeat.wakeup(agentId, {
+      source: "on_demand", triggerDetail: "manual", reason: "issue_resumed",
+      requestedByActorType: "user", requestedByActorId: "board-user",
+      payload: { issueId: blockedIssueId }, contextSnapshot: { issueId: blockedIssueId },
+    });
+    expect(resumed?.contextSnapshot?.wakeCommentIds).toEqual(commentIds);
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(receipts.filter((row) => row.status === "coalesced")).toHaveLength(2);
   });
 
   it("retries a resolved dependency wake when the prior wake was skipped as stale", async () => {

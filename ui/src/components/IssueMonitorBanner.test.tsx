@@ -29,6 +29,16 @@ function derived(overrides: Partial<DerivedMonitorState> & { state: DerivedMonit
 }
 
 describe("buildMonitorSurfaceCopy", () => {
+  it.each(["retrying", "due-now", "overdue"] as const)("keeps workspace contention neutral when %s", (state) => {
+    const copy = buildMonitorSurfaceCopy(derived({
+      state, source: "scheduled-retry", nextCheckAt: NOW.toISOString(), attemptCount: 4,
+    }), NOW, "workspace_busy");
+    expect(copy!.bannerTitle).toBe("Waiting for workspace");
+    expect(copy!.stripTitle).toBe("Waiting for workspace");
+    expect(copy!.tone).toBe("info");
+    expect(copy!.workspaceWait).toBe(true);
+    expect(copy!.bannerMeta.join(" ")).not.toMatch(/Attempt|overdue|retry/i);
+  });
   it("leads with two-unit relative time while scheduled", () => {
     const copy = buildMonitorSurfaceCopy(
       derived({
@@ -135,6 +145,19 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     } as unknown as Issue;
   }
 
+  it("explains automatic workspace waiting without promising that a reply bypasses the lock", () => {
+    const issue = {
+      status: "todo", scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: NOW.toISOString() },
+    } as Issue;
+    const root = createRoot(container);
+    flushSync(() => root.render(<><IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} /><IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} /></>));
+    expect(container.textContent).toContain("Waiting for workspace");
+    expect(container.textContent).toContain("You can keep sending instructions while the agent waits.");
+    expect(container.textContent).not.toContain("wakes the agent now");
+    expect(container.querySelector("button")).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
   it("renders the banner with a working Check now button while waiting", () => {
     const onCheckNow = vi.fn();
     expect(hasVisibleMonitorSurface(issueWithMonitor(new Date(NOW.getTime() + 2 * 60 * 60_000).toISOString()))).toBe(true);
@@ -191,6 +214,44 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     expect(container.textContent).toContain("Resumes in 2h");
     expect(container.textContent).toContain("Sending a reply wakes the agent now");
 
+    flushSync(() => root.unmount());
+  });
+
+  it("removes both countdowns and Check now when the retry starts, then shows a newly scheduled retry", () => {
+    const root = createRoot(container);
+    const issue = {
+      status: "in_progress",
+      scheduledRetry: {
+        status: "scheduled_retry",
+        scheduledRetryAt: new Date(NOW.getTime() - 2 * 60_000).toISOString(),
+        scheduledRetryAttempt: 1,
+      },
+    } as Issue;
+    const render = (next: Issue) => flushSync(() => root.render(
+      <>
+        <IssueMonitorBanner issue={next} onCheckNow={vi.fn()} />
+        <IssueMonitorComposerStrip issue={next} onCheckNow={vi.fn()} />
+      </>,
+    ));
+
+    render(issue);
+    expect(container.textContent).toContain("Overdue by 2m");
+
+    for (const status of ["queued", "running"] as const) {
+      const promoted = { ...issue, scheduledRetry: { ...issue.scheduledRetry!, status } };
+      render(promoted);
+      expect(hasVisibleMonitorSurface(promoted)).toBe(false);
+      expect(container.textContent).toBe("");
+      expect(container.querySelector("button")).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    }
+
+    render({ ...issue, scheduledRetry: { ...issue.scheduledRetry!, scheduledRetryAt: new Date(NOW.getTime() + 5 * 60_000).toISOString() } });
+    expect(container.textContent).toContain("Resumes in 5m");
+
+    render({ ...issue, status: "done" });
+    expect(container.textContent).toBe("");
+    expect(vi.getTimerCount()).toBe(0);
     flushSync(() => root.unmount());
   });
 });

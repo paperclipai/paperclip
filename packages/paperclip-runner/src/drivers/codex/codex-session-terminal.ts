@@ -83,7 +83,7 @@ export function admitResult(
 
 function finalize(
   state: CodexSessionState,turnStatus: string): void {
-    if (state.conversationMode === "direct") return;
+  if (state.conversationMode === "direct" || state.conversationMode === "prepared") return;
     if (state.currentGoal?.status === "active") return;
     if (state.terminal) return;
     if (state.result === null) {

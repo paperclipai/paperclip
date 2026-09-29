@@ -42,8 +42,9 @@ describe("app connect policy", () => {
     ))).toBe(false);
   });
 
-  it("admits retained hidden-provider reconnects without opening fresh setup", () => {
-    expect(canEnterAppsConnect(new URLSearchParams("source=slack"))).toBe(false);
+  it("preserves supported Slack tool setup and exact known-provider reconnects", () => {
+    // Slack's current customer-owned OAuth tool method supports catalog setup.
+    expect(canEnterAppsConnect(new URLSearchParams("source=slack"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=slack&reconnect=connection-1"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown&reconnect=connection-1"))).toBe(false);
   });
@@ -67,7 +68,7 @@ describe("app connect policy", () => {
       const href = appSourceConnectHref(app.slug);
       const searchParams = new URL(href, "http://paperclip.test").searchParams;
 
-      expect(canEnterAppsConnect(searchParams), app.slug).toBe(true);
+      expect(canEnterAppsConnect(searchParams, { chatConnectorsEnabled: true }), app.slug).toBe(true);
       expect(resolveAppsConnectRouteKey({ sourceSlug: searchParams.get("source") }), app.slug).toBe(app.slug);
     }
   });
@@ -79,5 +80,13 @@ describe("app connect policy", () => {
     expect(resolveAppsConnectRouteKey({ sourceSlug: "context7" })).toBe("context7");
     expect(resolveAppsConnectRouteKey({ sourceSlug: "supabase" })).toBe("supabase");
     expect(resolveAppsConnectRouteKey({})).toBeUndefined();
+  });
+
+  it("retains GitHub tools but denies chat-only deep links while chat connectors are disabled", () => {
+    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
+    for (const source of ["discord", "telegram", "microsoft-teams"]) {
+      expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(false);
+      expect(canEnterAppsConnect(new URLSearchParams({ source, reconnect: "connection-1" })), source).toBe(false);
+    }
   });
 });

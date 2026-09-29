@@ -357,6 +357,13 @@ export function ProjectDetail() {
     queryKey: [...queryKeys.projects.detail(routeProjectRef), lookupCompanyId ?? null],
     queryFn: () => projectsApi.get(routeProjectRef, lookupCompanyId),
     enabled: canFetchProject,
+    // Canonicalizing the same project's URL must not unmount its edit form
+    // while the alias query loads. Never carry data into another company or project.
+    placeholderData: (previous) => previous &&
+      previous.companyId === lookupCompanyId &&
+      (previous.id === routeProjectRef || projectRouteRef(previous) === routeProjectRef)
+      ? previous
+      : undefined,
   });
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;

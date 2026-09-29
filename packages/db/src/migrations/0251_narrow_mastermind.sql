@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "heartbeat_runs_native_replacement_predecessor_uq" ON "heartbeat_runs" USING btree ("company_id","retry_of_run_id") WHERE "heartbeat_runs"."scheduled_retry_reason" = 'native_safe_replacement';

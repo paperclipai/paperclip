@@ -12,6 +12,7 @@ export interface QualifiedAcpxProfile {
   readonly acpxVersion: typeof QUALIFIED_ACPX_VERSION;
   readonly agent: QualifiedAcpxAgent;
   readonly agentProfileVersion: 1;
+  /** Wire identity: an npm package name or a runner-owned builtin: identifier. */
   readonly agentServerPackage: string;
   readonly agentServerVersion: string;
   readonly agentRuntimePackage: string | null;
@@ -31,6 +32,14 @@ export interface QualifiedAcpxProfile {
 export const QUALIFIED_ACPX_PROFILES: Readonly<
   Record<QualifiedAcpxAgent, QualifiedAcpxProfile>
 > = deepFreeze({
+  grok: {
+    driverKind: ACPX_DRIVER_KIND, protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
+    acpxVersion: QUALIFIED_ACPX_VERSION, agent: "grok", agentProfileVersion: 1,
+    agentServerPackage: "builtin:grok-acp", agentServerVersion: "1",
+    agentRuntimePackage: "native:grok", agentRuntimeVersion: "1.0.13",
+    commandDigest: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
+    qualificationModel: "grok-4.7", reportedModelId: "grok-4.7", permissionPolicy: "interactive",
+  },
   pi: {
     driverKind: ACPX_DRIVER_KIND,
     protocolVersion: ACPX_DRIVER_PROTOCOL_VERSION,
@@ -54,9 +63,9 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agent: "claude",
     agentProfileVersion: 1,
     agentServerPackage: "@agentclientprotocol/claude-agent-acp",
-    agentServerVersion: "0.70.0",
+    agentServerVersion: "0.73.0",
     agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
-    agentRuntimeVersion: "0.3.263",
+    agentRuntimeVersion: "0.3.280",
     commandDigest:
       "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
     qualificationModel: "claude-sonnet-5",
@@ -72,9 +81,9 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agentServerPackage: "@agentclientprotocol/codex-acp",
     agentServerVersion: "1.6.2",
     agentRuntimePackage: "@openai/codex",
-    agentRuntimeVersion: "0.153.4",
+    agentRuntimeVersion: "0.156.0",
     commandDigest:
-      "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
+      "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
     qualificationModel: "gpt-5.6-sol",
     reportedModelId: "gpt-5.6-sol",
     permissionPolicy: "interactive",
@@ -87,7 +96,7 @@ export function resolveQualifiedAcpxProfile(
 ): QualifiedAcpxProfile {
   const profile = QUALIFIED_ACPX_PROFILES[agent];
   if (!requestedModel.trim()) throw new Error("ACPX model must not be empty");
-  if (agent !== "claude" && requestedModel !== profile.qualificationModel) {
+  if (agent !== "claude" && agent !== "grok" && requestedModel !== profile.qualificationModel) {
     throw new Error(
       `ACPX ${agent} profile requires exact model ${profile.qualificationModel}; received ${requestedModel}`,
     );

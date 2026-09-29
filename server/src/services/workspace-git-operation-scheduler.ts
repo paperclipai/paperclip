@@ -1,7 +1,7 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { runWorkspaceGitProcess } from "@paperclipai/adapter-utils/workspace-git-stream";
 import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
@@ -53,6 +53,8 @@ export interface WorkspaceGitScanResult {
 }
 
 export interface WorkspaceGitScanInput {
+  /** A backpressured, non-cacheable stdout consumer. Streaming jobs never coalesce. */
+  onStdout?: (chunk: Buffer) => Promise<void> | void;
   workspacePath: string;
   args: readonly string[];
   operation: string;
@@ -91,6 +93,8 @@ export interface WorkspaceGitSchedulerSnapshot {
 }
 
 export interface WorkspaceGitRunnerInput {
+  /** A backpressured, non-cacheable stdout consumer. Streaming jobs never coalesce. */
+  onStdout?: (chunk: Buffer) => Promise<void> | void;
   canonicalWorkspacePath: string;
   args: readonly string[];
   env?: NodeJS.ProcessEnv;
@@ -137,6 +141,8 @@ interface Waiter {
 }
 
 interface PendingScan {
+  /** A backpressured, non-cacheable stdout consumer. Streaming jobs never coalesce. */
+  onStdout?: (chunk: Buffer) => Promise<void> | void;
   key: string;
   operation: string;
   canonicalWorkspacePath: string;
@@ -254,151 +260,20 @@ function abortError(workspaceHash: string): WorkspaceGitScanError {
   );
 }
 
-function signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform !== "win32" && child.pid) {
+function createSpawnRunner(input: { gitBinary: string; gitArgsPrefix: readonly string[] }): WorkspaceGitRunner {
+  return async (runInput) => {
     try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // Fall back to the direct child if the process group already disappeared.
+      return await runWorkspaceGitProcess({ ...runInput, ...input, cwd: runInput.canonicalWorkspacePath });
+    } catch (error) {
+      const candidate = error as { code?: WorkspaceGitScanErrorCode; details?: Record<string, unknown> };
+      throw new WorkspaceGitScanError(
+        candidate.code && Object.values(WORKSPACE_GIT_SCAN_ERROR_CODES).includes(candidate.code)
+          ? candidate.code : WORKSPACE_GIT_SCAN_ERROR_CODES.failed,
+        error instanceof Error ? error.message : "Workspace Git scan failed",
+        { ...candidate.details, workspaceHash: workspaceIdentity(runInput.canonicalWorkspacePath) },
+      );
     }
-  }
-  try {
-    child.kill(signal);
-  } catch {
-    // The close/error handler owns settlement; an already-dead child is benign.
-  }
-}
-
-function createSpawnRunner(input: {
-  gitBinary: string;
-  gitArgsPrefix: readonly string[];
-}): WorkspaceGitRunner {
-  return (runInput) => new Promise<WorkspaceGitRunnerResult>((resolve, reject) => {
-    if (runInput.signal.aborted) {
-      reject(abortError(workspaceIdentity(runInput.canonicalWorkspacePath)));
-      return;
-    }
-
-    const child = spawn(
-      input.gitBinary,
-      [...input.gitArgsPrefix, "-C", runInput.canonicalWorkspacePath, ...runInput.args],
-      {
-        cwd: runInput.canonicalWorkspacePath,
-        env: runInput.env ?? process.env,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: process.platform !== "win32",
-        windowsHide: true,
-      },
-    );
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let termination: "timeout" | "cancelled" | "output_limit" | null = null;
-    let spawnError: Error | null = null;
-    let settled = false;
-
-    const terminate = (reason: NonNullable<typeof termination>) => {
-      if (termination) return;
-      termination = reason;
-      signalChild(child, "SIGTERM");
-      killTimer = setTimeout(() => signalChild(child, "SIGKILL"), runInput.killGraceMs);
-      killTimer.unref?.();
-    };
-
-    const append = (
-      chunk: Buffer | string,
-      chunks: Buffer[],
-      currentBytes: number,
-      maxBytes: number,
-    ): number => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const remaining = Math.max(0, maxBytes - currentBytes);
-      if (remaining > 0) chunks.push(buffer.subarray(0, remaining));
-      const nextBytes = currentBytes + buffer.length;
-      if (nextBytes > maxBytes) terminate("output_limit");
-      return nextBytes;
-    };
-
-    const onAbort = () => terminate("cancelled");
-    runInput.signal.addEventListener("abort", onAbort, { once: true });
-    child.stdout?.on("data", (chunk) => {
-      stdoutBytes = append(chunk, stdoutChunks, stdoutBytes, runInput.maxStdoutBytes);
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderrBytes = append(chunk, stderrChunks, stderrBytes, runInput.maxStderrBytes);
-    });
-    child.once("error", (error) => {
-      spawnError = error;
-    });
-
-    const timeoutTimer = setTimeout(() => terminate("timeout"), runInput.timeoutMs);
-    timeoutTimer.unref?.();
-    let killTimer: NodeJS.Timeout | null = null;
-
-    child.once("close", (code, childSignal) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutTimer);
-      if (killTimer) clearTimeout(killTimer);
-      runInput.signal.removeEventListener("abort", onAbort);
-      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
-      const stderr = Buffer.concat(stderrChunks).toString("utf8");
-      const workspaceHash = workspaceIdentity(runInput.canonicalWorkspacePath);
-
-      if (termination === "timeout") {
-        reject(new WorkspaceGitScanError(
-          WORKSPACE_GIT_SCAN_ERROR_CODES.timeout,
-          `Workspace Git scan timed out after ${runInput.timeoutMs}ms`,
-          { workspaceHash, timeoutMs: runInput.timeoutMs },
-        ));
-        return;
-      }
-      if (termination === "cancelled") {
-        reject(abortError(workspaceHash));
-        return;
-      }
-      if (termination === "output_limit") {
-        reject(new WorkspaceGitScanError(
-          WORKSPACE_GIT_SCAN_ERROR_CODES.outputLimit,
-          "Workspace Git scan exceeded its output limit",
-          {
-            workspaceHash,
-            stdoutBytes,
-            stderrBytes,
-            maxStdoutBytes: runInput.maxStdoutBytes,
-            maxStderrBytes: runInput.maxStderrBytes,
-          },
-        ));
-        return;
-      }
-      if (spawnError) {
-        reject(new WorkspaceGitScanError(
-          WORKSPACE_GIT_SCAN_ERROR_CODES.failed,
-          "Workspace Git scan could not start",
-          { workspaceHash, cause: spawnError.message },
-        ));
-        return;
-      }
-      if (code !== 0) {
-        reject(new WorkspaceGitScanError(
-          WORKSPACE_GIT_SCAN_ERROR_CODES.failed,
-          "Workspace Git scan failed",
-          {
-            workspaceHash,
-            exitCode: code,
-            signal: childSignal,
-            // Keep the diagnostic bounded; callers never receive raw paths in telemetry.
-            stderr: stderr.trim().slice(0, 1_000),
-          },
-        ));
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
-  });
+  };
 }
 
 export class WorkspaceGitOperationScheduler {
@@ -478,10 +353,10 @@ export class WorkspaceGitOperationScheduler {
     if (input.signal?.aborted) throw abortError(workspaceIdentity(canonicalWorkspacePath));
 
     const workspaceHash = workspaceIdentity(canonicalWorkspacePath);
-    const timeoutMs = clampInteger(input.timeoutMs, this.timeoutMs, 1, 120_000);
+    const timeoutMs = clampInteger(input.timeoutMs, this.timeoutMs, 1, input.onStdout ? 86_400_000 : 120_000);
     const maxStdoutBytes = clampInteger(input.maxStdoutBytes, this.maxStdoutBytes, 1, 128 * 1024 * 1024);
     const maxStderrBytes = clampInteger(input.maxStderrBytes, this.maxStderrBytes, 1, 128 * 1024 * 1024);
-    const key = scanKey({
+    const key = input.onStdout ? `stream:${randomUUID()}` : scanKey({
       canonicalWorkspacePath,
       args: input.args,
       env: input.env,
@@ -489,7 +364,7 @@ export class WorkspaceGitOperationScheduler {
       maxStdoutBytes,
       maxStderrBytes,
     });
-    const cacheTtlMs = clampInteger(input.cacheTtlMs, this.defaultCacheTtlMs, 0, 60_000);
+    const cacheTtlMs = input.onStdout ? 0 : clampInteger(input.cacheTtlMs, this.defaultCacheTtlMs, 0, 60_000);
     // A correctness-sensitive caller that explicitly disables caching must not
     // consume a result populated earlier by the file browser.
     const cached = cacheTtlMs > 0 ? this.readCache(key) : null;
@@ -557,6 +432,7 @@ export class WorkspaceGitOperationScheduler {
       args: [...input.args],
       fairnessKeys,
       env: input.env,
+      onStdout: input.onStdout,
       timeoutMs,
       maxStdoutBytes,
       maxStderrBytes,
@@ -590,8 +466,14 @@ export class WorkspaceGitOperationScheduler {
       };
       if (signal) {
         waiter.onAbort = () => {
-          this.removeWaiter(scan, waiter);
-          reject(abortError(scan.workspaceHash));
+          if (scan.onStdout && scan.state === "running") {
+            // The caller owns the sink storage. Do not release it until the
+            // child and its last pending write settle.
+            scan.controller.abort();
+          } else {
+            this.removeWaiter(scan, waiter);
+            reject(abortError(scan.workspaceHash));
+          }
         };
         signal.addEventListener("abort", waiter.onAbort, { once: true });
       }
@@ -678,6 +560,7 @@ export class WorkspaceGitOperationScheduler {
       canonicalWorkspacePath: scan.canonicalWorkspacePath,
       args: scan.args,
       env: scan.env,
+      onStdout: scan.onStdout,
       signal: scan.controller.signal,
       timeoutMs: scan.timeoutMs,
       killGraceMs: this.killGraceMs,
@@ -887,6 +770,8 @@ setExpensiveWorkspaceGitExecutor(async (input) => {
     // referenced-project scan sets this to its hardened environment, so the
     // hardening survives the hop through this shared scheduler.
     env: input.env,
+    onStdout: input.onStdout,
+    signal: input.signal,
   });
   return { stdout: result.stdout, stderr: result.stderr };
 });

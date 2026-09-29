@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { createDurableRunLogStore } from "./run-log-store.js";
 import type { StorageProvider } from "../storage/types.js";
@@ -31,6 +32,14 @@ function createMemoryProvider() {
       if (!buf) {
         const err = new Error("Object not found") as Error & { name: string };
         err.name = "NoSuchKey";
+        throw err;
+      }
+      // Real S3 answers 416 when the range starts at or past EOF — the mock
+      // must too, or caught-up-reader regressions (PAPERCLIP-BACKEND-9) pass
+      // silently with an empty slice.
+      if (input.range && (input.range.start >= buf.length || input.range.start > input.range.end)) {
+        const err = new Error("Invalid range") as Error & { name: string };
+        err.name = "InvalidRange";
         throw err;
       }
       const slice = input.range ? buf.subarray(input.range.start, input.range.end + 1) : buf;
@@ -92,6 +101,102 @@ describe("createDurableRunLogStore", () => {
     expect(objects.get(key)!.toString("utf8")).toContain("line-B");
   });
 
+  it.each(["finishes", "fails"])("waits for an accepted file append that %s before finalizing", async (outcome) => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const appendFile = fs.appendFile.bind(fs);
+    const spy = vi.spyOn(fs, "appendFile").mockImplementationOnce(async (...args) => {
+      await gate;
+      if (outcome === "fails") throw new Error("disk unavailable");
+      await appendFile(...args);
+    });
+    const append = store.append(handle, { stream: "stderr", chunk: "late diagnostic", ts: "t1" });
+    // Observe the deliberate rejection independently of finalization.
+    void append.catch(() => {});
+    let finalized = false;
+    const finalize = store.finalize(handle).then((summary) => {
+      finalized = true;
+      return summary;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(finalized).toBe(false);
+      release();
+      if (outcome === "fails") await expect(append).rejects.toThrow("disk unavailable");
+      else await append;
+      const summary = await finalize;
+      const local = await fs.readFile(path.join(baseDir, handle.logRef));
+      expect(summary.bytes).toBe(local.length);
+      expect(summary.sha256).toBe(createHash("sha256").update(local).digest("hex"));
+      expect(objects.get(handle.logRef)).toEqual(local);
+      expect(local.toString()).toBe(outcome === "fails" ? "" : JSON.stringify({
+        ts: "t1", stream: "stderr", chunk: "late diagnostic",
+      }) + "\n");
+    } finally {
+      release();
+      await append.catch(() => {});
+      await finalize;
+      spy.mockRestore();
+    }
+  });
+
+  it("ignores appends once finalization starts so the durable snapshot stays immutable", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "accepted", ts: "t1" });
+    const finalize = store.finalize(handle);
+    expect(await store.append(handle, { stream: "stderr", chunk: "too late", ts: "t2" })).toBe(0);
+    const summary = await finalize;
+    expect(await store.append(handle, { stream: "stderr", chunk: "also too late", ts: "t3" })).toBe(0);
+    const local = await fs.readFile(path.join(baseDir, handle.logRef));
+    expect(local.toString()).not.toContain("too late");
+    expect(summary.bytes).toBe(local.length);
+    expect(summary.sha256).toBe(createHash("sha256").update(local).digest("hex"));
+    expect(objects.get(handle.logRef)).toEqual(local);
+  });
+
+  it("leaves final metadata unknown when an append stalls and never mirrors its late completion", async () => {
+    const { provider, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, inflightMirrorMs: 10_000 } });
+    const handle = await store.begin(begin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const appendFile = fs.appendFile.bind(fs);
+    const spy = vi.spyOn(fs, "appendFile").mockImplementationOnce(async (...args) => {
+      await gate;
+      await appendFile(...args);
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const append = store.append(handle, { stream: "stderr", chunk: "stalled diagnostic", ts: "t1" });
+    let summary: Awaited<ReturnType<typeof store.finalize>> | undefined;
+    const finalize = store.finalize(handle).then((result) => { summary = result; });
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(summary).toEqual({ bytes: null, sha256: null, compressed: false });
+      expect(warn).toHaveBeenCalled();
+      expect(calls.put).toBe(0);
+      release();
+      await append;
+      await vi.advanceTimersByTimeAsync(20_000);
+      await store.flushInflightMirrors!();
+      expect(calls.put).toBe(0);
+      expect(await store.finalize(handle)).toEqual(summary);
+      expect(await store.append(handle, { stream: "stderr", chunk: "too late", ts: "t2" })).toBe(0);
+    } finally {
+      release();
+      await append;
+      await finalize;
+      vi.useRealTimers();
+      spy.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("falls back to S3 when the local file is gone (the pod-roll case that caused 'Run log not found')", async () => {
     const { provider } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, keyPrefix: "run-logs" } });
@@ -122,25 +227,48 @@ describe("createDurableRunLogStore", () => {
     expect(tail.nextOffset).toBeUndefined();
   });
 
-  it("falls back to S3 when the local file vanishes between stat() and open (TOCTOU race)", async () => {
+  it("S3 fallback returns an empty read (no InvalidRange) when the reader is fully caught up", async () => {
+    // Regression test for PAPERCLIP-BACKEND-9: a poller that had consumed the
+    // whole log kept polling at offset === total after the pod rolled; the S3
+    // path clamped end up to start and requested `bytes=total-total`, which
+    // S3 rejects with 416 InvalidRange -> 500.
     const { provider } = createMemoryProvider();
-    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, keyPrefix: "run-logs" } });
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, keyPrefix: "p" } });
     const handle = await store.begin(begin);
-    await store.append(handle, { stream: "stdout", chunk: "raced-line", ts: "t1" });
+    await store.append(handle, { stream: "stdout", chunk: "0123456789", ts: "t" });
     await store.finalize(handle);
-    // Delete the local file DURING stat(), i.e. after it reports the file
-    // present but before createReadStream opens it -> the open hits ENOENT.
-    const realStat = fs.stat.bind(fs);
-    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (target, ...rest) => {
-      const result = await realStat(target as Parameters<typeof realStat>[0], ...(rest as []));
-      if (String(target).endsWith(".ndjson")) {
-        await fs.rm(target as string, { force: true });
-      }
-      return result;
-    });
+    const full = await store.read(handle);
+    const total = Buffer.byteLength(full.content, "utf8");
+    await fs.rm(baseDir, { recursive: true, force: true }); // force S3 path
+    const caughtUp = await store.read(handle, { offset: total, limitBytes: 100 });
+    expect(caughtUp.content).toBe("");
+    expect(caughtUp.nextOffset).toBeUndefined();
+    // Past-EOF offsets clamp to the same empty read.
+    const pastEof = await store.read(handle, { offset: total + 50, limitBytes: 100 });
+    expect(pastEof.content).toBe("");
+    expect(pastEof.nextOffset).toBeUndefined();
+  });
+
+  it("local read at offset === size returns an empty read with undefined nextOffset", async () => {
+    const store = createDurableRunLogStore({ basePath: baseDir });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "abc", ts: "t" });
+    const full = await store.read(handle);
+    const total = Buffer.byteLength(full.content, "utf8");
+    const caughtUp = await store.read(handle, { offset: total, limitBytes: 100 });
+    expect(caughtUp.content).toBe("");
+    expect(caughtUp.nextOffset).toBeUndefined();
+  });
+
+  it("reads local pages without waiting for a separate metadata request", async () => {
+    const store = createDurableRunLogStore({ basePath: baseDir });
+    const handle = await store.begin(begin);
+    await fs.writeFile(path.join(baseDir, handle.logRef), "0123456789");
+    const statSpy = vi.spyOn(fs, "stat").mockRejectedValue(new Error("Metadata unavailable"));
     try {
-      const res = await store.read(handle);
-      expect(res.content).toContain("raced-line");
+      expect(await store.read(handle, { offset: 2, limitBytes: 4 })).toEqual({ content: "2345", nextOffset: 6 });
+      expect(await store.read(handle, { offset: 6, limitBytes: 4 })).toEqual({ content: "6789", nextOffset: undefined });
+      expect(await store.read(handle, { offset: 20, limitBytes: 4 })).toEqual({ content: "", nextOffset: undefined });
     } finally {
       statSpy.mockRestore();
     }

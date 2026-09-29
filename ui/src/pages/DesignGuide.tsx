@@ -1,8 +1,28 @@
+import { DispositionRecoveryNotice } from "../components/DispositionRecoveryNotice";
+import { CloudSignIn } from "../components/CloudSignIn";
+import { SetupPrompt } from "./apps/chat/SetupPrompt";
+import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
+import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
+import { SetupWizardNavigation, SetupWizardFooter } from "../components/SetupWizard";
+import { RemoteMcpDesignExample } from "@/features/connections/remote-mcp/RemoteMcpDesignExample";
+import { AgentChatPicker } from "@/components/AgentChatPicker";
+import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
+import { AnnouncementCard } from "@/components/AnnouncementCard";
+import { announcementPreview, announcementAnimationPreview, announcementAnimationPreviewSrc } from "@/lib/announcement-preview";
+import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
+import { AiConnectionDesignExamples } from "@/components/ai-connections/AiConnectionDesignExamples";
+import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { AgentCharacter } from "@/components/AgentCharacter";
+import { AGENT_PALETTE_IDS, appearanceForPalette } from "@paperclipai/shared";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
+import { TaskChatRunnerActivityGroup } from "@/components/task-chat/TaskChatRunnerActivityGroup";
+import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
+import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { ComposerAddMenu, ComposerModeChip } from "@/components/task-chat/ComposerAddMenu";
+import type { IssueWorkMode } from "@paperclipai/shared";
+import { TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
 import { useState } from "react";
-import { ServicesList } from "./apps/app-detail/ServicesPanel";
-import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
-import type { ComposioServiceRow } from "./apps/composio-services";
 import {
   BookOpen,
   Bot,
@@ -125,6 +145,7 @@ import {
   AvatarGroupCount,
 } from "@/components/ui/avatar";
 import { AgentCapsule, AGENT_GRADIENT_COUNT } from "@/components/AgentCapsule";
+import { AgentRunCard } from "@/components/ActiveAgentsPanel";
 import { StatusBadge, IssueStatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { EnforcementBanner } from "@/components/EnforcementBanner";
@@ -255,58 +276,6 @@ const DESIGN_GUIDE_TASK = {
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
 /* ------------------------------------------------------------------ */
-
-/**
- * Composio service rows for the design guide (PAP-17865). One row per state, so
- * a reader can compare all four side by side rather than connecting a real
- * Composio project to see them.
- */
-const DESIGN_GUIDE_COMPOSIO_ROWS: ComposioServiceRow[] = [
-  {
-    toolkitSlug: "github",
-    name: "GitHub",
-    description: "Issues, pull requests, and repository actions",
-    logoUrl: null,
-    state: "connected",
-    connectedAccountStatus: "ACTIVE",
-    childConnectionId: "design-guide-child",
-    toolCount: 42,
-    noAuth: false,
-  },
-  {
-    toolkitSlug: "hubspot",
-    name: "HubSpot",
-    description: "CRM contacts and deals",
-    logoUrl: null,
-    state: "attention",
-    connectedAccountStatus: "EXPIRED",
-    childConnectionId: "design-guide-child-2",
-    toolCount: 18,
-    noAuth: false,
-  },
-  {
-    toolkitSlug: "slack",
-    name: "Slack",
-    description: "Channels and messages",
-    logoUrl: null,
-    state: "pending",
-    connectedAccountStatus: "INITIALIZING",
-    childConnectionId: null,
-    toolCount: 12,
-    noAuth: false,
-  },
-  {
-    toolkitSlug: "gmail",
-    name: "Gmail",
-    description: "Read and send mail",
-    logoUrl: null,
-    state: "not_connected",
-    connectedAccountStatus: null,
-    childConnectionId: null,
-    toolCount: 9,
-    noAuth: false,
-  },
-];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -448,7 +417,75 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 /*  Page                                                               */
 /* ------------------------------------------------------------------ */
 
+function TaskExecutionControlsExample() {
+  const [running, setRunning] = useState(true);
+  const [dialogMode, setDialogMode] = useState<"resume" | "cancel" | "restore" | null>(null);
+  const [wake, setWake] = useState(true);
+  return <div className="max-w-xl space-y-4">
+    <div className="w-52 rounded-md border border-border p-1">
+      <TaskTreeControlMenuItems scope="subtree" canPause={running} canResume={!running} canCancel canRestore={!running}
+        onPause={() => setRunning(false)} onResume={() => setDialogMode("resume")}
+        onCancel={() => setDialogMode("cancel")} onRestore={() => setDialogMode("restore")} />
+    </div>
+    <p className="text-sm text-muted-foreground">{running ? "Running: type to switch Stop to Send." : "Paused: resume from the menu."}</p>
+    <TaskChatProjectCreatedCard item={{ id: "design-project", kind: "project_created", projectId: "example-project", name: "Onboarding improvements", description: "Help new teams reach their first useful result.", timestamp: "2026-09-11T00:00:00Z", repositories: [{ id: "1", name: "paperclipai/paperclip", url: "https://github.com/paperclipai/paperclip" }] }} />
+    {!running ? <TaskChatMarker item={{ id: "design-cancelled", kind: "marker", variant: "interrupted", tone: "neutral", label: "Run cancelled", detail: "The run was cancelled before returning an answer.", collapsible: true }} /> : null}
+    <TaskChatComposer pause={!running ? { scope: "subtree", onResume: () => setDialogMode("resume") } : null} onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
+    <TaskTreeControlDialog open={dialogMode !== null} onOpenChange={(open) => { if (!open) setDialogMode(null); }}
+      mode={dialogMode ?? "cancel"} scope="subtree" affectedCount={3} affectedAgentCount={2} loading={false} pending={false} valid
+      wakeAgents={wake} onWakeAgentsChange={setWake} onRetry={() => {}}
+      onApply={() => { setRunning(dialogMode !== "cancel" && wake); setDialogMode(null); }} />
+  </div>;
+}
+
+function TaskPendingInputExample() {
+  const [open, setOpen] = useState(true);
+  const [pending, setPending] = useState(true);
+  return <div className="max-w-xl">
+    <TaskChatComposer
+      onAdd={async () => {}}
+      workMode="standard"
+      takeover={pending && open ? {
+        id: "design-question",
+        label: "Question",
+        pendingCount: 1,
+        content: <div className="space-y-3 text-sm">
+          <p>Should the agent use the existing draft?</p>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => setPending(false)}>Use draft</Button>
+            <Button size="sm" variant="outline" onClick={() => setPending(false)}>Start fresh</Button>
+          </div>
+        </div>,
+        onDismiss: () => setOpen(false),
+        onSkip: () => setPending(false),
+      } : null}
+      pendingTakeover={pending ? { count: 1, label: "Question", onOpen: () => setOpen(true) } : null}
+    />
+  </div>;
+}
+
+function AgentChatPickerExample() {
+  const [state, setState] = useState<"closed" | "empty" | "loading" | "error">("closed");
+  return <div className="flex flex-wrap gap-2">
+    <Button variant="outline" onClick={() => setState("empty")}>Empty picker</Button>
+    <Button variant="outline" onClick={() => setState("loading")}>Loading picker</Button>
+    <Button variant="outline" onClick={() => setState("error")}>Failed picker</Button>
+    <AgentChatPicker agents={[]} open={state !== "closed"} onOpenChange={(open) => { if (!open) setState("closed"); }} onSelect={() => {}}
+      loading={state === "loading"} error={state === "error" ? new Error("Unavailable") : null} onRetry={() => setState("empty")} />
+  </div>;
+}
+
+function ComposerActionsExample() {
+  const [mode, setMode] = useState<IssueWorkMode>("standard");
+  return <div className="flex max-w-xl items-center gap-2 rounded-xl border border-border bg-card p-3">
+    <ComposerAddMenu mode={mode} onModeChange={setMode} onAttachFile={() => {}} onGoal={() => {}} />
+    <ComposerModeChip mode={mode} onRemove={() => setMode("standard")} />
+    <span className="ml-auto text-xs text-muted-foreground">Plus menu · removable mode chip</span>
+  </div>;
+}
+
 export function DesignGuide() {
+  const [wizardStep, setWizardStep] = useState(0);
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");
@@ -517,6 +554,22 @@ export function DesignGuide() {
             </div>
           </SubSection>
         </div>
+      </Section>
+
+      <Section title="Announcements">
+        <div className="grid gap-4 md:grid-cols-2">
+          <AnnouncementCard announcement={announcementAnimationPreview} imageSrc="/announcement-preview.svg" animationSrc={announcementAnimationPreviewSrc} onDismiss={() => {}} />
+          <AnnouncementCard announcement={announcementPreview} imageSrc="/announcement-preview.svg" onDismiss={() => {}} />
+          <AnnouncementCard announcement={{ ...announcementPreview, image: undefined, secondaryLink: undefined }} onDismiss={() => {}} />
+        </div>
+      </Section>
+
+      <Section title="Task Execution Controls">
+        <TaskExecutionControlsExample />
+      </Section>
+
+      <Section title="Composer actions">
+        <ComposerActionsExample />
       </Section>
 
       <Section title="Task Collection">
@@ -595,6 +648,17 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
+      <Section title="Runner activity">
+        <TaskChatRunnerActivityGroup item={{ id: "design-runner-activity", kind: "activity_phase", active: true, summary: "", interstitial: { id: "design-runner-commentary", kind: "message", author: "agent", text: "I’ll inspect the activity feed and check the layout.", interstitial: true }, items: [
+          { id: "design-runner-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Found the activity groups." },
+          { id: "design-runner-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "in_progress" },
+        ] }} />
+        <TaskChatRunnerActivityGroup item={{ id: "design-runner-completed", kind: "activity_phase", active: false, summary: "", items: [
+          { id: "design-completed-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Read the activity groups." },
+          { id: "design-completed-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "failed", detail: "A token check needs another pass." },
+        ] }} />
+      </Section>
+
       <Section title="Typography">
         <div className="space-y-3">
           <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
@@ -735,6 +799,10 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="Idle Slack conversation">
+          <StatusIcon status="in_review" externalConversationState="waiting" showLabel />
+          <IssueStatusBadge status="in_review" externalConversationState="waiting" />
+        </SubSection>
         <SubSection title="StatusIcon (interactive)">
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
@@ -802,6 +870,8 @@ export function DesignGuide() {
           <p className="text-xs text-muted-foreground">
             Used wherever a task is referenced — in markdown, the Related Work tab, and activity summaries.
             Pass <code className="font-mono">status</code> to show the target issue&apos;s state at a glance.
+            Use <code className="font-mono">variant="property"</code> for compact badges with direct navigation.
+            Pass <code className="font-mono">onRemove</code> for a separate blocker removal control with reserved space.
             Use <code className="font-mono">strikethrough</code> for &quot;removed&quot; contexts.
           </p>
           <div className="flex items-center gap-2 flex-wrap">
@@ -809,6 +879,7 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: "With in_progress status", status: "in_progress" }} />
             <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
+            <IssueReferencePill onRemove={() => window.alert("Blocker removed")} issue={{ id: "demo-blocker", identifier: "PAP-303", title: "Hover or focus to remove blocker", status: "in_review" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
           </div>
         </SubSection>
@@ -1159,6 +1230,23 @@ export function DesignGuide() {
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
       <Section title="Cards">
+        <SubSection title="Dashboard agent runs">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {["running", "queued", "succeeded", "failed", "timed_out", "cancelled", "interrupted"].map((status) => (
+              <AgentRunCard
+                key={status}
+                companyId="design-guide"
+                run={{
+                  id: `design-guide-${status}`, agentId: "design-guide-agent", agentName: "CodexCoder",
+                  status, adapterType: "codex_local", invocationSource: "on_demand", triggerDetail: "manual",
+                  startedAt: null, finishedAt: null, createdAt: "2026-09-11T12:00:00Z", issueId: "design-guide-task",
+                }}
+                issue={{ identifier: "PAP-559", title: "Recreate this wireframe on pages Paperclip", status: status === "succeeded" ? "done" : "in_progress" }}
+              />
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">The dashboard and Live runs page use the same compact cards. In-progress task icons animate across the app, including between runs, to represent task workflow status. Live indicators report active execution. Open a run to view its status and transcript.</p>
+        </SubSection>
         <SubSection title="Standard Card">
           <Card>
             <CardHeader>
@@ -1420,20 +1508,29 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  IDENTITY                                                     */}
       {/* ============================================================ */}
-      <Section title="Identity">
+      <Section title="Agent personas">
+        <SubSection title="Stable palette identities">
+          <div className="flex flex-wrap gap-3">{AGENT_PALETTE_IDS.map(palette => <AgentAvatar key={palette} appearance={appearanceForPalette(palette)} size={48} label={palette} />)}</div>
+        </SubSection>
+        <SubSection title="Onboarding and live character">
+          <p className="text-sm text-muted-foreground">Place one live character beside the agent name. Onboarding uses a larger padded frame. Onboarding and agent headers follow the pointer across the page; other placements track within their region. Full-page examples are in Storybook under Agents / Personas / Full pages.</p>
+          <div className="flex gap-4"><AgentCharacter muted state="sleepy" motion="still" size={128} /><AgentCharacter size={128} /></div>
+        </SubSection>
+      </Section>
+      <Section title="Human identity">
         <SubSection title="Sizes">
           <div className="flex items-center gap-6">
-            <Identity name="Agent Alpha" size="sm" />
-            <Identity name="Agent Alpha" />
-            <Identity name="Agent Alpha" size="lg" />
+            <Identity name="Alex Morgan" size="sm" />
+            <Identity name="Alex Morgan" />
+            <Identity name="Alex Morgan" size="lg" />
           </div>
         </SubSection>
 
         <SubSection title="Initials derivation">
           <div className="flex flex-col gap-2">
-            <Identity name="CEO Agent" size="sm" />
+            <Identity name="Casey Jordan" size="sm" />
             <Identity name="Alpha" size="sm" />
-            <Identity name="Quality Assurance Lead" size="sm" />
+            <Identity name="Quinn Lee" size="sm" />
           </div>
         </SubSection>
 
@@ -1591,7 +1688,26 @@ export function DesignGuide() {
       {/*  NAVIGATION PATTERNS                                          */}
       {/* ============================================================ */}
       <Section title="Navigation Patterns">
+        <SubSection title="Independent MCP connections">
+          <p className="text-sm text-muted-foreground">Zapier, Arcade, Composio and Executor each own a connection. Their controlled setup views share Access → Connect. Tool discovery completes setup. Saved connections reuse the standard Permissions action list and per-action Test dialog. Storybook’s Apps / Connections groups use in-memory provider fixtures.</p>
+          <RemoteMcpDesignExample />
+        </SubSection>
+        <SubSection title="Setup wizard">
+          <p className="text-sm text-muted-foreground">Shared by connection setup and trigger previews. Setup navigation takes over the section sidebar; each step owns a single footer.</p>
+          <div className="max-w-sm space-y-6">
+            <SetupWizardNavigation inline labels={["Choose trigger", "Configure", "Review"]} step={wizardStep} availableStep={2} onSelect={setWizardStep} />
+            <SetupWizardFooter onSaveExit={() => setWizardStep(0)}><Button onClick={() => setWizardStep((wizardStep + 1) % 3)}>Continue</Button></SetupWizardFooter>
+          </div>
+        </SubSection>
+        <SubSection title="Agent chat picker">
+          <AgentChatPickerExample />
+        </SubSection>
         <SubSection title="Sidebar nav items">
+          <p className="text-sm text-muted-foreground">
+            Layout accepts sidebarSections to compose additional SidebarSection groups inside the shared sidebar.
+            Use SidebarNavItem for each row, with sibling action buttons for starring or menus.
+            The Chats section shows starred agents, the earliest-created agent when unstarred, then four recent agents without duplicates. Compose and star controls share a vertical column. Compose appears on hover or keyboard focus and remains visible on touch; starred icons remain visible. The picker searches all company agents by name or role without a subtitle, count, continuation labels, or footer. Task breadcrumbs support leading identity and trailing actions beside the label, including single-item task headers; see the Agent chat Storybook.
+          </p>
           <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />
@@ -2073,49 +2189,6 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
-      <Section title="Composio Services">
-        <p className="text-sm text-muted-foreground">
-          A broker connection (Composio) fronts many services, so its detail page lists toolkits
-          with per-service state instead of one credential. Row state comes from Composio's own
-          account status, which is why there is a fourth <code>attention</code> state alongside the
-          three the design asks for: an expired credential is neither connected nor still settling.
-        </p>
-        <SubSection title="Row states">
-          <ServicesList
-            rows={DESIGN_GUIDE_COMPOSIO_ROWS}
-            busySlug={null}
-            onConnect={() => {}}
-            onRecheck={() => {}}
-            onDisconnect={() => {}}
-          />
-        </SubSection>
-        <SubSection title="Busy row">
-          <ServicesList
-            rows={[DESIGN_GUIDE_COMPOSIO_ROWS[2]!]}
-            busySlug={DESIGN_GUIDE_COMPOSIO_ROWS[2]!.toolkitSlug}
-            onConnect={() => {}}
-            onRecheck={() => {}}
-            onDisconnect={() => {}}
-          />
-        </SubSection>
-        <SubSection title="Provenance chip">
-          <p className="mb-2 text-xs text-muted-foreground">
-            Shown wherever a brokered child connection appears, so the parent/child coupling is
-            legible. Links to the broker's Services tab when the parent is known.
-          </p>
-          <div className="flex items-center gap-3">
-            <ComposioProvenanceChip
-              connection={{
-                config: { provider: "composio", parentConnectionId: "parent-1", toolkitSlug: "github" },
-              }}
-            />
-            <ComposioProvenanceChip
-              connection={{ config: { provider: "composio", toolkitSlug: "gmail" } }}
-            />
-          </div>
-        </SubSection>
-      </Section>
-
       <Section title="Source Repositories">
         <SubSection title="Empty and disconnected">
           <RepositoryEditor selected={[]} onChange={() => {}} state="disconnected" onConnect={() => {}} onRetry={() => {}} />
@@ -2137,6 +2210,62 @@ export function DesignGuide() {
           for all 10 states.
         </p>
         <EnvironmentVariablesEditorShowcase />
+      </Section>
+
+      <Section title="Tasks created from a task">
+        <SubSection title="Subtasks and created work are independent">
+          <div className="max-w-xl">
+            <TaskDetailTasksPanel
+              subtasks={[DESIGN_GUIDE_TASK]}
+              createdTasks={[
+                { ...DESIGN_GUIDE_TASK, projectId: "design-board", project: { id: "design-board", name: "Board UI" } as Issue["project"] },
+                { ...DESIGN_GUIDE_TASK, id: "design-followup", identifier: "PAP-428", title: "Write release notes", status: "todo", projectId: null },
+              ]}
+              projects={[]}
+            />
+          </div>
+        </SubSection>
+        <SubSection title="Empty, loading and failed">
+          <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} />
+          <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} isLoading />
+          <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} hasError onRetry={() => {}} />
+        </SubSection>
+      </Section>
+
+      <Section title="Disposition recovery notice">
+        <SubSection title="Needs attention, with inspectable details">
+          <DispositionRecoveryNotice snapshot={{ kind: "disposition_repair_escalated", actionId: "design-recovery", attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: null }} defaultExpanded />
+        </SubSection>
+        <p className="text-sm text-muted-foreground">Storybook’s Recovery notice stories show the actionable, pending, acknowledged, unavailable, failed, and mobile states using this production component.</p>
+      </Section>
+
+      <Section title="Pending task input above composer">
+        <p className="mb-3 text-sm text-muted-foreground">A decision card sits above the ordinary message composer. Dismiss the card to keep a reopen control, or resolve it to clear the pending state.</p>
+        <TaskPendingInputExample />
+      </Section>
+
+      <Section title="Execution recovery">
+        <p className="text-sm text-muted-foreground">
+          Recovery runs in the background. Task lists keep their ordinary status without
+          execution badges. Active transcript headers keep saying Working during automatic
+          recovery. Recovery decisions and attempts belong in the run log;
+          there is no execution status card or reconciliation form.
+        </p>
+      </Section>
+
+      <Section title="Cloud sign-in unavailable">
+        <CloudSignIn cloud={{ managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: null, stackSlug: null }} returnTo="/" />
+      </Section>
+
+      <Section title="Saved provider API keys">
+        <SavedProviderKeySelect options={[{ id: "example", label: "Claude API key (Your key)", binding: { type: "user_secret_ref", key: "ANTHROPIC_API_KEY", version: "latest" } }]} value="example" onChange={() => {}} loading={false} error={false} />
+        <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading error={false} />
+        <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading={false} error />
+      </Section>
+
+      <Section title="Browser setup prompt">
+        <p className="text-sm text-muted-foreground">A shared copy action for provider setup instructions. Confirms success inline and offers selectable text if clipboard access fails.</p>
+        <SetupPrompt prompt="Design guide example. This is a preview, not a real provider setup request." />
       </Section>
 
       <Section title="Connection Intent">
@@ -2197,6 +2326,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  INLINE BANNER + BUILT-IN AGENTS                              */}
       {/* ============================================================ */}
+      <Section title="Webhook URL warnings">
+        <div className="space-y-3">
+          {["http://localhost:3100", "https://paperclip.internal", "https://paperclip.example-tailnet.ts.net", "http://paperclip.example.com", "not-a-url"].map((url) => <WebhookUrlWarning key={url} url={url} />)}
+        </div>
+      </Section>
+
       <Section title="Inline Banner">
         <p className="text-sm text-muted-foreground">
           Token-backed full-width notice (<span className="font-mono">brandBanner</span> tones). Use{" "}
@@ -2237,6 +2372,18 @@ export function DesignGuide() {
             Compact variant for embedding inside dialogs and modals.
           </InlineBanner>
         </div>
+      </Section>
+
+      <Section title="Media artifacts">
+        <p className="text-sm text-muted-foreground">Images and videos use gallery tiles. The whole tile opens the task gallery; files and links keep compact, fully clickable rows. Task/Artifact Gallery in Storybook covers playable videos, mixed files, narrow panels, and unavailable previews.</p>
+        <div className="grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2">
+          <MediaArtifactCard id="design-image" title="Launch artwork" contentPath="/announcement-preview.svg" contentType="image/svg+xml" originalFilename="launch.svg" detail="Image" />
+          <MediaArtifactCard id="design-video" title="Video preview unavailable" contentPath="" contentType="video/mp4" originalFilename="preview.mp4" detail="Video" />
+        </div>
+      </Section>
+
+      <Section title="AI Connections">
+        <AiConnectionDesignExamples />
       </Section>
 
       <Section title="Built-in Agent Lifecycle Chips">

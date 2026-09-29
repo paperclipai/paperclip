@@ -26,14 +26,15 @@ export function SentryGate() {
   });
 
   const dsn = session?.sentryDsn;
+  const environment = session?.sentryEnvironment ?? undefined;
 
   useEffect(() => {
     if (!dsn) return;
-    void initBrowserErrorMonitoring(dsn);
+    void initBrowserErrorMonitoring(dsn, environment);
     return () => {
       void teardownBrowserErrorMonitoring();
     };
-  }, [dsn]);
+  }, [dsn, environment]);
 
   return null;
 }

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Ban, Check, FlaskConical, Loader2, RefreshCw, Search, ShieldQuestion } from "lucide-react";
 import type { Agent, ToolCatalogEntry, ToolConnectionCapabilities } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
-import { AgentIcon } from "@/components/AgentIconPicker";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,7 @@ export function PermissionsPanel({
   refreshPending,
   capabilities,
   permissionChangeWarning,
+  actions,
 }: Pick<
   AppDetailSectionProps,
   | "appName"
@@ -58,6 +59,8 @@ export function PermissionsPanel({
   refreshPending: boolean;
   capabilities: ToolConnectionCapabilities | undefined;
   permissionChangeWarning?: string;
+  /** A credential-only connection can supply its account controls instead of tool actions. */
+  actions?: ReactNode;
 }) {
   const [searchParams] = useSearchParams();
   return (
@@ -70,7 +73,7 @@ export function PermissionsPanel({
         disabled={pending}
         onSave={onSaveAccess}
       />
-      <ActionsSection
+      {actions !== undefined ? actions : <ActionsSection
         key={connectionId}
         connectionId={connectionId}
         appName={appName}
@@ -87,7 +90,7 @@ export function PermissionsPanel({
         onSetPermission={onSetActionPermission}
         onReviewQuarantined={onReviewQuarantined}
         onRefreshActions={onRefreshActions}
-      />
+      />}
     </div>
   );
 }
@@ -180,7 +183,7 @@ function AgentAccessSection({
         <div className="space-y-0.5">
           {selectedAgents.map((agent) => (
             <div key={agent.id} className="flex items-center gap-2 px-1.5 py-1 text-sm">
-              <AgentIcon icon={agent.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <AgentAvatar agent={agent} size={16} className="h-4 w-4 shrink-0 text-muted-foreground"/>
               <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
             </div>
           ))}
@@ -190,7 +193,7 @@ function AgentAccessSection({
   );
 }
 
-function ActionsSection({
+export function ActionsSection({
   connectionId,
   appName,
   readOnly,

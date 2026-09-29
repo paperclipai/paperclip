@@ -65,6 +65,7 @@ const mockApprovalService = vi.hoisted(() => ({
 }));
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
   getExperimental: vi.fn(async () => ({ enableNativeRunner: false })),
 }));
@@ -534,6 +535,52 @@ describe("agent routes adapter validation", () => {
     const env = adapterConfig.env as Record<string, unknown>;
     expect(env.OPENAI_API_KEY).toBe("sk-test-key");
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
+  });
+
+  it("restores a saved agent's redacted CODEX_HOME before testing its adapter", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const storedHome = "/paperclip/companies/company-1/agents/agent-1/codex-home";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      id: agentId,
+      adapterType: "external_test",
+      adapterConfig: { env: { CODEX_HOME: storedHome } },
+    });
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          agentId,
+          adapterConfig: { env: { CODEX_HOME: { type: "plain", value: "***REDACTED***" } } },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      { env: { CODEX_HOME: storedHome } },
+      expect.objectContaining({ adapterType: "external_test" }),
+    );
+  });
+
+  it("rejects redacted-value restoration from an incompatible saved agent", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          agentId: "11111111-1111-4111-8111-111111111111",
+          adapterConfig: { env: { CODEX_HOME: { type: "plain", value: "***REDACTED***" } } },
+        }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
   });
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
