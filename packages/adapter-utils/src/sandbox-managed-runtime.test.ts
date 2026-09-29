@@ -1212,7 +1212,9 @@ describe("sandbox managed runtime", () => {
   });
 
   it.each(["symlink", "root_symlink", "root_alias", "root_alias_retarget", "case_alias", "EACCES", "EIO", "ENOENT"])("handles an overlay source changed after the snapshot: %s", async (change) => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-overlay-source-"));
+    // The runtime pins a realpath root before staging. Match that spelling so
+    // injected I/O errors also reach the selected file on macOS's /var alias.
+    const rootDir = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-overlay-source-")));
     cleanupDirs.push(rootDir);
     const workspaceLocalDir = path.join(rootDir, "workspace");
     await initGitRepo(workspaceLocalDir);
@@ -1301,6 +1303,7 @@ describe("sandbox managed runtime", () => {
         expect(syncIn).toHaveBeenCalledOnce();
       } else {
         await expect(preparing).rejects.toThrow(change.endsWith("symlink") ? /overlay.*directory/i : failure.message);
+        if (statSpy) expect(statSpy).toHaveBeenCalledWith(selectedPath);
         expect(syncIn).not.toHaveBeenCalled();
       }
     } finally {

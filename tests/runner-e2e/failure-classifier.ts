@@ -46,9 +46,13 @@ export function classifyFailure(error: unknown): FailureClass {
   return "candidate_failure";
 }
 
-export function shouldRetryFailure(failureClass: FailureClass) {
+export function shouldRetryFailure(
+  failureClass: FailureClass,
+  maxAutomaticRetries = 1,
+) {
   return (
-    failureClass === "transient_infrastructure" ||
-    failureClass === "provider_variance"
+    maxAutomaticRetries > 0 &&
+    (failureClass === "transient_infrastructure" ||
+      failureClass === "provider_variance")
   );
 }

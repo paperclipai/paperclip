@@ -399,6 +399,22 @@ export function buildNativeExecutionWithCheckpoint(input: {
     normalizedSessionId: input.normalizedSessionId,
     resumedSession: input.previousRun !== null,
   });
+  // A presentation-only upgrade must not rotate a healthy provider session or
+  // lose a durable goal. Keep its v4/v5 format until that session naturally ends.
+  // All ordinary identity, workspace, provider, tool and recovery checks still apply.
+  if (input.previousRun && (execution.schema === "paperclip.native-execution-input.v4" || execution.schema === "paperclip.native-execution-input.v5")) {
+    const previousSchema = record(record(input.previousRun.runnerProfileJson).nativeExecutionInput).schema;
+    if ((previousSchema === "paperclip.native-execution-input.v4" || previousSchema === "paperclip.native-execution-input.v5") && previousSchema !== execution.schema) {
+      const { completionSources: _sources, ...common } = execution as typeof execution & { completionSources?: unknown };
+      const retainedFormat = parseNativeExecutionInput({ ...common, schema: previousSchema });
+      const retainedCheckpoint = rebindNativeSessionCheckpoint({
+        previousRun: input.previousRun,
+        currentExecution: retainedFormat,
+        executionTargetKind: input.executionTargetKind,
+      });
+      if (retainedCheckpoint) return { execution: retainedFormat, checkpoint: retainedCheckpoint, normalizedSessionId: input.normalizedSessionId };
+    }
+  }
   const checkpoint = input.previousRun
     ? rebindNativeSessionCheckpoint({
         previousRun: input.previousRun,

@@ -288,9 +288,15 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
       <div className="flex min-w-0 flex-col gap-1.5 py-1 text-xs" data-testid="task-chat-protocol-activity-row" data-activity-family="provider_notice">
         <div className="flex items-center gap-2 text-muted-foreground">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden data-testid="task-chat-protocol-activity-icon" />
-          <span className="font-medium">{item.status === "failed" ? "Error" : "Warning"}</span>
+          <span className="font-medium">{item.status === "failed" ? "Error" : item.details.find(detail => detail.label === "Severity")?.value === "info" ? "Provider update" : "Warning"}</span>
         </div>
         <p className="min-w-0 whitespace-pre-wrap break-words text-foreground">{summary}</p>
+        {item.details.some(detail => detail.label !== "Summary") ? (
+          <details className="text-muted-foreground">
+            <summary className="cursor-pointer">Details</summary>
+            <DetailList details={item.details.filter(detail => detail.label !== "Summary")} />
+          </details>
+        ) : null}
       </div>
     );
   }

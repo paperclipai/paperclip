@@ -61,7 +61,7 @@ export interface CodexModelContextSnapshot {
   dynamicToolNames: string[];
   modelInputKinds: ["text"];
   liveConsole?: {
-    conversationMode?: "task" | "direct";
+    conversationMode?: "task" | "direct" | "prepared";
     runtimeRequestResolution: boolean;
     goals: boolean;
     threadLineage: boolean;
@@ -141,7 +141,6 @@ export function createCodexTaskEnvelope(input: {
         input.criteria ?? [{ id: "objective", requirement: "Complete the objective safely." }],
     },
     constraints: input.constraints ?? [
-      "Work only inside the supplied working directory.",
       "Do not discover or invoke skills.",
       "Do not call a control-plane API.",
       "Return one semantic completion result.",

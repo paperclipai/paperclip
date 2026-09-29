@@ -3185,6 +3185,14 @@ impl CodexCommandExecutor {
     }
 
     fn steer_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
+        if payload
+            .get("mode")
+            .is_some_and(|mode| mode.as_str() != Some("steer"))
+        {
+            return Err(DurableRunnerError::invalid(
+                "Codex does not expose queued follow-up through turn.steer",
+            ));
+        }
         let text = payload
             .get("text")
             .and_then(Value::as_str)
@@ -4900,6 +4908,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             Some(CompletionContractBinding {
                 revision: "revision-1".to_owned(),
@@ -5261,6 +5270,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             Some(CompletionContractBinding {
                 revision: "revision-1".to_owned(),
@@ -5351,6 +5361,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             opencode_launch_profile_digest: None,
             completion_contract: None,
@@ -5403,6 +5414,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             ProviderToolBridge::default(),
@@ -5445,6 +5457,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             Some(CompletionContractBinding {
                 revision: "1".to_owned(),
@@ -5537,6 +5550,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             ProviderToolBridge::default(),
@@ -5603,6 +5617,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             ProviderToolBridge::default(),
@@ -5652,6 +5667,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             ProviderToolBridge::default(),
@@ -5775,6 +5791,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             bridge,
@@ -5886,6 +5903,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             bridge,
@@ -5942,6 +5960,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             ProviderToolBridge::default(),
@@ -6062,6 +6081,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             bridge,
@@ -6102,6 +6122,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             ProviderToolBridge::default(),
@@ -6139,6 +6160,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             ProviderToolBridge::default(),
@@ -6215,6 +6237,7 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                conversation_mode: None,
             },
             None,
             ProviderToolBridge::default(),

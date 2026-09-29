@@ -609,7 +609,7 @@ describe("sandbox adapter execution targets", () => {
       target: {
         kind: "remote", transport: "sandbox", providerKey: "local-test", remoteCwd: rootDir,
         runner: { execute: async (input) => {
-          if (input.args?.[1]?.includes("command.b64.paperclip-upload.b64") && input.args[1].includes(">>")) {
+          if (/command\.b64\.[^/]+\.paperclip-upload\.b64/.test(input.args?.[1] ?? "") && input.args![1].includes(">>")) {
             throw new Error("Upload interrupted");
           }
           return delegate.execute(input);

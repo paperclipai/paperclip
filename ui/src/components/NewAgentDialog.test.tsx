@@ -132,8 +132,9 @@ it.each([false, undefined])(
   },
 );
 
-it("offers Claude, Codex, OpenCode, and Grok on Cloud, even with the runner enabled", async () => {
+it.each([true, false, undefined])("gates the Cloud native runner on explicit enablement (%s)", async (enableNativeRunner) => {
   await act(async () => {
+    cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner });
     cache.setQueryData(queryKeys.health, {
       status: "ok",
       cloud: { managed: true },
@@ -160,8 +161,7 @@ it("offers Claude, Codex, OpenCode, and Grok on Cloud, even with the runner enab
     [...document.querySelectorAll<HTMLInputElement>('input[type="radio"]')].map(
       (input) => input.value,
     ),
-  ).toEqual(["claude_local", "codex_local", "opencode_local", "grok_local"]);
-  expect(document.body.textContent).not.toContain("CLI harness");
+  ).toEqual(["claude_local", "codex_local", "opencode_local", "grok_local", ...(enableNativeRunner ? ["paperclip_runner"] : [])]);
   await act(async () =>
     document.querySelector<HTMLInputElement>('input[value="grok_local"]')!.click(),
   );

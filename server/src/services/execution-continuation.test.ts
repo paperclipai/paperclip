@@ -146,6 +146,16 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("attests the exact latest user comment selected as the objective", async () => {
+      const envelope = await build();
+      const latest = await db.select().from(issueComments).where(eq(issueComments.id, laterId)).then(rows => rows[0]!);
+      expect(envelope.objective).toBe(latest.body);
+      expect(envelope.objectiveSource).toEqual({
+        kind: "comment",
+        id: laterId,
+        revision: latest.updatedAt.toISOString(),
+      });
+    });
     it("loads authenticated human answers from stored resolver identity", async () => {
       const answerId = randomUUID();
       await db.insert(issueThreadInteractions).values({ id: answerId, companyId, issueId,
@@ -378,6 +388,26 @@ const support = await getEmbeddedPostgresTestSupport();
         expect(issue).toMatchObject({ status, assigneeAgentId: agentId });
       } finally {
         await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+      }
+    });
+    it.each(["completed", "cancelled", "ordinary", "unfinished-child"])("admits only verified onboarding result reporting: %s", async kind => {
+      const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const childId = randomUUID();
+      await db.update(issues).set({ status: kind === "cancelled" ? "cancelled" : "done",
+        originKind: kind === "ordinary" ? "manual" : "onboarding_first_task" }).where(eq(issues.id, issueId));
+      await db.insert(issues).values({ id: childId, companyId, parentId: issueId, title: "Saved result",
+        status: kind === "unfinished-child" ? "in_progress" : "done", assigneeAgentId: agentId });
+      const report = () => buildExecutionContinuation({ db, companyId, issueId, agentId,
+        context: { wakeReason: "issue_children_completed", completedChildIssueId: childId },
+        summary: null, exposeLowTrustRaw: false });
+      try {
+        if (kind === "completed") await expect(report()).resolves.toMatchObject({ companyId, issueId });
+        else await expectStaleContinuation(report, "continuation_task_ownership_changed");
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status)
+          .toBe(kind === "cancelled" ? "cancelled" : "done");
+      } finally {
+        await db.delete(issues).where(eq(issues.id, childId));
+        await db.update(issues).set({ status: before.status, originKind: before.originKind }).where(eq(issues.id, issueId));
       }
     });
     it("rejects another company and an invalidated task owner", async () => {

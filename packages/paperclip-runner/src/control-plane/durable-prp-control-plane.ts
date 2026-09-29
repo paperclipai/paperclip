@@ -29,6 +29,7 @@ import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, ACPX_CREDENTIAL_NAMES } from "../drivers/acpx/environment.js";
 import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import {
   validatePrpEvent,
@@ -3277,12 +3278,17 @@ const runnerPlatformEnvironmentKeys = [
 ] as const;
 
 const runnerExplicitProviderEnvironmentKeys = [
-  "OPENROUTER_API_KEY",
+  ...ACPX_CREDENTIAL_NAMES.pi,
+  ...ACPX_CREDENTIAL_NAMES.cursor,
+  ...ACPX_CREDENTIAL_NAMES.copilot,
+  ACPX_CREDENTIAL_BINDING_ENV,
   "ANTHROPIC_API_KEY",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
   "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET",
+  "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET",
+  "XAI_API_KEY",
   "AWS_REGION",
   "AWS_DEFAULT_REGION",
   "AWS_WEB_IDENTITY_TOKEN_FILE",
@@ -3301,6 +3307,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_NATIVE_MCP_TOKEN",
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
   "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
+  "PAPERCLIP_ACPX_BUILTIN_ROOT",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
   "PAPERCLIP_ACPX_PROVIDER_RECOVERY_POLICY",

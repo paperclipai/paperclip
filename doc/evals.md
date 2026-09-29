@@ -19,7 +19,7 @@ The names describe the system under test; “headless” is an execution option,
 not an eval category.
 
 The explicit Product E2E `completion-updates` suite compares onboarding and
-idle Agent Chat handoffs on native Claude/Codex. It separates mechanical
+idle, busy, multiple-task, and restart Agent Chat handoffs on native Claude/Codex. It separates mechanical
 completion delivery/result access from semantic review of the retained answer;
 see the [probe contract](../tests/runner-e2e/README.md#completion-update-probes-explicit-only).
 
@@ -71,11 +71,24 @@ Daytona paths. Its [fixture contract](../tests/runner-e2e/README.md) distinguish
 startup cancellation from active response cancellation and HTTP send replay
 from ambiguous provider action recovery. Select it explicitly; `--all` excludes it.
 
+The explicit-only `context-integrity` Product E2E suite covers ordered public
+comment continuation and explicit invocation of an assigned pinned skill across
+the seven selected legacy/native local profiles. Select it by suite or exact
+execution ID because `--all` excludes explicit-only suites. Each cell applies a
+1,000-cent company and agent budget hard stop before task creation and records
+both limits in its evidence.
+
 The explicit-only `agent-chat-stories` suite covers the experimental settings
 lifecycle for a configured native agent and follow-ups during active work. Its
 fixture-driven file wait and persisted-plan oracle are documented in the
 [Product E2E guide](../tests/runner-e2e/README.md). It does not qualify the native
 onboarding wizard or change the native API-tool rollout defaults.
+
+The explicit-only `grok-qualification` and `grok-subscription-qualification`
+Product suites exercise Grok Build with API and company subscription
+authentication respectively. Keep their results separate; the subscription
+fixture seeds an explicitly supplied login and does not qualify interactive
+login. See the [Grok fixture contract](../tests/runner-e2e/README.md#grok-build-qualification).
 
 ## Validation ladder
 
@@ -179,6 +192,78 @@ For a repeatable workflow, use the matching skill: [paperclip-evals](../.agents/
 [add-runner-eval](../.agents/skills/add-runner-eval/SKILL.md), or
 [add-product-e2e-eval](../.agents/skills/add-product-e2e-eval/SKILL.md).
 
+## Diagnose failures before buying another campaign
+
+Use this loop to turn eval failures into product improvements. The unit of work
+is a broken user outcome or invariant, not an individual red cell.
+
+1. **Freeze the evidence.** Record the inspected application revision and each
+   campaign's evaluated revision, definition/grader fingerprint, model/profile,
+   environment, exact selected IDs, attempts, and usage coverage. Read the
+   history feed and retained attempt records before launching models. A report
+   refresh, skipped workflow, passing unit suite, or old-definition green cell
+   is not a new live measurement. Inventory explicit-only suites separately
+   from `--all`.
+2. **Reconstruct the failed boundary.** Read durable task state, interactions,
+   event chronology, source/worker identity, delivered output, and the failing
+   assertion. State whether the test reached the boundary it claims to test.
+   Separate observed failure, machine class, analytical cause, and confidence.
+   A cancelled queued wake does not by itself prove lost work; a failed decline
+   assertion does not prove unauthorized execution. A saved artifact does not
+   prove the user received a correct completion update.
+3. **Group by cause and product contract.** Join cells only when their evidence
+   supports the same mechanism. Check for already-merged fixes and definition
+   corrections before proposing new work. Keep product defects, provider/model
+   behavior, grading defects, infrastructure, and unexercised boundaries
+   distinct. Preserve the original grades when attribution changes.
+4. **Design the smallest general correction.** Name the desired user behavior,
+   the authoritative state/transaction or provider boundary that owns it, the
+   affected callers, and the existing guarantees that must survive. Check it
+   against `PRODUCT.md` and `SPEC-implementation.md`. A change to an intentional
+   product rule is a contract change, not an excuse to delete its guard. Avoid
+   case-name branches, phrase-specific prompts, unconditional retries, or
+   weakening approval, ownership, cancellation, and budget gates to get green.
+5. **Prove the mechanism cheaply.** Calibrate a grader against correct and
+   plausible wrong retained evidence. Reproduce a product race with scripted
+   providers or service tests. Pair every proposed fix with a regression that
+   exercises the opposite boundary (for example, eligible delivery versus
+   revoked access, benign obsolete wake versus interrupted active work).
+   Presentation-only changes use the existing report refresh path and make no
+   provider calls; do not claim replay can prove changed runtime behavior.
+6. **Select a bounded live confirmation.** Write the exact failed representative
+   IDs and only the passing controls affected by the change. Pin the source,
+   definitions, models, and remote image. Record an attempt cap, provider and
+   compute budget, wall-clock deadline, and concurrency before dispatch under
+   the existing live-run authorization. Missing pricing means unknown, not free.
+   Do not rerun unaffected green cells during diagnosis or retry usable behavior
+   failures until they happen to pass. Preserve every attempt. Expand to a
+   compatible qualification campaign only after the causal fix passes.
+7. **Close with evidence and remaining scope.** Report original versus new
+   measurements, exact selected coverage, regression results, cost coverage,
+   and unresolved boundaries. A partial verification may close one defect; it
+   cannot turn the full catalog green or establish reliability from one attempt.
+
+Keep one triage record per cause with: affected cell IDs; evidence links;
+observed failure; supported cause and confidence; existing fix/revision; proposed
+product contract; invariant regressions; next exact live selection; budget and
+stop condition; owner; and disposition. Useful dispositions include confirmed
+product defect, model behavior, grader correction, infrastructure repair,
+fixed-but-not-remeasured, historical pass, and unqualified coverage.
+
+Parallelize independent artifact inventory, deterministic checks, and isolated
+cells. Keep a cell's dependent turns ordered. When delegating, use inexpensive
+agents for bounded extraction, catalog reconciliation, and test execution; keep
+causal attribution, product design, and final review with the lead. Begin local
+browser campaigns at the documented conservative concurrency and increase only
+with measured host headroom. Hosted fanout must respect the workflow's provider
+and fleet caps; more simultaneous timeouts do not improve wall-clock efficiency.
+
+Current tools support exact-ID selection and retained-evidence report refresh,
+but not an automatic cause-aware "rerun unresolved failures" planner. Build an
+explicit selection manifest rather than treating `--all` as that planner. Review
+the launcher's automatic retry policy when budgeting; Product E2E may create one
+fresh attempt for a retryable failure.
+
 ## Install the authoring skills
 
 The reviewable sources live in this repository's `.agents/skills`. For a
@@ -263,6 +348,17 @@ results and follow-up coverage are recorded in that suite's guide.
 
 Continuation accounting has an explicit-only eight-cell Product E2E [baseline suite](../tests/runner-e2e/CONTINUATION-ACCOUNTING.md), complementing the deterministic lifecycle inventory.
 
+The explicit Product E2E `instruction-persistence` suite verifies private file
+edits, nested and binary agent files, stopped-provider directory saves, server restart, and a fresh task's
+downloaded proof on local native/legacy Codex and native Daytona. See the
+[Product E2E runbook](../tests/runner-e2e/README.md).
+
 The explicit-only Product E2E `api-response-reading` suite verifies retrieval of
 large saved API responses on local and Daytona native Codex runs. See the
 [Runner E2E guide](../tests/runner-e2e/README.md#bounded-api-response-reading).
+
+The explicit-only Product E2E `extended-harnesses` suite covers pending Cursor,
+Copilot and Pi ACP profiles on local and Daytona. See the
+[fixture admission, credentials and budget contract](../tests/runner-e2e/README.md#extended-acp-harnesses-explicit-only).
+The private Runner Evals campaign of the same name provides complementary
+semantic protocol cases; catalog membership is not live qualification.

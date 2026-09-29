@@ -197,6 +197,21 @@ describe.sequential("cli auth routes", () => {
     expect(res.body.canApprove).toBe(false);
   });
 
+  it.each([
+    ["cloud_tenant", "board", false, false, true],
+    ["cloud_tenant", "instance_admin_required", false, false, false],
+    ["session", "board", false, false, true],
+    ["board_api_key", "board", false, true, false],
+  ])("reports CLI approval for %s requesting %s", async (source, requestedAccess, isInstanceAdmin, requiresSignIn, canApprove) => {
+    mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
+      id: "12345678-1234-4123-8123-123456789abc", status: "pending", requestedAccess,
+    });
+    const app = await createApp({ type: "board", source, userId: "user-1", isInstanceAdmin });
+    const res = await request(app).get("/api/cli-auth/challenges/12345678-1234-4123-8123-123456789abc?token=pcp_cli_auth_secret");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ requiresSignIn, canApprove });
+  });
+
   it.each(["PASTE_ID_HERE", "not-a-uuid"])("rejects malformed challenge ID %s before calling the service", async (id) => {
     const app = await createApp({ type: "board", userId: "user-1", source: "session" });
     const responses = [

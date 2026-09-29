@@ -106,6 +106,29 @@ next question. Reduced-motion mode advances without animation.
 Multi-select and custom answers wait for Next, and the final page waits for
 Submit answers. The adjacent **Verified** story exercises the full flow.
 
+Use **Composer → Interaction above composer** to review the production
+pending-input layout. The stories cover questions, confirmations, checkbox
+choices, item verdicts, suggested tasks, tool reviews, runtime questions, and phone layouts with
+the bottom navigation. The normal message composer remains usable below the
+pending card.
+
+Use **Composer → Model and effort picker** to review harness-specific model
+choices. Codex uses the curated adapter catalog unless the instance declares
+`PAPERCLIP_ADAPTER_MODELS`; general OpenAI API models are not Codex choices.
+The Paperclip Runner Codex profile shows the same known model effort levels.
+Its selected effort is saved with the run and sent to Codex for each turn.
+Claude Code uses model-specific effort levels; Haiku has no effort slider.
+Grok uses its adapter's reasoning levels, including for its default model.
+Kimi shows effort only when its agent uses the CLI engine, including with its
+default model, because the default ACP engine ignores effort.
+
+Mobile entity picker sheets use a modal popover so touch scrolling stays inside
+the sheet even when it is portalled outside the new-task dialog. Run
+`pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/new-task-picker-touch.spec.ts`
+to verify native touch scrolling and selection in both assignee and model lists.
+The test uses a fixed model catalog and a reduced viewport to cover limited
+space while the phone keyboard is open; it does not require a provider login.
+
 The Storybook visual regression suite uses external PNG baselines instead of
 committed screenshots:
 
@@ -227,6 +250,17 @@ lockfile changes remain local to the worktree; the repository's lockfile bot
 owns committed updates.
 
 ## Hot-Restart Deploys
+
+During a restart, the board's health, session, and access checks retry temporary
+network/gateway failures and non-JSON API responses every five seconds. A new
+page shows **Reconnecting to Paperclip** with a **Try again** action and waits
+for startup health to become ready. Valid startup metadata remains available to
+sign-in and invitation pages. An already
+open page stays mounted during temporary background failures so unsaved edits
+survive. Successful checks resume the same route and refresh other failed reads;
+this recovery does not reload the browser or replay mutations. Authorization
+failures still require sign-in or an explicit retry. Storybook **App / Connection
+recovery** shows the startup recovery states.
 
 Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:
 
@@ -982,6 +1016,8 @@ eval "$(npx paperclipai worktree env)"
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
+An issue's partial `workspaceStrategy` inherits omitted fields from the enabled project's strategy when both use the same type. For example, an issue can override `baseRef` without losing the project's provision, runtime provision, or teardown commands. An explicit value, including `null` or an empty string, replaces the project value. Clearing a command restores the runtime's usual default behavior; use `provisionCommand: "true"` for an explicit no-op. A different strategy type or a disabled project policy does not supply these defaults. An issue's `existingBranch` pin also excludes the project's `branchTemplate`.
+
 An issue can pin its isolated worktree to an exact pre-existing branch instead of a template-derived one — the contract PR-preparation tasks use. Set the issue's `executionWorkspaceSettings` to `{ "mode": "isolated_workspace", "workspaceStrategy": { "type": "git_worktree", "existingBranch": "<branch>" } }`. The validator requires isolated mode plus a `git_worktree` strategy and rejects `branchTemplate` alongside `existingBranch`. At dispatch the runtime attaches (never creates, renames, fast-forwards, or resets) that branch: it reuses a registered worktree that already has the branch checked out (including legacy `.worktrees/` paths), otherwise it attaches the branch under the managed worktree parent. A missing branch, an occupied worktree path on another branch, or a non-worktree strategy fails closed with a `workspace_validation_failed` error instead of falling back to the shared checkout or a derived branch, and an inherited `reuse_existing` workspace binding on a different branch is ignored in favor of realizing the pinned branch.
 
 Heavier setup that is only needed by a managed runtime service can use `workspaceStrategy.runtimeProvisionCommand`. Paperclip runs this command lazily before spawning the first service in a start batch, serializes concurrent provisioning for the same workspace, and records the attempt as `workspace_runtime_provision`. The command receives the same workspace environment as `provisionCommand` and should be idempotent because later service-start batches invoke it again.
@@ -1096,6 +1132,35 @@ workspace below the host `HOME` is valid, including the default projectless
 agent workspace. The host `HOME` itself, a directory that contains it, a
 filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
 assigned workspace is rejected before provider startup.
+
+### Sandbox ACP input delivery
+
+The legacy sandbox process bridge retries recognized Daytona and Cloudflare
+HTTP 502, 503, and 504 failures while writing an input message, with at most
+three attempts and a short backoff.
+Retries keep the message sequence and use separate temporary upload files.
+The remote wrapper discards already-consumed sequences, so a lost provider
+response cannot send the same input bytes twice. Messages remain ordered.
+This does not restart an agent turn or replay a tool call. Authentication and
+shell errors fail immediately; exhausted input delivery closes the bridge and
+records a fixed diagnostic without logging the input payload. Persisting that
+failure diagnostic does not block bridge teardown.
+Run-log finalization closes its write handle and waits for accepted file
+appends before computing the size, hash, and durable copy. Writes submitted
+after finalization starts are ignored; later progress persistence is not part
+of that file-write barrier. If accepted writes remain stalled after three
+seconds, finalization returns unknown size/hash metadata and skips the final
+durable copy so the run can reach a terminal state. A late write cannot restart
+mirroring or produce a claimed verified snapshot.
+Readers still attempt bounded reads when size is unknown. Legacy comment
+attribution retains its existing 2 MB scan limit and allows three seconds per
+log. Storage errors or timeouts preserve any evidence already read and leave
+the comments available without additional derived attribution.
+The read deadline requests cancellation of local file streams, S3 HEAD and GET
+requests, and S3 response streams. The listing stops waiting at the deadline
+even if filesystem I/O delays cancellation. Late results cannot add evidence
+or start another page. Each listing retains its existing batches of eight reads;
+concurrent listings do not skip healthy logs because another listing is busy.
 
 ### Preinstalled remote runner runtime
 
@@ -1288,6 +1353,12 @@ Expected:
 
 - `/api/health` returns `{"status":"ok"}`
 - `/api/companies` returns a JSON array
+
+On `*.staging.paperclip.app`, the account menu shows the running server's
+short commit SHA below the user's email. Hover over it for the full SHA,
+or follow the link to inspect the commit on GitHub.
+Opening the menu refreshes `/api/health` so the label reflects recent deploys.
+The label is hidden on other hosts and when commit metadata is unavailable.
 
 ## Reset Local Dev Database
 
@@ -1625,3 +1696,16 @@ disconnected, visible active queries refresh every 15 seconds. This fallback
 stops when the socket opens, the tab is hidden, or the provider unmounts. A
 reconnected socket also refreshes visible queries to recover missed events.
 Run log views retain their existing HTTP polling fallback.
+
+### Company context during hot reload
+
+The company React context retains only its object identity in Vite's per-module
+`hot.data`. Provider values remain in the mounted React tree and keep their normal
+account scope. This lets a refreshed consumer read a provider from the preceding
+module version. Production builds do not use the development cache.
+
+Run `pnpm test:e2e:browser-context` to test this with real Vite modules and
+Chromium. The test starts its own loopback Vite server and mocks API responses;
+it needs no running Paperclip instance or provider credentials. The same spec lives
+in the default `test:e2e` discovery tree, so the existing Chrome CI shards run it
+on pull requests.

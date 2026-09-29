@@ -852,6 +852,32 @@ describeEmbeddedPostgres(
       ReturnType<typeof startEmbeddedPostgresTestDatabase>
     > | null = null;
 
+    async function readGatewayWakePayload(
+      payload: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> {
+      const message = String(payload.message ?? "");
+      if (message.includes("```json\n")) {
+        return parseWakePayloadFromMessage(message);
+      }
+      const runId = typeof payload.idempotencyKey === "string"
+        ? payload.idempotencyKey
+        : null;
+      if (!runId) throw new Error("Gateway payload did not include its run id");
+      const run = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      const context = run?.contextSnapshot;
+      const wake = context && typeof context === "object" && !Array.isArray(context)
+        ? (context as Record<string, unknown>).paperclipWake
+        : null;
+      if (!wake || typeof wake !== "object" || Array.isArray(wake)) {
+        throw new Error("Gateway payload omitted JSON without a structured wake context");
+      }
+      return wake as Record<string, unknown>;
+    }
+
     beforeAll(async () => {
       tempDb = await startEmbeddedPostgresTestDatabase(
         "paperclip-low-trust-red-team-routes-",
@@ -1978,7 +2004,7 @@ describeEmbeddedPostgres(
         // The gateway rejects unknown root params, so the wake context rides in the
         // generated message rather than a top-level `paperclip` field.
         expect(payload.paperclip).toBeUndefined();
-        const wake = parseWakePayloadFromMessage(payload.message);
+        const wake = await readGatewayWakePayload(payload);
         // Security-critical: low-trust quarantined output is redacted to the sanitized
         // stub before it reaches the higher-trust wake/continuation context. The raw
         // body must never appear (asserted by expectNoCanary below). The sourceTrust
@@ -2014,6 +2040,8 @@ describeEmbeddedPostgres(
         expect(String(payload.message ?? "")).toContain(
           "## Paperclip Wake Payload",
         );
+        expect(String(payload.message ?? "")).toContain(LOW_TRUST_QUARANTINED_BODY);
+        expect(String(payload.message ?? "")).toContain("Continue from the sanitized quarantine stub only.");
         expectNoCanary(payload, fixture.canaries.raw);
         gateway.releaseFirstWait();
         await waitFor(async () => {

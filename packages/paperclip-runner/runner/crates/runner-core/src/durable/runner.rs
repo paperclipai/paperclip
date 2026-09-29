@@ -1997,6 +1997,125 @@ mod tests {
     }
 
     #[test]
+    fn response_persistence_failure_with_blocked_drain_remains_indeterminate_on_replay() {
+        struct PersistenceFailedResponseExecutor {
+            delivered_responses: usize,
+            retained_reads: usize,
+        }
+        impl CommandExecutor for PersistenceFailedResponseExecutor {
+            fn execute(
+                &mut self,
+                command: &Command,
+            ) -> Result<CommandExecution, DurableRunnerError> {
+                assert_eq!(command.command_type, "request.resolve");
+                assert_eq!(command.payload["requestId"], "input-1");
+                // Model a real pipe delivery ACK followed by an uncertain
+                // provider-state write. Its staged settlement is not durable.
+                self.delivered_responses += 1;
+                Err(DurableRunnerError::invalid(
+                    "ACPX response state persistence failed after delivery",
+                ))
+            }
+
+            fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                self.retained_reads += 1;
+                Err(DurableRunnerError::invalid(
+                    "ACPX persistence latch blocks retained settlement",
+                ))
+            }
+
+            fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                panic!("failed response settlement must not poll or restore the provider")
+            }
+
+            fn acknowledge_events(&mut self, _: usize) -> Result<(), DurableRunnerError> {
+                panic!("an uncertain settlement must not receive a journal ACK")
+            }
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-response-persistence-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = PersistenceFailedResponseExecutor {
+            delivered_responses: 0,
+            retained_reads: 0,
+        };
+        let mut resolve = command("request.resolve");
+        resolve.payload = json!({
+            "requestId": "input-1",
+            "resolution": {"action": "submit", "response": {"answer": "accepted"}},
+        });
+
+        let failure =
+            process_command(&mut state, &store, &config, &mut executor, &resolve).unwrap_err();
+        assert!(failure
+            .to_string()
+            .starts_with("ACPX response state persistence failed after delivery"));
+        assert!(failure
+            .to_string()
+            .contains("retained failure evidence remains uncommitted"));
+        assert!(failure
+            .to_string()
+            .contains("ACPX persistence latch blocks retained settlement"));
+        assert_eq!(executor.delivered_responses, 1);
+        assert_eq!(executor.retained_reads, 1);
+        assert_eq!(
+            state.processed_commands[&resolve.command_id].status,
+            "pending"
+        );
+        assert!(state.outbox.is_empty());
+        assert_eq!(state.highest_source_seq(), 0);
+
+        // Inspect the actual journal before recovery changes pending into
+        // indeterminate. Neither a failed/completed result nor a resolved event
+        // may replace the pre-effect marker while the provider snapshot is unsure.
+        let journal: DurableState =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(
+            journal.processed_commands[&resolve.command_id].status,
+            "pending"
+        );
+        assert!(journal.outbox.is_empty());
+        assert_eq!(journal.highest_source_seq(), 0);
+
+        let pending = process_command(&mut state, &store, &config, &mut executor, &resolve)
+            .unwrap()
+            .0;
+        assert_eq!(pending.status, "pending");
+        assert_eq!(executor.delivered_responses, 1);
+        assert_eq!(executor.retained_reads, 1);
+
+        let (mut recovered, existed) = store.load_or_create(&config).unwrap();
+        assert!(existed);
+        assert_eq!(
+            recovered.processed_commands[&resolve.command_id].status,
+            "indeterminate"
+        );
+        let mut replacement = CountingExecutor { calls: 0 };
+        let replay = process_command(&mut recovered, &store, &config, &mut replacement, &resolve)
+            .unwrap()
+            .0;
+        assert_eq!(replay.status, "indeterminate");
+        assert_eq!(replay.result["code"], "execution_indeterminate");
+        assert_eq!(
+            replacement.calls, 0,
+            "recovery must never resend the response"
+        );
+        assert!(recovered.outbox.is_empty());
+        let (reloaded_again, _) = store.load_or_create(&config).unwrap();
+        assert_eq!(
+            reloaded_again.processed_commands[&resolve.command_id],
+            replay
+        );
+        assert!(reloaded_again.outbox.is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn unlimited_lifetime_keeps_attempts_bounded_after_weeks_of_work() {
         let mut config = config(std::env::temp_dir());
         config.max_runtime = Duration::ZERO;
