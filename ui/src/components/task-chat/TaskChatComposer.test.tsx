@@ -9,6 +9,7 @@ import {
   buildSkillMentionHref,
 } from "@paperclipai/shared";
 import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
+import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 import {
@@ -246,6 +247,12 @@ function pressKey(
       }),
     );
   });
+}
+
+function openComposerAddMenu() {
+  const add = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-add"]')!;
+  flushSync(() => add.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })));
+  return add;
 }
 
 function pasteFiles(files: File[]) {
@@ -776,7 +783,7 @@ describe("TaskChatComposer", () => {
       />,
     );
 
-    const composer = container.firstElementChild as HTMLElement;
+    const composer = container.querySelector<HTMLElement>(".paperclip-task-chat-composer")!;
     const mode = container.querySelector<HTMLElement>(
       '[data-testid="task-chat-composer-mode"]',
     )!;
@@ -792,8 +799,8 @@ describe("TaskChatComposer", () => {
     expect(composer.classList).toContain("dark:bg-muted");
     expect(composer.classList).toContain("dark:shadow-none");
     expect(composer.className).not.toContain("focus-within:ring");
-    expect(mode.classList).not.toContain("border");
-    expect(mode.className).not.toContain("ring-");
+    expect(mode.classList).toContain("rounded-full");
+    expect(mode.getAttribute("aria-label")).toBe("Remove Plan mode");
     expect(runner.classList).toContain("border-0");
     expect(runner.classList).not.toContain("border");
     expect(runner.className).not.toContain("ring-2");
@@ -802,7 +809,7 @@ describe("TaskChatComposer", () => {
   it("scopes the wrapping placeholder override to the task-chat composer", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
 
-    expect(container.firstElementChild?.classList).toContain(
+    expect(container.querySelector("[data-testid='task-chat-composer-input']")?.parentElement?.classList).toContain(
       "paperclip-task-chat-composer",
     );
   });
@@ -865,13 +872,13 @@ describe("TaskChatComposer", () => {
       />,
     );
 
+    expect(container.querySelector('[data-testid="task-chat-composer-add"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();
+
+    pressKey("Tab", { shiftKey: true });
     const chip = container.querySelector<HTMLButtonElement>(
       '[data-testid="task-chat-composer-mode"]',
     )!;
-    expect(chip.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip.textContent).toContain("Auto");
-
-    pressKey("Tab", { shiftKey: true });
     expect(chip.getAttribute("data-pending-work-mode")).toBe("planning");
     expect(chip.textContent).toContain("Plan");
 
@@ -893,13 +900,10 @@ describe("TaskChatComposer", () => {
       />,
     );
 
-    const chip = container.querySelector<HTMLButtonElement>(
-      '[data-testid="task-chat-composer-mode"]',
-    )!;
     editable().focus();
 
-    expect(chip.getAttribute("aria-keyshortcuts")).toContain("Meta+Period");
-    expect(chip.getAttribute("data-pending-work-mode")).toBe("standard");
+    expect(container.querySelector('[data-testid="task-chat-composer-add"]')?.getAttribute("aria-keyshortcuts")).toContain("Meta+Period");
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();
 
     const cycleMode = () => {
       const event = new KeyboardEvent("keydown", {
@@ -914,6 +918,7 @@ describe("TaskChatComposer", () => {
     };
 
     cycleMode();
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-mode"]')!;
     expect(chip.getAttribute("data-pending-work-mode")).toBe("planning");
     expect(chip.textContent).toContain("Plan");
 
@@ -922,9 +927,77 @@ describe("TaskChatComposer", () => {
     expect(chip.textContent).toContain("Ask");
 
     cycleMode();
-    expect(chip.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip.textContent).toContain("Auto");
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();
     expect(onWorkModeChange).not.toHaveBeenCalled();
+  });
+
+  it("selects exclusive modes from the add menu and removes the active chip", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onWorkModeChange={vi.fn()} />);
+    openComposerAddMenu();
+    expect(document.querySelector('[data-testid="composer-add-file"]')).toBeNull();
+    flushSync(() => (document.querySelector('[data-testid="composer-add-plan"]') as HTMLElement).click());
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.textContent).toContain("Plan mode");
+
+    openComposerAddMenu();
+    flushSync(() => (document.querySelector('[data-testid="composer-add-ask"]') as HTMLElement).click());
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.textContent).toContain("Ask mode");
+
+    flushSync(() => (container.querySelector('[data-testid="task-chat-composer-mode"]') as HTMLElement).click());
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();
+  });
+
+  it("opens a mobile Add dialog while keeping Send at the end of the footer", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onWorkModeChange={vi.fn()}
+      onAttachImage={vi.fn().mockResolvedValue(undefined)} mobile enableReassign
+      reassignOptions={[{ id: "agent:codex", label: "Codie" }]}
+      currentAssigneeValue="agent:codex" />);
+
+    const actions = container.querySelector<HTMLElement>('[data-testid="task-chat-composer-actions"]')!;
+    expect(actions.lastElementChild?.lastElementChild).toBe(sendButton());
+    expect(actions.firstElementChild?.contains(sendButton())).toBe(false);
+    expect(actions.lastElementChild?.querySelector('[data-testid="task-chat-composer-assignee"]')).not.toBeNull();
+    expect(actions.querySelector('[data-testid="task-chat-composer-assignee"] [data-slot="agent-avatar"] img')).not.toBeNull();
+
+    flushSync(() => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-add"]')!.click());
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain("Files and images");
+    expect(dialog?.textContent).toContain("Plan mode");
+    expect(dialog?.textContent).toContain("Ask mode");
+
+    flushSync(() => document.querySelector<HTMLButtonElement>('[data-testid="composer-add-plan"]')!.click());
+    const mode = container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]')!;
+    expect(mode.textContent).toContain("Plan mode");
+    expect(actions.contains(mode)).toBe(true);
+    expect(mode.querySelector(".sr-only")?.textContent).toBe("Plan mode");
+    expect(document.querySelector('[role="dialog"][data-state="open"]')).toBeNull();
+  });
+
+  it("opens the mobile file picker from the Add dialog", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" mobile
+      onAttachImage={vi.fn().mockResolvedValue(undefined)} />);
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const openPicker = vi.spyOn(input, "click").mockImplementation(() => {});
+    flushSync(() => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-add"]')!.click());
+    flushSync(() => document.querySelector<HTMLButtonElement>('[data-testid="composer-add-file"]')!.click());
+    expect(openPicker).toHaveBeenCalledOnce();
+  });
+
+  it("uses the Add dialog through the mobile shell's tablet breakpoint", () => {
+    const matchMedia = vi.fn((query: string) => ({
+      media: query,
+      matches: query === "(max-width: 767px)",
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList));
+    vi.stubGlobal("matchMedia", matchMedia);
+    try {
+      render(<ComposerAddMenu mode="standard" onModeChange={vi.fn()} />);
+      flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="Add to composer"]')!.click());
+      expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+      expect(matchMedia).toHaveBeenCalledWith("(max-width: 767px)");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("uses the borderless Paper controls and inverse circular send button", () => {
@@ -939,18 +1012,17 @@ describe("TaskChatComposer", () => {
       />,
     );
 
-    const mode = container.querySelector<HTMLButtonElement>(
-      '[data-testid="task-chat-composer-mode"]',
+    const add = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-composer-add"]',
     )!;
     const assignee = container.querySelector<HTMLButtonElement>(
       '[data-testid="task-chat-composer-assignee"]',
     )!;
     const send = sendButton();
 
-    expect(mode.classList).not.toContain("border");
-    expect(mode.classList).toContain("border-0");
-    expect(mode.classList).toContain("status-chip");
-    expect(mode.style.getPropertyValue("--sc")).toBe("var(--tc-mode-agent)");
+    expect(add.classList).not.toContain("border");
+    expect(add.getAttribute("aria-label")).toBe("Add to composer");
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();
     expect(assignee.classList).toContain("border-0");
     expect(assignee.classList).toContain("shadow-none");
     expect(send.classList).toContain("rounded-full");
@@ -977,10 +1049,10 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("wake up", true, undefined, undefined, expect.any(String));
   });
 
-  it("hides the attach button without an upload handler and shows it with one", () => {
+  it("shows the add menu only when at least one action is available", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
     expect(
-      container.querySelector('[data-testid="task-chat-composer-attach"]'),
+      container.querySelector('[data-testid="task-chat-composer-add"]'),
     ).toBeNull();
 
     render(
@@ -991,8 +1063,18 @@ describe("TaskChatComposer", () => {
       />,
     );
     expect(
-      container.querySelector('[data-testid="task-chat-composer-attach"]'),
+      container.querySelector('[data-testid="task-chat-composer-add"]'),
     ).not.toBeNull();
+  });
+
+  it("opens the file picker from the add menu", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard"
+      onAttachImage={vi.fn().mockResolvedValue(undefined)} />);
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const openPicker = vi.spyOn(input, "click").mockImplementation(() => {});
+    openComposerAddMenu();
+    flushSync(() => document.querySelector<HTMLElement>('[data-testid="composer-add-file"]')!.click());
+    expect(openPicker).toHaveBeenCalledOnce();
   });
 
   it("wires the editor's inline image upload to onAttachImage and returns the attachment URL", async () => {
@@ -1396,6 +1478,27 @@ describe("TaskChatComposer", () => {
       expect(editable().textContent).toBe("");
     });
 
+    it("shows Goal in the add menu only for a supported agent and prepares the command", async () => {
+      const onRunnerGoalCommand = vi.fn();
+      render(<TaskChatComposer onAdd={vi.fn()} workMode="standard"
+        onWorkModeChange={vi.fn()} runnerGoalCapability={capability} onRunnerGoalCommand={onRunnerGoalCommand} />);
+      typeText("Ship the feature");
+      openComposerAddMenu();
+      const goal = document.querySelector<HTMLElement>('[data-testid="composer-add-goal"]');
+      expect(goal).not.toBeNull();
+      flushSync(() => goal!.click());
+      await flushAsync();
+      expect(editable().textContent).toBe("/goal Ship the feature");
+      expect(onRunnerGoalCommand).not.toHaveBeenCalled();
+
+      render(<TaskChatComposer onAdd={vi.fn()} workMode="standard"
+        onWorkModeChange={vi.fn()}
+        runnerGoalCapability={{ ...capability, availability: "unsupported" }}
+        onRunnerGoalCommand={onRunnerGoalCommand} />);
+      openComposerAddMenu();
+      expect(document.querySelector('[data-testid="composer-add-goal"]')).toBeNull();
+    });
+
     it("commits a pending agent reassignment before starting the goal", async () => {
       const order: string[] = [];
       const onAdd = vi.fn().mockResolvedValue(undefined);
@@ -1431,6 +1534,10 @@ describe("TaskChatComposer", () => {
       expect(option).toBeDefined();
       flushSync(() => option!.click());
       await flushAsync();
+
+      openComposerAddMenu();
+      expect(document.querySelector('[data-testid="composer-add-goal"]')).not.toBeNull();
+      flushSync(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
 
       typeText("/goal Ship the feature");
       pressKey("Enter", { metaKey: true });
@@ -1962,7 +2069,54 @@ describe("TaskChatComposer", () => {
   });
 
   describe("composer takeovers", () => {
-    it("replaces the editor with one action surface and exposes Skip", async () => {
+    it.each([false, true])("keeps the interaction card visible while sending a normal message (mobile=%s)", async (mobile) => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          mobile={mobile}
+          takeover={{
+            id: "question-1",
+            label: "Question",
+            pendingCount: 1,
+            content: <p>Which environment?</p>,
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          }}
+        />,
+      );
+
+      typeText("Continue investigating while I decide.");
+      expect(container.querySelector('[data-testid="task-chat-composer-takeover"]')?.textContent).toContain("Which environment?");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledWith("Continue investigating while I decide.", undefined, undefined, undefined, expect.any(String));
+      expect(container.querySelector('[data-testid="task-chat-composer-takeover"]')?.textContent).toContain("Which environment?");
+      expect(editable().textContent).toBe("");
+    });
+
+    it("keeps the composer mode shortcut available beneath an open question", () => {
+      render(
+        <TaskChatComposer
+          onAdd={vi.fn()}
+          workMode="standard"
+          onWorkModeChange={vi.fn()}
+          takeover={{
+            id: "question-1",
+            label: "Question",
+            pendingCount: 1,
+            content: <p>Which environment?</p>,
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          }}
+        />,
+      );
+      pressKey(".", { metaKey: true });
+      expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.textContent).toContain("Plan");
+      expect(container.querySelector('[data-testid="task-chat-composer-takeover"]')).not.toBeNull();
+    });
+
+    it("shows a separate card above a usable editor and exposes Skip", async () => {
       const onSkip = vi.fn().mockResolvedValue(undefined);
       render(
         <TaskChatComposer
@@ -1984,7 +2138,11 @@ describe("TaskChatComposer", () => {
         container.querySelector('[data-testid="task-chat-composer-takeover"]')
           ?.textContent,
       ).toContain("Which environment should receive this?");
-      expect(container.querySelector('[data-testid="mdx-editor"]')).toBeNull();
+      const card = container.querySelector('[data-testid="task-chat-composer-takeover"]')!;
+      const composer = container.querySelector('.paperclip-task-chat-composer')!;
+      expect(card.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(container.querySelector('[data-testid="mdx-editor"]')).not.toBeNull();
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')).not.toBeNull();
       expect(container.textContent).not.toContain("Input needed");
       expect(container.textContent).not.toContain("Write instead");
       const skip = Array.from(

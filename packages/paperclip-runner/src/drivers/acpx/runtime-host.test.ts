@@ -358,6 +358,32 @@ describe("ACPX runtime host", () => {
         await writeFile(join(skillRoot, "references", "answer.txt"), expectedReference);
         await writeFile(join(skillRoot, "SKILL.md"), "---\nname: assigned\ndescription: Updated instructions.\n---\nRead references/answer.txt before responding.");
       }
+      // The prepared native envelope v3 carries the selected skill explicitly;
+      // its task object intentionally has no internal description field. Keep
+      // this boundary covered across a fresh open and a provider reopen.
+      for (let index = 0; index < 2; index += 1) {
+        const host = await AcpxRuntimeHost.open(
+          { ...options, runtimeContext: context },
+          dependencies,
+        );
+        const message = JSON.stringify({
+          schema: "paperclip.native-model-envelope.v3",
+          requestedSkills: ["assigned"],
+          task: {
+            identifier: "PAP-1",
+            title: "Assigned task",
+            prompt: "A prepared direct user request",
+            workMode: "standard",
+          },
+          interactionResponses: index ? [{ response: { status: "accepted" } }] : [],
+        });
+        host.startTurn({ text: message, requestId: `prepared-skill-turn-${index}` });
+        expect(providerStartTurn).toHaveBeenLastCalledWith({
+          text: `/assigned ${message}`,
+          requestId: `prepared-skill-turn-${index}`,
+        });
+        await host.close({ reason: "prepared envelope reopen test" });
+      }
       // The same agent's next ordinary task must not inherit the command.
       const ordinary = await AcpxRuntimeHost.open(
         { ...options, runtimeContext: context }, dependencies,
@@ -371,6 +397,25 @@ describe("ACPX runtime host", () => {
         text: ordinaryMessage, requestId: "ordinary-task",
       });
       await ordinary.close({ reason: "ordinary task verified" });
+      const ordinaryPrepared = await AcpxRuntimeHost.open(
+        { ...options, runtimeContext: context }, dependencies,
+      );
+      const ordinaryPreparedMessage = JSON.stringify({
+        schema: "paperclip.native-model-envelope.v3",
+        requestedSkills: [],
+        task: {
+          identifier: "PAP-2",
+          title: "An ordinary task",
+          prompt: "Mention /assigned in a note",
+          workMode: "standard",
+        },
+      });
+      ordinaryPrepared.startTurn({ text: ordinaryPreparedMessage, requestId: "ordinary-prepared-task" });
+      expect(providerStartTurn).toHaveBeenLastCalledWith({
+        text: ordinaryPreparedMessage,
+        requestId: "ordinary-prepared-task",
+      });
+      await ordinaryPrepared.close({ reason: "ordinary prepared task verified" });
       // No stale assignment survives a later launch without runtime context.
       assigned = false;
       const host = await AcpxRuntimeHost.open(options, dependencies);

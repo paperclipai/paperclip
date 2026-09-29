@@ -96,6 +96,13 @@ do not change workspace isolation or grant credentials or connection access.
 task tools; `approve-reads` allows assigned reads; `deny-all` rejects requests.
 None of these restrictive modes is the default.
 
+Automatic Paperclip/read allowances currently require the Claude SDK dispatch
+boundary. Grok preserves these restricted settings, but its ACP requests lack
+independently bound tool authority. They therefore stop with
+`approval_required`, including Paperclip tool requests. Use an explicitly
+selected `approve-all` policy for unattended Grok work in an assigned sandbox;
+Paperclip authorization and governed approvals still apply.
+
 This runtime has no interactive permission handler. An operation that still
 requires approval stops the turn with `approval_required`. The server marks the
 task blocked, exposes the permission action to the operator, and disables

@@ -93,6 +93,10 @@ RUN set -eu; \
     install "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh; \
     rm -rf /tmp/gh.tgz /tmp/gh.sha256 "/tmp/gh_${GH_VERSION}_linux_amd64"
 
+COPY packages/paperclip-runner/scripts/provision-grok.mjs /tmp/grok-provision/scripts/provision-grok.mjs
+COPY packages/paperclip-runner/src/providers/grok/platforms.json /tmp/grok-provision/src/providers/grok/platforms.json
+RUN node /tmp/grok-provision/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok && rm -rf /tmp/grok-provision
+
 COPY --from=runnerd-build /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd
 COPY --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
 RUN set -eu; for cli in codex claude opencode; do \

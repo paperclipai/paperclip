@@ -95,6 +95,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const provider = isPaperclipRunnerProvider(providerCandidate)
     ? providerCandidate
     : "codex";
+  const acpxAgent = schemaValues.acpxAgent === "grok" ? "grok" : "claude";
 
   const schemaModel = typeof schemaValues.model === "string"
     ? schemaValues.model.trim()
@@ -233,8 +234,8 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
       : {}),
     ...(provider === "acpx"
       ? {
-          acpxAgent: schemaValues.acpxAgent === "grok" ? "grok" : "claude",
-          model: configuredModel || schemaModel || (schemaValues.acpxAgent === "grok" ? "grok-4.7" : resolvePaperclipRunnerModel("acpx", undefined)),
+          acpxAgent,
+          model: configuredModel || schemaModel || (acpxAgent === "grok" ? "grok-4.7" : resolvePaperclipRunnerModel("acpx", undefined)),
         }
       : {}),
     ...(provider === "claude_managed"

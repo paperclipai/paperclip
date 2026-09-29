@@ -164,9 +164,9 @@ impl AcpxProviderDescriptor {
             ),
             "grok" => (
                 "grok-4.7",
-                "@paperclipai/grok-acp",
-                "1.0.13",
-                Some("@paperclipai/grok-acp"),
+                "builtin:grok-acp",
+                "1",
+                Some("native:grok"),
                 Some("1.0.13"),
                 "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
             ),

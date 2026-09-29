@@ -321,7 +321,7 @@ describe("public repository paid workflow security", () => {
     expect(grokPreparation).toBeGreaterThan(paidInstall);
     expect(paidExecution).toBeGreaterThan(grokPreparation);
     expect(paidJob).toContain("if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-acpx-grok' || matrix.profileId == 'runner-acpx-grok-subscription')");
-    expect(paidJob).toContain("run: node packages/grok-acp/install.mjs");
+    expect(paidJob).toContain("run: sudo node packages/paperclip-runner/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok");
 
     const everydayOracleStep = paidJob.slice(
       everydayOraclePreparation,

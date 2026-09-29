@@ -201,7 +201,8 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(transaction: (callback: (tx: Record<string, never>) => Promise<unknown>) => Promise<unknown> =
+  async (callback) => callback({})) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -220,7 +221,7 @@ async function createApp() {
     next();
   });
   app.use("/api", issueRoutes({
-    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+    transaction,
   } as any, {} as any));
   app.use(errorHandler);
   return app;
@@ -330,6 +331,7 @@ describe("issue update comment wakeups", () => {
       externalConversationState,
       assigneeAgentId: ASSIGNEE_AGENT_ID,
       assigneeUserId: null,
+      assigneeAdapterOverrides: { adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "ultra", fastMode: true } },
     });
     mockIssueService.getById.mockResolvedValue(existing);
     mockIssueService.update.mockResolvedValue(updated);
@@ -347,11 +349,16 @@ describe("issue update comment wakeups", () => {
         assigneeUserId: null,
         comment: "write the whole thing",
         commentClientRequestId: "55555555-5555-4555-8555-555555555555",
+        assigneeAdapterOverrides: updated.assigneeAdapterOverrides,
       });
 
     expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(existing.id, expect.objectContaining({
+      assigneeAdapterOverrides: updated.assigneeAdapterOverrides,
+    }), expect.anything());
     expect(mockIssueService.addComment).toHaveBeenCalledWith(existing.id, "write the whole thing", expect.anything(),
-      expect.objectContaining({ clientRequestId: "55555555-5555-4555-8555-555555555555" }));
+      expect.objectContaining({ clientRequestId: "55555555-5555-4555-8555-555555555555" }), expect.anything());
+    expect(mockIssueService.update.mock.calls[0]?.[2]).toBe(mockIssueService.addComment.mock.calls[0]?.[4]);
     // The route dispatches the wake after it sends the response, so wait for
     // the fire-and-forget dispatch to settle. This keeps the wake inside this
     // test and stops it from leaking into the next test as an extra call.
@@ -376,6 +383,35 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("rolls back adapter settings if the accompanying comment fails", async () => {
+    const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+    let persistedModel = "gpt-6-sol";
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id, fields) => {
+      persistedModel = fields.assigneeAdapterOverrides.adapterConfig.model;
+      return { ...existing, ...fields };
+    });
+    mockIssueService.addComment.mockRejectedValue(new Error("comment write failed"));
+    const transaction = vi.fn(async (callback: (tx: Record<string, never>) => Promise<unknown>) => {
+      const previousModel = persistedModel;
+      try {
+        return await callback({});
+      } catch (error) {
+        persistedModel = previousModel;
+        throw error;
+      }
+    });
+
+    const res = await request(await createApp(transaction))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: "use Astra", assigneeAdapterOverrides: { adapterConfig: { model: "gpt-6-astra" } } });
+
+    expect(res.status).toBe(500);
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(persistedModel).toBe("gpt-6-sol");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("interrupts the active run and wakes the newly assigned agent with handoff context", async () => {

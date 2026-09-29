@@ -318,7 +318,7 @@ function TaskExecutionExample({
 }
 
 const meta = {
-  title: "Tasks/Execution Controls",
+  title: "Composer/Execution controls",
   component: TaskExecutionExample,
   parameters: { layout: "padded" },
 } satisfies Meta<typeof TaskExecutionExample>;

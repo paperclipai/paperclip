@@ -1,5 +1,8 @@
 import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "./DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
+import type { ComposerRunSettings } from "./task-chat/composer-run-settings";
+import { ComposerRunSettingsPicker } from "./task-chat/ComposerRunSettingsPicker";
+import { ComposerAddMenu, ComposerModeChip } from "./task-chat/ComposerAddMenu";
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./task-chat/TaskChatPausedTakeover";
 import { useEmailComment } from "./EmailMessageCard";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
@@ -46,6 +49,7 @@ import type {
   SuccessfulRunHandoffState,
   IssueWorkMode,
   IssueWorkProduct,
+  IssueAssigneeAdapterOverrides,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { findUIAdapter } from "../adapters/registry";
@@ -59,6 +63,9 @@ import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   loadDraft,
+  loadDraftIfAvailable,
+  loadDraftRecoveryKey,
+  preserveDraftInTab,
   saveDraft,
   clearDraft,
   loadDraftAttachments,
@@ -210,9 +217,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import {
   nextWorkMode,
-  titleForPendingWorkMode,
   workModeMetaFor,
-  workModeMetaList,
 } from "../lib/work-mode-meta";
 import {
   Tooltip,
@@ -515,6 +520,8 @@ interface IssueChatComposerProps {
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
   currentAssigneeValue?: string;
+  companyId?: string | null;
+  assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
   agentMap?: Map<string, Agent>;
@@ -606,6 +613,7 @@ interface IssueChatThreadProps {
     reassignment?: CommentReassignment,
     attachmentIds?: string[],
     clientRequestId?: string,
+    runSettings?: ComposerRunSettings,
   ) => Promise<void>;
   onReviewConversation?: () => Promise<void>;
   onCancelRun?: () => Promise<void>;
@@ -622,6 +630,7 @@ interface IssueChatThreadProps {
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
   currentAssigneeValue?: string;
+  assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
   composerPause?: TaskComposerPause | null;
@@ -4652,10 +4661,12 @@ const IssueChatComposer = forwardRef<
     stopScope = "leaf",
     onImageUpload,
     onAttachImage,
-    draftKey,
+    draftKey: sharedDraftKey,
     enableReassign = false,
     reassignOptions = [],
     currentAssigneeValue = "",
+    companyId,
+    assigneeAdapterOverrides,
     suggestedAssigneeValue,
     mentions = [],
     agentMap,
@@ -4672,6 +4683,17 @@ const IssueChatComposer = forwardRef<
   forwardedRef,
 ) {
   const stopControl = useComposerStop(onStop, stopPending);
+  const restoredRecovery = useMemo(() => {
+    const key = sharedDraftKey && loadDraftRecoveryKey(sharedDraftKey);
+    return key ? { sourceKey: sharedDraftKey!, key, persisted: true } : null;
+  }, [sharedDraftKey]);
+  const [newRecovery, setDraftRecovery] = useState<{ sourceKey: string; key: string; persisted: boolean } | null>(null);
+  const draftRecovery = newRecovery?.sourceKey === sharedDraftKey ? newRecovery : restoredRecovery;
+  const draftKey = draftRecovery?.key ?? sharedDraftKey;
+  // Keep the active buffer through send completion. Re-entering a task may
+  // return to its shared draft after an empty recovery has been retired.
+  useEffect(() => setDraftRecovery(restoredRecovery), [sharedDraftKey, restoredRecovery]);
+  const retiredDraftKeyRef = useRef<string | undefined>(undefined);
   // Initialize before StrictMode's mount cleanup can flush an empty value over
   // the stored draft. The effect below handles subsequent task-key changes.
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
@@ -4691,6 +4713,7 @@ const IssueChatComposer = forwardRef<
   }, [draftKey]);
   const bodyRef = useRef(body);
   bodyRef.current = body;
+  const reconciledSubmissionRef = useRef<{ draftKey: string | undefined; attemptId: string } | null>(null);
   const pendingDraftRef = useRef<{
     draftKey: string;
     attemptId: string;
@@ -4756,6 +4779,8 @@ const IssueChatComposer = forwardRef<
   const [reassignTarget, setReassignTarget] = useState(
     effectiveSuggestedAssigneeValue,
   );
+  const [runSettings, setRunSettings] = useState<ComposerRunSettings | null>(null);
+  useEffect(() => setRunSettings(null), [draftKey, currentAssigneeValue]);
   const [noAssigneeDialogOpen, setNoAssigneeDialogOpen] = useState(false);
   const [dismissedCoachToken, setDismissedCoachToken] = useState<string | null>(
     null,
@@ -4764,7 +4789,6 @@ const IssueChatComposer = forwardRef<
   const [pendingWorkMode, setPendingWorkMode] = useState<IssueWorkMode>(
     resolvedIssueWorkMode,
   );
-  const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const canToggleWorkMode = typeof onWorkModeChange === "function";
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const reassignTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -4806,7 +4830,7 @@ const IssueChatComposer = forwardRef<
   }
 
   useEffect(() => {
-    if (!draftKey) return;
+    if (!draftKey || (draftRecovery?.key === draftKey && !draftRecovery.persisted)) return;
     setBody(loadDraft(draftKey));
     setComposerAttachments(
       loadDraftAttachments(draftKey).map((item) => ({
@@ -4822,21 +4846,54 @@ const IssueChatComposer = forwardRef<
   // Text equality is not delivery proof: users may intentionally repeat text.
   useEffect(() => {
     if (!uncertainSubmission || !confirmedSubmissionIds.has(uncertainSubmission.attemptId)) return;
+    const { attemptId } = uncertainSubmission;
+    const reconciled = reconciledSubmissionRef.current;
+    if (reconciled && reconciled.draftKey === draftKey && reconciled.attemptId === attemptId) return;
     const nextDraft = uncertainSubmission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
-    if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);
+    const submittedIds = uncertainSubmission.submittedAttachmentIds;
+    let nextAttachments = submittedIds
+      ? composerAttachmentsRef.current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
+      : [];
+    if (draftKey) {
+      const retained = loadDraftSubmission(draftKey);
+      // Settle storage from its own snapshot, never from this tab's stale copy.
+      // A different retained attempt is owned by its original tab.
+      if (retained?.attemptId === attemptId) settleDraftSubmission(draftKey, attemptId);
+      const storedDraft = loadDraftIfAvailable(draftKey);
+      const storedAttachments = loadDraftAttachments(draftKey).filter(item => !submittedIds?.includes(item.attachmentId));
+      const foreignAttempt = retained && retained.attemptId !== attemptId;
+      const differentAttachments = JSON.stringify(nextAttachments.map(item => item.attachmentId).sort()) !==
+        JSON.stringify(storedAttachments.map(item => item.attachmentId).sort());
+      if (storedDraft !== null && (foreignAttempt || !retained || storedDraft !== nextDraft || differentAttachments)) {
+        // Text has no cross-tab ordering. Preserve each buffer separately. When
+        // both snapshots describe the same text, retain all attachment receipts.
+        if (!foreignAttempt && (storedDraft === nextDraft || storedDraft === bodyRef.current)) {
+          const ids = new Set(nextAttachments.map(item => item.attachmentId));
+          const combined = [...nextAttachments, ...storedAttachments.filter(item => !ids.has(item.attachmentId)).map(item => ({
+            ...item, size: item.size ?? 0, id: `receipt:${item.attachmentId}`, status: "attached" as const,
+          }))];
+          // Each draft is limited to 20 receipts. If their union exceeds that,
+          // keep the local selection here and the other selection in shared storage.
+          if (combined.length <= 20) nextAttachments = combined;
+        }
+        const recovered = preserveDraftInTab(sharedDraftKey!, nextDraft, nextAttachments);
+        // Fence old effect cleanups before switching keys or updating bodyRef.
+        retiredDraftKeyRef.current = draftKey;
+        setDraftRecovery({ sourceKey: sharedDraftKey!, ...recovered });
+      }
+      // With unavailable storage, the confirmed in-memory attempt still settles.
+    }
+    reconciledSubmissionRef.current = { draftKey, attemptId };
     setUncertainSubmission(null);
     setBody(nextDraft);
     bodyRef.current = nextDraft;
-    const submittedIds = uncertainSubmission.submittedAttachmentIds;
-    setComposerAttachments(current => submittedIds
-      ? current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
-      : []);
-  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
+    setComposerAttachments(nextAttachments);
+  }, [confirmedSubmissionIds, draftKey, sharedDraftKey, uncertainSubmission]);
 
   useEffect(() => {
     if (
-      !draftKey ||
+      !draftKey || retiredDraftKeyRef.current === draftKey ||
       submitting ||
       composerAttachments !== composerAttachmentsRef.current
     )
@@ -4853,14 +4910,14 @@ const IssueChatComposer = forwardRef<
     if (!draftKey || submitting) return;
     if (draftTimer.current) clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
-      saveDraft(draftKey, body);
+      if (retiredDraftKeyRef.current !== draftKey) saveDraft(draftKey, body);
     }, DRAFT_DEBOUNCE_MS);
   }, [body, draftKey, submitting]);
 
   useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
-      if (draftKey && !submittingRef.current)
+      if (draftKey && retiredDraftKeyRef.current !== draftKey && !submittingRef.current)
         saveDraft(draftKey, bodyRef.current);
     };
   }, [draftKey]);
@@ -4868,7 +4925,7 @@ const IssueChatComposer = forwardRef<
   useEffect(() => {
     if (!draftKey) return;
     const flushDraft = () => {
-      if (!submittingRef.current) saveDraft(draftKey, bodyRef.current);
+      if (retiredDraftKeyRef.current !== draftKey && !submittingRef.current) saveDraft(draftKey, bodyRef.current);
     };
     window.addEventListener("beforeunload", flushDraft);
     return () => window.removeEventListener("beforeunload", flushDraft);
@@ -5006,10 +5063,11 @@ const IssueChatComposer = forwardRef<
       }
       // assistant-ui thread.append is fire-and-forget. Await the actual Board
       // mutation; it already owns optimistic echo and durable error handling.
-      const sendPromise = onSend(
-        submittedBody, reopen, reassignment,
-        attachmentIds.length ? attachmentIds : undefined, attemptId,
-      );
+      const sendPromise = runSettings
+        ? onSend(submittedBody, reopen, reassignment,
+            attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings)
+        : onSend(submittedBody, reopen, reassignment,
+            attachmentIds.length ? attachmentIds : undefined, attemptId);
       queueViewportRestore(viewportSnapshot);
       await sendPromise;
       // Settle the captured task even if the user navigated away. The exact
@@ -5021,6 +5079,7 @@ const IssueChatComposer = forwardRef<
         current.filter((item) => !submittedAttachmentKeys.has(item.id)),
       );
       setReassignTarget(effectiveSuggestedAssigneeValue);
+      setRunSettings(null);
     } catch (error) {
       if (mountedTaskKey.current !== draftKey) return;
       const nextDraft = bodyRef.current;
@@ -5296,9 +5355,7 @@ const IssueChatComposer = forwardRef<
     );
   }
 
-  const workModeOptions = workModeMetaList();
   const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode);
-  const PendingWorkModeIcon = pendingWorkModeMeta.icon;
 
   function handleComposerKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>) {
     // Match the period via both `code` and `key`: iOS Safari with a hardware
@@ -5351,6 +5408,12 @@ const IssueChatComposer = forwardRef<
         </div>
       ) : null}
 
+      {draftRecovery && draftRecovery.sourceKey === sharedDraftKey ? (
+        <p role="status" className="mb-3 text-sm text-muted-foreground">
+          Another tab changed the saved draft. This draft is kept separately in this tab.
+          {!draftRecovery.persisted ? " Browser storage is unavailable; copy your text before leaving." : " It will be restored if you reload this tab."}
+        </p>
+      ) : null}
       {uncertainSubmission ? (
         <div
           role="alert"
@@ -5532,89 +5595,38 @@ const IssueChatComposer = forwardRef<
       <div className="flex flex-wrap items-center justify-end gap-3">
         <div className="mr-auto flex items-center gap-2">
           {canAcceptFiles ? (
-            <>
-              <input
-                ref={attachInputRef}
-                type="file"
-                className="hidden"
-                onChange={handleAttachFile}
-              />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => attachInputRef.current?.click()}
-                disabled={attaching}
-                title="Attach file"
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-            </>
+            <input ref={attachInputRef} type="file" className="hidden" onChange={handleAttachFile} />
           ) : null}
-          {canToggleWorkMode ? (
-            <Popover open={workModeMenuOpen} onOpenChange={setWorkModeMenuOpen}>
-              <PopoverTrigger asChild>
-                {/* Single persistent mode chip (PAP-95b mockup rev 5): yellow in
-                    planning, neutral in standard, caret opens the switch menu. */}
-                <button
-                  type="button"
-                  data-testid="issue-chat-composer-work-mode-toggle"
-                  data-pending-work-mode={pendingWorkMode}
-                  aria-haspopup="menu"
-                  aria-expanded={workModeMenuOpen}
-                  aria-pressed={pendingWorkMode !== "standard"}
-                  aria-keyshortcuts="Meta+Period Control+Period"
-                  title={titleForPendingWorkMode(pendingWorkMode)}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-(length:--text-micro) font-semibold transition-colors",
-                    pendingWorkModeMeta.classes.chip,
-                  )}
-                >
-                  <PendingWorkModeIcon className="h-3.5 w-3.5" aria-hidden />
-                  <span>{pendingWorkModeMeta.label}</span>
-                  <ChevronDown className="h-3 w-3 opacity-60" aria-hidden />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent
-                className="w-44 p-1"
-                align="start"
-                data-testid="issue-chat-composer-work-mode-menu"
-              >
-                {workModeOptions.map((option) => {
-                  const Icon = option.icon;
-                  const active = option.value === pendingWorkMode;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      data-testid={`issue-chat-composer-work-mode-menu-${option.value}`}
-                      data-pending-work-mode={pendingWorkMode}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
-                        active && "bg-accent",
-                        option.classes.menuItem,
-                      )}
-                      onClick={() => {
-                        setPendingWorkMode(option.value);
-                        setWorkModeMenuOpen(false);
-                      }}
-                    >
-                      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      <span>{option.label}</span>
-                      {active ? (
-                        <Check className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      ) : null}
-                    </button>
-                  );
-                })}
-                <div className="mt-1 border-t px-2 py-1.5 text-(length:--text-nano) text-muted-foreground">
-                  Cmd/Ctrl+. cycles modes
-                </div>
-              </PopoverContent>
-            </Popover>
-          ) : null}
+          <ComposerAddMenu mode={pendingWorkMode}
+            onModeChange={canToggleWorkMode ? setPendingWorkMode : undefined}
+            onAttachFile={canAcceptFiles ? () => attachInputRef.current?.click() : undefined}
+            attachDisabled={attaching}
+            disabled={!!uncertainSubmission}
+            triggerTestId="issue-chat-composer-add" menuTestId="issue-chat-composer-add-menu" />
+          <ComposerModeChip mode={pendingWorkMode}
+            onRemove={canToggleWorkMode ? () => setPendingWorkMode("standard") : undefined}
+            disabled={!!uncertainSubmission}
+            testId="issue-chat-composer-work-mode-chip" />
         </div>
 
-        {enableReassign && reassignOptions.length > 0 ? (
+        {enableReassign && reassignOptions.length > 0 && companyId && agentMap ? (
+          <ComposerRunSettingsPicker
+            companyId={companyId}
+            assigneeValue={reassignTarget}
+            currentAssigneeValue={currentAssigneeValue}
+            options={reassignOptions}
+            agents={agentMap}
+            overrides={assigneeAdapterOverrides}
+            settings={runSettings}
+            onSettingsChange={setRunSettings}
+            onAssigneeChange={setReassignTarget}
+            triggerRef={reassignTriggerRef}
+            renderAssigneeIdentity={(value) => {
+              const selected = value.startsWith("agent:") ? agentMap.get(value.slice(6)) : null;
+              return selected ? <AgentAvatar agent={selected} size={16} className="size-4 shrink-0" /> : null;
+            }}
+          />
+        ) : enableReassign && reassignOptions.length > 0 ? (
           <InlineEntitySelector
             ref={reassignTriggerRef}
             value={reassignTarget}
@@ -5768,6 +5780,7 @@ export function IssueChatThread({
   canFalsePositiveRecoveryAction = false,
   legacyRecoverySourceIssue = null,
   companyId,
+  assigneeAdapterOverrides,
   projectId,
   issueStatus,
   issueAssigneeAgentId = null,
@@ -6076,9 +6089,11 @@ export function IssueChatThread({
   }
 
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
-    (body, reopen, reassignment, attachmentIds, clientRequestId) => {
+    (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      return onAdd(body, reopen, reassignment, attachmentIds, clientRequestId);
+      return runSettings
+        ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
+        : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId);
     },
     [onAdd],
   );
@@ -6751,6 +6766,8 @@ export function IssueChatThread({
                 enableReassign={enableReassign}
                 reassignOptions={reassignOptions}
                 currentAssigneeValue={currentAssigneeValue}
+                companyId={companyId}
+                assigneeAdapterOverrides={assigneeAdapterOverrides}
                 suggestedAssigneeValue={suggestedAssigneeValue}
                 mentions={mentions}
                 agentMap={agentMap}

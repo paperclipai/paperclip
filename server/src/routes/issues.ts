@@ -13731,13 +13731,17 @@ export function issueRoutes(
       });
       const decision =
         transition.decision && decisionId ? transition.decision : null;
-      let attachmentComment: Awaited<ReturnType<typeof svc.addComment>> | null =
+      let transactionalComment: Awaited<ReturnType<typeof svc.addComment>> | null =
         null;
-      const attachmentCommentSourceTrust = commentAttachmentIds?.length
+      const commentWithAdapterOverrides = Boolean(
+        commentBody && updateFields.assigneeAdapterOverrides !== undefined,
+      );
+      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
       const shouldUseTransactionalIssueUpdate =
         Boolean(commentAttachmentIds?.length) ||
+        commentWithAdapterOverrides ||
         Boolean(decision) ||
         shouldRelayStop ||
         persistReviewActivityTransactionally ||
@@ -13752,10 +13756,10 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
-            if (commentAttachmentIds?.length) {
-              // Reassignment, comment creation and upload binding commit together.
-              // An invalid or already-bound receipt rolls back the issue update.
-              attachmentComment = await svc.addComment(
+            if (commentAttachmentIds?.length || commentWithAdapterOverrides) {
+              // Adapter settings, reassignment, comment and upload binding commit together.
+              // A failed comment or invalid receipt rolls back the issue update.
+              transactionalComment = await svc.addComment(
                 id,
                 commentBody,
                 {
@@ -13770,7 +13774,7 @@ export function issueRoutes(
                   clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
                   mirrorToSlack: actor.actorType === "user",
                   authorizationReason: issueMutationAuthorizationReason,
-                  sourceTrust: attachmentCommentSourceTrust,
+                  sourceTrust: transactionalCommentSourceTrust,
                 },
                 tx,
               );
@@ -14355,7 +14359,7 @@ export function issueRoutes(
       }
 
       let comment: Awaited<ReturnType<typeof svc.addComment>> | null =
-        attachmentComment;
+        transactionalComment;
       let goalCommentSteered = false;
       let lostReviewPathRef: string | null = null;
       if (commentBody) {

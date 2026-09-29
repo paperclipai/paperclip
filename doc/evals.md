@@ -71,6 +71,13 @@ Daytona paths. Its [fixture contract](../tests/runner-e2e/README.md) distinguish
 startup cancellation from active response cancellation and HTTP send replay
 from ambiguous provider action recovery. Select it explicitly; `--all` excludes it.
 
+The explicit-only `context-integrity` Product E2E suite covers ordered public
+comment continuation and explicit invocation of an assigned pinned skill across
+the seven selected legacy/native local profiles. Select it by suite or exact
+execution ID because `--all` excludes explicit-only suites. Each cell applies a
+1,000-cent company and agent budget hard stop before task creation and records
+both limits in its evidence.
+
 The explicit-only `agent-chat-stories` suite covers the experimental settings
 lifecycle for a configured native agent and follow-ups during active work. Its
 fixture-driven file wait and persisted-plan oracle are documented in the
@@ -268,6 +275,11 @@ named existing controls on legacy and native Codex. Discover it with
 results and follow-up coverage are recorded in that suite's guide.
 
 Continuation accounting has an explicit-only eight-cell Product E2E [baseline suite](../tests/runner-e2e/CONTINUATION-ACCOUNTING.md), complementing the deterministic lifecycle inventory.
+
+The explicit Product E2E `instruction-persistence` suite verifies private file
+edits, nested and binary agent files, stopped-provider directory saves, server restart, and a fresh task's
+downloaded proof on local native/legacy Codex and native Daytona. See the
+[Product E2E runbook](../tests/runner-e2e/README.md).
 
 The explicit-only Product E2E `api-response-reading` suite verifies retrieval of
 large saved API responses on local and Daytona native Codex runs. See the

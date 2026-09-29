@@ -2874,6 +2874,15 @@ function acpxProviderPackageAuthority(
   manifest: string;
 } {
   const cliDirectory = dirname(sidecarScript);
+  // Public server packages vendor runner dist directly, without a nested dist
+  // directory or a separately published runner package.
+  if (basename(sidecarScript) === "acpx-runtime-sidecar.cjs" &&
+      basename(cliDirectory) === "cli" && basename(dirname(cliDirectory)) === "paperclip-runner" &&
+      basename(resolve(cliDirectory, "../..")) === "vendor" &&
+      basename(resolve(cliDirectory, "../../..")) === "dist") {
+    const serverRoot = resolve(cliDirectory, "../../../..");
+    return { root: serverRoot, manifest: resolve(serverRoot, "package.json") };
+  }
   if (
     basename(sidecarScript) !== "acpx-runtime-sidecar.cjs" ||
     basename(cliDirectory) !== "cli" ||
@@ -3144,6 +3153,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
       // The verified sidecar bundle cannot use import.meta.url while Node
       // executes it through /proc/self/fd. Anchor its closed provider package
       // lookups at the package that owns the already-authenticated bundle.
+      PAPERCLIP_ACPX_BUILTIN_ROOT: resolve(dirname(sidecarPath), "../providers"),
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: providerPackageAuthority.root,
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
         providerPackageAuthority.manifest,
@@ -3267,6 +3277,7 @@ export function createRunnerdCodexAppServerArgs(input: {
   codexHome: string;
   codexCommand?: string;
   readOnlyRoots?: string[];
+  instructionWorkingCopyRoot?: string;
 }): string[] {
   // The filesystem policy denies HOME and CODEX_HOME to keep credentials and
   // runner state outside provider reach. Always bind those names to the actual
@@ -3279,6 +3290,7 @@ export function createRunnerdCodexAppServerArgs(input: {
       CODEX_HOME: input.codexHome,
     },
     [...(input.readOnlyRoots ?? []), ...codexExecutableReadOnlyRoots(input.environment ?? {}, input.codexCommand)],
+    input.instructionWorkingCopyRoot,
   );
 }
 
@@ -4618,6 +4630,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                           environment: this.options.environment,
                           codexHome,
                           codexCommand: this.options.codexCommand,
+                          instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
                           readOnlyRoots: [
                             ...trustedRuntimeReadOnlyRoots(
                               this.options.environment,
@@ -4655,6 +4668,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                     "paperclip-runner-workspace-read-only"
                       ? "plan"
                       : "default",
+                  ...(params.conversationMode === "prepared"
+                    ? { conversationMode: "prepared" }
+                    : {}),
                   includeCollaborationModeInstructions:
                     includeCodexCollaborationInstructions,
                   ...(provider === "codex"
@@ -5106,6 +5122,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             environment: this.options.environment,
             codexHome,
             codexCommand: this.options.codexCommand,
+            instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
             readOnlyRoots: [
               ...trustedRuntimeReadOnlyRoots(this.options.environment),
               ...(runtimeContext

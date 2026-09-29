@@ -1355,9 +1355,9 @@ Terminal states: `done`, `cancelled`
 - `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
 - `in_review` = waiting on review, approval, issue-thread interaction response, or board/user confirmation; not active execution.
 - `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
-- `done` = completed.
-- `cancelled` = intentionally abandoned.
-- `in_progress` requires an assignee (use checkout).
+- `done` = completed. Release clears execution locks but preserves the assignee and `completedAt`.
+- `cancelled` = intentionally abandoned. Release clears execution locks but preserves the assignee and `cancelledAt`.
+- `in_progress` requires an assignee (use checkout). Release returns it to `todo` and clears the agent assignee.
 - `started_at` is auto-set on `in_progress`.
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
@@ -1418,7 +1418,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
 | PATCH  | `/api/issues/:issueId`             | Update issue; response is authoritative and includes `changes` + `comment` (`Prefer: return=minimal` supported); `blockedByIssueIds` replaces blocker set |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
-| POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
+| POST   | `/api/issues/:issueId/release`     | Release execution locks; preserve terminal task ownership                                 |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |

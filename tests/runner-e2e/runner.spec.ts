@@ -1,5 +1,6 @@
 import { completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
+import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
 import { runAccountingFlow } from "./accounting-flow.js";
@@ -7,6 +8,7 @@ import type { Issue } from "../../packages/shared/src/types/issue.js";
 import { lifecycleLiveCase, gradeLifecycleRepair } from "./lifecycle-live-cases.js";
 import { runContinuationFlow } from "./continuation-flow.js";
 import { runEverydayFlow } from "./everyday-flow.js";
+import { runContextIntegrityFlow } from "./context-integrity-flow.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 
 import { runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
@@ -54,6 +56,7 @@ import {
   type FailureClass,
   type RunnerE2EResult,
 } from "./types.js";
+import { assertRunnerE2EPrerequisites } from "./prerequisites.js";
 
 interface IssueRecord {
   id: string;
@@ -280,6 +283,9 @@ const executionIds = (() => {
   return [single];
 })();
 const executions = executionIds.map(runnerExecutionById);
+// Direct Playwright invocation must enforce the same admission boundary as
+// launch.ts before reading any provider credential from the environment.
+assertRunnerE2EPrerequisites(executions);
 const attempt = Number(process.env.PAPERCLIP_RUNNER_E2E_ATTEMPT ?? "1");
 const temporaryRoot = process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT;
 const privateRoot = process.env.PAPERCLIP_RUNNER_E2E_PRIVATE_DIR;
@@ -543,7 +549,7 @@ for (const execution of executions) {
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = ["continuation_accounting", "continuation", "agent_chat", "everyday_workflow", "first_task"].includes(execution.task.flow);
+    const companyRunFlow = ["continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence"].includes(execution.task.flow);
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
     const pageLifecycleDiagnostics: Array<Record<string, unknown>> = [];
@@ -880,6 +886,16 @@ for (const execution of executions) {
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         });
         issue = accounting.issue as IssueRecord; selectedRuns = accounting.runs as RunRecord[];
+      } else if (execution.task.flow === "instruction_persistence") {
+        const story = await runInstructionPersistenceFlow({
+          page, api, fixtures, execution, nonce, secrets, deadlineAt: startedAtMs + deadlineMs,
+          restart: () => restartIsolatedPaperclipServer({ api, requestId: `instructions-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `instructions.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "continuation") {
         const continuation = await runContinuationFlow({
           page, api, fixtures, execution, nonce, secrets, workspacePath, deadlineAt: startedAtMs + deadlineMs - 60_000,
@@ -903,6 +919,19 @@ for (const execution of executions) {
         });
         issue = story.issue; selectedRuns = story.runs;
         matcherResults = story.evidence.checks.map(check => ({ matcher: { kind: "json_path" as const, path: check.id, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "context_integrity") {
+        const contextIntegrity = await runContextIntegrityFlow({
+          page, api, fixtures, execution, nonce, deadlineAt: startedAtMs + deadlineMs,
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          observe: (currentIssue, currentRuns, checks) => {
+            issue = currentIssue as unknown as IssueRecord;
+            selectedRuns = currentRuns as unknown as RunRecord[];
+            matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const, path: `contextIntegrity.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+          },
+        });
+        issue = contextIntegrity.issue as unknown as IssueRecord;
+        selectedRuns = contextIntegrity.runs as unknown as RunRecord[];
       } else if (execution.task.flow === "agent_chat") {
         const chat = await runChatFlow({
           page, api, fixtures, execution, nonce, workspacePath,

@@ -215,6 +215,8 @@ export const queryKeys = {
     skills: (id: string) => ["agents", "skills", id] as const,
     instructionsBundle: (id: string) =>
       ["agents", "instructions-bundle", id] as const,
+    instructionCandidates: (id: string) =>
+      ["agents", "instruction-candidates", id] as const,
     instructionsFile: (id: string, relativePath: string) =>
       ["agents", "instructions-bundle", id, "file", relativePath] as const,
     keys: (agentId: string) => ["agents", "keys", agentId] as const,

@@ -1102,6 +1102,8 @@ export async function prepareSandboxManagedRuntime(input: {
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceExclude?: string[];
+  /** Plain persistent directories include all files, independent of Git and task cache exclusions. */
+  workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: SandboxManagedRuntimeAsset[];
   /**
@@ -1179,7 +1181,7 @@ export async function prepareSandboxManagedRuntime(input: {
   // The git enumeration (`git status --ignored`, the HEAD diffs, `ls-files`).
   // It reads git's own bookkeeping to decide what to include/exclude, so it is
   // usually fast, but on a large working tree the `--ignored` walk is not free.
-  const gitSnapshot = syncWorkspace
+  const gitSnapshot = syncWorkspace && input.workspaceFileMode !== "all"
     ? input.workspaceGitSnapshot !== undefined
       ? input.workspaceGitSnapshot
       : await runStepSpan("snapshot.git", () =>
@@ -1195,7 +1197,7 @@ export async function prepareSandboxManagedRuntime(input: {
   // A selected subfolder has no cloneable Git snapshot, but its parent
   // repository's ignore rules still govern which files may leave the host.
   // Use the same bounded, path-relative resolver as referenced project trees.
-  const directoryIgnore = syncWorkspace && !gitSnapshot
+  const directoryIgnore = syncWorkspace && !gitSnapshot && input.workspaceFileMode !== "all"
     ? await resolveReferencedSourceIgnore(input.workspaceLocalDir)
     : null;
   if (directoryIgnore?.kind === "failed") {
@@ -1203,14 +1205,14 @@ export async function prepareSandboxManagedRuntime(input: {
   }
   const gitIgnoredExcludes = directoryIgnore?.kind === "git" ? directoryIgnore.ignoredPaths : undefined;
   const workspaceArchiveExclude = mergeExcludes(
-    SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
-    [...GIT_ARCHIVE_EXCLUDES],
+    input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
+    input.workspaceFileMode === "all" ? [] : [...GIT_ARCHIVE_EXCLUDES],
     input.workspaceExclude,
     gitIgnoredExcludes,
   );
   const restoreExclude = mergeExcludes(
-    SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
-    [...GIT_ARCHIVE_EXCLUDES],
+    input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
+    input.workspaceFileMode === "all" ? [] : [...GIT_ARCHIVE_EXCLUDES],
     [".paperclip-runtime"],
     input.preserveAbsentOnRestore,
     input.workspaceExclude,

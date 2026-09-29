@@ -7,10 +7,86 @@
     "src/scenarios/scenario-plan.ts"
   ],
   "counts": {
-    "actions": 48,
+    "actions": 52,
     "legacyRequirements": 106
   },
   "actions": [
+    {
+      "id": "read_agent_instructions",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:read_agent_instructions",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::read_agent_instructions has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:read_agent_instructions"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::read_agent_instructions has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "update_agent_instructions",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:update_agent_instructions",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::update_agent_instructions has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:update_agent_instructions"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::update_agent_instructions has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "get_agent_instruction_history",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:get_agent_instruction_history",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::get_agent_instruction_history has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:get_agent_instruction_history"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::get_agent_instruction_history has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "restore_agent_instructions",
+      "ownership": "always_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:restore_agent_instructions",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::restore_agent_instructions has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:restore_agent_instructions"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::restore_agent_instructions has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
     {
       "id": "create_skill",
       "ownership": "optional_agent_tool",

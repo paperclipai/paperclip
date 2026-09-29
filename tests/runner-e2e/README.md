@@ -25,6 +25,14 @@ The launcher always sets `PAPERCLIP_ANNOUNCEMENTS_ENABLED=false` for its isolate
 instances so announcement panels do not obscure screenshot evidence. No shell
 or workflow configuration is needed, including for Daytona cells.
 
+## Provider-free browser bootstrap regression
+
+`pnpm test:e2e:runner:browser-support` includes a wide development-module graph
+loaded before and after the production service worker takes control. It keeps
+full traces and checks that Vite module loads do not create worker fetches or
+leave the page empty. This isolates browser loading; it does not create a
+Paperclip task, run an agent, or replace a Product E2E result.
+
 ## Completion-update probes (explicit only)
 
 `--suite completion-updates` selects ten local Product E2E cells: native Codex
@@ -107,6 +115,9 @@ Shell variables take precedence over the local file. The recognized names are:
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `OPENROUTER_API_KEY`
+- `KIMI_MODEL_API_KEY` (local-only pending Kimi CLI/ACP profiles)
+- `XAI_API_KEY` (local Grok API-key profile)
+- `GROK_AUTH_JSON` (local native Grok subscription profile)
 - `DAYTONA_API_KEY`
 - `PAPERCLIP_E2E_DAYTONA_IMAGE` (Daytona only)
 
@@ -116,6 +127,12 @@ keys only to Playwright, which posts each value once to the company-secrets API.
 Paperclip receives secret references in agent/environment payloads. Provider
 keys, Daytona keys, `DATABASE_URL`, and `DATABASE_MIGRATION_URL` are removed
 from the Paperclip child process.
+
+Kimi keys are recognized for local catalog, schema, and isolation tests only.
+Its explicit context-integrity profiles are blocked before credential loading
+until runtime identity, authentication, skills, session, and billing
+qualification is complete. Grok profiles are explicit-only and require their
+matching API-key or subscription credential.
 
 Never put credentials in `catalog.ts`, screenshots, fixture metadata, workflow
 inputs, or a tracked env file.
@@ -150,11 +167,11 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains thirteen suites, including the explicit-only everyday and
+The catalog contains the explicit-only suites alongside the standard suites. It also includes the explicit-only everyday and
 [lifecycle baseline](LIFECYCLE-BASELINE.md) suites. The latter adds 46 real-provider
 cells pairing narrative variants and exercising durable lifecycle boundaries;
-it is excluded from `--all`. `core-compatibility` (**Core Runner
-Compatibility**) is seven major runner profiles × local/Daytona × three
+it is excluded from `--all`. `core-compatibility` (**Core Runner Compatibility**)
+is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
 - `message-marker`: one basic visible response and Done transition;
@@ -188,6 +205,30 @@ rendered, answered in the browser, and resumed once on the same task without
 duplicating the final response. The second workflow restarts the isolated
 Paperclip server while the interaction is waiting, reloads that state, and
 then resumes it. The suite has no Daytona cells.
+
+`instruction-persistence` is an explicit-only three-cell workflow: legacy and
+native Codex locally, plus native Codex on Daytona. Each creates six browser tasks
+for the same agent. The editor first creates a nested supporting file. The first
+run edits its registered AGENT_HOME using ordinary filesystem tools: instructions,
+nested text, editor-created content, and exact binary bytes. The oracle checks the
+current files, a stopped-run save receipt, and absence of newly appended history.
+The first task also publishes a small verification receipt for the normal
+completion contract; the personal files stay in the agent directory.
+After a Paperclip restart, a fresh task must upload a downloaded proof attachment
+containing independent saved nonces absent from its prompt. A third task edits its
+private copy while the browser edits the same current file. The later run sync
+must win for that changed file, preserve an unrelated board-created file, and
+produce no conflict candidate or manual review step. Exact bytes, downloads,
+and receipts are independently checked; model claims alone cannot pass.
+Three further tasks fill a sparse personal file to its 256 MiB limit, exceed
+that limit, and clean it up. Every run must still succeed; the run UI must show
+a warning while full and clear it after cleanup. Rejected bytes must not replace
+the saved file. This adds at most one 256 MiB saved fixture per isolated agent.
+The deadline is twenty minutes per cell, with six expected provider runs;
+normal instance/Daytona cleanup, screenshots, evidence, and billing apply. Run with
+`pnpm test:e2e:runner -- --suite instruction-persistence`. Managed agent directories
+checkpoint and close the provider before collection while retaining conversation
+state. The separate `daytona-warm-continuity` suite covers warm runtime behavior.
 
 `daytona-warm-continuity` (**Daytona Warm Continuity**) is exactly two paid
 cells: legacy Codex and Runner Codex against one reusable warm Daytona
@@ -290,6 +331,26 @@ pnpm test:e2e:runner -- --list --suite agent-chat-hardening
 pnpm test:e2e:runner -- --id agent-chat-hardening.runner-codex.local.stop-startup-new-resume
 ```
 
+`context-integrity` is an explicit-only local suite with two bounded cases across
+ten listed legacy/native profiles (20 cells). Six cells are pending-prerequisite
+profiles and are listed for discovery but rejected before provider credentials are
+loaded: `legacy-kimi-cli`, `legacy-kimi-acp`, and `legacy-grok`, each with both
+cases. The seven previously qualified profiles remain unchanged. Pi is not listed
+because no qualified model source exists. `ordered-comment-continuation`
+sends three separate user comments through the public comments API, retaining an
+intentional repeated comment before a changed scope. `assigned-skill-explicit-invocation`
+creates and pins a task skill through public skill APIs, requires an explicit
+provider skill invocation, and keeps the output requirement in the skill body.
+The suite is excluded from `--all` and has no Daytona cells.
+Each cell applies a public API 1,000-cent company and agent budget hard stop
+before task creation and records both limits in its evidence. Unknown provider
+billing or a budget incident is not admitted as a pass.
+
+```sh
+pnpm test:e2e:runner -- --list --suite context-integrity
+pnpm test:e2e:runner -- --id context-integrity.runner-codex.local.ordered-comment-continuation
+```
+
 Each hardening oracle has positive and plausible-negative calibration tests.
 The review grader parses the worker's saved JSON and compares both source values
 and the consistency verdict. Hiring requires one identity, correct reporting
@@ -334,7 +395,11 @@ AND semantics. `--id` is exclusive with dimension selectors and `--all`.
 selector, an empty selection, or a run with no explicit selector exits before
 Paperclip starts. `--max-parallel <n>` controls the number of isolated
 profile/environment/case harnesses that can overlap (default 1, also configurable
-with `PAPERCLIP_E2E_MAX_PARALLEL`). Headed/UI/debug runs are forced to one worker.
+with `PAPERCLIP_E2E_MAX_PARALLEL`). `--max-automatic-retries <0|1>` controls the
+launcher retry budget (default 1). Set it to 0 for a single-attempt comparison;
+it suppresses both transient-infrastructure and provider-variance retries while
+preserving the original failure classification. Headed/UI/debug runs are forced
+to one worker.
 The Plan case is still sequential internally because its turns share one task;
 it runs in parallel with unrelated scenarios.
 
@@ -397,6 +462,14 @@ the image job deliberately fails its anonymous-pull check otherwise. Existing
 content tags are never rebuilt or overwritten by the workflow.
 
 ### Match the local controller package to the Daytona image
+
+When the controller runs on macOS or another platform different from the sandbox,
+set `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` to a verified Linux amd64
+`paperclip-runnerd`, such as the binary copied from `/usr/local/bin/paperclip-runnerd`
+in the pinned image. The controller must have these exact bytes for its artifact
+identity check. A local macOS runner cannot substitute for the Linux binary,
+even when the sandbox image contains a compatible runner. This also applies to
+native Codex cells, which do not otherwise need the remote provider pack below.
 
 Native ACPX (including Claude) and OpenCode Daytona cells also require
 `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` on the controller. The package and

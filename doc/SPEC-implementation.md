@@ -698,6 +698,11 @@ Issue-thread interactions are coordination records, not grants of authority. Eve
 interaction kind defaults to resolver policy `anyone` when the create request omits
 `resolverPolicy`. Restrictions are opt-in.
 
+Question, confirmation, checkbox confirmation, and item verdict cards stay pending
+when a user sends an ordinary task comment. Their `supersedeOnUserComment` flag
+defaults to `false`. A creator may set it to `true` when a comment should replace
+the pending request, as the opening onboarding question does.
+
 Canonical resolver policies are:
 
 - `anyone`: any authenticated actor in the interaction's company who can read the
@@ -1092,6 +1097,12 @@ Server behavior:
 2. if updated row count is 0, return `409` with current owner/status
 3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
 
+`POST /issues/:issueId/release` clears checkout and execution locks. For terminal
+issues (`done` or `cancelled`), it preserves the assignee, status, and disposition
+timestamps, including on repeated release. For unfinished issues it clears the
+agent assignee; only `in_progress` changes to `todo`. Existing company access,
+assignee/run ownership checks, and the `issue.released` activity event still apply.
+
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 
 ## 10.5 Projects
@@ -1348,7 +1359,8 @@ Board can at any time:
 
 Ask-first connection calls use a server-owned tool-action confirmation linked to
 the authoritative action request. The task feed retains a stable record; dismissal
-only hides the composer takeover. Task and Connections decisions share one
+only hides the pending card above the composer. The ordinary composer remains
+available while the card is open. Task and Connections decisions share one
 transaction. Approval runs stored, signed arguments once; decline runs nothing.
 The human decision remains distinct from provider execution success or failure.
 
@@ -1718,6 +1730,23 @@ Agents cannot
 read or change these preferences. The legacy instance general setting is retained
 for API compatibility but no longer controls shortcut behavior in the app;
 users opt in individually after the upgrade.
+
+### Persistent managed agent files (2026-09-28)
+
+The Instructions Editor and agent execution share one current agent-owned
+directory, scoped by company and agent. The configured instruction entry is one
+file in this directory. Registered private copies synchronize supported files
+across tasks and sessions, separately from task workspace persistence. Saves
+require verified provider stop and current authorization, then synchronize changed
+files using per-file last-sync-wins;
+new content is not stored as revision history. Existing deployed revisions and
+saved execution formats remain compatible during adoption. See
+[Persistent agent files](agent-files.md).
+
+Persistent-file storage limits are advisory for execution: a full folder cannot
+pause the agent, fail its run, or prevent later runs. Show a warning on each run
+while storage remains full, restore existing files so the agent can remove them,
+and enforce the limits on saves. Cleanup clears the warning for future runs.
 
 ### Unsafe native workspace exports
 

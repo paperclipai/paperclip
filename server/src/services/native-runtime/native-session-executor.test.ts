@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   access,
   cp,
@@ -55,6 +56,11 @@ import { nativeToolContractFingerprintForTarget } from "./native-session-resume.
 import { buildNativeHeartbeatPreparationSpans } from "./native-run-trace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 
 const githubAccess = vi.hoisted(() => ({
   activate: vi.fn((_binding: { runId: string }) => vi.fn()),
@@ -1041,9 +1047,9 @@ describe("remote provider pack manifest", () => {
     const lockfile = "lockfileVersion: '9.0'\n";
     const opencodeCommand = "#!/bin/sh\n";
     const opencodeExecutable = "opencode-binary\n";
-    const grokExecutable = "grok-binary\n";
-    await mkdir(join(root, "node_modules/@paperclipai/grok-acp/bin"), { recursive: true });
-    await writeFile(join(root, "node_modules/@paperclipai/grok-acp/bin/grok"), grokExecutable);
+    const grokLauncher = "grok-binary\n";
+    await mkdir(join(root, "dist/providers/grok"), { recursive: true });
+    await writeFile(join(root, "dist/providers/grok/launcher.cjs"), grokLauncher);
     await writeFile(
       join(root, "dist", "cli", "opencode-app-server-proxy.cjs"),
       proxy,
@@ -1088,7 +1094,7 @@ describe("remote provider pack manifest", () => {
           "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
       },
       artifacts: {
-        grokExecutable: { path: "node_modules/@paperclipai/grok-acp/bin/grok", sha256: digest(grokExecutable) },
+        grokLauncher: { path: "dist/providers/grok/launcher.cjs", sha256: digest(grokLauncher) },
         nodeCommand: {
           path: "node_modules/node/bin/node",
           sha256: digest(node),
@@ -1168,6 +1174,54 @@ describe("remote provider pack manifest", () => {
       "provider dist tree digest mismatch",
     );
     await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("provider pack read diagnostics", () => {
+  it.each([
+    ["EACCES", "permission_denied"],
+    ["EPERM", "permission_denied"],
+    ["EIO", "io_error"],
+  ])("reports %s without exposing the underlying filesystem message", (code, reason) => {
+    const root = join(tmpdir(), "private-provider-pack");
+    const manifestPath = join(root, "provider-pack.json");
+    const cause = Object.assign(new Error(`${code}: cannot read ${manifestPath}`), {
+      code,
+      path: manifestPath,
+    });
+    vi.mocked(readFileSync).mockImplementationOnce(() => { throw cause; });
+    let failure: Error | undefined;
+    try { readRemoteProviderPackManifest(root); } catch (error) { failure = error as Error; }
+    expect(readFileSync).toHaveBeenLastCalledWith(manifestPath, "utf8");
+    expect(failure?.message).toBe(`runner_remote_provider_artifact_incompatible: provider-pack.json is unreadable (${reason})`);
+    expect(failure?.message).not.toContain(root);
+    expect(failure?.message).not.toContain(code);
+    expect(failure?.cause).toBe(cause);
+  });
+
+  it("classifies a JSON null manifest as incompatible instead of a TypeError", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-null-pack-"));
+    try {
+      await writeFile(join(root, "provider-pack.json"), "null");
+      expect(() => readRemoteProviderPackManifest(root)).toThrow(
+        "runner_remote_provider_artifact_incompatible: provider pack pins or source revision do not match",
+      );
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["missing", "invalid_json", "invalid_path_type"])("reports %s without putting the path in the terminal message", async (reason) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-private-pack-"));
+    try {
+      const manifestPath = join(root, "provider-pack.json");
+      if (reason === "invalid_json") await writeFile(manifestPath, "{ private-invalid-json");
+      if (reason === "invalid_path_type") await mkdir(manifestPath);
+      let failure: Error | undefined;
+      try { readRemoteProviderPackManifest(root); } catch (error) { failure = error as Error; }
+      expect(failure?.message).toBe(`runner_remote_provider_artifact_incompatible: provider-pack.json is unreadable (${reason})`);
+      expect(failure?.message).not.toContain(root);
+      expect(failure?.message).not.toContain("private-invalid-json");
+      expect(failure?.cause).toBeDefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
 
@@ -1477,7 +1531,7 @@ describe("verified native harness backups", () => {
           },
           sourceProviderLeaseId: "sandbox-1",
         }),
-      ).toThrow("runner_harness_state_mismatch");
+      ).toThrow("runner_harness_state_mismatch: backup_provider_identity_missing");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -5816,6 +5870,57 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  it.each([
+    { changed: false, closeFails: false },
+    { changed: true, closeFails: false },
+    { changed: true, closeFails: true },
+  ])("collects changed instructions only after the owned warm provider stops (changed=$changed, close fails=$closeFails)", async ({ changed, closeFails }) => {
+    const identity = `instruction-close-${changed}-${closeFails}`;
+    let releaseClose!: () => void;
+    const closed = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const close = vi.fn(async () => { await closed; if (closeFails) throw new Error("instruction provider close failed"); });
+    const collectStopped = vi.fn(async () => {});
+    const hasChanges = vi.fn(async () => changed);
+    const warmExecution = { ...execution,
+      binding: { ...execution.binding, runId: identity, executionWorkspaceId: identity },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      expect(options.requireSessionCloseBeforeReturn).toBe(true);
+      expect(options.onSessionClosed).toBe(collectStopped);
+      await options.onSession?.({ close });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const running = executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution,
+      runnerInstanceId: identity, runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity, remoteCwd: `/tmp/${identity}` },
+      instructionWorkingCopy: { hasChanges, collectStopped } });
+    const observed = running.then(() => null, error => error);
+    try {
+      if (changed) {
+        await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+        expect(collectStopped).not.toHaveBeenCalled();
+        releaseClose();
+        const error = await observed;
+        if (closeFails) {
+          expect(error?.message).toBe("instruction provider close failed");
+          expect(collectStopped).not.toHaveBeenCalled();
+        } else {
+          expect(error).toBeNull();
+          expect(collectStopped).toHaveBeenCalledOnce();
+        }
+      } else {
+        expect(await observed).toBeNull();
+        expect(close).not.toHaveBeenCalled();
+        expect(collectStopped).not.toHaveBeenCalled();
+      }
+    } finally {
+      releaseClose();
+      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
+    }
+  });
+
   describe("warm session identity transitions", () => {
     let previousHome: string | undefined;
     let isolatedHome: string;
@@ -9119,7 +9224,7 @@ describe("runnerd provider runtime wiring", () => {
           execution: currentExecution,
           runnerInstanceId: "runner-after-running-prior-scope",
         }),
-      ).rejects.toThrow("runner_state_identity_mismatch");
+      ).rejects.toThrow("runner_state_identity_mismatch: prior_owner_active");
       await expect(access(scopedRoot)).resolves.toBeUndefined();
       await expect(access(join(stateBase, "quarantine"))).rejects.toThrow();
       expect(state.createBackend).not.toHaveBeenCalled();
@@ -10640,6 +10745,69 @@ describe("runnerd provider runtime wiring", () => {
     expect(state.createTransport.mock.calls[0]![0].runnerBinary).not.toBe(
       `${remoteCwd}/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd`,
     );
+  });
+
+  it("archives failover evidence with an explicitly replaced provider session", async () => {
+    const remoteCwd = join(isolatedStateDirectory, "remote");
+    const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+      if (command.args?.[0] === "--build-metadata") return {
+        exitCode: 0, timedOut: false, stdout: JSON.stringify({
+          schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+          packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+          durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"],
+          prpTransportModes: ["listen_ws"],
+        }), stderr: "",
+      };
+      if (command.args?.[0] === "--version") return {
+        exitCode: 0, timedOut: false, stdout: "codex-cli 0.156.0", stderr: "",
+      };
+      if (command.args?.[1]?.includes("base64")) return {
+        exitCode: 1, timedOut: false, stdout: "", stderr: "",
+      };
+      return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+    });
+    let prepareReplacement!: () => Promise<void>;
+    const replacement = { close: vi.fn(async () => undefined) };
+    const openSession = vi.fn(async () => {
+      await prepareReplacement();
+      return replacement;
+    });
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession } as never);
+    const backend = await createRunnerdBackend({
+      db: leaseDb(execution), execution, runnerInstanceId: "runner-replacement",
+      runnerIngressAuthorized: true,
+      runnerExecutionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd, environmentId: "environment",
+        leaseId: "lease-created", providerKey: "daytona", reusableLeaseConfigured: true,
+        effectiveCapabilities: { runnerWebSocketIngress: true },
+        sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "sandbox-created" },
+        runner: { execute: remoteExecute, syncIn: vi.fn(async () => undefined) },
+      } as never,
+    });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
+      prepareExternalRunnerState: () => Promise<void>;
+    };
+    prepareReplacement = options.prepareExternalRunnerState;
+    const root = options.stateDirectory!;
+    for (const name of ["current", "previous"]) {
+      await mkdir(join(root, "failover-backups", name), { recursive: true });
+      await writeFile(join(root, "failover-backups", name, "manifest.json"), JSON.stringify({ priorSession: name }));
+    }
+    // Ambiguous ordinary recovery must still fail closed. Only the runtime's
+    // explicitly admitted replacement may retire these prior-session backups.
+    await expect(prepareReplacement()).rejects.toThrow("runner_harness_state_mismatch: backup_without_reusable_lease");
+    await expect(backend.openReplacementSession!({
+      identity: { runId: execution.binding.runId }, workingDirectory: execution.workspace.cwd,
+    } as never, {} as never)).resolves.toBe(replacement);
+    expect(openSession).toHaveBeenCalledOnce();
+    await expect(access(join(root, "failover-backups"))).rejects.toThrow();
+    const archives = await readdir(join(root, "continuity-breaks"));
+    expect(archives).toHaveLength(1);
+    for (const name of ["current", "previous"]) {
+      expect(JSON.parse(await readFile(join(root, "continuity-breaks", archives[0]!, "failover-backups", name, "manifest.json"), "utf8")))
+        .toEqual({ priorSession: name });
+    }
   });
 
   it.each(["fresh", "existing_state", "symlink_parent", "wrong_identity", "connected", "pending_turn", "remote_probe_failed", "backup_present"])(

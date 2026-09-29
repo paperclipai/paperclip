@@ -25,6 +25,18 @@ function renderRunner(config: Record<string, unknown>): string {
 }
 
 describe("Paperclip Runner Codex configuration", () => {
+  it.each([
+    [undefined, "Full auto (approve all)"],
+    ["approve-paperclip", "Automatic Paperclip actions"],
+    ["approve-reads", "Allow Paperclip reads"],
+    ["deny-all", "Deny all"],
+  ])("displays Grok's default or saved permission mode %s", (acpxPermissionMode, label) => {
+    const html = renderRunner({ provider: "acpx", acpxAgent: "grok", acpxPermissionMode });
+    expect(html).toContain('<option value="grok" selected="">Grok Build</option>');
+    expect(html).toContain('aria-label="Permission mode"');
+    expect(html).toContain(label);
+  });
+
   it("exposes all qualified provider choices", () => {
     const html = renderRunner({ provider: "codex" });
 

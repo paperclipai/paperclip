@@ -788,6 +788,75 @@ describe("codex_local ACP lane", () => {
     });
   });
 
+  it("sends assignment-owned markdown and ordered distinct wake comments at the ACP boundary", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-context-owner-");
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const issue = {
+      id: "issue-1",
+      identifier: "PAP-901",
+      title: "Repeat phrase Repeat phrase",
+      description: "Repeat phrase Repeat phrase",
+    };
+    const comments = [
+      { id: "comment-a", body: "Same event body." },
+      { id: "comment-b", body: "Same event body." },
+    ];
+    // The adapter receives server-rendered fields. Keep the server builder's
+    // own tests in the server package; adapter packages compile independently.
+    const assignmentMarkdown = [
+      "Paperclip task context:",
+      `- Issue: ${JSON.stringify(issue.identifier)}`,
+      `- Title: ${JSON.stringify(issue.title)}`,
+      "", "Issue description:", "```text", issue.description, "```",
+    ].join("\n");
+    const historicalMarkdown = [
+      assignmentMarkdown,
+      ...comments.map((comment) => `${comment.id}: ${comment.body}`),
+    ].join("\n");
+    const result = await execute(buildContext(root, {
+      context: {
+        issueId: issue.id,
+        paperclipTaskMarkdown: historicalMarkdown,
+        paperclipTaskMarkdownAssignment: assignmentMarkdown,
+        paperclipWake: {
+          reason: "issue_commented",
+          issue: { ...issue, status: "in_progress" },
+          comments: comments.map((comment, index) => ({
+            ...comment,
+            issueId: issue.id,
+            createdAt: `2026-09-21T00:0${index}:00.000Z`,
+          })),
+          commentWindow: { requestedCount: 2, includedCount: 2, missingCount: 0 },
+          fallbackFetchNeeded: false,
+        },
+        paperclipTurnContext: {
+          version: 1,
+          assignment: { owner: "task_markdown" },
+          events: {
+            owner: "wake_prompt",
+            comments: [
+              { id: "comment-a", revision: "a" },
+              { id: "comment-b", revision: "b" },
+            ],
+          },
+        },
+        paperclipWorkspace: { cwd: root, source: "project_workspace", workspaceId: "workspace-1" },
+      },
+    }));
+    expect(result.exitCode).toBe(0);
+    const prompt = String(runtimes[0]?.startInputs[0]?.text ?? "");
+    expect(prompt.split("Same event body.")).toHaveLength(3);
+    expect(prompt.indexOf("comment comment-a")).toBeLessThan(prompt.indexOf("comment comment-b"));
+    expect(prompt).toContain("Repeat phrase Repeat phrase");
+  });
+
   it("creates the ACP session on the in-sandbox workspace cwd for runner-backed remote runs", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-remote-cwd-");
     const localCwd = path.join(root, "worktree");
@@ -971,6 +1040,54 @@ describe("codex_local ACP lane", () => {
     // Mode preserved at 0600 by the atomic same-directory rename.
     const mode = (await fs.stat(path.join(sharedHostHome, "auth.json"))).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+
+  it("does not copy an API-key run's sandbox auth into the shared subscription home", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-key-copyback-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const keyHome = path.join(root, "api-key-home");
+    const sharedHostHome = path.join(root, "shared-codex-home");
+    await Promise.all([localCwd, remoteCwd, keyHome, sharedHostHome].map((dir) => fs.mkdir(dir, { recursive: true })));
+    const sharedAuth = subscriptionAuthJson("acct-same", OLDER_REFRESH, "host-older");
+    await fs.writeFile(path.join(sharedHostHome, "auth.json"), sharedAuth, { mode: 0o600 });
+    // A subscription-shaped sandbox credential must never be considered for
+    // the shared home when this run explicitly authenticates with an API key.
+    await fs.writeFile(
+      path.join(keyHome, "auth.json"),
+      subscriptionAuthJson("acct-same", NEWER_REFRESH, "sandbox-newer"),
+      { mode: 0o600 },
+    );
+    process.env.CODEX_HOME = sharedHostHome;
+
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(buildContext(localCwd, {
+      config: {
+        engine: "acp",
+        cwd: localCwd,
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+        env: { CODEX_HOME: keyHome, OPENAI_API_KEY: "sk-test-key" },
+        promptTemplate: "Do the assigned work.",
+      },
+      context: {
+        issueId: "issue-1",
+        paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd,
+        runner: createLocalSandboxRunner(),
+      } as never,
+      authToken: "real-run-jwt",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(await fs.readFile(path.join(sharedHostHome, "auth.json"), "utf8")).toBe(sharedAuth);
   });
 
   it("keeps the shared host Codex auth when the sandbox copy is not strictly newer", async () => {

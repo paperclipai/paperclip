@@ -220,6 +220,9 @@ export interface ExecuteNativeSessionOptions {
    * carries required persistence (for example, a remote runner checkpoint).
    */
   requireSessionCloseBeforeReturn?: boolean;
+  /** Trusted cleanup observer, called only after the owned close completes.
+   * Requires requireSessionCloseBeforeReturn; never called for a live warm session. */
+  onSessionClosed?: () => Promise<void>;
   onCheckpoint?: (
     snapshot: PersistedNativeSession,
     options?: CheckpointControlPlaneSessionOptions,
@@ -2349,12 +2352,18 @@ export async function executeNativeSession(
               : false;
           if (dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) {
             modelEnvelope = buildNativeModelEnvelope(input);
+            // Source references cannot resolve after replacing the task prompt.
+            modelEnvelope.completionContract = structuredClone(input.completionContract.contract);
+            if ("requestedSkills" in modelEnvelope) modelEnvelope.requestedSkills = [];
             modelEnvelope.task.prompt = [
               "Paperclip semantic-result recovery for a prior completed provider turn.",
               "The prior turn already performed the work and its user-facing final answer is recorded.",
               "Do not repeat implementation, tests, research, or the final answer.",
               "Use the existing session context to invoke exactly one paperclip_finish or paperclip_block with the accurate current disposition, then stop without additional user-facing prose.",
             ].join("\n");
+          }
+          if (!(dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) && "requestedSkills" in modelEnvelope && options.backend.preparedTaskConstraints) {
+            modelEnvelope.constraints = [...options.backend.preparedTaskConstraints];
           }
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
@@ -2750,6 +2759,7 @@ export async function executeNativeSession(
           // generic retryable transport failure at the control-plane boundary.
           throw protocolIntegrityFailure ?? closeError;
         }
+        await options.onSessionClosed?.();
       }
     } else if (shouldClose && !failedCleanupDeferred) {
       // A provider that ignores close must not keep execution pending forever.

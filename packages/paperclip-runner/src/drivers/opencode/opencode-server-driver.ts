@@ -89,6 +89,7 @@ export interface OpenCodeServerDriverOptions {
   model: string;
   permissionMode?: "allow" | "ask" | "deny";
   taskEnvelope?: CodexTaskEnvelope;
+  conversationMode?: "task" | "prepared";
   runnerInstanceId?: string;
   command?: string;
   /** Inherited runner-owned executable descriptor duplicated into the child. */
@@ -337,6 +338,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
             createCodexTaskEnvelope({
               objective: "Complete the supplied task.",
             }),
+          conversationMode: this.#options.conversationMode,
           systemInstructions:
             this.#options.systemInstructions ??
             CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -422,6 +424,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #semanticResultProviderMessageId: string | null = null;
   #lastNonTerminalToolSourceSeq = 0;
   #usage: Record<string, unknown> | null = null;
+  readonly #conversationMode: "task" | "prepared";
   #sendFullContext: boolean;
   #closed = false;
   #abort = new AbortController();
@@ -435,6 +438,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     workingDirectory: string;
     runnerInstanceId: string;
     model: string;
+    conversationMode?: "task" | "prepared";
     taskEnvelope: CodexTaskEnvelope;
     systemInstructions: string;
     dynamicToolHandler?: DynamicToolHandler;
@@ -450,11 +454,12 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#workingDirectory = input.workingDirectory;
     this.#runnerInstanceId = input.runnerInstanceId;
     this.#model = input.model;
+    this.#conversationMode = input.conversationMode ?? "task";
     this.#taskEnvelope = input.taskEnvelope;
     this.#systemInstructions = input.systemInstructions;
     this.#dynamicToolHandler = input.dynamicToolHandler;
     this.#now = input.now;
-    this.#sendFullContext = input.snapshot === null;
+    this.#sendFullContext = input.snapshot === null && this.#conversationMode !== "prepared";
     this.#sourceSequence = input.snapshot?.lastSourceSequence ?? 0;
     this.#activeTurnId = input.snapshot?.activeTurnId ?? null;
     const restored = input.snapshot?.semanticResult ?? null;

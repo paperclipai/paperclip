@@ -335,6 +335,22 @@ describe("runner E2E structured evidence scanning", () => {
       findSecretLeakInJsonValues({ nested: "sk-proj-abcdefghijklmnop" }, []),
     ).toBe("secret-shaped value");
   });
+
+  it("keeps fake Kimi and Grok credentials out of persisted payloads while retaining references", () => {
+    const fakeCredentials = ["kimi-fixture-secret", "xai-fixture-secret"];
+    const payload = {
+      env: {
+        KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "kimi-ref", version: "latest" },
+        XAI_API_KEY: { type: "secret_ref", secretId: "xai-ref", version: "latest" },
+      },
+      log: "provider response redacted",
+    };
+    expect(findSecretLeakInJsonValues(payload, fakeCredentials)).toBeNull();
+    expect(findSecretLeak(JSON.stringify(payload), fakeCredentials)).toBeNull();
+    expect(() => assertSecretFree(JSON.stringify(payload), fakeCredentials, "pending-profile.json")).not.toThrow();
+    expect(JSON.stringify(payload)).not.toContain(fakeCredentials[0]!);
+    expect(JSON.stringify(payload)).not.toContain(fakeCredentials[1]!);
+  });
 });
 
 describe("runner E2E fixture registry", () => {
@@ -806,6 +822,13 @@ describe("runner E2E failure policy", () => {
     expect(shouldRetryFailure(failureClass)).toBe(true);
   });
 
+  it("disables both automatic retry classes when the policy is zero", () => {
+    expect(shouldRetryFailure("transient_infrastructure", 0)).toBe(false);
+    expect(shouldRetryFailure("provider_variance", 0)).toBe(false);
+    expect(shouldRetryFailure("transient_infrastructure", 1)).toBe(true);
+    expect(shouldRetryFailure("provider_variance", 1)).toBe(true);
+  });
+
   it("retries only transient infrastructure failures", () => {
     expect(
       classifyFailure(new Error("Daytona preview connection timed out")),
@@ -885,8 +908,10 @@ describe("runner E2E server isolation", () => {
         OPENAI_API_KEY: "openai",
         ANTHROPIC_API_KEY: "anthropic",
         OPENROUTER_API_KEY: "openrouter",
-        DAYTONA_API_KEY: "daytona",
+        KIMI_MODEL_API_KEY: "kimi",
         XAI_API_KEY: "xai",
+        GROK_AUTH_JSON: "grok-auth-json",
+        DAYTONA_API_KEY: "daytona",
         XAI_ORG_ID: "xai-sensitive",
         GROK_HOME: "/outside/grok",
         OPENAI_ORG_ID: "also-provider-sensitive",
@@ -911,8 +936,10 @@ describe("runner E2E server isolation", () => {
     expect(env.PATH).toBe("/bin");
     expect(env.DATABASE_URL).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
-    expect(env.OPENAI_ORG_ID).toBeUndefined();
+    expect(env.KIMI_MODEL_API_KEY).toBeUndefined();
     expect(env.XAI_API_KEY).toBeUndefined();
+    expect(env.GROK_AUTH_JSON).toBeUndefined();
+    expect(env.OPENAI_ORG_ID).toBeUndefined();
     expect(env.XAI_ORG_ID).toBeUndefined();
     expect(env.GROK_HOME).toBeUndefined();
     expect(env.PAPERCLIP_API_KEY).toBeUndefined();

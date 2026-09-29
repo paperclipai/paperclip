@@ -12,6 +12,8 @@ export interface PutObjectInput {
 
 export interface GetObjectInput {
   objectKey: string;
+  // S3 reads cancel pending requests and their response streams.
+  signal?: AbortSignal;
   range?: {
     start: number;
     end: number;

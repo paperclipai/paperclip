@@ -2,6 +2,7 @@ export const CREDENTIAL_NAMES = [
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
   "OPENROUTER_API_KEY",
+  "KIMI_MODEL_API_KEY",
   "XAI_API_KEY",
   "GROK_AUTH_JSON",
   "DAYTONA_API_KEY",
@@ -13,6 +14,7 @@ export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
   | "everyday_workflow"
+  | "context_integrity"
 
   | "continuation_accounting"
   | "continuation"
@@ -23,7 +25,8 @@ export type RunnerTaskFlow =
   | "plan_revision_acceptance"
   | "question_resume_completion"
   | "plan_approval_completion"
-  | "warm_three_turn";
+  | "warm_three_turn"
+  | "instruction_persistence";
 
 export interface SecretReference {
   type: "secret_ref";
