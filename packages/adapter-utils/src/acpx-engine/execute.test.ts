@@ -2509,6 +2509,171 @@ describe("shared ACPX engine runtime behavior", () => {
     }
   });
 
+  describe("session record persistence", () => {
+    const TOKEN_NAME = "EXAMPLE_SERVICE_TOKEN";
+    const TOKEN_VALUE = "example-token-value-0123456789";
+
+    function buildSessionRecord(env: Record<string, string>, withModel: boolean) {
+      return {
+        schema: "acpx.session.v1",
+        acpxRecordId: "record-1",
+        acpSessionId: "backend-session",
+        agentCommand: "node ./fake-acp.js",
+        cwd: process.cwd(),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        lastUsedAt: "2026-01-01T00:00:00.000Z",
+        lastSeq: 0,
+        eventLog: {
+          active_path: "record-1.stream.ndjson",
+          segment_count: 1,
+          max_segment_bytes: 1024,
+          max_segments: 1,
+        },
+        messages: [],
+        updated_at: "2026-01-01T00:00:00.000Z",
+        cumulative_token_usage: {},
+        request_token_usage: {},
+        acpx: { session_options: withModel ? { model: "example-model", env } : { env } },
+      };
+    }
+
+    type SessionStoreLike = {
+      load(id: string): Promise<Record<string, any> | undefined>;
+      save(record: Record<string, unknown>): Promise<void>;
+    };
+
+    function createHarness(options: { failResume?: boolean; envOnly?: boolean } = {}) {
+      const ensureInputs: Array<Record<string, any>> = [];
+      const liveRecords: Array<Record<string, any>> = [];
+      let sessionStore: SessionStoreLike | undefined;
+      const execute = createAcpxEngineExecutor({
+        createRuntime: (runtimeOptions) => {
+          sessionStore = (runtimeOptions as unknown as { sessionStore: SessionStoreLike }).sessionStore;
+          return {
+            ensureSession: async (input: Record<string, any>) => {
+              ensureInputs.push(input);
+              if (options.failResume && input.resumeSessionId) {
+                throw new Error("resume failed: session not found");
+              }
+              // Mimic ACPX: the live record carries the launch env, then is saved.
+              const live = buildSessionRecord({ ...input.sessionOptions.env }, !options.envOnly);
+              liveRecords.push(live);
+              await sessionStore!.save(live);
+              return {
+                backendSessionId: "backend-session",
+                agentSessionId: "agent-session",
+                runtimeSessionName: "runtime-session",
+                acpxRecordId: "record-1",
+              };
+            },
+            startTurn: () => ({
+              events: (async function* () { yield { type: "done", stopReason: "end_turn" }; })(),
+              result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+              cancel: async () => {},
+            }),
+            close: async () => {},
+          } as never;
+        },
+      });
+      const run = (stateDir: string, runId: string, sessionParams?: unknown) =>
+        execute({
+          runId,
+          agent: { id: "agent-1", companyId: "company-1" },
+          runtime: sessionParams ? { sessionParams } : {},
+          config: {
+            agent: "custom",
+            agentCommand: "node ./fake-acp.js",
+            stateDir,
+            mode: "persistent",
+            env: { [TOKEN_NAME]: TOKEN_VALUE },
+          },
+          context: {},
+          onLog: async () => {},
+          onMeta: async () => {},
+        } as never);
+      return { run, ensureInputs, liveRecords, store: () => sessionStore! };
+    }
+
+    async function readPersistedSessions(stateDir: string) {
+      const dir = path.join(stateDir, "sessions");
+      const names = (await fs.readdir(dir)).filter((name) => name.endsWith(".json"));
+      return await Promise.all(names.map((name) => fs.readFile(path.join(dir, name), "utf8")));
+    }
+
+    it("does not write session_options.env to the persisted session record", async () => {
+      const stateDir = path.join(await makeTempRoot(), "state");
+      const harness = createHarness();
+      const result = await harness.run(stateDir, "run-1");
+      expect(result.exitCode).toBe(0);
+
+      expect(harness.liveRecords[0]!.acpx.session_options.env[TOKEN_NAME]).toBe(TOKEN_VALUE);
+
+      const files = await readPersistedSessions(stateDir);
+      expect(files).toHaveLength(1);
+      expect(files[0]).not.toContain(TOKEN_VALUE);
+      const persisted = JSON.parse(files[0]!) as { acpx?: { session_options?: Record<string, unknown> } };
+      expect(persisted.acpx?.session_options).toEqual({ model: "example-model" });
+    });
+
+    it("does not mutate the in-memory record passed to save", async () => {
+      const stateDir = path.join(await makeTempRoot(), "state");
+      const harness = createHarness();
+      await harness.run(stateDir, "run-1");
+
+      const live = harness.liveRecords[0]!;
+      const before = JSON.stringify(live);
+      await harness.store().save(live);
+      expect(JSON.stringify(live)).toBe(before);
+      expect(live.acpx.session_options.env[TOKEN_NAME]).toBe(TOKEN_VALUE);
+    });
+
+    it("drops session_options when env was its only entry", async () => {
+      const stateDir = path.join(await makeTempRoot(), "state");
+      const harness = createHarness({ envOnly: true });
+      await harness.run(stateDir, "run-1");
+
+      const files = await readPersistedSessions(stateDir);
+      expect(files[0]).not.toContain(TOKEN_VALUE);
+      const persisted = JSON.parse(files[0]!) as { acpx?: Record<string, unknown> };
+      expect(persisted.acpx?.session_options).toBeUndefined();
+    });
+
+    it("load() still returns the current run's env for a persisted session", async () => {
+      const stateDir = path.join(await makeTempRoot(), "state");
+      const harness = createHarness();
+      await harness.run(stateDir, "run-1");
+
+      const loaded = await harness.store().load("record-1");
+      const launchEnv = harness.ensureInputs[0]!.sessionOptions.env as Record<string, string>;
+      expect(loaded?.acpx?.session_options?.env).toEqual(launchEnv);
+      expect(loaded?.acpx?.session_options?.env?.[TOKEN_NAME]).toBe(TOKEN_VALUE);
+      expect(loaded?.acpx?.session_options?.model).toBe("example-model");
+    });
+
+    it("does not persist env on the fresh-session retry after a failed resume", async () => {
+      const stateDir = path.join(await makeTempRoot(), "state");
+      const harness = createHarness({ failResume: true });
+      const first = await harness.run(stateDir, "run-1");
+      expect(first.exitCode).toBe(0);
+      await fs.rm(path.join(stateDir, "sessions"), { recursive: true, force: true });
+
+      const second = await harness.run(stateDir, "run-2", first.sessionParams);
+      expect(second.exitCode).toBe(0);
+
+      const secondRunCalls = harness.ensureInputs.slice(1);
+      expect(secondRunCalls).toHaveLength(2);
+      expect(secondRunCalls[0]!.resumeSessionId).toBeTruthy();
+      expect(secondRunCalls[1]!.resumeSessionId).toBeUndefined();
+      expect(secondRunCalls[1]!.sessionOptions.env[TOKEN_NAME]).toBe(TOKEN_VALUE);
+
+      const files = await readPersistedSessions(stateDir);
+      expect(files).toHaveLength(1);
+      expect(files[0]).not.toContain(TOKEN_VALUE);
+      const persisted = JSON.parse(files[0]!) as { acpx?: { session_options?: Record<string, unknown> } };
+      expect(persisted.acpx?.session_options).toEqual({ model: "example-model" });
+    });
+  });
+
   it("writes a Paperclip-managed .claude/settings.local.json for the claude agent so it can reach the Paperclip API", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
