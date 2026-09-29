@@ -43,6 +43,8 @@ import {
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
+import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
+import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -2348,7 +2350,9 @@ rl.on("line", (line) => {
     }
   });
 
-  it("creates a personal authorization card and resumes after the user grant exists", async () => {
+  it("starts with another user's personal app and requests authorization only when used", async () => {
+    const originalApiUrl = process.env.PAPERCLIP_API_URL;
+    process.env.PAPERCLIP_API_URL = "http://paperclip.example.test";
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
@@ -2362,7 +2366,7 @@ rl.on("line", (line) => {
       },
     }));
     try {
-      const { connection } = await createRemoteMcpTool(db, company.id, {
+      const { connection, application, catalogEntry } = await createRemoteMcpTool(db, company.id, {
         url: fake.url,
         toolName: "whoami",
         riskLevel: "read",
@@ -2376,9 +2380,33 @@ rl.on("line", (line) => {
         healthMessage: "This app needs you to sign in.",
       }).where(eq(toolConnections.id, connection.id));
       await allowAllToolsForAgent(db, company.id, agent.id);
+      await createActiveMember(db, company.id, "alice");
+      await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, connection.id));
+      await db.insert(connectionGrants).values({
+        companyId: company.id, connectionId: connection.id, kind: "user",
+        subjectUserId: "alice", credentialSecretRefs: [], status: "active", isDefault: false,
+      });
+      await db.insert(toolConnectionInstalls).values({
+        companyId: company.id, connectionId: connection.id, targetType: "agent", targetId: agent.id,
+      });
+      const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent, runId: run.id });
+      expect(snapshot.bindingId).toBe(`native-mcp:${run.id}`);
+      const runtime = await buildPaperclipRuntimeMcpServers({ db, agent, runId: run.id, expectedAssignmentDigest: snapshot.digest });
+      expect(runtime).toHaveLength(1);
+      // Startup and tool discovery never contact the provider or ask Carol to sign in.
+      expect(fake.requests).toHaveLength(0);
+      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id))).toEqual([]);
       const gateway = createTestToolGatewayService(db);
-      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
-      const tool = (await gateway.listToolsForSession(session.token)).find((item) => item.providerType === "mcp_remote_http")!;
+      const app = createGatewayRouteApp(db, gateway);
+      const endpoint = new URL(runtime[0]!.url!).pathname;
+      const listed = await request(app).post(endpoint).set("authorization", `Bearer ${runtime[0]!.token}`)
+        .send({ jsonrpc: "2.0", id: "list", method: "tools/list" }).expect(200);
+      const tool = listed.body.result.tools.find((entry: { name: string }) => entry.name === expectedConnectedToolName({
+        applicationKey: application.applicationKey, connectionId: connection.id, toolName: catalogEntry.toolName,
+      }));
+      expect(tool).toBeDefined();
+      const call = () => request(app).post(endpoint).set("authorization", `Bearer ${runtime[0]!.token}`)
+        .send({ jsonrpc: "2.0", id: "call", method: "tools/call", params: { name: tool.name, arguments: {} } });
 
       await db.insert(issueThreadInteractions).values({
         companyId: company.id,
@@ -2399,8 +2427,9 @@ rl.on("line", (line) => {
         },
       });
 
-      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
-        .rejects.toMatchObject({ status: 409, reasonCode: "user_authorization_required" });
+      const missingGrant = await call().expect(409);
+      expect(missingGrant.body.error.data.reasonCode).toBe("user_authorization_required");
+      expect(fake.requests).toHaveLength(0); // Alice's grant must never authorize Carol's call.
       const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
       expect(interaction).toMatchObject({
         kind: "request_confirmation",
@@ -2424,13 +2453,15 @@ rl.on("line", (line) => {
         status: "active",
         isDefault: false,
       });
-      const result = await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} });
-      expect(result).toMatchObject({ status: "completed", result: { content: "connected" } });
+      const result = await call().expect(200);
+      expect(result.body.result.content).toEqual([{ type: "text", text: "connected" }]);
       expect(fake.requests).toHaveLength(1);
       await expect(db.select({ healthStatus: toolConnections.healthStatus }).from(toolConnections).where(
         eq(toolConnections.id, connection.id),
       )).resolves.toEqual([{ healthStatus: "ok" }]);
     } finally {
+      if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = originalApiUrl;
       await fake.close();
     }
   });

@@ -1,3 +1,4 @@
+import { isNativeMentionContextRun } from "./native-mention-context.js";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -1175,7 +1176,8 @@ export async function finalizeNativeRun(input: {
     ],
   };
 
-  await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
+  const mentionContextRun = isNativeMentionContextRun(run);
+  if (!mentionContextRun) await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
   const sourceWake = run.wakeupRequestId ? await input.db.select({ payload: agentWakeupRequests.payload })
     .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
       eq(agentWakeupRequests.companyId, run.companyId))).then((rows) => rows[0]) : null;
@@ -1253,6 +1255,7 @@ export async function finalizeNativeRun(input: {
       contextSnapshot: reviewContext, allowResolvedByRunId: run.id,
     }) : null;
     const proposedDecision = resolveNativeFinalizerStatus({
+      mentionContextRun,
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
@@ -1278,7 +1281,7 @@ export async function finalizeNativeRun(input: {
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
     });
     const decision = conversationNativeDecision({
-      conversation: isConversation(authoritativeIssue), terminalState,
+      conversation: !mentionContextRun && isConversation(authoritativeIssue), terminalState,
       workspaceFinalizeStatus: input.workspaceFinalizeStatus, hasGovernanceGate: !!governanceGate,
       priorStatus: authoritativeStatus(authoritativeIssue.status), decision: proposedDecision,
     });

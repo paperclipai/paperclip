@@ -1,3 +1,4 @@
+import { isNativeMentionContextRun } from "./native-mention-context.js";
 import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
@@ -574,6 +575,8 @@ export async function reconcileNativeFinalizations(
       assessmentId: nativeRunFinalizations.assessmentId,
       decisionId: nativeRunFinalizations.decisionId,
       runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      wakeupRequestId: heartbeatRuns.wakeupRequestId,
     })
     .from(heartbeatRuns)
     .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
@@ -598,6 +601,8 @@ export async function reconcileNativeFinalizations(
     ));
   const results = [];
   for (const row of rows) {
+    // A completed mention response has no ownership of the source task to reassess.
+    if (row.coordinatorPhase === "committed" && isNativeMentionContextRun(row)) continue;
     const pendingEffects = row.decisionId
       ? await db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
           eq(statusDecisionEffects.companyId, row.companyId),

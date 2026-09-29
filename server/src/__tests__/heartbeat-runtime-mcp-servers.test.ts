@@ -178,21 +178,14 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.update(toolConnections)
       .set({ healthStatus: "degraded", healthMessage: "fixture unavailable" })
       .where(eq(toolConnections.id, installedConnection!.id));
-    const unavailableReports: Array<Array<{ id: string; name: string }>> = [];
     await expect(
       buildPaperclipRuntimeMcpServers({
         db,
         agent: agent!,
         runId: randomUUID(),
         expectedAssignmentDigest: first[0]!.connectionId.slice("assignment:".length),
-        onUnavailableAssignedConnections: (connections) => {
-          unavailableReports.push(connections);
-        },
       }),
     ).resolves.toEqual([]);
-    expect(unavailableReports).toEqual([[
-      { id: installedConnection!.id, name: installedConnection!.name },
-    ]]);
     expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(2);
     await expect(
       createManagedMcpRunConfig({

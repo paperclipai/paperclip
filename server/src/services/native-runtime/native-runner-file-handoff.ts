@@ -1,3 +1,4 @@
+import { hasNativeMentionContextAccess } from "./native-mention-context.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
@@ -818,6 +819,7 @@ export async function stageNativeRunnerWakeAttachments(input: {
       contextSnapshot: heartbeatRuns.contextSnapshot,
       agentStatus: agents.status,
       assigneeAgentId: issues.assigneeAgentId,
+      executionRunId: issues.executionRunId,
     })
     .from(heartbeatRuns)
     .innerJoin(
@@ -844,7 +846,6 @@ export async function stageNativeRunnerWakeAttachments(input: {
         inArray(heartbeatRuns.status, ["queued", "running"]),
         eq(issues.id, input.binding.issueId),
         eq(issues.companyId, input.binding.companyId),
-        eq(issues.executionRunId, input.binding.runId),
         eq(agents.id, input.binding.agentId),
         eq(agents.companyId, input.binding.companyId),
       ),
@@ -867,7 +868,9 @@ export async function stageNativeRunnerWakeAttachments(input: {
         contextSnapshot: reviewContext,
       })
     : null;
-  if (run.assigneeAgentId !== input.binding.agentId && !nativeReview) {
+  const ownsExecution = run.executionRunId === input.binding.runId
+    && (run.assigneeAgentId === input.binding.agentId || nativeReview);
+  if (!ownsExecution && !await hasNativeMentionContextAccess(input.db, input.binding)) {
     throw new Error("paperclip_runner_attachment_staging_not_authorized");
   }
   const selections = wakeAttachmentSelections(run.contextSnapshot);

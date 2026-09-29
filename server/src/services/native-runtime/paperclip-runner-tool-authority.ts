@@ -1,3 +1,4 @@
+import { hasNativeMentionContextAccess } from "./native-mention-context.js";
 import { executeAgentInstructionTool } from "./agent-instruction-tools.js";
 import { createReadStream } from "node:fs";
 import { publicChatTaskUrl } from "../chat-task-url.js";
@@ -594,7 +595,7 @@ export class PaperclipRunnerToolAuthority {
     const key = createHash("sha256").update(callId).digest("hex");
     const digest = createHash("sha256").update(canonicalJson(input)).digest("hex");
     const prior = await this.db.transaction(async (tx) => {
-      const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+      const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db, "issue:read");
       const resultJson = record(locked.run.resultJson);
       const receipts = record(resultJson.apiToolReceipts);
       const existing = record(receipts[key]);
@@ -638,7 +639,7 @@ export class PaperclipRunnerToolAuthority {
     try {
       id = await this.db.transaction(async tx => {
         await this.#lockApiCaptureCompany(tx as unknown as Db);
-        const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
+        const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db, "issue:read");
         const resultJson = record(locked.run.resultJson);
         const used = resultJson.apiResponseCaptureBytes ?? 0;
         if (typeof used !== "number" || !Number.isSafeInteger(used) || used < 0
@@ -742,10 +743,6 @@ export class PaperclipRunnerToolAuthority {
         eq(heartbeatRuns.agentId, this.binding.agentId),
         eq(heartbeatRuns.nativeIssueId, this.binding.issueId),
         eq(issues.companyId, this.binding.companyId),
-        ...(this.binding.nativeReview ? [] : [
-          eq(issues.assigneeAgentId, this.binding.agentId),
-          eq(issues.executionRunId, this.binding.runId),
-        ]),
         eq(agents.companyId, this.binding.companyId),
       ))
       .limit(1);
@@ -755,6 +752,11 @@ export class PaperclipRunnerToolAuthority {
       || row.run.status !== "running"
       || ["paused", "terminated", "pending_approval", "error"].includes(row.actor.status)
     ) {
+      throw new Error("paperclip_runner_tool_binding_not_authorized");
+    }
+    if (!this.binding.nativeReview
+      && (row.issue.assigneeAgentId !== this.binding.agentId || row.issue.executionRunId !== this.binding.runId)
+      && !await hasNativeMentionContextAccess(this.db, this.binding)) {
       throw new Error("paperclip_runner_tool_binding_not_authorized");
     }
     if (this.binding.nativeReview) {
@@ -1503,7 +1505,7 @@ export class PaperclipRunnerToolAuthority {
     return this.db.transaction(async (tx) => {
       try {
         const context = await this.#lockAuthorizedMutationContext(
-          tx as unknown as Db,
+          tx as unknown as Db, operationId === "report_progress" ? "issue:comment" : false,
         );
         const isFilePreparation =
           operationId === "register_deliverable" ||
@@ -1594,7 +1596,7 @@ export class PaperclipRunnerToolAuthority {
     });
   }
 
-  async #lockAuthorizedMutationContext(tx: Db): Promise<{
+  async #lockAuthorizedMutationContext(tx: Db, allowMentionContext: "issue:read" | "issue:comment" | false = false): Promise<{
     run: typeof heartbeatRuns.$inferSelect;
     issue: typeof issues.$inferSelect;
     actor: typeof agents.$inferSelect;
@@ -1619,8 +1621,6 @@ export class PaperclipRunnerToolAuthority {
         eq(heartbeatRuns.agentId, this.binding.agentId),
         eq(heartbeatRuns.nativeIssueId, this.binding.issueId),
         eq(issues.companyId, this.binding.companyId),
-        eq(issues.assigneeAgentId, this.binding.agentId),
-        eq(issues.executionRunId, this.binding.runId),
         eq(agents.companyId, this.binding.companyId),
       ))
       .for("update")
@@ -1633,11 +1633,13 @@ export class PaperclipRunnerToolAuthority {
       || context.run.agentId !== this.binding.agentId
       || context.run.nativeIssueId !== this.binding.issueId
       || context.issue.companyId !== this.binding.companyId
-      || context.issue.assigneeAgentId !== this.binding.agentId
-      || context.issue.executionRunId !== this.binding.runId
       || context.actor.companyId !== this.binding.companyId
       || ["paused", "terminated", "pending_approval", "error"].includes(context.actor.status)
     ) {
+      throw new Error("paperclip_runner_tool_binding_not_authorized");
+    }
+    if ((context.issue.assigneeAgentId !== this.binding.agentId || context.issue.executionRunId !== this.binding.runId)
+      && !(allowMentionContext && await hasNativeMentionContextAccess(tx, this.binding, allowMentionContext))) {
       throw new Error("paperclip_runner_tool_binding_not_authorized");
     }
     return context;

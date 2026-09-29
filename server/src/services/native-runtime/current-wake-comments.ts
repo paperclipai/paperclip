@@ -1,3 +1,4 @@
+import { hasNativeMentionContextAccess } from "./native-mention-context.js";
 import { createHash } from "node:crypto";
 
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -788,7 +789,8 @@ export async function assertCurrentWakeCommentsRead(
       if (!review || (review.interaction.status === "pending" && locked.issueExecutionRunId !== input.runId)) {
         throw new Error("native_current_wake_comments_binding_changed");
       }
-    } else if (locked.issueAssigneeAgentId !== input.agentId || locked.issueExecutionRunId !== input.runId) {
+    } else if ((locked.issueAssigneeAgentId !== input.agentId || locked.issueExecutionRunId !== input.runId)
+      && !await hasNativeMentionContextAccess(tx as unknown as Db, input)) {
       throw new Error("native_current_wake_comments_binding_changed");
     }
     const currentBinding = await resolveCurrentWakeCommentsBinding(

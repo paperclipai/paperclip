@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   assets,
   companies,
@@ -41,6 +42,8 @@ import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
+import { assertCurrentWakeCommentsRead } from "./current-wake-comments.js";
+import { resolveNativeMentionContext } from "./native-mention-context.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 
 describe("native runner file handoff", () => {
@@ -113,6 +116,53 @@ describe("native runner file handoff", () => {
 
   afterAll(async () => {
     await temporary?.cleanup();
+  });
+
+  it.each(["done", "in_progress"])("runs a mention on a %s task without taking its assignee's execution lock", async (status) => {
+    const mentionIssueId = randomUUID();
+    await db.insert(issues).values({ id: mentionIssueId, companyId, title: "Source task", status, assigneeAgentId: agentId, executionRunId: status === "in_progress" ? runId : null });
+    const mentionedAgentId = randomUUID();
+    const mentionRunId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    await db.insert(agents).values({ id: mentionedAgentId, companyId, name: "Mentioned agent", adapterType: "paperclip_runner", status: "active" });
+    const comment = await issueService(db).addComment(mentionIssueId, `Please apply this evidence, [Codie](agent://${mentionedAgentId}).`, { agentId });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId, companyId, agentId: mentionedAgentId, source: "automation",
+      reason: "issue_comment_mentioned", status: "claimed", runId: mentionRunId,
+      payload: { issueId: mentionIssueId, commentId: comment.id },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: mentionRunId, companyId, agentId: mentionedAgentId, status: "running",
+      runtimeMode: "native", nativeIssueId: mentionIssueId, invocationSource: "automation", wakeupRequestId,
+      contextSnapshot: { issueId: mentionIssueId, wakeReason: "issue_comment_mentioned", wakeCommentId: comment.id },
+      runnerProfileJson: { nativeMentionContext: { version: 1, issueId: mentionIssueId, agentId: mentionedAgentId, wakeupRequestId } },
+    });
+    const binding = { companyId, issueId: mentionIssueId, agentId: mentionedAgentId, runId: mentionRunId };
+    expect(await resolveNativeMentionContext(db, binding)).toEqual({ version: 1, issueId: mentionIssueId, agentId: mentionedAgentId, wakeupRequestId });
+    const before = await db.select().from(issues).where(eq(issues.id, mentionIssueId));
+    const staged = await stageNativeRunnerWakeAttachments({ db, binding: {
+      companyId, issueId: mentionIssueId, runId: mentionRunId, agentId: mentionedAgentId, workspaceRoot, executionTargetKind: "local",
+    } });
+    expect(staged.attachments).toEqual([]);
+    await staged.cleanup();
+    const mentionedAuthority = new PaperclipRunnerToolAuthority(db, { ...binding, workspaceRoot, executionTargetKind: "local" });
+    await expect(mentionedAuthority.execute({ tool: "get_task_context", callId: "read", arguments: {} })).resolves.toMatchObject({ activeTask: { id: mentionIssueId } });
+    await expect(mentionedAuthority.execute({ tool: "report_progress", callId: "respond", arguments: { body: "Evidence received.", idempotencyKey: "mention-response" } })).resolves.toMatchObject({ disposition: "applied" });
+    await expect(mentionedAuthority.execute({ tool: "set_dependencies", callId: "change-source", arguments: { blockedByTaskIds: [], idempotencyKey: "change-source" } })).rejects.toThrow("tool_binding_not_authorized");
+    await expect(assertCurrentWakeCommentsRead(db, binding)).resolves.toBeUndefined();
+    const [after] = await db.select().from(issues).where(eq(issues.id, mentionIssueId));
+    expect(after).toMatchObject({ status: before[0].status, assigneeAgentId: agentId, executionRunId: before[0].executionRunId });
+    // The durable wake must still identify a live comment that mentions this agent.
+    await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, comment.id));
+    await expect(mentionedAuthority.execute({ tool: "get_task_context", callId: "deleted-comment", arguments: {} })).rejects.toThrow("tool_binding_not_authorized");
+    await db.update(issueComments).set({ deletedAt: null }).where(eq(issueComments.id, comment.id));
+    await db.update(agentWakeupRequests).set({ payload: { issueId, commentId: comment.id } }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await expect(mentionedAuthority.execute({ tool: "get_task_context", callId: "wrong-issue", arguments: {} })).rejects.toThrow("tool_binding_not_authorized");
+    await db.update(agentWakeupRequests).set({ payload: { issueId: mentionIssueId, commentId: comment.id } }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+    // A wake snapshot cannot grant access without the server's native admission.
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, mentionRunId));
+    await expect(stageNativeRunnerWakeAttachments({ db, binding: { ...binding, workspaceRoot, executionTargetKind: "local" } })).rejects.toThrow("attachment_staging_not_authorized");
+    await expect(mentionedAuthority.execute({ tool: "get_task_context", callId: "forged", arguments: {} })).rejects.toThrow("tool_binding_not_authorized");
   });
 
   function authority(
