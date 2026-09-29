@@ -295,6 +295,70 @@ function readRunLogLimitBytes(value: unknown) {
   return Math.max(1, Math.min(RUN_LOG_MAX_LIMIT_BYTES, Math.trunc(parsed)));
 }
 
+/**
+ * Authorization decision for `POST /api/heartbeat-runs/:runId/cancel`.
+ *
+ * Board operators cancel any run. The run's own agent can also cancel
+ * `automation` or `on_demand` wakes it started itself, so a stuck-pinned run
+ * doesn't have to wait for the board to free it. Timer / assignment wakes
+ * stay board-only — those are work units the board owns and the assigned
+ * agent has no authority to revoke.
+ *
+ * Exported so the auth surface can be unit-tested without the full Express
+ * router in the loop.
+ */
+export function decideCancelAuth(
+  actor: { type: "agent"; agentId: string | null } | { type: "user"; userId: string | null },
+  run: {
+    agentId: string;
+    invocationSource: string;
+    status: string;
+    // Authoritative wake initiator stamped onto the run row at enqueue time.
+    // `requestedByActorType === "agent"` plus `requestedByActorId === actor.agentId`
+    // is the only path that grants the assigned agent self-cancel authority —
+    // proxying on `invocationSource` lets the assigned agent terminate
+    // system- or user-created runs that happen to land on the same agent id.
+    requestedByActorType: string | null;
+    requestedByActorId: string | null;
+  },
+): { ok: true; cancelledByActorType: "user" | "agent"; cancelReason: string; resultJsonPatch: Record<string, unknown>; activityActorId: string; activityActorType: "user" | "agent" }
+  | { ok: false; status: 403 | 409; error: string } {
+  if (actor.type === "agent") {
+    if (
+      actor.agentId !== run.agentId ||
+      run.requestedByActorType !== "agent" ||
+      run.requestedByActorId !== actor.agentId
+    ) {
+      return { ok: false, status: 403, error: "Agent can only cancel a run it itself started" };
+    }
+    if (!["queued", "running"].includes(run.status)) {
+      return { ok: false, status: 409, error: `Cannot cancel a run in '${run.status}' state` };
+    }
+    return {
+      ok: true,
+      cancelledByActorType: "agent",
+      cancelReason: "Cancelled by the owning agent",
+      resultJsonPatch: {
+        cancelledByActorType: "agent",
+        cancelledByAgentId: actor.agentId ?? null,
+      },
+      activityActorId: actor.agentId ?? "agent",
+      activityActorType: "agent",
+    };
+  }
+  return {
+    ok: true,
+    cancelledByActorType: "user",
+    cancelReason: "Cancelled by a board operator",
+    resultJsonPatch: {
+      cancelledByActorType: "user",
+      cancelledByUserId: actor.userId ?? null,
+    },
+    activityActorId: actor.userId ?? "board",
+    activityActorType: "user",
+  };
+}
+
 function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -6954,29 +7018,48 @@ export function agentRoutes(
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
-    assertBoard(req);
     const runId = readHeartbeatRunId(req);
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
-    // Stamp the cancellation as operator-initiated (this route is board-only).
-    // Recovery reads this to stand down instead of classifying the cancelled
-    // run as agent stranding and re-waking the agent the operator just stopped.
-    const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
-      resultJson: {
-        cancelledByActorType: "user",
-        cancelledByUserId: req.actor.userId ?? null,
-      },
+    // Authorization: see decideCancelAuth above for the policy. The wake
+    // initiator lives on the run's contextSnapshot (stamped at enqueue time
+    // by enqueueWakeup) — the auth decision reads those fields, not a join
+    // against agent_wakeup_requests.
+    const snapshot = parseObject(existing.contextSnapshot);
+    const actor = req.actor.type === "agent"
+      ? { type: "agent" as const, agentId: req.actor.agentId ?? null }
+      : { type: "user" as const, userId: req.actor.userId ?? null };
+    const decision = decideCancelAuth(actor, {
+      agentId: existing.agentId,
+      invocationSource: existing.invocationSource,
+      status: existing.status,
+      requestedByActorType: typeof snapshot.requestedByActorType === "string"
+        ? snapshot.requestedByActorType
+        : null,
+      requestedByActorId: typeof snapshot.requestedByActorId === "string"
+        ? snapshot.requestedByActorId
+        : null,
+    });
+    if (!decision.ok) {
+      res.status(decision.status).json({ error: decision.error });
+      return;
+    }
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
+    }
+    const run = await heartbeat.cancelRun(runId, decision.cancelReason, {
+      resultJson: decision.resultJsonPatch,
     });
 
     if (run) {
       await logActivity(db, {
         companyId: run.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorType: decision.activityActorType,
+        actorId: decision.activityActorId,
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: run.id,
-        details: { agentId: run.agentId },
+        details: { agentId: run.agentId, byActor: req.actor.type },
       });
     }
 
