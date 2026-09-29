@@ -6,6 +6,10 @@ import {
   type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
 import {
+  codexLocalReasoningEffortsForModel,
+  isCodexLocalKnownModel,
+} from "@paperclipai/adapter-codex-local";
+import {
   AGENTCORE_QUALIFIED_MODEL,
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
@@ -63,6 +67,7 @@ export type PaperclipRunnerNativeProviderInput =
       provider: "codex";
       model: string | null;
       codexApprovalPolicy: "never" | "on-request" | "untrusted";
+      codexReasoningEffort?: string;
     }
   | {
       provider: "opencode";
@@ -650,6 +655,18 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       },
     };
   }
+  const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort;
+  const allowedEfforts = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  if (effort !== undefined && effort !== null && effort !== "" && (
+    typeof effort !== "string" || !allowedEfforts.includes(effort)
+    || (profile.model && isCodexLocalKnownModel(profile.model)
+      && !codexLocalReasoningEffortsForModel(profile.model).includes(effort as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"))
+  )) {
+    throw new PaperclipRunnerProviderProfileError(
+      "paperclip_runner_codex_effort_invalid",
+      "Paperclip Runner Codex reasoning effort is not supported for this model.",
+    );
+  }
   return {
     provider: "codex",
     model: profile.model,
@@ -657,5 +674,6 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       "codex",
       config.codexPermissionMode,
     ) as "never" | "on-request" | "untrusted",
+    ...(typeof effort === "string" && effort ? { codexReasoningEffort: effort } : {}),
   };
 }

@@ -115,6 +115,8 @@ pending card.
 Use **Composer → Model and effort picker** to review harness-specific model
 choices. Codex uses the curated adapter catalog unless the instance declares
 `PAPERCLIP_ADAPTER_MODELS`; general OpenAI API models are not Codex choices.
+The Paperclip Runner Codex profile shows the same known model effort levels.
+Its selected effort is saved with the run and sent to Codex for each turn.
 
 The Storybook visual regression suite uses external PNG baselines instead of
 committed screenshots:

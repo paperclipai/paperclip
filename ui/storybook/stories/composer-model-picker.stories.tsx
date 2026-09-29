@@ -139,6 +139,10 @@ export const RunnerCodexProfile: Story = {
   name: "16 · Runner · Codex profile",
   args: { agentId: "runner", initialPanel: "models" },
 };
+export const RunnerCodexEffort: Story = {
+  name: "16b · Runner · Codex effort",
+  args: { agentId: "runner", initialPanel: "settings", initialModel: "gpt-6-astra", initialEffort: "high" },
+};
 export const GrokModelOnly: Story = {
   name: "17 · Grok · model only",
   args: { agentId: "grok", initialPanel: "settings" },
@@ -250,6 +254,16 @@ export const ProductionComposer: Story = {
   },
 };
 
+export const ProductionRunnerCodexEffort: Story = {
+  name: "23a · App Runner picker with Codex effort",
+  render: () => <ComposerRunSettingsLiveStory agentId="runner" initialPanel="settings" initialModel="gpt-6-astra" initialEffort="high" />,
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
+    await expect(screen.getByTestId("selected-effort")).toHaveTextContent("High");
+  },
+};
+
 export const ProductionMobileComposer: Story = {
   name: "23b · App picker on mobile",
   render: () => <ComposerRunSettingsLiveStory initialPanel="settings" mobile compact />,
@@ -259,6 +273,17 @@ export const ProductionMobileComposer: Story = {
     const capsule = screen.getByTestId("task-chat-composer-assignee");
     const send = screen.getByRole("button", { name: "Send message" });
     await expect(send.getBoundingClientRect().left - capsule.getBoundingClientRect().right).toBeLessThanOrEqual(16);
+  },
+};
+
+export const ProductionMobileRunnerCodexEffort: Story = {
+  name: "23c · App Runner Codex effort on mobile",
+  render: () => <ComposerRunSettingsLiveStory agentId="runner" initialPanel="settings" initialModel="gpt-6-astra" mobile compact />,
+  globals: { viewport: { value: "mobile1", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    const screen = within(canvasElement.ownerDocument.body);
+    await expect(screen.getByTestId("composer-mobile-dialog")).toBeVisible();
+    await expect(screen.getByRole("slider", { name: "Effort" })).toBeVisible();
   },
 };
 

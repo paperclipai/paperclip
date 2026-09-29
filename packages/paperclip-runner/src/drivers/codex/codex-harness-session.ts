@@ -221,6 +221,7 @@ export class CodexHarnessSession
     try {
       response = await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
           text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"

@@ -44,6 +44,17 @@ describe("Paperclip Runner native provider configuration", () => {
     ).toThrow("codexPermissionMode set to never");
   });
 
+  it("projects Codex effort only when the selected model supports it", () => {
+    expect(resolvePaperclipRunnerNativeProviderInput({
+      backend: "codex_app_server",
+      adapterConfig: { provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "ultra" },
+    })).toMatchObject({ provider: "codex", model: "gpt-6-astra", codexReasoningEffort: "ultra" });
+    expect(() => resolvePaperclipRunnerNativeProviderInput({
+      backend: "codex_app_server",
+      adapterConfig: { provider: "codex", model: "gpt-6-luna", modelReasoningEffort: "ultra" },
+    })).toThrow("reasoning effort is not supported");
+  });
+
   it("requires persisted Claude recovery to use the qualified identity and current profile secret", () => {
     const stored = {
       id: "00000000-0000-4000-8000-000000000001",

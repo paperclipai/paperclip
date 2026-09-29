@@ -23770,7 +23770,7 @@ export function heartbeatService(
                         : null,
                     ...resolvePaperclipRunnerNativeProviderInput({
                       backend: nativeRuntimeResolution.profile.backend,
-                      adapterConfig: agent.adapterConfig,
+                      adapterConfig: mergedConfig,
                       managedProfile,
                       agentCoreProfile,
                     }),

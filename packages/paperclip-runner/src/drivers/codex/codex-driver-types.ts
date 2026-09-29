@@ -17,6 +17,8 @@ export interface CodexAppServerDriverOptions {
   taskEnvelope: CodexTaskEnvelope;
   /** Explicit provider model selected by the persisted native execution. */
   model?: string;
+  /** Per-run reasoning effort sent with each Codex turn, including resumed turns. */
+  reasoningEffort?: string;
   approvalPolicy?: "never" | "on-request" | "untrusted";
   baseInstructions?: string;
   includeSkillInstructions?: boolean;
