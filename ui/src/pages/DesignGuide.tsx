@@ -1,5 +1,6 @@
 import { DispositionRecoveryNotice } from "../components/DispositionRecoveryNotice";
 import { CloudSignIn } from "../components/CloudSignIn";
+import { CloudAccessError } from "../components/CloudAccessGate";
 import { SetupPrompt } from "./apps/chat/SetupPrompt";
 import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
 import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
@@ -2372,6 +2373,18 @@ export function DesignGuide() {
             Compact variant for embedding inside dialogs and modals.
           </InlineBanner>
         </div>
+      </Section>
+
+      <Section title="Connection recovery">
+        <SubSection title="Waiting for server">
+          <CloudAccessError temporary retrying={false} onRetry={() => undefined} />
+        </SubSection>
+        <SubSection title="Checking connection">
+          <CloudAccessError temporary retrying onRetry={() => undefined} />
+        </SubSection>
+        <SubSection title="Access check failed">
+          <CloudAccessError temporary={false} retrying={false} onRetry={() => undefined} />
+        </SubSection>
       </Section>
 
       <Section title="Media artifacts">

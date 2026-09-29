@@ -1,5 +1,7 @@
 import type { ServerInfoSnapshot } from "@paperclipai/shared";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
+import { ApiError } from "./client";
+import { ApiUnavailableError, readApiJson } from "./response";
 
 export type DevServerHealthStatus = {
   enabled: true;
@@ -52,14 +54,16 @@ export const healthApi = {
     const res = await fetch("/api/health", {
       credentials: "include",
       headers: { Accept: "application/json" },
+      cache: "no-store",
     });
+    const payload = await readApiJson<HealthStatus & { error?: string } | null>(res);
     if (!res.ok) {
-      const payload = await res.json().catch(() => null) as { error?: string } | null;
       const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
       if (recovery) return recovery;
-      throw new Error(payload?.error ?? `Failed to load health (${res.status})`);
+      throw new ApiError(payload?.error ?? `Failed to load health (${res.status})`, res.status, payload);
     }
-    return res.json();
+    if (payload?.status !== "ok") throw new ApiUnavailableError(res.status);
+    return payload;
   },
   requestDevServerRestart: async (): Promise<void> => {
     const res = await fetch("/api/health/dev-server/restart", {

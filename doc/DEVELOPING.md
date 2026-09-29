@@ -238,6 +238,15 @@ owns committed updates.
 
 ## Hot-Restart Deploys
 
+During a restart, the board's health, session, and access checks retry temporary
+network/gateway failures and non-JSON API responses every five seconds. A new
+page shows **Reconnecting to Paperclip** with a **Try again** action. An already
+open page stays mounted during temporary background failures so unsaved edits
+survive. Successful checks resume the same route and refresh other failed reads;
+this recovery does not reload the browser or replay mutations. Authorization
+failures still require sign-in or an explicit retry. Storybook **App / Connection
+recovery** shows the startup recovery states.
+
 Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:
 
 ```sh

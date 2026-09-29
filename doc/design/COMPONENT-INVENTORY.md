@@ -6,6 +6,13 @@ Run scope: `ui/src/components/` and `ui/src/pages/` on branch `design/token-extr
 
 ## Counts
 
+### Connection recovery — 2026-09-29
+
+`CloudAccessGate.tsx` contains the startup `CloudAccessError` composition, using
+the existing Button and typography tokens. It covers automatic reconnection,
+an in-flight check, and manual retry after access-check failures. See
+`/design-guide` and Storybook **App / Connection recovery**.
+
 ### Independent MCP connection setup — 2026-09-21
 
 `ui/src/features/connections/remote-mcp/RemoteMcpConnectionSetup.tsx` is the controlled
