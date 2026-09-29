@@ -389,6 +389,17 @@ export function normalizeRetryAfterHeader(
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
+// A transport failure carries no `Retry-After` header, but it is the same
+// condition the header describes: the gateway refused the wake before it
+// created a run (measured 2026-09-28: `UND_ERR_SOCKET: other side closed`).
+// Recorded with `retryNotBefore: null`, the platform's delivery hold has
+// nothing to open for `hermes_gateway_connect_failed`, so a burst of wakes
+// materializes as one refused run per wake - 19 such runs in 24 h, 14 of them
+// starting inside an 18 s window. The window this hint opens is deliberately
+// short: it exists to collapse a burst, not to park an agent's work, and the
+// platform caps it at `MAX_GATEWAY_DELIVERY_HOLD_MS` (15 min) regardless.
+export const GATEWAY_TRANSPORT_RETRY_HINT_MS = 30_000;
+
 async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
@@ -396,6 +407,9 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
   } catch (err) {
     const fetchErr = new Error(`Hermes gateway request failed: ${fetchFailureMessage(err)}`) as HermesHttpError;
     fetchErr.code = "hermes_gateway_connect_failed";
+    // Without a hint the delivery hold never opens for this code, so every wake
+    // in the refused burst produces its own failed delivery run.
+    fetchErr.retryNotBefore = new Date(Date.now() + GATEWAY_TRANSPORT_RETRY_HINT_MS).toISOString();
     throw fetchErr;
   }
   const body = await readResponseJson(response);

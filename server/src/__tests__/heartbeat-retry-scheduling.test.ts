@@ -2368,6 +2368,77 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     ).toMatchObject({ until: retryNotBefore.toISOString(), errorCode: "hermes_gateway_rate_limited" });
   });
 
+  it("opens the delivery window from a transport-failure hint that carries no provider-work evidence", async () => {
+    // Measured production shape (2026-09-28, 19 runs in 24 h): the wake burst
+    // reached a gateway whose socket closed under it, so the adapter recorded
+    // `hermes_gateway_connect_failed`, decided the create outcome was ambiguous
+    // (`executionRecovery` absent, i.e. no `providerWorkStarted` claim) and - 
+    // before the fix - recorded no retry hint either. The hold reads the hint
+    // alone, so the parking decision must not depend on the missing evidence.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const issueId = randomUUID();
+    // The hold is compared against the server's wall clock, so seed real time.
+    const now = new Date(Date.now() - 5_000);
+    const retryNotBefore = new Date(Date.now() + 30_000);
+
+    await seedRetryFixture({
+      runId: sourceRunId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "hermes_gateway_connect_failed",
+      errorFamily: "transient_upstream",
+      adapterType: "hermes_gateway",
+      agentName: "Leela",
+      resultJson: {
+        errorFamily: "transient_upstream",
+        stopReason: "adapter_failed",
+        retryNotBefore: retryNotBefore.toISOString(),
+        transientRetryNotBefore: retryNotBefore.toISOString(),
+      },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Buried under a burst on a closing socket",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 3,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-3`,
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_status_changed",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: { issueId, wakeReason: "issue_status_changed" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+    expect(wake).toBeNull();
+
+    const agentRuns = await db
+      .select({
+        status: heartbeatRuns.status,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+
+    // Nothing dispatchable: the wake cannot reach the closing socket again.
+    expect(agentRuns.filter((run) => run.status === "queued" || run.status === "running")).toHaveLength(0);
+    const parked = agentRuns.filter((run) => run.scheduledRetryReason === "gateway_delivery_hold");
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({ status: "scheduled_retry" });
+    expect(parked[0]!.scheduledRetryAt?.getTime()).toBe(retryNotBefore.getTime());
+  });
+
   it("coalesces wakes parked on the gateway delivery window and delivers them when it closes", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

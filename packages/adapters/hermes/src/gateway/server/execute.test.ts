@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { execute, GATEWAY_TRANSPORT_RETRY_HINT_MS, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 
 function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
@@ -637,6 +637,36 @@ describe("execute", () => {
     expect(result.errorCode).toBe("hermes_gateway_connect_failed");
     expect(result.errorMessage).toContain("ENOTFOUND");
     expect(result.errorMessage).toContain("host.docker.internal");
+  });
+
+  it("records a bounded retry hint when the gateway connection fails", async () => {
+    // Measured production shape (2026-09-28): a wake burst into a gateway whose
+    // socket closes under it produces `hermes_gateway_connect_failed` with
+    // `retryNotBefore: null`, so the platform's delivery hold
+    // (`readActiveGatewayDeliveryHold`) has nothing to open and every wake in
+    // the burst becomes its own refused run (14 runs inside 18 s). The hint is
+    // not a promise about the gateway - it is the window that lets the platform
+    // park the rest of the burst - so it is recorded short and bounded.
+    const startedAt = Date.now();
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw Object.assign(new Error("fetch failed"), {
+        cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+      });
+    }));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "gateway-key",
+    }));
+
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    const hint = Date.parse(String(result.retryNotBefore));
+    expect(Number.isNaN(hint)).toBe(false);
+    expect(hint).toBeGreaterThanOrEqual(startedAt + GATEWAY_TRANSPORT_RETRY_HINT_MS - 1_000);
+    expect(hint).toBeLessThanOrEqual(Date.now() + GATEWAY_TRANSPORT_RETRY_HINT_MS + 1_000);
+    // Bounded: it opens a window for a burst, it does not park an agent's work.
+    expect(hint).toBeLessThanOrEqual(Date.now() + 60_000);
   });
 
   it("redacts echoed auth material from HTTP error payloads", async () => {
