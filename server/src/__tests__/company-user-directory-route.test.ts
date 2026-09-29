@@ -5,12 +5,13 @@ import { accessRoutes } from "../routes/access.js";
 import { errorHandler } from "../middleware/index.js";
 
 const canUser = vi.hoisted(() => vi.fn());
+const hasPermission = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     isInstanceAdmin: vi.fn(),
     canUser,
-    hasPermission: vi.fn(),
+    hasPermission,
   }),
   agentService: () => ({
     getById: vi.fn(),
@@ -102,6 +103,7 @@ describe("GET /companies/:companyId/user-directory", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     canUser.mockResolvedValue(false);
+    hasPermission.mockResolvedValue(false);
   });
 
   it("returns active human users for operators without manage-permissions access", async () => {
@@ -152,5 +154,38 @@ describe("GET /companies/:companyId/user-directory", () => {
     expect(granted.status).toBe(200);
     expect(granted.body).toEqual({ canApproveJoins: true });
     expect(canUser).toHaveBeenCalledWith("company-1", "user-1", "joins:approve");
+  });
+
+  it("checks a cloud tenant admin against the same permission as the join list", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "cloud_tenant",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      memberships: [],
+    });
+
+    const denied = await request(app).get("/api/companies/company-1/join-requests/access");
+    expect(denied.status).toBe(200);
+    expect(denied.body).toEqual({ canApproveJoins: false });
+    expect(canUser).toHaveBeenCalledWith("company-1", "user-1", "joins:approve");
+
+    canUser.mockResolvedValue(true);
+    const granted = await request(app).get("/api/companies/company-1/join-requests/access");
+    expect(granted.status).toBe(200);
+    expect(granted.body).toEqual({ canApproveJoins: true });
+  });
+
+  it("checks an agent join approval grant", async () => {
+    const app = createApp({ type: "agent", companyId: "company-1", agentId: "agent-1" });
+
+    const denied = await request(app).get("/api/companies/company-1/join-requests/access");
+    expect(denied.body).toEqual({ canApproveJoins: false });
+
+    hasPermission.mockResolvedValue(true);
+    const granted = await request(app).get("/api/companies/company-1/join-requests/access");
+    expect(granted.body).toEqual({ canApproveJoins: true });
+    expect(hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "joins:approve");
   });
 });

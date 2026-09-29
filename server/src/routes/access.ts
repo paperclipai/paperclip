@@ -4185,10 +4185,10 @@ export function accessRoutes(
   router.get("/companies/:companyId/join-requests/access", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const canApproveJoins =
-      req.actor.type === "board" &&
-      (isLocalImplicit(req) || Boolean(req.actor.isInstanceAdmin) ||
-        await access.canUser(companyId, req.actor.userId ?? null, "joins:approve"));
+    const canApproveJoins = req.actor.type === "agent"
+      ? !!req.actor.agentId && await access.hasPermission(companyId, "agent", req.actor.agentId, "joins:approve")
+      : req.actor.type === "board" &&
+        (isLocalImplicit(req) || await access.canUser(companyId, req.actor.userId, "joins:approve"));
     res.json({ canApproveJoins });
   });
 
