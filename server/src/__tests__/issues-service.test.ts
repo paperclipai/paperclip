@@ -224,19 +224,14 @@ describe("readIssueCommentRunLogText", () => {
     }
   });
 
-  it("bounds stalled attribution reads and stops pagination after the deadline", async () => {
+  it("bounds reads that ignore cancellation and stops late pagination after the deadline", async () => {
     let release!: (value: { content: string; nextOffset: number }) => void;
-    let rejectRead!: (reason: unknown) => void;
-    const stalled = new Promise<{ content: string; nextOffset: number }>((resolve, reject) => {
+    const stalled = new Promise<{ content: string; nextOffset: number }>((resolve) => {
       release = resolve;
-      rejectRead = reject;
     });
     const read = vi.spyOn(getRunLogStore(), "read")
       .mockResolvedValueOnce({ content: "earlier evidence", nextOffset: 16 })
-      .mockImplementationOnce((_handle, options) => {
-        options?.signal?.addEventListener("abort", () => rejectRead(options.signal?.reason), { once: true });
-        return stalled;
-      });
+      .mockReturnValueOnce(stalled);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let result: string | undefined;
     const pending = readIssueCommentRunLogText({
@@ -245,6 +240,7 @@ describe("readIssueCommentRunLogText", () => {
     try {
       await vi.advanceTimersByTimeAsync(3_000);
       expect(result).toBe("earlier evidence");
+      expect(read.mock.calls[1]?.[1]?.signal?.aborted).toBe(true);
       release({ content: "too late", nextOffset: 24 });
       await pending;
       await vi.advanceTimersByTimeAsync(0);

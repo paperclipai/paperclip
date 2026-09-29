@@ -6560,12 +6560,9 @@ export async function readIssueCommentRunLogText(run: {
   let content = "";
   let nextOffset: number | undefined = 0;
   const controller = new AbortController();
-  const readTimer = setTimeout(() => {
-    controller.abort(new DOMException("Attribution log read timed out", "TimeoutError"));
-  }, ISSUE_COMMENT_RUN_LOG_DERIVATION_TIMEOUT_MS);
-  readTimer.unref?.();
+  let readTimer: NodeJS.Timeout | undefined;
 
-  try {
+  const readChunks = async () => {
     while (nextOffset !== undefined) {
       controller.signal.throwIfAborted();
       const remainingBytes =
@@ -6585,6 +6582,22 @@ export async function readIssueCommentRunLogText(run: {
       nextOffset = chunk.nextOffset;
       offset = chunk.nextOffset ?? 0;
     }
+  };
+
+  try {
+    await Promise.race([
+      readChunks(),
+      new Promise<never>((_resolve, reject) => {
+        readTimer = setTimeout(() => {
+          const reason = new DOMException("Attribution log read timed out", "TimeoutError");
+          // Cancellation closes storage work where supported, but filesystem
+          // I/O can delay stream destruction. Keep the response deadline too.
+          reject(reason);
+          controller.abort(reason);
+        }, ISSUE_COMMENT_RUN_LOG_DERIVATION_TIMEOUT_MS);
+        readTimer.unref?.();
+      }),
+    ]);
   } catch (err) {
     // Attribution enriches already-authorized comments. Missing, failed, or
     // stalled storage must not prevent listing them; keep any evidence read.
