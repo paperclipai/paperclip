@@ -253,6 +253,7 @@ import {
 import {
   assertAgentCoreProfileRecoveryBinding,
   assertManagedProfileRecoveryBinding,
+  projectPaperclipRunnerCodexTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
 import {
@@ -23770,7 +23771,12 @@ export function heartbeatService(
                         : null,
                     ...resolvePaperclipRunnerNativeProviderInput({
                       backend: nativeRuntimeResolution.profile.backend,
-                      adapterConfig: mergedConfig,
+                      adapterConfig: nativeRuntimeResolution.profile.backend === "codex_app_server"
+                        ? projectPaperclipRunnerCodexTaskConfig(
+                            agent.adapterConfig,
+                            issueAssigneeOverrides?.adapterConfig,
+                          )
+                        : agent.adapterConfig,
                       managedProfile,
                       agentCoreProfile,
                     }),

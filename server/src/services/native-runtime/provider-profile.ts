@@ -143,6 +143,26 @@ function optionalString(value: unknown): string | null {
     : null;
 }
 
+/** A task may change the Codex model and effort, but not the agent's provider identity. */
+export function projectPaperclipRunnerCodexTaskConfig(
+  agentConfig: unknown,
+  taskOverrides: unknown,
+): Record<string, unknown> {
+  const base = asRecord(agentConfig);
+  const task = asRecord(taskOverrides);
+  const config = { ...base };
+  const model = optionalString(task.model);
+  const effortKey = ["modelReasoningEffort", "reasoningEffort", "effort"].find((key) => key in task);
+  if ((model !== null && model !== optionalString(base.model)) || effortKey !== undefined) {
+    delete config.modelReasoningEffort;
+    delete config.reasoningEffort;
+    delete config.effort;
+  }
+  if (model !== null) config.model = model;
+  if (effortKey !== undefined) config.modelReasoningEffort = task[effortKey];
+  return config;
+}
+
 function positiveNumberOrNull(
   value: unknown,
   code: string,

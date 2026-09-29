@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertAgentCoreProfileRecoveryBinding,
   assertManagedProfileRecoveryBinding,
+  projectPaperclipRunnerCodexTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
 
@@ -53,6 +54,19 @@ describe("Paperclip Runner native provider configuration", () => {
       backend: "codex_app_server",
       adapterConfig: { provider: "codex", model: "gpt-6-luna", modelReasoningEffort: "ultra" },
     })).toThrow("reasoning effort is not supported");
+  });
+
+  it("uses only task model and effort overrides without changing the Runner provider", () => {
+    const base = { provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "ultra", codexPermissionMode: "never" };
+    const projected = projectPaperclipRunnerCodexTaskConfig(base, {
+      provider: "opencode", model: "gpt-6-luna", managedProfileId: "other-profile",
+    });
+    expect(projected).toEqual({ provider: "codex", model: "gpt-6-luna", codexPermissionMode: "never" });
+    expect(resolvePaperclipRunnerNativeProviderInput({
+      backend: "codex_app_server", adapterConfig: projected,
+    })).toEqual({ provider: "codex", model: "gpt-6-luna", codexApprovalPolicy: "never" });
+    expect(projectPaperclipRunnerCodexTaskConfig(base, { modelReasoningEffort: "high" }))
+      .toMatchObject({ provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "high" });
   });
 
   it("requires persisted Claude recovery to use the qualified identity and current profile secret", () => {
