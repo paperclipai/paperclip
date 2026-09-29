@@ -18,6 +18,81 @@ afterEach(async () => {
 });
 
 describe("runner E2E report aggregation", () => {
+  it.each([
+    { name: "missing", usage: null, runIds: ["run-1"], tokens: "Unavailable", cost: "Unavailable", htmlTokens: "Unavailable" },
+    { name: "partial", usage: { runs: [{ usage: { inputTokens: 1250, outputTokens: 75, cachedInputTokens: 500, costUsd: 0.0125 } }, { usage: null }] }, runIds: ["run-1", "run-2"], tokens: "1250 input / 75 output / 500 cached (partial: 1/2 runs)", cost: "$0.012500 (partial: 1/2 runs)", htmlTokens: "1,250 (partial: 1/2 runs)" },
+    { name: "reported", usage: { inputTokens: 1250, outputTokens: 75, cachedInputTokens: 500, costUsd: 0.0125 }, runIds: ["run-1"], tokens: "1250 input / 75 output / 500 cached", cost: "$0.012500", htmlTokens: "1,250" },
+    { name: "reported zero cost", usage: { inputTokens: 1, outputTokens: 0, costUsd: 0 }, runIds: ["run-1"], tokens: "1 input / 0 output / 0 cached", cost: "$0.000000", htmlTokens: "1" },
+  ])("renders $name usage with its actual coverage", async ({ usage, runIds, tokens, cost, htmlTokens }) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-billing-report-"));
+    cleanupDirectories.push(root);
+    const executionId = "core-compatibility.runner-codex.local.message-marker";
+    const directory = path.join(root, "attempt-1");
+    await mkdir(directory);
+    const result: RunnerE2EResult = {
+      schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "core-compatibility",
+      attempt: 1, status: "passed", profileId: "runner-codex", environmentId: "local",
+      caseId: "message-marker", provider: "codex", model: "fixture-model", runtimeMode: "native",
+      startedAt: "2026-09-23T00:00:00Z", finishedAt: "2026-09-23T00:00:01Z", durationMs: 1000,
+      cleanup: "passed", runIds, usage,
+    };
+    const raw = JSON.stringify(result);
+    await writeFile(path.join(directory, "result.json"), raw);
+    await writeFile(path.join(directory, "final-state.png"), "fake-png");
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: ["final-state.png"], leaks: [], missing: [] }));
+    const output = path.join(root, "merged");
+    await execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot,
+      env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]) },
+    });
+    const markdown = await readFile(path.join(output, "summary.md"), "utf8");
+    expect(markdown.split("\n").find((line) => line.startsWith("Tokens: "))).toBe(`Tokens: ${tokens}`);
+    expect(markdown.split("\n").find((line) => line.startsWith("Provider-reported LLM cost: "))).toBe(`Provider-reported LLM cost: ${cost}`);
+    const dashboard = await readFile(path.join(output, "index.html"), "utf8");
+    expect(dashboard).toContain(`<strong>${htmlTokens}</strong><span>Input tokens</span>`);
+    if (usage === null) {
+      expect(markdown).not.toContain("0/0 | $0.000000");
+      expect(dashboard).toContain("<strong>Unavailable</strong><span>LLM reported subtotal</span>");
+      expect(dashboard).toContain("<span>Known spend</span><strong>Unavailable</strong>");
+    }
+    expect(await readFile(path.join(directory, "result.json"), "utf8")).toBe(raw);
+    const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+    expect(normalized.passed).toBe(1);
+    expect(normalized.results[0].usage).toEqual(usage);
+  });
+
+  it("keeps interrupted journeys incomplete unless their evidence is invalid", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-incomplete-report-"));
+    cleanupDirectories.push(root);
+    const ids: string[] = [];
+    for (const [caseId, validEvidence] of [["task-card-accept", true], ["task-reply-accept", false]] as const) {
+      const executionId = `first-task.runner-codex.local.${caseId}`;
+      ids.push(executionId);
+      const directory = path.join(root, caseId);
+      await mkdir(directory);
+      await writeFile(path.join(directory, "result.json"), JSON.stringify({
+        schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "first-task",
+        attempt: 1, status: "failed", failureClass: "candidate_failure", error: "Recording stopped before acceptance",
+        profileId: "runner-codex", environmentId: "local", caseId, provider: "codex", model: "fixture-model", runtimeMode: "native",
+        startedAt: "2026-09-15T00:00:00Z", finishedAt: "2026-09-15T00:01:00Z", durationMs: 60_000, cleanup: "passed",
+        firstTask: { caseId, nonce: "fixture", onboardingIssueId: "task", agentId: "agent", initialTaskIds: ["task"], instructions: [], configuredModel: null, observedModels: [], checkpoints: [],
+          checks: [{ id: "acceptance-recorded", passed: false, notReached: "No acceptance checkpoint", detail: "Acceptance recorded", evidence: [] }] },
+      } satisfies RunnerE2EResult));
+      if (validEvidence) await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: [], leaks: [], missing: [] }));
+    }
+    const output = path.join(root, "merged");
+    await expect(execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot, env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify(ids) },
+    })).rejects.toBeDefined();
+    const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+    expect(normalized).toMatchObject({ passed: 0, failed: 1, incomplete: 1 });
+    expect(normalized.results[0]).toMatchObject({ evidenceValid: true, evidenceErrors: [] });
+    expect(normalized.results[1]).toMatchObject({ evidenceValid: false, failureClass: "permanent_infrastructure" });
+    const page = await readFile(path.join(output, "index.html"), "utf8");
+    expect(page).toContain("Incomplete journey");
+    expect(page).toContain("evidence manifest missing");
+  });
+
   it("selects the latest retry and enforces cleanup and pass evidence", async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), "runner-e2e-report-test-"),
@@ -213,10 +288,10 @@ describe("runner E2E report aggregation", () => {
     expect(dashboard).toContain("data-gallery-next");
     expect(dashboard).toContain("View gallery · 1");
     expect(dashboard).toContain(
-      "Declared PNG screenshots and sanitized structured evidence are retained with every published campaign",
+      "Declared PNG screenshots and normalized results are retained with every published campaign",
     );
     expect(dashboard).toContain(
-      "Declared screenshots and sanitized structured evidence published",
+      "Declared screenshots and normalized results published",
     );
     expect(dashboard).toContain("message_contains");
     expect(dashboard).toContain("Matchers and test context");
@@ -369,6 +444,85 @@ describe("runner E2E report aggregation", () => {
       status: "passed",
       evidenceValid: true,
     });
+  });
+
+  it("materializes declared screenshots from hashed Playwright attachments", async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), "runner-e2e-report-screenshot-alias-")
+    );
+    cleanupDirectories.push(root);
+    const executionId = "daytona-warm-continuity.legacy-codex.daytona.warm-three-turn";
+    const directory = path.join(root, "attempt-1");
+    const attachment =
+      "playwright-output/warm-turn/attachments/warm-turn-1-deadbeef.png";
+    await mkdir(path.join(directory, path.dirname(attachment)), {
+      recursive: true,
+    });
+    await writeFile(path.join(directory, "final-state.png"), "final-png");
+    await writeFile(path.join(directory, attachment), "warm-turn-png");
+    await writeFile(
+      path.join(directory, "result.json"),
+      JSON.stringify({
+        schema: "paperclip.runner-e2e.result/v1",
+        executionId,
+        attempt: 1,
+        status: "passed",
+        profileId: "legacy-codex",
+        environmentId: "daytona",
+        caseId: "warm-three-turn",
+        provider: "codex",
+        model: "fixture-model",
+        runtimeMode: "legacy",
+        startedAt: "2026-08-26T00:00:00.000Z",
+        finishedAt: "2026-08-26T00:00:01.000Z",
+        durationMs: 1_000,
+        cleanup: "passed",
+        screenshots: [
+          {
+            id: "warm-turn-1",
+            label: "Warm Daytona turn 1 awaiting review",
+            file: "warm-turn-1.png",
+          },
+          {
+            id: "final-state",
+            label: "Final visible task state",
+            file: "final-state.png",
+          },
+        ],
+      } satisfies RunnerE2EResult),
+    );
+    await writeFile(
+      path.join(directory, "evidence-manifest.json"),
+      JSON.stringify({
+        files: ["final-state.png", attachment],
+        leaks: [],
+        missing: [],
+      }),
+    );
+
+    const output = path.join(root, "merged");
+    await execFileAsync(
+      process.execPath,
+      [
+        path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"),
+        path.join(repositoryRoot, "tests/runner-e2e/report.ts"),
+      ],
+      {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root,
+          PAPERCLIP_RUNNER_E2E_REPORT_OUT: output,
+          PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]),
+        },
+      },
+    );
+    expect(
+      await readFile(
+        path.join(output, "evidence", executionId, "attempt-1", "warm-turn-1.png"),
+        "utf8",
+      ),
+    ).toBe("warm-turn-png");
   });
 
   it("constructs the public root JUnit from fixed markup and escaped fields", async () => {

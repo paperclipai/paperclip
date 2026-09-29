@@ -104,18 +104,18 @@ interface EmbeddedEvalReport {
     startedAt: string;
     finishedAt: string;
     durationMs: number | null;
-    initialRevision: number;
-    finalRevision: number;
+    initialRevision: number | null;
+    finalRevision: number | null;
     finalStateSummary?: string;
     usage: {
       agentTurns: number;
       providerRequests: number | null;
-      inputTokens: number;
-      outputTokens: number;
-      cachedInputTokens: number;
-      reasoningTokens: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      reasoningTokens?: number;
       providerReportedCostNanodollars?: number;
-      estimatedCostNanodollars: number;
+      estimatedCostNanodollars?: number;
       pricingVersion: string;
     } | null;
   };

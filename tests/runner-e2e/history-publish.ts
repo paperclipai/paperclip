@@ -1,3 +1,4 @@
+import { validateRetainedRunnerResult } from "./result-validation.js";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import path from "node:path";
@@ -42,7 +43,6 @@ const PUBLISH_ROOT_FILES = new Set([
   "normalized-results.json",
   "summary.md",
 ]);
-const PUBLIC_EVIDENCE_EXTENSIONS = new Set([".json", ".log", ".md", ".txt"]);
 const MAX_PUBLIC_RASTER_BYTES = 12 * 1024 * 1024;
 const EMPTY_PUBLIC_SCREENSHOTS: ReadonlySet<string> = new Set();
 const PRIVATE_EVIDENCE_DIRECTORIES = new Set([
@@ -72,10 +72,13 @@ function publicEvidencePath(
   ) {
     return false;
   }
+  // A text extension and credential scan do not establish a public projection.
+  // API snapshots and process logs can still hold hidden reasoning and provider
+  // session identities. Keep those diagnostics in the retained Actions artifact;
+  // normalized-results.json already carries the graded result contract.
   return (
-    PUBLIC_EVIDENCE_EXTENSIONS.has(
-      path.posix.extname(evidencePath).toLowerCase(),
-    ) || publicScreenshots.has(relative)
+    path.posix.extname(evidencePath).toLowerCase() === ".png" &&
+    publicScreenshots.has(relative)
   );
 }
 
@@ -313,10 +316,14 @@ export async function createBundleManifest(
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(campaignId)) {
     throw new Error("Campaign ID is unsafe for immutable object storage");
   }
+  const retainedPaths = await relativeFiles(root, root, allowPublicSummary, publicScreenshots);
+  const retained = new Set(retainedPaths);
+  const missingScreenshots = [...publicScreenshots].filter((relative) => !retained.has(relative));
+  if (missingScreenshots.length > 0) {
+    throw new Error(`Declared public screenshots are missing from the historical bundle: ${missingScreenshots.sort().join(", ")}`);
+  }
   const files = await Promise.all(
-    (await relativeFiles(root, root, allowPublicSummary, publicScreenshots))
-      .sort()
-      .map(async (relative) => {
+    retainedPaths.sort().map(async (relative) => {
         const absolute = path.join(root, ...relative.split("/"));
         if (
           relative === "public-images/campaign-summary.png" ||
@@ -513,6 +520,7 @@ async function main() {
   const campaign = JSON.parse(
     await readFile(path.join(reportRoot, "normalized-results.json"), "utf8"),
   ) as RunnerE2ECampaign;
+  for (const result of campaign.results ?? []) validateRetainedRunnerResult(result);
   if (campaign.schema !== "paperclip.runner-e2e.campaign/v2") {
     throw new Error("Historical publishing requires a v2 normalized campaign");
   }
@@ -540,8 +548,8 @@ async function main() {
   // file left in a reused local directory. The root landing page below is the
   // only dashboard that embeds navigation across campaigns. S3 gets its own
   // staged copy. Only screenshots declared by normalized results (plus the
-  // fixed failure screenshot for failed executions) cross the public boundary;
-  // all other target-produced files remain subject to the structured allowlist.
+  // fixed failure screenshot for failed executions) cross the public evidence
+  // boundary. Raw per-attempt text stays in the retained Actions artifact.
   const s3ReportRoot = path.join(temporary, "s3-campaign");
   await cp(reportRoot, s3ReportRoot, { recursive: true, errorOnExist: true });
   await prunePrivateHistoryEvidence(s3ReportRoot, publicScreenshots);

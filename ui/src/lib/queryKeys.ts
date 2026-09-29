@@ -1,4 +1,8 @@
 export const queryKeys = {
+  agentChats: {
+    detail: (companyId: string | null, userId: string | null, agentId: string | undefined) =>
+      ["agent-chat", companyId, userId, agentId] as const,
+  },
   companies: {
     /**
      * Prefix for everything company-shaped. Matches the list, details and stats
@@ -27,6 +31,14 @@ export const queryKeys = {
     gallery: (companyId: string) => ["apps", companyId, "gallery"] as const,
     attention: (companyId: string) => ["apps", companyId, "attention"] as const,
   },
+  chatEndpoints: {
+    list: (companyId: string) => ["chat-endpoints", companyId] as const,
+    detail: (endpointId: string) => ["chat-endpoints", "detail", endpointId] as const,
+    resources: (endpointId: string) => ["chat-endpoints", endpointId, "resources"] as const,
+    principals: (endpointId: string) => ["chat-endpoints", endpointId, "principals"] as const,
+    conversations: (endpointId: string) => ["chat-endpoints", endpointId, "conversations"] as const,
+    activity: (endpointId: string) => ["chat-endpoints", endpointId, "activity"] as const,
+  },
   tools: {
     applications: (companyId: string) =>
       ["tools", companyId, "applications"] as const,
@@ -38,8 +50,6 @@ export const queryKeys = {
       ["tools", "connection", connectionId, "installs"] as const,
     connectionGrants: (connectionId: string) =>
       ["tools", "connection", connectionId, "grants"] as const,
-    composioServices: (connectionId: string) =>
-      ["tools", "connection", connectionId, "composio-services"] as const,
     catalog: (connectionId: string) => ["tools", "connection", connectionId, "catalog"] as const,
     connectionActivity: (connectionId: string) =>
       ["tools", "connection", connectionId, "activity"] as const,
@@ -320,6 +330,8 @@ export const queryKeys = {
       ] as const,
     listByParent: (companyId: string, parentId: string) =>
       ["issues", companyId, "parent", parentId] as const,
+    listCreatedFromIssue: (companyId: string, issueId: string) =>
+      ["issues", companyId, "created-from", issueId] as const,
     listByDescendantRoot: (companyId: string, rootIssueId: string) =>
       ["issues", companyId, "descendants", rootIssueId] as const,
     listByExecutionWorkspace: (
@@ -580,6 +592,7 @@ export const queryKeys = {
     currentBoardAccess: ["access", "current-board-access"] as const,
   },
   auth: {
+    preferences: (userId: string | null) => ["auth", "preferences", userId] as const,
     session: ["auth", "session"] as const,
   },
   inboxAgentPolicy: {
@@ -602,6 +615,7 @@ export const queryKeys = {
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
   health: ["health"] as const,
+  stagingCommit: ["staging-commit"] as const,
   cloud: {
     stacks: ["cloud", "stacks"] as const,
   },

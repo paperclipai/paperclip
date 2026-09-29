@@ -10,6 +10,7 @@ import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 import {
   captureDirectorySnapshot,
   directorySnapshotSha256,
+  disposeDirectorySnapshot,
   classifyWorkspaceRestoreFailure,
   describeWorkspaceRestoreFailure,
   mergeDirectoryWithBaseline,
@@ -41,6 +42,7 @@ describe("workspace restore merge", () => {
 
     const snapshot = await captureDirectorySnapshot(rootDir, { exclude: [] });
     const serialized = serializeDirectorySnapshot(snapshot);
+    if (serialized.version !== 1) throw new Error("Expected legacy in-memory snapshot");
     const restored = parseDirectorySnapshot(serialized);
 
     expect(serialized.entries.map(([relativePath]) => relativePath)).toEqual([
@@ -103,6 +105,24 @@ describe("workspace restore merge", () => {
     ).resolves.toBe("ssh codex\n");
   });
 
+  it("preserves a host file replacing a deleted baseline directory and continues the restore", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-conflict-"));
+    cleanupDirs.push(rootDir);
+    const targetDir = path.join(rootDir, "target");
+    const sourceDir = path.join(rootDir, "source");
+    await mkdir(path.join(targetDir, "replaced", "nested"), { recursive: true });
+    await mkdir(sourceDir);
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [], diskBacked: true });
+    try {
+      await rm(path.join(targetDir, "replaced"), { recursive: true });
+      await writeFile(path.join(targetDir, "replaced"), "host change");
+      await writeFile(path.join(sourceDir, "other.txt"), "sandbox change");
+      await mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir });
+      expect(await readFile(path.join(targetDir, "replaced"), "utf8")).toBe("host change");
+      expect(await readFile(path.join(targetDir, "other.txt"), "utf8")).toBe("sandbox change");
+    } finally { await disposeDirectorySnapshot(baseline); }
+  });
+
   it("ignores non-file entries when capturing snapshots", async () => {
     if (process.platform === "win32") return;
 
@@ -126,6 +146,24 @@ describe("workspace restore merge", () => {
   });
 
   describe("classifyWorkspaceRestoreFailure", () => {
+    it.each([
+      "Daytona syncOut refusing tarball with an unparseable entry listing: private listing",
+      "Daytona syncOut refusing unparseable or ambiguous symlink entry: private listing",
+      "Daytona syncOut refusing unparseable or ambiguous hardlink entry: private listing",
+      "Daytona syncOut refusing tarball member that escapes the extraction dir: ../private",
+      "Daytona syncOut refusing tarball link whose target escapes the extraction dir: link -> /private",
+      "Daytona sync source path is not a confined absolute path: ../private",
+      "Daytona sync source path escapes the workspace remote dir: /private",
+      ...[40, 41, 42, 44, 45].map((code) => `Daytona outbound symlink-escape guard command failed (exit ${code}): private detail`),
+    ])("holds the deterministic confinement refusal: %s", (message) => {
+      expect(classifyWorkspaceRestoreFailure(new Error(message))).toBe("restore_unsafe_archive");
+      expect(describeWorkspaceRestoreFailure(classifyWorkspaceRestoreFailure(new Error(message)))).not.toContain("private");
+    });
+
+    it("preserves the generic policy for other outbound command failures", () => {
+      expect(classifyWorkspaceRestoreFailure(new Error("Daytona outbound symlink-escape guard command failed (exit 1): transport failed"))).toBe("restore_failed");
+    });
+
     it("maps an EACCES error to restore_permission_denied", () => {
       const error: NodeJS.ErrnoException = new Error("permission denied");
       error.code = "EACCES";

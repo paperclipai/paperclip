@@ -9,6 +9,8 @@ import { ProfileSettings } from "./ProfileSettings";
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
+  getPreferences: vi.fn(),
+  updatePreferences: vi.fn(),
   signInEmail: vi.fn(),
   signUpEmail: vi.fn(),
   getProfile: vi.fn(),
@@ -70,6 +72,8 @@ describe("ProfileSettings", () => {
         image: "https://example.com/jane.png",
       },
     });
+    mockAuthApi.getPreferences.mockResolvedValue({ keyboardShortcuts: false });
+    mockAuthApi.updatePreferences.mockResolvedValue({ keyboardShortcuts: true });
     mockAssetsApi.uploadImage.mockResolvedValue({
       assetId: "asset-1",
       contentPath: "/api/assets/asset-1/content",
@@ -86,6 +90,41 @@ describe("ProfileSettings", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("saves personal shortcuts and immediately updates the user-scoped cache", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+    await flushReact();
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle keyboard shortcuts"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle?.disabled).toBe(false);
+    await act(async () => toggle?.click());
+    await flushReact();
+    expect(mockAuthApi.updatePreferences).toHaveBeenCalledWith({ companyId: "company-1", keyboardShortcuts: true, expectedUserId: "user-1" }, expect.anything());
+    expect(queryClient.getQueryData(["auth", "preferences", "user-1"])).toEqual({ keyboardShortcuts: true });
+    expect(mockAuthApi.updateProfile).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("shows a preference save failure and leaves shortcuts disabled", async () => {
+    mockAuthApi.updatePreferences.mockRejectedValueOnce(new Error("Could not save shortcuts"));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+    await flushReact();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Toggle keyboard shortcuts"]')?.click());
+    await flushReact();
+    expect(container.textContent).toContain("Could not save shortcuts");
+    expect(queryClient.getQueryData(["auth", "preferences", "user-1"])).toEqual({ keyboardShortcuts: false });
+    await act(async () => root.unmount());
   });
 
   it("uploads a clicked avatar into Paperclip storage and persists the returned asset path", async () => {

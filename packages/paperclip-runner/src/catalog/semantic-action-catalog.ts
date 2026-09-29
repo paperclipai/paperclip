@@ -1,11 +1,14 @@
+import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
 import type {
   PaperclipJsonSchema,
   PaperclipSemanticActionDescriptor,
   PaperclipSemanticActionId,
   PaperclipSemanticActionMode,
 } from "./semantic-action-types.js";
+import { createSkillAction } from "../protocol-actions/create-skill.js";
 import { searchApiAction } from "../protocol-actions/search-api.js";
 import { callApiAction } from "../protocol-actions/call-api.js";
+import { projectIconSchema, projectRepositoryUrlSchema } from "../protocol-actions/create-project.js";
 
 const ALL_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 const WORK_MODES = ["standard", "planning", "skill_test"] as const;
@@ -107,6 +110,7 @@ function descriptor(input: DescriptorInput): PaperclipSemanticActionDescriptor {
 }
 
 const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
+  descriptor({ ...createSkillAction.live.descriptor, placement: "optional", effect: "write" }),
   ...[searchApiAction, callApiAction].map(action => descriptor({
     operationId: action.id,
     title: action.live.descriptor.title,
@@ -320,6 +324,30 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     requiredClaims: ["discovery:agents:read"],
   }),
   descriptor({
+    operationId: "hire_agent",
+    title: "Hire a native agent",
+    description:
+      "Create one native Paperclip Runner teammate for the current company and task. The new agent reports to you, inherits your native runtime, and receives no provider, adapter, environment, or credential configuration from the tool. Reuse an existing teammate when appropriate and follow any approval returned by the API.",
+    placement: "optional",
+    effect: "write",
+    requiredClaims: ["delegation:agents:create"],
+    allowedModes: STANDARD_MODE,
+    inputSchema: object(
+      {
+        name: text("Name for the new teammate.", 200),
+        role: {
+          enum: ["ceo", "cto", "cmo", "cfo", "security", "engineer", "designer", "pm", "qa", "devops", "researcher", "general"],
+          default: "general",
+        },
+        title: nullableText("Optional teammate title.", 300),
+        capabilities: nullableText("Optional concise capability summary.", 2_000),
+        instructions: nullableText("Optional persona or task instructions.", 20_000),
+      },
+      ["name"],
+    ),
+    outputSchema: openObject,
+  }),
+  descriptor({
     operationId: "get_agent",
     title: "Get company agent",
     description: "Read one redacted actor profile in the run company.",
@@ -412,6 +440,9 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     outputSchema: operationReceipt,
   }),
   descriptor({
+    ...reassignTaskAction.live.descriptor, placement: "optional", effect: "write",
+  }),
+  descriptor({
     operationId: "set_dependencies",
     title: "Set task dependencies",
     description: "Replace the active task's first-class blocker set.",
@@ -429,9 +460,43 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     outputSchema: operationReceipt,
   }),
   descriptor({
+    operationId: "list_projects",
+    title: "List projects",
+    requiredClaims: ["discovery:projects:read"],
+    description: "Inspect available company projects before selecting a project for new work.",
+    placement: "optional",
+    inputSchema: object({}),
+  }),
+  descriptor({
+    operationId: "list_project_repositories",
+    title: "List available repositories",
+    description: "List authorized repositories with stable IDs and names. Consider appropriate repositories before creating a project; never invent IDs.",
+    placement: "optional",
+    inputSchema: object({}),
+  }),
+  descriptor({
+    operationId: "create_project",
+    title: "Create project",
+    description: "Create a project after considering existing projects and available repositories. repositoryIds and repositoryUrls accept multiple existing repositories. Use HTTPS GitHub repositoryUrls when an accessible repo is not in the catalog; this registers project repositories, not remote GitHub repositories. Non-code projects may omit repositories. Cannot combine repositoryIds/repositoryUrls with workspace. Reuse the idempotency key on retries.",
+    placement: "optional", effect: "write", allowedModes: STANDARD_MODE,
+    inputSchema: object({
+      ...idempotency, name: text("Project name.", 500), description: nullableText("Project outcome and context."),
+      repositoryIds: stringArray("Authorized repository IDs from list_project_repositories; may contain multiple repositories."),
+      repositoryUrls: {
+        type: "array", items: projectRepositoryUrlSchema, maxItems: 100, uniqueItems: true,
+        description: "Existing HTTPS GitHub repository URLs, including repos absent from the catalog.",
+      },
+      workspace: openObject, status: { enum: ["backlog", "planned", "in_progress", "completed", "cancelled"] },
+      goalId: nullableText("Goal ID."), goalIds: stringArray("Goal IDs."), leadAgentId: nullableText("Lead agent ID."),
+      targetDate: nullableText("Target date."), color: nullableText("Project color."), icon: projectIconSchema,
+      env: openObject, executionWorkspacePolicy: openObject, archivedAt: nullableText("Archive timestamp."),
+    }, ["idempotencyKey", "name"]),
+    outputSchema: openObject,
+  }),
+  descriptor({
     operationId: "create_task",
-    title: "Create child task",
-    description: "Create one child task under the active task.",
+    title: "Create task",
+    description: "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
     placement: "optional",
     effect: "write",
     requiredClaims: ["delegation:tasks:create"],
@@ -439,9 +504,12 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     inputSchema: object(
       {
         ...idempotency,
-        title: text("Child task title.", 500),
+        title: text("Task title.", 500),
+        projectId: nullableText("Project identifier for the new task."),
+        initialPlan: nullableText("Remaining execution steps to persist as the task plan. Exclude completed planning, approval, and handoff steps; cite the source plan revision and approval. A copied plan is not a new approval gate."),
         description: nullableText("Child task description."),
         assigneeActorId: nullableText("Optional actor assignee.", 200),
+        status: { enum: ["backlog", "todo"], description: "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved)." },
         priority: { enum: ["critical", "high", "medium", "low"] },
         blockedByTaskIds: stringArray("Initial blocker task identifiers."),
       },

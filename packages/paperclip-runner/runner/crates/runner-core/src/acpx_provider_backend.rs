@@ -33,6 +33,10 @@ use crate::provider_events::{
     project_acpx_state_event, AcpxEventProjectionContext, NormalizedProviderEvent,
 };
 use crate::qualified_launch::verify_launch_artifact;
+
+fn is_reserved_terminal_operation_id(operation_id: &str) -> bool {
+    matches!(operation_id, "paperclip_finish" | "paperclip_block")
+}
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS};
 
 pub const ACPX_PROVIDER_STATE_FILE: &str = "acpx-provider-state.json";
@@ -145,9 +149,9 @@ impl AcpxProviderDescriptor {
             "claude" => (
                 "claude-sonnet-5",
                 "@agentclientprotocol/claude-agent-acp",
-                "0.70.0",
+                "0.73.0",
                 Some("@anthropic-ai/claude-agent-sdk"),
-                Some("0.3.263"),
+                Some("0.3.280"),
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
             ),
             "codex" => (
@@ -155,8 +159,16 @@ impl AcpxProviderDescriptor {
                 "@agentclientprotocol/codex-acp",
                 "1.6.2",
                 Some("@openai/codex"),
-                Some("0.153.4"),
-                "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
+                Some("0.156.0"),
+                "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+            ),
+            "grok" => (
+                "grok-4.7",
+                "builtin:grok-acp",
+                "1",
+                Some("native:grok"),
+                Some("1.0.13"),
+                "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
             ),
             "pi" => return Err(DurableRunnerError::invalid(
                 "ACPX agent pi is not executable through the verified runnerd provider boundary",
@@ -172,7 +184,7 @@ impl AcpxProviderDescriptor {
             || self.driver != "acpx_runtime"
             || self.provider_version != "0.13.1"
             || self.acpx_version != "0.13.1"
-            || (self.agent != "claude" && self.model != expected.0)
+            || (self.agent != "claude" && self.agent != "grok" && self.model != expected.0)
             || self.model.trim().is_empty()
             || self.model.len() > 1024
             || self.agent_server_package != expected.1
@@ -236,6 +248,28 @@ impl AcpxProviderDescriptor {
     ) -> Result<AcpxProviderSessionConfig, DurableRunnerError> {
         secure_directory(&self.runtime_directory, "ACPX runtime")?;
         let transport = self.verified_transport(launch_profile)?;
+        // Keep the controller's full authority catalog durable so terminal
+        // semantic results can be correlated through the reserved bridge.
+        // The ACPX provider session receives only dynamic operations: its
+        // reserved finish/block contract is runner-owned and validated by
+        // AcpxProviderSession itself.
+        let provider_operations = tool_set
+            .operations
+            .into_iter()
+            .filter(|tool| !is_reserved_terminal_operation_id(&tool.operation_id))
+            .collect::<Vec<_>>();
+        let provider_tool_set = AuthorizedToolSet {
+            schema: tool_set.schema.clone(),
+            schema_version: tool_set.schema_version,
+            catalog_digest: authorized_tool_catalog_digest(&provider_operations).map_err(
+                |error| {
+                    DurableRunnerError::invalid(format!(
+                        "ACPX provider tool catalog is invalid: {error}"
+                    ))
+                },
+            )?,
+            operations: provider_operations,
+        };
         Ok(AcpxProviderSessionConfig {
             transport,
             agent: self.agent.clone(),
@@ -248,7 +282,8 @@ impl AcpxProviderDescriptor {
             permission_mode: self.permission_mode,
             permission_mode_pinned: self.permission_mode_pinned,
             system_instructions: self.instructions.clone(),
-            tool_set,
+            runtime_context: self.runtime_context.clone(),
+            tool_set: provider_tool_set,
             expected_identity,
         })
     }
@@ -632,7 +667,9 @@ impl AcpxCommandExecutor {
                 event_type: "run.terminal".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
+                    "schema": "paperclip.prp.terminal.v1",
                     "status": "failed",
+                    "turnTerminalState": "failed",
                     "runTerminalState": "failed",
                     "reportedWorkDisposition": "unknown",
                     "provider": "acpx",
@@ -770,7 +807,32 @@ impl AcpxCommandExecutor {
         .map_err(|error| {
             DurableRunnerError::invalid(format!("run.attach ACPX provider is invalid: {error}"))
         })?;
-        descriptor.validate(&self.context)?;
+        let mut attachment_context = self.context.clone();
+        if let Some(boundary) = payload.get("paperclipNextAuthority") {
+            // The durable runner validates this authority's immutable bindings
+            // and PRP v2 handoff capability before dispatching run.attach. Its
+            // activation follows our command result, so self.context must keep
+            // correlating audit events with the old run until rotate_authority.
+            let identity = boundary.get("identity").ok_or_else(|| {
+                DurableRunnerError::invalid("run.attach authority identity is required")
+            })?;
+            let run_id = identity
+                .get("runId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid("run.attach authority runId is required")
+                })?;
+            if run_id == self.context.run_id
+                || identity.get("normalizedSessionId").and_then(Value::as_str)
+                    != Some(self.context.normalized_session_id.as_str())
+            {
+                return Err(DurableRunnerError::invalid(
+                    "run.attach authority changed an immutable session binding",
+                ));
+            }
+            attachment_context.run_id = run_id.to_owned();
+        }
+        descriptor.validate(&attachment_context)?;
         let tool_set = authorized_tool_set(payload)?;
         let state = self
             .state
@@ -1231,6 +1293,27 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+        // The shared transport waits for an explicit readiness contract before
+        // rotating run authority. ACPX checkpoints its process during attach,
+        // but must first settle the same durable guards enforced by attach_run.
+        // Do not consume events here: the durable runner commits and ACKs the
+        // old authority's retained prefix before a later probe can report ready.
+        let mut warm_attach_blockers = Vec::new();
+        if state.lifecycle == "closed" {
+            warm_attach_blockers.push("durable_closed");
+        }
+        if state.provider_exit_unconfirmed {
+            warm_attach_blockers.push("provider_exit_unconfirmed");
+        }
+        if state.identity.is_none() {
+            warm_attach_blockers.push("provider_identity_unavailable");
+        }
+        if state.active_turn_id.is_some() {
+            warm_attach_blockers.push("durable_active_turn");
+        }
+        if !state.pending_events.is_empty() {
+            warm_attach_blockers.push("durable_pending_events");
+        }
         Ok(CommandExecution::result(json!({
             "status": state.lifecycle,
             "provider": "acpx",
@@ -1241,6 +1324,8 @@ impl AcpxCommandExecutor {
             "providerAccountSessionId": state.identity.as_ref().map(|value| value.agent_session_id.as_str()),
             "providerIdentity": state.identity,
             "activeProviderTurnId": state.active_turn_id,
+            "warmAttachReady": warm_attach_blockers.is_empty(),
+            "warmAttachBlockers": warm_attach_blockers,
         })))
     }
 
@@ -1393,11 +1478,11 @@ impl AcpxCommandExecutor {
                     {
                         continue;
                     }
-                    let status = match event_type.as_str() {
-                        "turn.completed" => "succeeded",
-                        "turn.cancelled" => "cancelled",
-                        "turn.interrupted" => "interrupted",
-                        _ => "failed",
+                    let (turn_terminal_state, status) = match event_type.as_str() {
+                        "turn.completed" => ("completed", "succeeded"),
+                        "turn.cancelled" => ("cancelled", "cancelled"),
+                        "turn.interrupted" => ("interrupted", "cancelled"),
+                        _ => ("failed", "failed"),
                     };
                     let disposition = goal_terminal_disposition(
                         state
@@ -1415,7 +1500,9 @@ impl AcpxCommandExecutor {
                         event_type: "run.terminal".to_owned(),
                         priority: EventPriority::P0,
                         payload: json!({
+                            "schema": "paperclip.prp.terminal.v1",
                             "status": status,
+                            "turnTerminalState": turn_terminal_state,
                             "runTerminalState": status,
                             "reportedWorkDisposition": disposition,
                             "provider": "acpx",
@@ -1527,6 +1614,13 @@ impl CommandExecutor for AcpxCommandExecutor {
             return Ok(Vec::new());
         }
         self.poll_provider()?;
+        self.retained_events()
+    }
+
+    fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        // Explicit drain runs while control traffic suppresses provider polling.
+        // Expose the already-retained suffix so runnerd can commit and ACK it
+        // before suspension, without restoring or advancing the provider.
         Ok(self
             .state
             .as_ref()
@@ -1764,9 +1858,9 @@ mod tests {
                 (
                     "claude-sonnet-5",
                     "@agentclientprotocol/claude-agent-acp",
-                    "0.70.0",
+                    "0.73.0",
                     json!("@anthropic-ai/claude-agent-sdk"),
-                    json!("0.3.263"),
+                    json!("0.3.280"),
                     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
                 )
             } else {
@@ -1775,8 +1869,8 @@ mod tests {
                     "@agentclientprotocol/codex-acp",
                     "1.6.2",
                     json!("@openai/codex"),
-                    json!("0.153.4"),
-                    "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
+                    json!("0.156.0"),
+                    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
                 )
             };
         json!({
@@ -1803,6 +1897,57 @@ mod tests {
             "permissionModePinned": true,
             "runtimeContext": null,
         })
+    }
+
+    #[test]
+    fn retained_events_exposes_terminal_suffix_without_restoring_provider() {
+        let directory = temporary_directory("retained-terminal-suffix");
+        let config = test_config(&directory, None);
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        // Invalid on-disk state would fail restoration. Retained-only reads
+        // must neither restore a provider nor inspect a different state owner.
+        fs::write(executor.state_path(), b"not provider state").unwrap();
+        assert!(executor.retained_events().unwrap().is_empty());
+
+        let operations = Vec::new();
+        let tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let mut state = AcpxDurableState::new(
+            serde_json::from_value(descriptor("claude")).unwrap(),
+            tool_set,
+            "retained-only-test".to_owned(),
+        );
+        state.lifecycle = "session_open".to_owned();
+        for event_type in ["turn.completed", "run.usage", "run.completed"] {
+            state
+                .push(NormalizedProviderEvent {
+                    event_type: event_type.to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({}),
+                })
+                .unwrap();
+        }
+        executor.state = Some(state);
+        let suffix = executor.retained_events().unwrap();
+        assert_eq!(
+            suffix
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["turn.completed", "run.usage", "run.completed"],
+        );
+        // Reading is not acknowledgement: a retry sees the exact same FIFO.
+        assert_eq!(executor.retained_events().unwrap(), suffix);
+        assert!(executor.session.is_none());
+        assert_eq!(
+            fs::read(executor.state_path()).unwrap(),
+            b"not provider state"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2010,6 +2155,61 @@ mod tests {
         let original_config = test_config(&directory, Some(launch_profile.clone()));
         let mut original = AcpxCommandExecutor::with_runner_config(&directory, &original_config);
         original.state = Some(state);
+        let settled = original.state.clone().unwrap();
+        let ready = original.snapshot().unwrap().result;
+        assert_eq!(ready["warmAttachReady"], true);
+        assert_eq!(ready["warmAttachBlockers"], json!([]));
+        let blocked_states: [(&str, fn(&mut AcpxDurableState)); 4] = [
+            ("durable_closed", |state| {
+                state.lifecycle = "closed".to_owned()
+            }),
+            ("provider_exit_unconfirmed", |state| {
+                state.lifecycle = "prepared".to_owned();
+                state.provider_exit_unconfirmed = true;
+            }),
+            ("provider_identity_unavailable", |state| {
+                state.lifecycle = "prepared".to_owned();
+                state.identity = None;
+            }),
+            ("durable_active_turn", |state| {
+                state.lifecycle = "turn_active".to_owned();
+                state.active_turn_id = Some("turn-1".to_owned());
+            }),
+        ];
+        for (blocker, mutate) in blocked_states {
+            original.state = Some(settled.clone());
+            mutate(original.state.as_mut().unwrap());
+            let snapshot = original.snapshot().unwrap().result;
+            assert_eq!(snapshot["warmAttachReady"], false, "{blocker}");
+            assert_eq!(snapshot["warmAttachBlockers"], json!([blocker]));
+        }
+        // A readiness probe must retain the old authority's audit events until
+        // the durable runner commits and acknowledges them, including recovery
+        // notices that run.attach itself is allowed to consume.
+        for event_type in ["session.resumed", "harness.diagnostic"] {
+            original.state = Some(settled.clone());
+            original
+                .state
+                .as_mut()
+                .unwrap()
+                .push(NormalizedProviderEvent {
+                    event_type: event_type.to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({}),
+                })
+                .unwrap();
+            let snapshot = original.snapshot().unwrap().result;
+            assert_eq!(snapshot["warmAttachReady"], false);
+            assert_eq!(
+                snapshot["warmAttachBlockers"],
+                json!(["durable_pending_events"])
+            );
+            assert_eq!(original.retained_events().unwrap().len(), 1);
+            original.acknowledge_events(1).unwrap();
+            assert_eq!(original.snapshot().unwrap().result["warmAttachReady"], true);
+        }
+        original.state = Some(settled);
+        assert!(!marker.exists(), "readiness must not start a provider");
         original.save_state().unwrap();
 
         let mut wrong_session_config = original_config.clone();
@@ -2045,6 +2245,43 @@ mod tests {
             .attach_run(&json!({"provider": descriptor_value}))
             .unwrap();
         assert_eq!(attached.state.as_ref().unwrap().descriptor.run_id, "run-2");
+        assert!(!marker.exists());
+
+        // In-place warm handoff executes under the old authority. Only the
+        // authenticated next-authority boundary may admit the new descriptor;
+        // event correlation stays on run-1 until durable activation completes.
+        assert!(original
+            .attach_run(&json!({"provider": descriptor_value}))
+            .is_err());
+        let warm_payload = json!({
+            "provider": descriptor_value,
+            "paperclipNextAuthority": {
+                "identity": {
+                    "runnerInstanceId": original_config.runner_instance_id,
+                    "environmentLeaseId": original_config.environment_lease_id,
+                    "runId": "run-2",
+                    "normalizedSessionId": original_config.normalized_session_id,
+                    "turnId": "turn-2",
+                    "itemId": "item-2",
+                },
+                "connection": {"mode": "connect", "connectUrl": original_config.connect_url},
+            },
+        });
+        let mut wrong_run = warm_payload.clone();
+        wrong_run["paperclipNextAuthority"]["identity"]["runId"] = json!("run-3");
+        assert!(original.attach_run(&wrong_run).is_err());
+        let mut wrong_session = warm_payload.clone();
+        wrong_session["paperclipNextAuthority"]["identity"]["normalizedSessionId"] =
+            json!("other-session");
+        assert!(original.attach_run(&wrong_session).is_err());
+        let mut changed_profile = warm_payload.clone();
+        changed_profile["provider"]["instructions"] = json!("different profile");
+        assert!(original.attach_run(&changed_profile).is_err());
+        original.attach_run(&warm_payload).unwrap();
+        assert_eq!(original.state.as_ref().unwrap().descriptor.run_id, "run-2");
+        assert_eq!(original.context.run_id, "run-1");
+        original.rotate_authority(&attached_config);
+        assert_eq!(original.context.run_id, "run-2");
         assert!(!marker.exists());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -2169,6 +2406,8 @@ mod tests {
         assert_eq!(events[0].event_type, "turn.failed");
         assert_eq!(events[0].payload["providerShutdownFailed"], true);
         assert_eq!(events[1].event_type, "run.terminal");
+        assert_eq!(events[1].payload["schema"], "paperclip.prp.terminal.v1");
+        assert_eq!(events[1].payload["turnTerminalState"], "failed");
         let cleanup_error = recovered
             .shutdown()
             .expect_err("cleanup must not succeed while the original lifetime remains active");
@@ -2281,9 +2520,39 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn lifetime_fence_fixtures_do_not_reuse_a_retired_provider_quorum() {
+        let (original_candidates, original_lifetime_fence) = reserve_provider_lifetime_fence();
+        drop(original_lifetime_fence);
+        let (other_candidates, _other_lifetime_fence) = reserve_provider_lifetime_fence();
+
+        assert!(
+            original_candidates
+                .iter()
+                .all(|candidate| !other_candidates.contains(candidate)),
+            "another fixture must not impersonate a retired provider lifetime"
+        );
+        assert_eq!(
+            acquire_provider_lifetime_fence(original_candidates)
+                .expect("unrelated live fixture must not block the original cleanup proof")
+                .len(),
+            2
+        );
+    }
+
     fn reserve_provider_lifetime_fence() -> ([u16; 3], Vec<TcpListener>) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // A fixture releases its original listeners before proving cleanup.
+        // Never give those candidate ports to another parallel fixture in that
+        // gap: its listeners would impersonate the original provider lifetime.
+        static NEXT_CANDIDATE_PORT: AtomicU32 = AtomicU32::new(49_152);
         let mut listeners = Vec::new();
-        for port in 49_152..=u16::MAX {
+        loop {
+            let Ok(port) = u16::try_from(NEXT_CANDIDATE_PORT.fetch_add(1, Ordering::Relaxed))
+            else {
+                break;
+            };
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
                 listeners.push(listener);
                 if listeners.len() == 3 {

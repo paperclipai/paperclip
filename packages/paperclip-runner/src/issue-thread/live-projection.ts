@@ -487,7 +487,7 @@ function derivedRecordItems(
     }
   }
 
-  if (operationId === "create_task" || operationId === "set_dependencies") {
+  if (operationId === "create_task" || operationId === "reassign_task" || operationId === "set_dependencies") {
     const created = refsOf("task")
       .filter((id) => id !== state.tasks[0]?.id)
       .map((ref) => state.tasks.find((candidate) => candidate.id === ref))
@@ -761,7 +761,7 @@ export function projectCapabilityIssueThread(
       : snapshot.config.provider === "opencode" || snapshot.config.driver === "opencode_server"
         ? "Real OpenCode"
       : snapshot.config.provider === "acpx" || snapshot.config.driver === "acpx_runtime"
-        ? `Real ${snapshot.config.acpxAgent === "claude" ? "Claude" : snapshot.config.acpxAgent === "codex" ? "Codex" : "Pi"} via ACPX`
+        ? `Real ${snapshot.config.acpxAgent === "grok" ? "Grok Build" : snapshot.config.acpxAgent === "claude" ? "Claude" : snapshot.config.acpxAgent === "codex" ? "Codex" : "Pi"} via ACPX`
         : "Real Codex"
     : mode === "replay" ? "Replay" : "Fake agent";
   const connection = input.connection ?? { state: "connected", attempt: 0 };

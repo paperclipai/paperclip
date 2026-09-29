@@ -43,7 +43,7 @@ describe("capability-semantic-tools.md stays in sync with the catalog", () => {
     expect(Number(alwaysHeader)).toBe(always.length);
     expect(Number(optionalHeader)).toBe(optional.length);
     // Guard against the historical 36-vs-37 drift the reconciliation plan flagged.
-    expect(SCENARIO_CATALOG.length).toBe(37);
+    expect(SCENARIO_CATALOG.length).toBe(39);
   });
 
   it("lists exactly the catalog's operation ids in the counts region", () => {

@@ -100,6 +100,29 @@ OAuth. Production must advertise the `github.code` profile (see Cloud's
 preserves the sign-in intent and offers a retry instead of silently switching
 to a personal access token. A successful retry preserves the chosen audience.
 
+## GitHub Actions tools
+
+Managed and PAT connections request `X-MCP-Toolsets: default,actions` for MCP
+discovery and invocation. GitHub's default catalog excludes Actions; granting
+Actions permissions alone does not expose workflow tools. Existing connections
+can use **Refresh actions** after upgrading to discover the added tools.
+The normal catalog, access, approval, and quarantine rules still apply.
+
+To dispatch an existing workflow, use `actions_run_trigger` with
+`method: "run_workflow"`, the repository owner and name, `workflow_id`, `ref`,
+and any workflow `inputs`. The workflow must declare `workflow_dispatch`.
+The GitHub App installation or fine-grained PAT needs **Actions: Read and
+write** for the repository. App owners set that permission on the GitHub App
+registration; installation owners must approve an increase before it takes
+effect. Paperclip's action controls do not grant GitHub permissions.
+
+The tool also supports rerunning and cancelling runs and deleting run logs.
+It retains GitHub's destructive classification. Read tools include
+`actions_list`, `actions_get`, and `get_job_logs`.
+
+Provider references: [MCP toolset configuration](https://github.com/github/github-mcp-server/blob/main/docs/server-configuration.md)
+and [workflow dispatch permissions](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event).
+
 ## Webhooks
 
 Paperclip Cloud verifies `X-Hub-Signature-256` against the exact bounded request

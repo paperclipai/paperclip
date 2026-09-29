@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
+import { createWorkspaceManifest, WorkspaceManifestMap, workspacePathMatcher, type PathManifest, type WorkspacePaths, type WorkspaceManifestWriter } from "./workspace-manifest.js";
 import { shouldExcludePath } from "./exclude-patterns.js";
 import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 
@@ -12,13 +13,42 @@ export type SnapshotEntry =
 
 export interface DirectorySnapshot {
   exclude: string[];
-  entries: Map<string, SnapshotEntry>;
+  entries: Map<string, SnapshotEntry> | WorkspaceManifestMap<SnapshotEntry>;
+  ignoredPaths?: WorkspacePaths;
 }
 
-export interface SerializedDirectorySnapshot {
+export interface LegacySerializedDirectorySnapshot {
   version: 1;
   exclude: string[];
   entries: Array<[string, SnapshotEntry]>;
+}
+
+export type SerializedDirectorySnapshot = LegacySerializedDirectorySnapshot | {
+  version: 2;
+  exclude: string[];
+  entries: PathManifest;
+  ignoredPaths?: WorkspacePaths;
+};
+const ownedDirectorySnapshots = new WeakMap<DirectorySnapshot, string>();
+export async function disposeDirectorySnapshot(snapshot: DirectorySnapshot | null): Promise<void> {
+  if (!snapshot) return;
+  if (snapshot.entries instanceof WorkspaceManifestMap) {
+    snapshot.entries.close();
+    const ownedDirectory = ownedDirectorySnapshots.get(snapshot);
+    ownedDirectorySnapshots.delete(snapshot);
+    if (ownedDirectory) await fs.rm(ownedDirectory, { recursive: true, force: true });
+  }
+}
+
+function parseManifestEntry(value: string): SnapshotEntry {
+  const result = parseSnapshotEntry(JSON.parse(value));
+  if (!result) throw new Error("Invalid workspace baseline entry");
+  return result;
+}
+
+/** Call only after the controller validates a persisted manifest's path and digest. */
+export function openDirectorySnapshot(value: Extract<SerializedDirectorySnapshot, { version: 2 }>): DirectorySnapshot {
+  return { exclude: value.exclude, entries: new WorkspaceManifestMap(value.entries, parseManifestEntry), ignoredPaths: value.ignoredPaths };
 }
 
 function isSafeSnapshotRelativePath(value: string): boolean {
@@ -51,6 +81,10 @@ function parseSnapshotEntry(value: unknown): SnapshotEntry | null {
 export function serializeDirectorySnapshot(
   snapshot: DirectorySnapshot,
 ): SerializedDirectorySnapshot {
+  if (snapshot.entries instanceof WorkspaceManifestMap) return {
+    version: 2, exclude: [...snapshot.exclude], entries: snapshot.entries.manifest,
+    ...(snapshot.ignoredPaths ? { ignoredPaths: snapshot.ignoredPaths } : {}),
+  };
   return {
     version: 1,
     exclude: [...snapshot.exclude],
@@ -91,9 +125,11 @@ export function parseDirectorySnapshot(
 }
 
 export function directorySnapshotSha256(snapshot: DirectorySnapshot): string {
-  return createHash("sha256")
-    .update(JSON.stringify(serializeDirectorySnapshot(snapshot)))
-    .digest("hex");
+  if (!(snapshot.entries instanceof WorkspaceManifestMap)) return createHash("sha256")
+    .update(JSON.stringify(serializeDirectorySnapshot(snapshot))).digest("hex");
+  const digest = createHash("sha256").update("workspace-baseline-v2\0").update(JSON.stringify(snapshot.exclude));
+  for (const entry of snapshot.entries) digest.update(JSON.stringify(entry)).update("\0");
+  return digest.digest("hex");
 }
 
 async function hashFile(filePath: string): Promise<string> {
@@ -106,48 +142,24 @@ async function hashFile(filePath: string): Promise<string> {
   });
 }
 
-async function walkDirectory(
-  root: string,
-  exclude: readonly string[],
-  relative = "",
-  out: Map<string, SnapshotEntry> = new Map(),
-): Promise<Map<string, SnapshotEntry>> {
+async function* walkDirectory(
+  root: string, exclude: readonly string[], ignored: ReturnType<typeof workspacePathMatcher>, relative = "",
+): AsyncGenerator<[string, SnapshotEntry]> {
   const current = relative ? path.join(root, relative) : root;
-  const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
-  entries.sort((left, right) => left.name.localeCompare(right.name));
-
-  for (const entry of entries) {
+  for await (const entry of await fs.opendir(current)) {
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
-    if (shouldExcludePath(nextRelative, exclude)) continue;
-
+    if (shouldExcludePath(nextRelative, exclude) || ignored.matches(nextRelative)) continue;
     const fullPath = path.join(root, nextRelative);
     const stats = await fs.lstat(fullPath);
-    if (!stats.isDirectory() && !stats.isSymbolicLink() && !stats.isFile()) {
-      continue;
-    }
-
     if (stats.isDirectory()) {
-      out.set(nextRelative, { kind: "dir" });
-      await walkDirectory(root, exclude, nextRelative, out);
-      continue;
+      yield [nextRelative, { kind: "dir" }];
+      yield* walkDirectory(root, exclude, ignored, nextRelative);
+    } else if (stats.isSymbolicLink()) {
+      yield [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
+    } else if (stats.isFile()) {
+      yield [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
     }
-
-    if (stats.isSymbolicLink()) {
-      out.set(nextRelative, {
-        kind: "symlink",
-        target: await fs.readlink(fullPath),
-      });
-      continue;
-    }
-
-    out.set(nextRelative, {
-      kind: "file",
-      mode: stats.mode,
-      hash: await hashFile(fullPath),
-    });
   }
-
-  return out;
 }
 
 async function readSnapshotEntry(root: string, relative: string): Promise<SnapshotEntry | null> {
@@ -206,6 +218,7 @@ export const WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE = "ERR_WORKSPACE_RESTORE_LOCK_T
 export type WorkspaceRestoreFailureCode =
   | "restore_permission_denied"
   | "restore_lock_timeout"
+  | "restore_unsafe_archive"
   | "restore_failed";
 
 /**
@@ -222,13 +235,24 @@ export type WorkspaceRestoreOutcome =
  * `EACCES` and `EPERM` to a permission failure, the merge-lock timeout
  * (matched by {@link WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE}, never by the error
  * message text) to a lock-timeout failure, and every other error to a generic
- * failure. Never reads or returns `Error.message`, a filesystem path, or a
- * process id.
+ * failure. The known Daytona confinement diagnostic also identifies unsafe
+ * archives across plugin transports that retain only a message. Never returns
+ * raw messages, paths or process IDs.
  */
 export function classifyWorkspaceRestoreFailure(error: unknown): WorkspaceRestoreFailureCode {
   const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
   if (code === "EACCES" || code === "EPERM") return "restore_permission_denied";
   if (code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return "restore_lock_timeout";
+  const message = error instanceof Error ? error.message : "";
+  const archiveRefused = /Daytona syncOut refusing (?:tarball (?:with an unparseable entry listing|(?:link whose target|member that) escapes the extraction dir)|unparseable or ambiguous (?:sym|hard)link entry)/.test(message);
+  const outboundPathRefused = /Daytona sync source path (?:is not a confined absolute path|escapes the workspace remote dir):/.test(message);
+  // These are the fail-closed guard's own exit codes. Transport/command failures
+  // with other exit codes retain the existing transient failure policy.
+  const outboundGuardRefused = /Daytona outbound symlink-escape guard command failed \(exit (?:40|41|42|44|45)\)/.test(message);
+  if (code === "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" ||
+      archiveRefused || outboundPathRefused || outboundGuardRefused) {
+    return "restore_unsafe_archive";
+  }
   return "restore_failed";
 }
 
@@ -246,6 +270,8 @@ export function describeWorkspaceRestoreFailure(code: WorkspaceRestoreFailureCod
       return "the restore could not write to the workspace (permission denied)";
     case "restore_lock_timeout":
       return "the restore timed out waiting for the workspace merge lock";
+    case "restore_unsafe_archive":
+      return "the archive contains an unsafe link or path; workspace repair is required";
     case "restore_failed":
       return "the restore failed";
   }
@@ -430,13 +456,59 @@ async function copySnapshotEntry(sourceDir: string, targetDir: string, relative:
 
 export async function captureDirectorySnapshot(
   rootDir: string,
-  options: { exclude?: string[] } = {},
+  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean } = {},
 ): Promise<DirectorySnapshot> {
   const exclude = [...new Set(options.exclude ?? [])];
-  return {
-    exclude,
-    entries: await walkDirectory(rootDir, exclude),
-  };
+  const ignored = workspacePathMatcher(options.ignoredPaths);
+  let writer: WorkspaceManifestWriter | null = null;
+  try {
+    writer = options.diskBacked ? await createWorkspaceManifest("paperclip-workspace-baseline-") : null;
+    const memory = new Map<string, SnapshotEntry>();
+    for await (const [relative, entry] of walkDirectory(rootDir, exclude, ignored)) {
+      if (writer) writer.add("baseline", relative, JSON.stringify(entry));
+      else memory.set(relative, entry);
+    }
+    const manifest = writer?.paths("baseline");
+    writer?.close();
+    const snapshot: DirectorySnapshot = {
+      exclude, ignoredPaths: options.ignoredPaths,
+      entries: manifest ? new WorkspaceManifestMap(manifest, parseManifestEntry) : memory,
+    };
+    if (writer) ownedDirectorySnapshots.set(snapshot, path.dirname(writer.filePath));
+    return snapshot;
+  } catch (error) {
+    writer?.close(false);
+    if (writer) await fs.rm(path.dirname(writer.filePath), { recursive: true, force: true });
+    throw error;
+  } finally { ignored.close(); }
+}
+
+/** A disk-backed subset for independent nested-repository merges. */
+export async function selectDirectorySnapshot(snapshot: DirectorySnapshot, options: {
+  prefix?: string; omit?: string[]; exclude: string[]; ignoredPaths?: WorkspacePaths;
+}): Promise<DirectorySnapshot> {
+  const writer = await createWorkspaceManifest("paperclip-workspace-baseline-");
+  try {
+    for (const [relative, entry] of snapshot.entries) {
+      if (options.prefix && !relative.startsWith(options.prefix)) continue;
+      if (options.omit?.some((omit) => relative === omit || relative.startsWith(`${omit}/`))) continue;
+      writer.add("baseline", options.prefix ? relative.slice(options.prefix.length) : relative, JSON.stringify(entry));
+    }
+    const result: DirectorySnapshot = { exclude: options.exclude, ignoredPaths: options.ignoredPaths,
+      entries: new WorkspaceManifestMap(writer.paths("baseline"), parseManifestEntry) };
+    writer.close();
+    ownedDirectorySnapshots.set(result, path.dirname(writer.filePath));
+    return result;
+  } catch (error) {
+    writer.close(false);
+    await fs.rm(path.dirname(writer.filePath), { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function orderedEntries(snapshot: DirectorySnapshot, reverse = false): Iterable<[string, SnapshotEntry]> {
+  if (snapshot.entries instanceof WorkspaceManifestMap) return snapshot.entries.entries(reverse);
+  return [...snapshot.entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0) * (reverse ? -1 : 1));
 }
 
 export async function mergeDirectoryWithBaseline(input: {
@@ -446,37 +518,31 @@ export async function mergeDirectoryWithBaseline(input: {
   beforeApply?: () => Promise<void>;
   afterApply?: () => Promise<void>;
 }): Promise<void> {
-  const source = await captureDirectorySnapshot(input.sourceDir, { exclude: input.baseline.exclude });
-  await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
-    await input.beforeApply?.();
-    const current = await captureDirectorySnapshot(canonicalTargetDir, { exclude: input.baseline.exclude });
-    const deletedLeafEntries = [...input.baseline.entries.entries()]
-      .filter(([relative, entry]) => entry.kind !== "dir" && !source.entries.has(relative))
-      .sort(([left], [right]) => right.length - left.length);
-
-    for (const [relative, baselineEntry] of deletedLeafEntries) {
-      if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
-      await fs.rm(path.join(canonicalTargetDir, relative), { recursive: true, force: true }).catch(() => undefined);
-    }
-
-    const deletedDirs = [...input.baseline.entries.entries()]
-      .filter(([relative, entry]) => entry.kind === "dir" && !source.entries.has(relative))
-      .sort(([left], [right]) => right.length - left.length);
-
-    for (const [relative] of deletedDirs) {
-      await fs.rmdir(path.join(canonicalTargetDir, relative)).catch(() => undefined);
-    }
-
-    const changedSourceEntries = [...source.entries.entries()]
-      .filter(([relative, entry]) => !entriesMatch(input.baseline.entries.get(relative), entry))
-      .sort(([left], [right]) => left.localeCompare(right));
-
-    for (const [relative, entry] of changedSourceEntries) {
-      await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
-    }
-
-    await input.afterApply?.();
-  });
+  const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true };
+  const source = await captureDirectorySnapshot(input.sourceDir, options);
+  try {
+    await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
+      await input.beforeApply?.();
+      const current = await captureDirectorySnapshot(canonicalTargetDir, options);
+      try {
+        for (const [relative, baselineEntry] of orderedEntries(input.baseline)) {
+          if (baselineEntry.kind === "dir" || source.entries.has(relative)) continue;
+          if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
+          await fs.rm(path.join(canonicalTargetDir, relative), { recursive: true, force: true });
+        }
+        // Reverse path order visits descendants before their parent directory.
+        for (const [relative, entry] of orderedEntries(input.baseline, true)) {
+          if (entry.kind === "dir" && !source.entries.has(relative)) await fs.rmdir(path.join(canonicalTargetDir, relative)).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "ENOTDIR") throw error;
+          });
+        }
+        for (const [relative, entry] of orderedEntries(source)) {
+          if (!entriesMatch(input.baseline.entries.get(relative), entry)) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
+        }
+        await input.afterApply?.();
+      } finally { await disposeDirectorySnapshot(current); }
+    });
+  } finally { await disposeDirectorySnapshot(source); }
 }
 
 export async function directoryEntryMatchesBaseline(

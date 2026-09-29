@@ -4,10 +4,16 @@ import type { AppDefinition, ConnectionMethodDef, FieldDef } from "./types/app-d
 import type { ToolConnectionOwnership } from "./types/tool-access.js";
 
 export const CONNECTABLE_APP_SLUGS = new Set([
+  "anthropic", "openai", "openrouter", "xai",
+  "agentmail",
+  "cognee",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "zapier",
+  "arcade",
+  "executor",
   "slack",
   "notion",
+  "railway",
   "posthog",
   "linear",
   "google-sheets",
@@ -23,6 +29,10 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "google-people",
   "google-workspace-search",
   "github",
+  "discord",
+  "microsoft-teams",
+  "telegram",
+  "imessage-photon",
 ]);
 
 export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>
@@ -41,7 +51,6 @@ export const APP_STORE_HIDDEN_SLUGS = new Set([
   "brex",
   "candid",
   "coda",
-  "composio",
   "context7",
   "egnyte",
   "embat",
@@ -54,7 +63,6 @@ export const APP_STORE_HIDDEN_SLUGS = new Set([
   "razorpay",
   "sanity",
   "similarweb",
-  "slack",
   "ticket-tailor",
   "ticktick",
   "xero",
@@ -167,6 +175,7 @@ export function connectionMethodAcceptsCustomerOAuthClient(method: ConnectionMet
 
 export function connectionMethodSupportsCatalogSetup(method: ConnectionMethodDef | null | undefined): boolean {
   if (!method) return false;
+  if (method.transport === "runtime_auth") return Boolean(method.ai);
   if (method.auth === "none" || method.auth === "api_key") return true;
   return connectionMethodSupportsAutomaticOAuth(method)
     || connectionMethodAcceptsCustomerOAuthClient(method);
@@ -207,7 +216,8 @@ export function appAcceptsCustomerOAuthClient(app: AppDefinition | null | undefi
   return Boolean(app && getAvailableConnectionMethods(app).some(connectionMethodAcceptsCustomerOAuthClient));
 }
 
-export function credentialConfigPath(field: FieldDef): string {
+export function credentialConfigPath(field: FieldDef, method?: ConnectionMethodDef | null): string {
+  if (method?.transport === "local_stdio" && method.keyPlacement?.location === "env") return `env.${field.key}`;
   return `credentials.${field.key}`;
 }
 

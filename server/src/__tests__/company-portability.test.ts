@@ -1727,6 +1727,22 @@ describe("company portability", () => {
     expect(exported.warnings.filter((warning) => warning.includes("could not be exported portably"))).toHaveLength(1);
   });
 
+  it("round-trips the saved visual persona through the portable bundle", async () => {
+    const appearance = { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "arctic-blue" };
+    const source = await agentSvc.list();
+    agentSvc.list.mockResolvedValue(source.map((agent: Record<string, unknown>) => ({ ...agent, appearance })));
+    const portability = companyPortabilityService({} as any);
+    const include = { company: true, agents: true, projects: false, issues: false, skills: false };
+    const exported = await portability.exportBundle("company-1", { include });
+    expect(asTextFile(exported.files[".paperclip.yaml"])).toContain("arctic-blue");
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({ ...input, id: `imported-${input.name}` }));
+    await portability.importBundle({ source: { type: "inline", files: exported.files, rootPath: exported.rootPath }, include,
+      target: { mode: "new_company", newCompanyName: "Imported personas" }, collisionStrategy: "rename", agents: "all" }, "user-1");
+    expect(agentSvc.create).toHaveBeenCalled();
+    for (const [, input] of agentSvc.create.mock.calls) expect(input).toMatchObject({ appearance });
+  });
+
   it("reads env inputs back from .paperclip.yaml during preview import", async () => {
     const portability = companyPortabilityService({} as any);
 

@@ -585,8 +585,9 @@ export function TurnGroup({
     <section className="pit-turn" data-turn-id={turn.id} aria-label={`Turn ${turn.ordinal}`}>
       <h2 className="pit-turn-header">
         <span className="pit-turn-label">
-          Turn {turn.ordinal} · {turn.mode} · {turn.toolCallCount} tool call
-          {turn.toolCallCount === 1 ? "" : "s"} ·{" "}
+          Turn {turn.ordinal} · {turn.mode} · {turn.mode === "replay" && turn.toolCallCount === 0
+            ? "no recorded tool calls"
+            : `${turn.toolCallCount} tool call${turn.toolCallCount === 1 ? "" : "s"}`} ·{" "}
           {new Date(turn.at).toISOString().slice(11, 19)}
         </span>
         {turn.stoppedByUser ? (

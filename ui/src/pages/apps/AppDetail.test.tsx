@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getAppStoreDefinition } from "@paperclipai/shared";
 import { AppDetail } from "./AppDetail";
 import { APP_TABS } from "./app-tabs";
 
@@ -453,10 +454,28 @@ describe("AppDetail", () => {
     await flushReact();
   }
 
+  it.each([
+    { transport: "rest_api", config: { sourceTemplateKey: "composio", connectionMethodKey: "api-key" } },
+    { transport: "mcp_remote", config: { provider: "composio", parentConnectionId: "old-parent", toolkitSlug: "github" } },
+  ])("shows replacement and explicit removal for a retired Composio record", async (legacy) => {
+    getConnectionMock.mockResolvedValue(connection({ ...legacy, enabled: false, healthStatus: "error" }));
+    await renderAppDetail();
+    expect(container.textContent).toContain("Connection retired");
+    expect(container.textContent).toContain("Remove each obsolete connection separately");
+    expect(container.textContent).not.toContain("Paused");
+    expect(container.textContent).not.toContain("Refresh actions");
+    const replacement = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Add Composio MCP connection")!;
+    await act(async () => replacement.click());
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=composio");
+    const danger = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Danger zone"))!;
+    await act(async () => danger.click());
+    expect(container.textContent).toContain("Remove app");
+    expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent === "Reconnect")).toBe(false);
+  });
+
   it("uses Permissions as the primary connection page and has no Setup tab", () => {
     expect(APP_TABS.map((tab) => tab.key)).toEqual([
       "permissions",
-      "services",
       "review",
     ]);
   });
@@ -1172,6 +1191,41 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Which agents can use this connection?");
   });
 
+  it.each(["permissions", "review"])("offers a supported replacement for an obsolete Anthropic connection on %s", async (tab) => {
+    mockParams.tab = tab;
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("anthropic")!] });
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Anthropic",
+      transport: "rest_api",
+      authKind: "api_key",
+      config: { sourceTemplateKey: "anthropic", connectionMethodKey: "api-key" },
+      healthStatus: "error",
+      healthMessage: "This connection has no supported tool integration.",
+    }));
+
+    await renderAppDetail();
+
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(findButton("Check & reconnect")).toBeUndefined();
+    expect(findButton("Reconnect")).toBeUndefined();
+    expect(container.textContent).toContain("Connection no longer supported");
+    expect(container.textContent).toContain("then remove this connection");
+    expect(container.querySelector('a[href="/apps/connect?source=anthropic"]')?.textContent)
+      .toBe("Add supported connection");
+  });
+
+  it("offers retry for a transient GitHub error without asking for another login", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth", healthStatus: "error", requiresReauthorization: false,
+      healthMessage: "GitHub access changed during refresh. Try again.",
+    }));
+    await renderAppDetail();
+    expect(container.textContent).toContain("Retry access");
+    expect(container.textContent).not.toContain("Reconnect required");
+  });
+
   it("shows terminal OAuth failures as reconnect-required sign-in", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({
@@ -1325,6 +1379,14 @@ describe("AppDetail", () => {
     return Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === label);
   }
+
+  it("does not label a revoked AI credential as Connected", async () => {
+    getConnectionMock.mockResolvedValue(connection({ connectionPurpose: "ai", transport: "runtime_auth", healthStatus: "ok", config: { provider: "openai", method: "api_key" } }));
+    listConnectionGrantsMock.mockResolvedValue({ connection: { id: "conn-1" }, grants: [organizationGrant({ status: "revoked" })], capabilities: fullCapabilities(), currentUserId: "user-1", members: [] });
+    await renderAppDetail();
+    expect(container.textContent).toContain("Revoked");
+    expect(container.textContent).not.toContain("Connected");
+  });
 
   it("keeps the app header concise on every tab", async () => {
     mockParams.tab = "permissions";

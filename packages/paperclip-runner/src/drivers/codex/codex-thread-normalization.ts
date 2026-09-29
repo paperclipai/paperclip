@@ -140,6 +140,7 @@ export function isSupportedCodexNotificationMethod(method: string): boolean {
     method === "model/verification" ||
     method === "model/safetyBuffering/updated" ||
     method.startsWith("item/") ||
+    method === "paperclip/canonicalProviderEvent" ||
     method === "paperclip/workspaceChange/updated" ||
     method === "paperclip/runResult" ||
     method === "turn/diff/updated" ||
@@ -206,7 +207,7 @@ export function safeCodexRequestResponse(
   if (method === "item/permissions/requestApproval") {
     return { permissions: {}, scope: "turn" };
   }
-  if (method === "mcpServer/elicitation/request") {
+  if (method === "mcpServer/elicitation/request" || method === "elicitation/create") {
     return { action, content: null, _meta: null };
   }
   if (

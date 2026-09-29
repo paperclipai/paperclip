@@ -2,23 +2,31 @@ import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
-  it("forwards GPT-6 Astra, its ultra reasoning effort, and fast mode", () => {
+  it.each([null, "existing-session"])("defaults direct and resumed launches to full bypass (%s)", (resumeSessionId) => {
+    const { args } = buildCodexExecArgs({}, { resumeSessionId });
+    expect(args).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(args).not.toContain('sandbox_mode="workspace-write"');
+    if (resumeSessionId) expect(args.slice(-3)).toEqual(["resume", resumeSessionId, "-"]);
+  });
+
+  it.each([["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s, its supported reasoning effort, and fast mode", (model, effort) => {
     const result = buildCodexExecArgs({
-      model: "gpt-6-astra",
-      modelReasoningEffort: "ultra",
+      model,
+      modelReasoningEffort: effort,
       fastMode: true,
     });
 
-    expect(result.model).toBe("gpt-6-astra");
+    expect(result.model).toBe(model);
     expect(result.fastModeApplied).toBe(true);
     expect(result.fastModeIgnoredReason).toBeNull();
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
-      "gpt-6-astra",
+      model,
       "-c",
-      'model_reasoning_effort="ultra"',
+      `model_reasoning_effort="${effort}"`,
       "-c",
       'service_tier="fast"',
       "-c",
@@ -54,6 +62,7 @@ describe("buildCodexExecArgs", () => {
       "--search",
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.4",
       "-c",
@@ -76,6 +85,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "-c",
@@ -98,6 +108,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "future-codex-model",
       "-c",
@@ -119,6 +130,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "-c",
       'service_tier="fast"',
       "-c",
@@ -136,11 +148,12 @@ describe("buildCodexExecArgs", () => {
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toContain(
-      "currently only supported on gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 or manually configured model IDs",
+      "currently only supported on gpt-6-astra, gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 or manually configured model IDs",
     );
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5",
       "-",
@@ -158,6 +171,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.4-mini",
       "-",
@@ -176,6 +190,7 @@ describe("buildCodexExecArgs", () => {
       "exec",
       "--json",
       "--skip-git-repo-check",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "-",
@@ -195,6 +210,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "--skip-git-repo-check",
@@ -222,4 +238,44 @@ describe("buildCodexExecArgs", () => {
 
     expect(result.args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
   });
+  it.each([null, "existing-session"])("makes legacy settings operable for session %s", (resumeSessionId) => {
+    const { args } = buildCodexExecArgs({
+      dangerouslyBypassApprovalsAndSandbox: false,
+      extraArgs: ["-c", "sandbox_workspace_write.network_access=true"],
+    }, { resumeSessionId });
+    expect(args).toContain('sandbox_mode="workspace-write"');
+    expect(args).toContain("sandbox_workspace_write.network_access=true");
+    expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    if (resumeSessionId) expect(args.slice(-3)).toEqual(["resume", resumeSessionId, "-"]);
+  });
+
+  it.each([
+    ["--sandbox", "read-only"], ["--sandbox=read-only"], ["-s", "read-only"],
+    ["-sread-only"], ["-prestricted"], ["-c=sandbox_mode=read-only"],
+    ["-c", 'sandbox_mode="read-only"'], ["--config=sandbox_mode=read-only"],
+    ["--profile", "restricted"], ["-p", "restricted"], ["--full-auto"],
+    ["--dangerously-bypass-approvals-and-sandbox"],
+  ])("preserves explicit sandbox/profile arguments %j", (...extraArgs) => {
+    const { args } = buildCodexExecArgs({ extraArgs });
+    expect(args).not.toContain('sandbox_mode="workspace-write"');
+    expect(args).not.toContain("sandbox_workspace_write.network_access=true");
+    expect(args).toEqual(["exec", "--json", ...extraArgs, "-"]);
+  });
+
+  it("preserves an explicit network denial after defaults", () => {
+    const { args } = buildCodexExecArgs({ extraArgs: ["-c", "sandbox_workspace_write.network_access=false"] });
+    expect(args.lastIndexOf("sandbox_workspace_write.network_access=false"))
+      .toBeGreaterThan(args.indexOf("sandbox_workspace_write.network_access=true"));
+  });
+
+  it("honors a disabled execution-target network policy even with an agent override", () => {
+    const { args } = buildCodexExecArgs({ extraArgs: ["-c", "sandbox_workspace_write.network_access=true"] }, { networkAccess: false });
+    expect(args.slice(-3)).toEqual(["-c", "sandbox_workspace_write.network_access=false", "-"]);
+  });
+
+  it("preserves the existing explicit bypass configuration", () => {
+    const { args } = buildCodexExecArgs({ dangerouslyBypassApprovalsAndSandbox: true });
+    expect(args).toEqual(["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]);
+  });
+
 });

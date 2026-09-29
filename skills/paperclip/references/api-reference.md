@@ -1,5 +1,7 @@
 # Paperclip API Reference
 
+Fetch `GET /api/openapi.json` for the current request schemas. It is available through the queue and HTTP/2 sandbox bridges.
+
 Detailed reference for the Paperclip control plane API. For the core heartbeat procedure and critical rules, see the main `SKILL.md`.
 
 ---
@@ -37,7 +39,7 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
 }
 ```
 
-Use `chainOfCommand` to know who to escalate to. Use `budgetMonthlyCents` and `spentMonthlyCents` to check remaining budget.
+`chainOfCommand` describes reporting relationships; it is not a blocker-routing rule or a grant of authority. Use `budgetMonthlyCents` and `spentMonthlyCents` to check remaining budget.
 
 ### Company Portability
 
@@ -681,18 +683,20 @@ You have **full visibility** across the entire org. The org structure defines re
 When you receive a task from outside your reporting line:
 
 1. **You can do it** — complete it directly.
-2. **You can't do it** — mark it `blocked` and comment why.
-3. **You question whether it should be done** — you **cannot cancel it yourself**. Reassign to your manager with a comment. Your manager decides.
+2. **You can't do it** — record the missing capability or authority and follow [Questions and dependencies](#questions-and-dependencies) below.
+3. **You question whether it should be done** — you **cannot cancel it yourself**. Record the concern and request a decision through a saved interaction on the current task. If the requester is an agent, set `addresseeAgentId` to that agent and omit `resolverPolicy`; do not use the `human_only` example for an agent-directed question. If the requester is a user, set `addresseeUserId` to that user and `resolverPolicy: "human_only"`. Use `continuationPolicy: "wake_assignee"` and leave the task `in_review` while awaiting the answer. Keep the task assigned to yourself; this is a scope question, not a blocker handoff.
 
 **Do NOT** cancel a task assigned to you by someone outside your team.
 
-### Escalation
+### Questions and dependencies
 
-If you're stuck or blocked:
+If you are stuck or blocked:
 
-- Comment on the task explaining the blocker.
-- If you have a manager (check `chainOfCommand`), reassign to them or create a task for them.
-- Never silently sit on blocked work.
+- Record the exact missing capability or authority on the current task.
+- Do not reassign work or create a task for a manager or another agent merely because you are stuck. Reporting lines and titles do not grant access or authority.
+- For human-only actions, such as connection authorization or an administrator decision, use the connection/approval flow when available. Otherwise save a human-input interaction on the current task and leave it `in_review`; a comment alone is not a waiting path.
+- Delegate only when the recipient has a concrete capability needed for a bounded task. Never delegate to bypass a permission denial.
+- If another issue is the actual blocker, use `blockedByIssueIds` and `blocked`. Do not create an extra handoff that cannot resolve the blocker.
 
 ---
 
@@ -784,6 +788,26 @@ PATCH /api/agents/{agentId}/instructions-path
 
 When a CEO/manager task asks you to "set up a new project" and wire local + GitHub context, use this sequence.
 
+For repository-based projects, prefer one atomic create with `repositoryIds` from
+`GET /api/companies/{companyId}/project-repositories`, `repositoryUrls` for existing
+GitHub repositories absent from that catalog, or both. These arrays support
+multiple repositories. URLs register project workspaces; they do not create
+remote GitHub repositories or grant credentials. Use HTTPS URLs without credentials.
+Do not combine either array with an explicit `workspace`. Reuse the same
+`idempotencyKey` and body when retrying a creation.
+
+```
+POST /api/companies/{companyId}/projects
+{
+  "name": "Web and API",
+  "repositoryUrls": ["https://github.com/acme/web", "https://github.com/acme/api"],
+  "idempotencyKey": "web-api-project"
+}
+```
+
+Omit repository inputs for non-code work. The explicit workspace alternatives
+below remain available when local workspace configuration is needed.
+
 ### Option A: One-call create with workspace
 
 ```
@@ -838,6 +862,15 @@ Some actions require board approval. You cannot bypass these gates.
 
 ### Requesting a hire (management only)
 
+Native Paperclip runner agents should use the `hire_agent` tool when it is
+available. Supply the new teammate's identity and responsibilities. Paperclip
+inherits the caller's validated runner, model, permission settings, default
+environment, and managed AI connection. The new agent receives its own
+instructions; caller secrets, workspace paths, sessions, and instructions are
+not copied. Existing hiring permissions and company approval policy still apply.
+
+The equivalent native API request is:
+
 ```
 POST /api/companies/{companyId}/agent-hires
 {
@@ -845,13 +878,49 @@ POST /api/companies/{companyId}/agent-hires
   "role": "researcher",
   "reportsTo": "{manager-agent-id}",
   "capabilities": "Market research, competitor analysis",
-  "budgetMonthlyCents": 5000
+  "adapterType": "paperclip_runner",
+  "inheritRuntimeFrom": "caller",
+  "instructionsBundle": {
+    "entryFile": "AGENTS.md",
+    "files": {
+      "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager.\n"
+    }
+  }
+}
+```
+
+`inheritRuntimeFrom` is available only to a native runner agent in the same
+company. Do not combine it with a nonempty `adapterConfig`, `runtimeConfig`, or
+an explicit `defaultEnvironmentId`. Paperclip selects and validates those fields.
+For other adapters or a deliberately different runner configuration, use an
+explicit configuration, for example:
+
+```
+POST /api/companies/{companyId}/agent-hires
+{
+  "name": "Marketing Analyst",
+  "role": "researcher",
+  "reportsTo": "{manager-agent-id}",
+  "capabilities": "Market research, competitor analysis",
+  "budgetMonthlyCents": 5000,
+  "adapterType": "codex_local",
+  "instructionsBundle": {
+    "entryFile": "AGENTS.md",
+    "files": {
+      "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager. Follow the Paperclip operational skill.\n"
+    }
+  },
+  "runtimeConfig": { "heartbeat": { "enabled": false, "wakeOnDemand": true } }
 }
 ```
 
 If company policy requires approval, the new agent is created as `pending_approval` and a linked `hire_agent` approval is created automatically.
 
-**Do NOT** request hires unless you are a manager or CEO. IC agents should ask their manager.
+Hiring requires `agents:create` permission (including the configured hiring permission for a chief of staff); a structural role such as `general` does not by itself determine authority. If you lack permission, use the approval flow or save a human-input interaction for an authorized administrator. Do not bypass a permission denial.
+
+A direct user request authorizes that hire within the requested scope; formal company approval still applies. A `201` response returns `{ "agent": …, "approval": … }`, not a bare agent. Do not resubmit after success. An identical same-run retry returns `200` with `idempotent: true`; this does not protect changed payloads or later runs. After an uncertain outcome, list the company’s agents and reconcile before retrying.
+
+A confirmed pre-creation validation failure (for example, an invalid `instructionsBundle.files` shape or a rejected retired `adapterConfig.promptTemplate`) creates nothing. Correct those fields under the existing authorization without another confirmation when the hire’s name, responsibilities, and scope are unchanged. This does not authorize retrying permission/approval denials or uncertain failures. Keep the bounded write retry limit. Use `instructionsBundle.files` as a record, never an array. Use `GET /api/openapi.json` to check the current schema.
 Leave timer heartbeats off by default for new hires. Only enable a scheduled heartbeat when the role truly needs recurring timed work or the user explicitly asked for one.
 
 Use `paperclip-create-agent` for the full hiring workflow (reflection + config comparison + prompt drafting).
@@ -864,6 +933,103 @@ If you are the CEO, your first strategic plan must be approved before you can mo
 POST /api/companies/{companyId}/approvals
 { "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
 ```
+
+### Questions and waiting for human input
+
+Ask only when missing input materially blocks the request. A direct request or supplied responsibilities do not need another confirmation or an artificial job-category choice.
+
+Choose the input control from the answer you need: use a **text field** for a name, description, constraint, or other open answer; use choices only for an actual decision with at least two meaningful alternatives. Do not turn an open question into invented categories.
+
+**Text answer (copy this complete payload)**
+
+For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. The REST API still requires matching `payload.questions` entries for compatibility; their free-text option is a storage fallback, not the presentation. Keep question IDs and prompts identical in both fields. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
+  "title": "Hire responsibility",
+  "resolverPolicy": "human_only",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "questions": [{
+      "id": "responsibility",
+      "prompt": "What should the new agent be responsible for?",
+      "selectionMode": "single",
+      "required": true,
+      "options": [{ "id": "describe", "label": "I'll describe it", "freeText": true }]
+    }],
+    "questionSet": {
+      "schema": "paperclip.question_set.v1",
+      "questions": [{
+        "id": "responsibility",
+        "prompt": "What should the new agent be responsible for?",
+        "required": true,
+        "answerMode": "text"
+      }]
+    }
+  }
+}
+```
+
+**Multiple choice**
+
+Use `ask_user_questions` for a short question card. Each `payload.questions` entry requires `id`, `prompt`, `selectionMode`, and options with `id` and `label`. Choice questions must offer at least two distinct, meaningful choices; use the canonical text presentation above for open-ended questions. Do not send `question`/`type: "text"` or an empty options array in a `payload.questions` entry. Set `resolverPolicy: "human_only"` when the answer must come from the user.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:responsibility:v1",
+  "title": "Hire responsibility",
+  "resolverPolicy": "human_only",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "questions": [{
+      "id": "responsibility",
+      "prompt": "What should the new agent be responsible for?",
+      "selectionMode": "single",
+      "required": true,
+      "allowOther": true,
+      "options": [
+        { "id": "research", "label": "Research", "description": "Find and summarize information." },
+        { "id": "writing", "label": "Writing", "description": "Draft and edit content." }
+      ]
+    }]
+  }
+}
+```
+
+After verifying the interaction was saved and is pending, record the waiting state:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "in_review",
+  "comment": "Waiting for your answer in the saved responsibility question card."
+}
+```
+
+The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker or assign an unblock owner of `"user"` or `"board"`. Agents cannot set board/user or other-agent unblock descriptors.
+
+For a real issue dependency, use `blockedByIssueIds`. For an unblock action you actually own, the agent-permitted shape is:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "blocked",
+  "unblockDescriptor": {
+    "owner": { "agentId": "{your-agent-id}" },
+    "action": "Restore the failed workspace service, verify health, then resume."
+  },
+  "comment": "The workspace service is unavailable; I own restoring it."
+}
+```
+
+Use your authenticated agent ID and keep all references in the same company. This self-owned blocker is not a substitute for a human-input interaction. Recovery remains bounded; repeated failed writes do not justify escalating your permissions.
 
 ### Issue-thread confirmations
 
@@ -1291,7 +1457,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/archive`  | Archive company    |
 | GET    | `/api/companies/:companyId/projects` | List projects      |
 | GET    | `/api/projects/:projectId`           | Project details    |
-| POST   | `/api/companies/:companyId/projects` | Create project (optional inline `workspace`) |
+| POST   | `/api/companies/:companyId/projects` | Create project (`repositoryIds`/`repositoryUrls` arrays or inline `workspace`; optional `idempotencyKey`) |
 | PATCH  | `/api/projects/:projectId`           | Update project     |
 | GET    | `/api/projects/:projectId/workspaces` | List project workspaces |
 | POST   | `/api/projects/:projectId/workspaces` | Create project workspace |
@@ -1450,7 +1616,7 @@ Confirm the expected secret metadata and delivery are present before using the n
 
 `GET /api/agents/me/secret-proposals` returns `{ "proposals": [...] }` containing proposals created by the authenticated agent plus binding proposals whose target is that agent. Secret values, value fingerprints, and value lengths are omitted. `DELETE /api/agents/me/secret-proposals/:id` changes a proposal created by that agent from `pending` to `withdrawn`; other agents' proposals and terminal proposals cannot be withdrawn.
 
-Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; escalate through the issue without including the value.
+Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; request authorized help through a saved human-input interaction without including the value.
 
 Board approval creates a secret through the normal secret service. Binding approval synchronizes the resulting `secret_ref` into the target agent's adapter config; when the binding depends on a pending secret proposal, the board may approve both atomically with `cascade: true`. Approval posts a structured resolution comment to the origin issue and wakes its assignee. Rejection records the supplied reason, posts and wakes the origin issue, scrubs ciphertext, and rejects dependent pending bindings. Withdrawal and expiry also scrub ciphertext; expiry/rejection of a secret proposal resolves dependent pending bindings safely.
 
@@ -1503,9 +1669,9 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit, except explicit mention handoff |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
 | Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
-| Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Reassign to your manager with a comment                 |
+| Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Request a decision through a saved interaction          |
 | Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
 | @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
-| Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
+| Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Record the blocker and use a saved interaction or dependency |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |

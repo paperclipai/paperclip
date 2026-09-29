@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -41,7 +41,9 @@ import {
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  readIssueCommentRunLogText,
 } from "../services/issues.ts";
+import { getRunLogStore } from "../services/run-log-store.js";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -147,6 +149,155 @@ describeEmbeddedPostgres("issueService run attachment artifacts", () => {
       },
     });
   }, 20_000);
+});
+
+describe("readIssueCommentRunLogText", () => {
+  it("cancels timed-out storage reads so later listings can recover", async () => {
+    let active = 0;
+    const cleanups: Array<() => void> = [];
+    const read = vi.spyOn(getRunLogStore(), "read").mockImplementation((_handle, options) =>
+      new Promise((_resolve, reject) => {
+        active += 1;
+        let settled = false;
+        const abort = () => {
+          if (settled) return;
+          settled = true;
+          active -= 1;
+          reject(new DOMException("Read aborted", "AbortError"));
+        };
+        cleanups.push(abort);
+        options?.signal?.addEventListener("abort", abort, { once: true });
+      }),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null };
+    const firstBatch = Array.from({ length: 8 }, () => readIssueCommentRunLogText(run));
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await Promise.all(firstBatch)).toEqual(Array(8).fill(""));
+      expect(active).toBe(0);
+      read.mockResolvedValueOnce({ content: "storage recovered" });
+      await expect(readIssueCommentRunLogText(run)).resolves.toBe("storage recovered");
+      expect(read).toHaveBeenCalledTimes(9);
+    } finally {
+      for (const cleanup of cleanups) cleanup();
+      await Promise.allSettled(firstBatch);
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+      read.mockRestore();
+    }
+  });
+
+  it("keeps readable attribution evidence for concurrent listings", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(getRunLogStore(), "read").mockImplementation(async () => {
+      await gate;
+      return { content: "comment id: legacy-comment" };
+    });
+    const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null };
+    const listings = Array.from({ length: 2 }, () =>
+      Promise.all(Array.from({ length: 8 }, () => readIssueCommentRunLogText(run))),
+    );
+    try {
+      release();
+      for (const listing of listings) {
+        expect(await listing).toEqual(Array(8).fill("comment id: legacy-comment"));
+      }
+      expect(read).toHaveBeenCalledTimes(16);
+    } finally {
+      release();
+      await Promise.allSettled(listings);
+      read.mockRestore();
+    }
+  });
+
+  it.each([null, 128])("keeps partial attribution evidence when storage fails with logBytes=%s", async (logBytes) => {
+    const read = vi.spyOn(getRunLogStore(), "read").mockRejectedValue(new Error("Storage gateway unavailable"));
+    const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes };
+    try {
+      await expect(readIssueCommentRunLogText(run)).resolves.toBe("");
+      read.mockResolvedValueOnce({ content: "earlier evidence", nextOffset: 16 });
+      await expect(readIssueCommentRunLogText(run)).resolves.toBe("earlier evidence");
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it("bounds reads that ignore cancellation and stops late pagination after the deadline", async () => {
+    let release!: (value: { content: string; nextOffset: number }) => void;
+    const stalled = new Promise<{ content: string; nextOffset: number }>((resolve) => {
+      release = resolve;
+    });
+    const read = vi.spyOn(getRunLogStore(), "read")
+      .mockResolvedValueOnce({ content: "earlier evidence", nextOffset: 16 })
+      .mockReturnValueOnce(stalled);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let result: string | undefined;
+    const pending = readIssueCommentRunLogText({
+      runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null,
+    }).then((value) => { result = value; });
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(result).toBe("earlier evidence");
+      expect(read.mock.calls[1]?.[1]?.signal?.aborted).toBe(true);
+      release({ content: "too late", nextOffset: 24 });
+      await pending;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(result).toBe("earlier evidence");
+    } finally {
+      release({ content: "", nextOffset: 0 });
+      await pending.catch(() => {});
+      vi.useRealTimers();
+      read.mockRestore();
+    }
+  });
+
+  it.each([null, 128, 0])("reads existing attribution markers with logBytes=%s", async (logBytes) => {
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const agentId = randomUUID();
+    const read = vi.spyOn(getRunLogStore(), "read")
+      .mockResolvedValueOnce({ content: "comment id: ", nextOffset: 12 })
+      .mockResolvedValueOnce({ content: commentId + "\n" });
+    try {
+      const logContent = await readIssueCommentRunLogText({
+        runId, logStore: "local_file", logRef: "test/run.ndjson", logBytes,
+      });
+      const derived = deriveIssueCommentRunLogAttribution(
+        [{
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "local-board",
+          createdByRunId: null,
+          createdAt: new Date("2020-01-01T00:00:01Z"),
+        }],
+        [{
+          runId,
+          agentId,
+          createdAt: new Date("2020-01-01T00:00:00Z"),
+          startedAt: new Date("2020-01-01T00:00:00Z"),
+          finishedAt: new Date("2020-01-01T00:00:02Z"),
+          logContent,
+        }],
+      );
+      if (logBytes === 0) {
+        expect(read).not.toHaveBeenCalled();
+        expect(derived.size).toBe(0);
+      } else {
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(read.mock.calls[1]?.[1]?.offset).toBe(12);
+        expect(derived.get(commentId)).toEqual({
+          derivedAuthorAgentId: agentId,
+          derivedCreatedByRunId: runId,
+          derivedAuthorSource: "run_log_comment_post",
+        });
+      }
+    } finally {
+      read.mockRestore();
+    }
+  });
 });
 
 describe("deriveIssueCommentRunLogAttribution", () => {
@@ -1466,7 +1617,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([recentMediumIssueId]);
   });
 
-  it("ranks comment matches ahead of description-only matches", async () => {
+  it("ranks direct description matches ahead of comment-only matches", async () => {
     const companyId = randomUUID();
     const commentMatchId = randomUUID();
     const descriptionMatchId = randomUUID();
@@ -1508,7 +1659,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       includeRoutineExecutions: true,
     });
 
-    expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
+    expect(result.map((issue) => issue.id)).toEqual([descriptionMatchId, commentMatchId]);
   });
 
   it("filters issue lists to the full descendant tree for a root issue", async () => {
@@ -7099,6 +7250,8 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
 describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
+  let singleConnectionDb!: ReturnType<typeof createDb>;
+  let singleConnectionSvc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let companyId!: string;
   let agentId!: string;
@@ -7108,6 +7261,8 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-comment-runid-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
+    singleConnectionDb = createDb(tempDb.connectionString, { maxConnections: 1 });
+    singleConnectionSvc = issueService(singleConnectionDb);
 
     companyId = randomUUID();
     agentId = randomUUID();
@@ -7150,6 +7305,20 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .where(eq(issueComments.id, commentId))
       .then((rows) => rows[0]?.createdByRunId ?? null);
   }
+
+  it("keeps addComment transaction reads on a single pooled connection", async () => {
+    const comment = await singleConnectionDb.transaction(async (tx) =>
+      singleConnectionSvc.addComment(
+        issueId,
+        "transaction-safe comment",
+        {},
+        { authorType: "system" },
+        tx,
+      ),
+    );
+
+    expect(comment.body).toBe("transaction-safe comment");
+  });
 
   it("nulls out a non-UUID x-paperclip-run-id instead of 500-ing", async () => {
     const comment = await svc.addComment(issueId, "hello from a synthetic run id", {

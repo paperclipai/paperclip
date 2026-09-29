@@ -20,6 +20,7 @@ describe("opencode_local environment diagnostics", () => {
       config: {
         command: process.execPath,
         cwd,
+        env: { XDG_CONFIG_HOME: path.join(cwd, "config") },
       },
     });
 
@@ -45,6 +46,7 @@ describe("opencode_local environment diagnostics", () => {
           cwd,
           env: {
             OPENAI_API_KEY: "",
+            XDG_CONFIG_HOME: path.join(cwd, "config"),
           },
         },
       });
@@ -84,6 +86,7 @@ describe("opencode_local environment diagnostics", () => {
         config: {
           command: fakeOpencode,
           cwd,
+          env: { XDG_CONFIG_HOME: path.join(cwd, "config") },
         },
       });
 

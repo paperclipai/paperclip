@@ -1,4 +1,7 @@
+import { AiConnectionField } from "./ai-connections/AiConnectionField";
+import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
+import { setupEfforts } from "../lib/agent-setup-fields";
 import { RuntimeTestCard } from "./RuntimeTestCard";
 import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
 import type { AdapterConfigSection } from "../adapters/types";
@@ -9,6 +12,7 @@ import type {
   Agent,
   AdapterAuthSessionPrompt,
   AdapterAuthSessionStatus,
+  CodexAccountBindingClaim,
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
@@ -43,7 +47,7 @@ import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   connectSourceName,
-  OnboardingLoginCard,
+  ProviderSubscriptionCard,
   OnboardingCardField,
   OnboardingLoginCodeRow,
   type AdapterLoginChrome,
@@ -188,6 +192,64 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.debug).length > 0 ||
     Object.keys(o.runtime).length > 0
   );
+}
+
+/**
+ * Structural equality for overlay entry values. Overlay values are
+ * JSON-shaped (scalars, env maps, argument arrays), so a reference compare
+ * alone would keep an edit-then-restore of a structured value falsely dirty
+ * after a refresh subtracts the persisted snapshot.
+ */
+export function overlayValuesEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => overlayValuesEqual(item, b[index]));
+  }
+  if (
+    typeof a === "object" && a !== null && !Array.isArray(a) &&
+    typeof b === "object" && b !== null && !Array.isArray(b)
+  ) {
+    const aEntries = Object.entries(a as Record<string, unknown>);
+    const bRecord = b as Record<string, unknown>;
+    return (
+      aEntries.length === Object.keys(bRecord).length &&
+      aEntries.every(([key, value]) => key in bRecord && overlayValuesEqual(value, bRecord[key]))
+    );
+  }
+  return false;
+}
+
+/**
+ * Remove from `current` every entry `persisted` carried with a structurally
+ * equal value, keeping entries the user added or changed after `persisted`
+ * was snapshotted. The refresh that follows a background save consumes this
+ * so edits made while that save was in flight survive as pending dirty state
+ * instead of being wiped with the rest of the overlay.
+ */
+export function subtractPersistedOverlay(
+  current: AgentConfigOverlay,
+  persisted: AgentConfigOverlay,
+): AgentConfigOverlay {
+  const subtractGroup = (
+    currentGroup: Record<string, unknown>,
+    persistedGroup: Record<string, unknown>,
+  ): Record<string, unknown> =>
+    Object.fromEntries(
+      Object.entries(currentGroup).filter(
+        ([field, value]) =>
+          !(field in persistedGroup) || !overlayValuesEqual(value, persistedGroup[field]),
+      ),
+    );
+  return {
+    identity: subtractGroup(current.identity, persisted.identity),
+    ...(current.adapterType !== undefined && current.adapterType !== persisted.adapterType
+      ? { adapterType: current.adapterType }
+      : {}),
+    adapterConfig: subtractGroup(current.adapterConfig, persisted.adapterConfig),
+    heartbeat: subtractGroup(current.heartbeat, persisted.heartbeat),
+    debug: subtractGroup(current.debug, persisted.debug),
+    runtime: subtractGroup(current.runtime, persisted.runtime),
+  };
 }
 
 /* ---- Shared input class ---- */
@@ -409,12 +471,34 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [environmentDraftDirty, setEnvironmentDraftDirty] = useState(false);
   const [environmentEditorKey, setEnvironmentEditorKey] = useState(0);
   const agentRef = useRef<Agent | null>(null);
+  // The overlay snapshot a background account-binding save persisted. The form
+  // stays editable while that save is in flight, so the agent refresh that
+  // follows it must not wipe edits made during the save. The refresh subtracts
+  // only what the save persisted; a user-initiated Save leaves the snapshot
+  // null and keeps the full wipe. An UNRELATED refresh can land while the save
+  // is still in flight — that refresh does not carry the persisted binding
+  // yet, so it must neither consume the snapshot nor subtract it: subtracting
+  // would drop the binding entry from the overlay while `props.agent` also
+  // lacks it, and an ordinary Save racing the binding refresh would then
+  // replace the config without the binding and undo the just-persisted bind.
+  // The overlay stays untouched until the save settles; the refresh after
+  // settlement consumes the snapshot and subtracts it.
+  const backgroundSaveOverlayRef = useRef<AgentConfigOverlay | null>(null);
+  const backgroundSaveInFlightRef = useRef(false);
 
   // Clear overlay when agent data refreshes (after save)
   useEffect(() => {
     if (!isCreate) {
-      if (agentRef.current !== null && props.agent !== agentRef.current) {
-        setOverlay({ ...emptyOverlay });
+      if (
+        agentRef.current !== null &&
+        props.agent !== agentRef.current &&
+        !backgroundSaveInFlightRef.current
+      ) {
+        const persisted = backgroundSaveOverlayRef.current;
+        backgroundSaveOverlayRef.current = null;
+        setOverlay((prev) =>
+          persisted ? subtractPersistedOverlay(prev, persisted) : { ...emptyOverlay },
+        );
       }
       agentRef.current = props.agent;
     }
@@ -600,6 +684,51 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     invalidateUserSecretDefinitions();
   };
 
+  // Edit mode: a Codex login that signed in to a DIFFERENT account than the
+  // company default cannot take effect through the shared company home — the
+  // promotion never displaces another account's claim there. Bind this
+  // agent's CODEX_HOME to the login's account-home secret and persist at
+  // once, the same one-step shape as the Claude stored-login bind above.
+  // Same-account logins skip the bind on purpose: the company-home refresh
+  // already carried them, and an unbound agent keeps following the company
+  // default across later credential rotations. No claim flag is needed —
+  // the secret already exists company-scoped, so this is an ordinary
+  // secret-reference binding through the normal agent-update patch.
+  const handleCodexAccountBindingEdit = async (claim: CodexAccountBindingClaim) => {
+    if (isCreate || !claim.companyIdentityDiffers) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv: Record<string, EnvBinding> = {
+      ...baseEnv,
+      CODEX_HOME: { type: "secret_ref", secretId: claim.secretId, version: "latest" },
+    };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    // This save runs in the background while the form stays editable. Record
+    // exactly what it persists so the agent refresh it triggers keeps edits
+    // made during the save (see the refresh effect) instead of wiping them
+    // with the persisted entries. The in-flight flag protects the snapshot
+    // from an unrelated refresh landing mid-save. A failed save never
+    // refreshes the agent with the binding, so clear the snapshot there — a
+    // later unrelated refresh then wipes normally.
+    backgroundSaveOverlayRef.current = nextOverlay;
+    backgroundSaveInFlightRef.current = true;
+    try {
+      await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
+    } catch (err) {
+      backgroundSaveOverlayRef.current = null;
+      throw err;
+    } finally {
+      backgroundSaveInFlightRef.current = false;
+    }
+    invalidateUserSecretDefinitions();
+  };
+
   // Create mode: bind the fixed reference to an existing stored login with no new
   // login round trip. Add the fixed binding and set the apply-existing flag. The
   // create request sends the flag; the server binds the token only for a user
@@ -762,9 +891,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? String(isCreate ? props.values.adapterSchemaValues?.provider ?? "codex"
       : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex"))
     : undefined;
+  const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
+    (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
+  ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, runnerProvider)
+    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, modelProvider)
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
@@ -773,7 +905,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
       environmentId: currentDefaultEnvironmentId || null,
-      provider: runnerProvider,
+      provider: modelProvider,
     }),
     enabled: Boolean(selectedCompanyId),
   });
@@ -928,15 +1060,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
+      const agentId = isCreate ? undefined : props.agent.id;
+      const aiConnection = isCreate ? undefined : aiConnectionBindingSchema.safeParse(
+        (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
+      ).data;
       if (props.compactTestFeedback) {
         const providerAdapter = adapterType === "paperclip_runner"
           ? adapterConfig.provider === "codex" ? "codex_local"
+            : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "grok" ? "grok_local"
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
-        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, environmentId });
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId });
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, environmentId });
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1012,6 +1149,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
+    (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
@@ -1116,7 +1254,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: runnerProvider });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -1132,6 +1270,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
+          : adapterType === "grok_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
@@ -1147,7 +1286,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : claudeThinkingEffortOptions;
+              : adapterType === "claude_local" || adapterType === "grok_local"
+                ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType, currentModelId).map((id) => ({
+                    id,
+                    label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
+                  }))]
+                : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1514,6 +1658,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
+          {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "grok" ? "grok_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
+            value={aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+            model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
+            onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
+
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testActionError
@@ -1537,6 +1686,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onApplyStored={
                 isCreate ? handleApplyStoredClaudeLogin : handleApplyStoredClaudeLoginEdit
               }
+              onAccountBinding={isCreate ? undefined : handleCodexAccountBindingEdit}
             />
           )}
 
@@ -1571,10 +1721,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 models={models}
                 value={currentModelId}
                 onChange={(v) => {
-                  const supportedEfforts = codexReasoningEffortOptions(v, "Auto");
-                  const clearUnsupportedEffort = adapterType === "codex_local"
+                  const supportedEfforts = setupEfforts(adapterType, v);
+                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(adapterType)
                     && Boolean(currentThinkingEffort)
-                    && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
+                    && !supportedEfforts.includes(String(currentThinkingEffort));
                   if (isCreate) {
                     set!({
                       model: v,
@@ -2115,8 +2265,18 @@ export type AdapterLoginDescriptor = {
 // correctly, and the first thing to rot would have been the timeout and
 // cleanup paths, which are the ones nobody exercises by hand.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
+  // Applies the non-secret Codex account-binding claim from an authenticated
+  // owner read: the company secret that names the signed-in account's own
+  // home. The panel calls this only when the company default home stayed on a
+  // DIFFERENT account — the one case where the login cannot take effect
+  // through the shared company home — and it AWAITS the handler, rendering
+  // saving/bound/failed states with an explicit Retry on failure, so a
+  // rejected save is never silently swallowed. The claim never carries a
+  // token byte or an account identifier.
+  onAccountBinding?: (claim: CodexAccountBindingClaim) => void | Promise<void>;
   // Start the login on mount instead of waiting for a press. The connect step's
   // footer button is the press — by the time the panel is rendered there, the
   // customer has already asked for this.
@@ -2124,7 +2284,16 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // The login reached its success state. Onboarding advances on this, which is
   // why the `onboarding` chrome draws no success state of its own — the screen
   // it would appear on is already gone.
-  onConnected?: () => void;
+  onConnected?: (sessionId?: string) => void;
+  // The pasted code went to the server. Fires as the submit starts rather than
+  // when the login finishes, so a caller can show the work the moment the
+  // customer has done their part: the round trip to `onConnected` is a poll
+  // and a completion read, long enough to read as nothing having happened.
+  onCodeSubmitted?: () => void;
+  // A submitted code did not become a stored login — the submit was refused,
+  // the completion failed, or the session failed or ran out of time. The pair
+  // of `onCodeSubmitted`, so a caller that showed work can stop showing it.
+  onSubmitFailed?: () => void;
   chrome?: AdapterLoginChrome;
   /**
    * The address the customer has to open, once the server has produced one.
@@ -2132,9 +2301,9 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
    * The one fact about a running login that the step needs outside the card:
    * its own button is what sends the customer there, and a prompt arriving is
    * what moves the step from waiting to ready. Everything else it needs the
-   * panel already does — the paste submits itself, success is reported through
-   * `onConnected`, and the customer's own Cancel press is reported through
-   * `onCancel` — so this stays a single value rather than a whole session
+   * panel already does — the paste submits itself, and the submit and how it
+   * ended are reported through `onCodeSubmitted`, `onSubmitFailed` and
+   * `onConnected` — so this stays a single value rather than a whole session
    * handed upward.
    */
   onPromptReady?: (authorizationUrl: string | null) => void;
@@ -2172,13 +2341,21 @@ export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   return <DisplayedCodeLoginPanel {...props} />;
 }
 
+class AdapterLoginConflictError extends Error {
+  constructor(readonly sessionId: string) {
+    super("Another sign-in attempt is active. Finish or cancel that attempt before starting a new sign-in.");
+  }
+}
+
 function DisplayedCodeLoginPanel({
   companyId,
   adapterType,
   environmentId,
   autoStart,
   onConnected,
+  onAccountBinding,
   chrome = "panel",
+  aiConnection,
   onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -2187,6 +2364,12 @@ function DisplayedCodeLoginPanel({
   // it so a later poll that returns a null prompt does not hide the code and the
   // URL.
   const [latchedPrompt, setLatchedPrompt] = useState<AdapterAuthSessionPrompt | null>(null);
+  // The cross-account bind's own lifecycle (see the binding block below).
+  // Declared with the panel's state because `startDisabled` reads it: a
+  // saving bind blocks a new Sign in.
+  const [accountBindState, setAccountBindState] = useState<"idle" | "saving" | "bound" | "failed">(
+    "idle",
+  );
 
   // True for the session currently held in `sessionId` when it came from the
   // owner-scoped resume read rather than a fresh `startLogin`. It marks the
@@ -2197,11 +2380,14 @@ function DisplayedCodeLoginPanel({
   const resumedRef = useRef(false);
 
   const startLogin = useMutation({
-    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
+    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId, aiConnection }),
     onSuccess: (session) => {
       resumedRef.current = false;
       setStartError(null);
       setLatchedPrompt(null);
+      // A fresh login is a fresh bind decision: clear the previous session's
+      // bind narration so its outcome cannot masquerade as this session's.
+      setAccountBindState("idle");
       setSessionId(session.sessionId);
     },
     onError: (error) => {
@@ -2233,7 +2419,10 @@ function DisplayedCodeLoginPanel({
     queryKey: ["adapter-login-active-session", companyId, adapterType],
     queryFn: async () => {
       try {
-        return await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+        const active = await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+        if (!active) return null;
+        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new AdapterLoginConflictError(active.sessionId);
+        return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
@@ -2284,7 +2473,13 @@ function DisplayedCodeLoginPanel({
   const prompt = latchedPrompt;
   const isTerminal = status ? ADAPTER_LOGIN_TERMINAL_STATUSES.has(status) : false;
   const isActive = Boolean(sessionId) && !isTerminal;
-  const startDisabled = startLogin.isPending || isActive;
+  // A saving bind also blocks a new Sign in: the bind is an agent-update save,
+  // and a second login started while it is in flight could finish its own
+  // save first — the older save would then land last and silently revert the
+  // agent to the previous account while the panel reports the newer bind.
+  // Serializing at the only entry point is the whole fix; the panel has no
+  // other way to start a login mid-save.
+  const startDisabled = startLogin.isPending || isActive || accountBindState === "saving";
 
   // Adopt the caller's active session once, on mount. This is what makes a
   // page reload keep the session: with no local state at all, the panel would
@@ -2332,6 +2527,20 @@ function DisplayedCodeLoginPanel({
   // before the session id lands and start a second login the server would
   // count against the per-owner cap.
   const autoStartedRef = useRef(false);
+  const cancelConflictingLogin = useMutation({
+    mutationFn: async () => {
+      const conflict = activeSessionQuery.error;
+      if (!(conflict instanceof AdapterLoginConflictError)) return;
+      await agentsApi.cancelAdapterAuthLogin(companyId, adapterType, conflict.sessionId);
+    },
+    onSuccess: async () => {
+      autoStartedRef.current = false;
+      resumeAttemptedRef.current = false;
+      setStartError(null);
+      await activeSessionQuery.refetch();
+    },
+    onError: () => setStartError("Could not cancel the previous sign-in. Retry before starting a new one."),
+  });
   const startLoginRef = useRef(startLogin.mutate);
   startLoginRef.current = startLogin.mutate;
   useEffect(() => {
@@ -2369,8 +2578,43 @@ function DisplayedCodeLoginPanel({
   useEffect(() => {
     if (status !== "authenticated" || connectedRef.current) return;
     connectedRef.current = true;
-    onConnectedRef.current?.();
+    onConnectedRef.current?.(sessionId ?? undefined);
   }, [status]);
+
+  // Drive the account-binding hand-off as a visible state machine, not a
+  // fire-and-forget latch. The bind saves the agent, and the status poll
+  // stops at the terminal state — so a rejected save behind a silently
+  // latched claim would leave nothing to re-fire it and no way to retry.
+  // A cross-account claim moves saving → bound | failed, and failed renders
+  // an explicit Retry that re-runs the same handler with the same claim.
+  // Latched per SESSION, not per mount: the terminal state re-enables Sign in
+  // inside the same mounted panel, and a second cross-account login must run
+  // its own bind — a mount-scoped boolean would silently skip it and leave
+  // the agent on the previous account.
+  const accountBindSessionRef = useRef<string | null>(null);
+  const onAccountBindingRef = useRef(onAccountBinding);
+  onAccountBindingRef.current = onAccountBinding;
+  const accountBinding = statusQuery.data?.codexAccountBinding ?? null;
+  const runAccountBinding = useCallback(async (claim: CodexAccountBindingClaim) => {
+    const handler = onAccountBindingRef.current;
+    if (!handler) return;
+    setAccountBindState("saving");
+    try {
+      await handler(claim);
+      setAccountBindState("bound");
+    } catch {
+      setAccountBindState("failed");
+    }
+  }, []);
+  useEffect(() => {
+    if (status !== "authenticated" || !sessionId) return;
+    if (accountBindSessionRef.current === sessionId) return;
+    if (!accountBinding || !accountBinding.companyIdentityDiffers || !onAccountBindingRef.current) {
+      return;
+    }
+    accountBindSessionRef.current = sessionId;
+    void runAccountBinding(accountBinding);
+  }, [status, sessionId, accountBinding, runAccountBinding]);
 
   // Report the prompt's URL upward, the way the submitted-browser-code panel
   // does. The caller's loading beat ends when this arrives, so without it the
@@ -2386,29 +2630,22 @@ function DisplayedCodeLoginPanel({
   if (chrome === "onboarding") {
     const failed = isTerminal && status && status !== "authenticated";
     return (
-      <OnboardingLoginCard
+      <ProviderSubscriptionCard
         loading={!prompt && !startError && !failed}
-        instruction={
-          <>
-            {/* The same destination as the step's own button. Two ways to one
-                link: the button for the customer following the flow, the anchor
-                for anyone finishing in another browser. */}
-            <a
-              href={prompt?.url}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="underline underline-offset-2 hover:text-foreground"
-            >
-              Sign in to {connectSourceName(adapterType)}
-            </a>
-            {" by providing the authorization code below"}
-          </>
-        }
+        providerName={connectSourceName(adapterType)}
+        authorizationUrl={prompt?.url}
+        mode="displayed_code"
       >
         {startError ? (
-          <p role="alert" className="pl-2 text-xs text-destructive">
-            {startError}
-          </p>
+          <div>
+            <p role="alert" className="pl-2 text-xs text-destructive">{startError}</p>
+            {activeSessionQuery.error instanceof AdapterLoginConflictError && (
+              <Button type="button" variant="outline" disabled={cancelConflictingLogin.isPending}
+                onClick={() => cancelConflictingLogin.mutate()}>
+                Cancel previous sign-in and retry
+              </Button>
+            )}
+          </div>
         ) : failed ? (
           <p role="alert" className="pl-2 text-xs text-destructive">
             {status === "timed_out"
@@ -2420,7 +2657,7 @@ function DisplayedCodeLoginPanel({
         ) : (
           <OnboardingLoginCodeRow code={prompt?.code ?? ""} autoCopy />
         )}
-      </OnboardingLoginCard>
+      </ProviderSubscriptionCard>
     );
   }
 
@@ -2534,6 +2771,41 @@ function DisplayedCodeLoginPanel({
         {isTerminal && status && (
           <AdapterLoginTerminalState status={status} message={session?.failure?.message ?? null} />
         )}
+
+        {/* The cross-account bind's own state, below the login's success line.
+            The bind is a second, separate save — showing it as part of the
+            login would report success for a write that can still fail. */}
+        {status === "authenticated" && accountBindState === "saving" && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Binding this agent to the signed-in account...</span>
+          </div>
+        )}
+        {status === "authenticated" && accountBindState === "bound" && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+            <Check className="size-3 shrink-0" />
+            <span>Agent bound to the signed-in account.</span>
+          </div>
+        )}
+        {status === "authenticated" && accountBindState === "failed" && (
+          <div className="flex items-center gap-2 text-(length:--text-micro)">
+            <TriangleAlert className="size-3 shrink-0 text-destructive" />
+            <span className="text-destructive">
+              Could not bind this agent to the signed-in account.
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => {
+                if (accountBinding) void runAccountBinding(accountBinding);
+              }}
+            >
+              Retry
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2582,7 +2854,10 @@ function SubmittedBrowserCodeLoginPanel({
   onApplyStored,
   autoStart,
   onConnected,
+  onCodeSubmitted,
+  onSubmitFailed,
   chrome = "panel",
+  aiConnection,
   onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -2605,6 +2880,10 @@ function SubmittedBrowserCodeLoginPanel({
   // True after the client wall-clock cap passes for the active login. The panel
   // stops both polls and shows the timed-out state.
   const [timedOut, setTimedOut] = useState(false);
+  // A code has gone to the server and has not yet come back as a stored login
+  // or a failure. The field is locked for that stretch: the step's button is
+  // saying "Connecting" above it, and a second paste would submit again.
+  const [codeSubmitted, setCodeSubmitted] = useState(false);
   // True after the status poll returns 404. The server removes the row and the
   // in-memory session at once on any non-stored terminal state, so a status 404
   // means the login failed and the server cleaned up. The panel stops both
@@ -2633,6 +2912,7 @@ function SubmittedBrowserCodeLoginPanel({
     setCompletionFailed(false);
     setTimedOut(false);
     setStatusGone(false);
+    setCodeSubmitted(false);
     completionStartedRef.current = false;
   };
 
@@ -2665,10 +2945,11 @@ function SubmittedBrowserCodeLoginPanel({
     mutationFn: () =>
       agentsApi.startClaudeSetupTokenLogin(companyId, {
         environmentId,
+        aiConnection,
         // When the owner already has a stored token, the login rotates it under
         // the captured version, so a replacement login never conflicts with an
         // existing value. Without a stored token the login is a first write.
-        ...(storedToken
+        ...(storedToken && !aiConnection
           ? {
               overwrite: {
                 expectedSecretId: storedToken.secretId,
@@ -2742,7 +3023,10 @@ function SubmittedBrowserCodeLoginPanel({
     queryKey: ["claude-setup-token-active-session", companyId],
     queryFn: async () => {
       try {
-        return await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+        const active = await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+        if (!active) return null;
+        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
@@ -2949,11 +3233,26 @@ function SubmittedBrowserCodeLoginPanel({
     Boolean(authorizationUrl) &&
     !isCompleting &&
     isValidBrowserCode(trimmedCode) &&
-    !submitCode.isPending;
+    !submitCode.isPending &&
+    !codeSubmitted;
+
+  const onCodeSubmittedRef = useRef(onCodeSubmitted);
+  onCodeSubmittedRef.current = onCodeSubmitted;
+  const onSubmitFailedRef = useRef(onSubmitFailed);
+  onSubmitFailedRef.current = onSubmitFailed;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
+    // A new attempt supersedes the last attempt's error, and has to: the
+    // failure report below watches for an error after a submit, and one left
+    // over from before it would end this attempt the moment it began.
+    setStartError(null);
     submitCode.mutate(trimmedCode);
+    // Reported now, not when the login finishes. A stored login is a poll and a
+    // completion read away, long enough that a button still offering "Waiting
+    // for code" after the paste read as the paste not having registered.
+    setCodeSubmitted(true);
+    onCodeSubmittedRef.current?.();
     // Onboarding keeps the code on screen; the panel still clears it.
     //
     // Clearing emptied the input in the same frame the paste landed, so on the
@@ -3047,8 +3346,20 @@ function SubmittedBrowserCodeLoginPanel({
   useEffect(() => {
     if (!isStored || connectedRef.current) return;
     connectedRef.current = true;
-    onConnectedRef.current?.();
+    onConnectedRef.current?.(sessionId ?? undefined);
   }, [isStored]);
+
+  // The other end of `onCodeSubmitted`. Any of these after a submit means the
+  // code is not going to become a stored login, and a caller still showing
+  // "Connecting" would otherwise spin for good. Once per submit; the field
+  // unlocks with it. Not reset on success: the field stays locked through the
+  // hold that follows, rather than reopening under a button saying Connecting.
+  useEffect(() => {
+    if (!codeSubmitted) return;
+    if (!startError && !isFailure && !timedOut) return;
+    setCodeSubmitted(false);
+    onSubmitFailedRef.current?.();
+  }, [codeSubmitted, startError, isFailure, timedOut]);
 
   const onPromptReadyRef = useRef(onPromptReady);
   onPromptReadyRef.current = onPromptReady;
@@ -3059,21 +3370,11 @@ function SubmittedBrowserCodeLoginPanel({
   if (chrome === "onboarding") {
     const failedNow = isFailure || timedOut;
     return (
-      <OnboardingLoginCard
+      <ProviderSubscriptionCard
         loading={!authorizationUrl && !startError && !failedNow}
-        instruction={
-          <>
-            <a
-              href={authorizationUrl ?? undefined}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="underline underline-offset-2 hover:text-foreground"
-            >
-              Sign in to {connectSourceName(adapterType)}
-            </a>
-            {" then come back and enter authorization code"}
-          </>
-        }
+        providerName={connectSourceName(adapterType)}
+        authorizationUrl={authorizationUrl ?? undefined}
+        mode="submitted_code"
       >
         {/* The plain-HTTP advisory survives the redesign. It is the one thing on
             this card not about getting the login done, and dropping it to keep
@@ -3102,10 +3403,14 @@ function SubmittedBrowserCodeLoginPanel({
             onPaste={() => {
               pastedRef.current = true;
             }}
-            disabled={submitCode.isPending || isCompleting}
+            // Dots, not the code. It stays in the field after the paste so the
+            // customer can see something landed, and that is all they need to
+            // see of it.
+            masked
+            disabled={submitCode.isPending || isCompleting || codeSubmitted}
           />
         )}
-      </OnboardingLoginCard>
+      </ProviderSubscriptionCard>
     );
   }
 

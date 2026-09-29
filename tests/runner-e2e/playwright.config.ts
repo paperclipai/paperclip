@@ -1,6 +1,9 @@
 import path from "node:path";
 import { defineConfig } from "@playwright/test";
-import { runnerE2EWebServerCommand } from "./web-server-command.js";
+import {
+  runnerE2EWebServerCommand,
+  runnerE2EWebServerGracefulShutdown,
+} from "./web-server-command.js";
 
 function required(name: string) {
   const value = process.env[name]?.trim();
@@ -69,6 +72,7 @@ export default defineConfig({
     // blob reports. The wrapper inherits the test process and strips provider
     // keys before spawning the real Paperclip process.
     command: runnerE2EWebServerCommand(repositoryRoot),
+    gracefulShutdown: runnerE2EWebServerGracefulShutdown,
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
     timeout: 180_000,

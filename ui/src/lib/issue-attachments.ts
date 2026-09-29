@@ -1,6 +1,6 @@
 import type { IssueAttachment } from "@paperclipai/shared";
 import { isMarkdownAttachmentContent } from "@paperclipai/shared";
-import { isVideoLikeOutput } from "./issue-output";
+import { isImageLikeOutput, isVideoLikeOutput } from "./issue-output";
 
 type AttachmentPathLike = {
   contentPath: string;
@@ -24,8 +24,9 @@ export function attachmentDownloadPath(attachment: AttachmentPathLike) {
   return attachment.downloadPath ?? `${attachment.contentPath}?download=1`;
 }
 
-export function isImageAttachment(attachment: Pick<IssueAttachment, "contentType">) {
-  return normalizedContentType(attachment).startsWith("image/");
+export function isImageAttachment(attachment: Pick<IssueAttachment, "contentType"> & Partial<Pick<IssueAttachment, "originalFilename">>) {
+  const type = normalizedContentType(attachment);
+  return isImageLikeOutput(type, attachment.originalFilename) && !/^image\/hei[cf](?:-sequence)?$/.test(type);
 }
 
 export function isVideoAttachment(

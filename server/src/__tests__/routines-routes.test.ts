@@ -171,7 +171,7 @@ async function createApp(actor: Record<string, unknown>) {
     vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
   ]);
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
@@ -182,6 +182,18 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("routine routes", () => {
+  it("forwards the Fireflies signature and exact raw JSON to the public handler", async () => {
+    const app = await createApp({ type: "none" });
+    const raw = '{ "event": "meeting.summarized", "meeting_id": "meeting-1", "timestamp": 1780000000000 }';
+    mockRoutineService.firePublicTrigger.mockResolvedValue({ status: "ignored", routineStarted: false });
+    const res = await request(app).post("/api/routine-triggers/public/fireflies-public/fire")
+      .set("Content-Type", "application/json").set("X-Hub-Signature", "sha256=fixture").send(raw);
+    expect(res.status).toBe(202);
+    expect(mockRoutineService.firePublicTrigger).toHaveBeenCalledWith("fireflies-public", expect.objectContaining({
+      firefliesSignatureHeader: "sha256=fixture", rawBody: Buffer.from(raw), payload: JSON.parse(raw),
+    }));
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");

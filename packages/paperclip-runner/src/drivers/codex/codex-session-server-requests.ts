@@ -6,7 +6,7 @@ import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.j
 import type { CodexRpcServerRequest } from "./app-server-transport.js";
 import {
   boundedCodexValue,
-  codexToolAcceptsDisposition as toolAcceptsDisposition,
+  codexToolAcceptsResult as toolAcceptsResult,
   isCodexSemanticTool as isSemanticTool,
   isRetainableCodexPayload,
   redactCodexValue,
@@ -80,6 +80,11 @@ async function handleServerRequestBody(
     request: CodexRpcServerRequest,
   ): Promise<Record<string, unknown>> {
     if (request.method === "item/tool/call") {
+      // Provider requests and turn/start responses have independent delivery
+      // paths. Judge the call against the admitted provider turn, not the
+      // temporary null/optimistic identity while its start is still pending.
+      await state.turnStartSettled;
+      state.assertProtocolIntegrity();
       const tool = text(request.params.tool);
       const threadId = text(request.params.threadId);
       const turnId = text(request.params.turnId);
@@ -184,7 +189,7 @@ async function handleServerRequestBody(
         };
       }
       if (
-        !toolAcceptsDisposition(tool, validation.result.reportedWorkDisposition)
+        !toolAcceptsResult(tool, validation.result)
       ) {
         return {
           success: false,
@@ -194,10 +199,20 @@ async function handleServerRequestBody(
               text:
                 tool === CODEX_BLOCK_TOOL_NAME
                   ? "paperclip_block requires reportedWorkDisposition=blocked."
-                  : "paperclip_finish accepts only done or needs_review.",
+                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake continuation.",
             },
           ],
         };
+      }
+      let feedback = "Completion report accepted. Task status is committed after this turn and workspace finalization finish.";
+      try {
+        feedback = await state.completionFeedback?.(validation.result) ?? feedback;
+      } catch (error) {
+        return rejectedToolCall(boundedText(error instanceof Error ? error.message : error));
+      }
+      state.assertProtocolIntegrity();
+      if (state.terminal || state.activeTurnId !== turnId) {
+        return rejectedToolCall("The turn ended while checking completion. The result was not accepted.");
       }
       const admission = admitResult(state, validation.result, callId, turnId);
       if (admission === "conflict") {
@@ -208,7 +223,7 @@ async function handleServerRequestBody(
       return {
         success: true,
         contentItems: [
-          { type: "inputText", text: "Semantic completion accepted." },
+          { type: "inputText", text: feedback },
         ],
       };
     }
@@ -277,7 +292,11 @@ async function handleServerRequestBody(
       prompt: runtimeRequestPrompt(requestKind, request.params),
       details: record(redactCodexValue(boundedCodexValue(request.params))),
       ...(input !== null ? { input } : {}),
-      origin: {
+      origin: request.method === "elicitation/create" ? {
+        adapter: "acpx-runtime-sidecar",
+        provider: text(record(request.params.origin).provider, "acpx"),
+        method: request.method,
+      } : {
         adapter: "codex-app-server",
         provider: "codex",
         method: request.method,

@@ -43,17 +43,17 @@ export interface EvalInspectorReport {
     startedAt: string;
     finishedAt: string;
     durationMs: number | null;
-    initialRevision: number;
-    finalRevision: number;
+    initialRevision: number | null;
+    finalRevision: number | null;
     usage: {
       agentTurns: number;
       providerRequests: number | null;
-      inputTokens: number;
-      outputTokens: number;
-      cachedInputTokens: number;
-      reasoningTokens: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      reasoningTokens?: number;
       providerReportedCostNanodollars?: number;
-      estimatedCostNanodollars: number;
+      estimatedCostNanodollars?: number;
       pricingVersion?: string;
     } | null;
   };
@@ -286,15 +286,17 @@ export function EvalReportInspector({
           <dd>
             {isPublic
               ? "Withheld from public replay"
-              : `r${evalReport.run.initialRevision} → r${evalReport.run.finalRevision}`}
+              : evalReport.run.initialRevision == null || evalReport.run.finalRevision == null
+                ? "unavailable"
+                : `r${evalReport.run.initialRevision} → r${evalReport.run.finalRevision}`}
           </dd>
         </div>
         <div>
           <dt>Tokens</dt>
           <dd>
-            {evalReport.run.usage === null
-              ? "unknown"
-              : `${evalReport.run.usage.inputTokens} in · ${evalReport.run.usage.outputTokens} out · ${evalReport.run.usage.cachedInputTokens} cached`}
+            {evalReport.run.usage == null
+              ? "unavailable"
+              : `${evalReport.run.usage.inputTokens ?? "unavailable"} in · ${evalReport.run.usage.outputTokens ?? "unavailable"} out · ${evalReport.run.usage.cachedInputTokens ?? "unavailable"} cached`}
           </dd>
         </div>
         <div>
@@ -308,9 +310,9 @@ export function EvalReportInspector({
         <div>
           <dt>Estimated cost</dt>
           <dd>
-            {evalReport.run.usage === null
-              ? "unknown"
-                  : `$${(evalReport.run.usage.estimatedCostNanodollars / 1_000_000_000).toFixed(6)}${evalReport.run.usage.pricingVersion ? ` · ${evalReport.run.usage.pricingVersion}` : ""}`}
+            {evalReport.run.usage?.estimatedCostNanodollars == null
+              ? "unavailable"
+              : `$${(evalReport.run.usage.estimatedCostNanodollars / 1_000_000_000).toFixed(6)}${evalReport.run.usage.pricingVersion ? ` · ${evalReport.run.usage.pricingVersion}` : ""}`}
           </dd>
         </div>
         <div>

@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
+import { activityLog } from "@paperclipai/db";
+import { projectToolContext } from "../services/project-tool-context.js";
+import { persistActivity, publishActivity } from "../services/activity-log.js";
 import { z } from "zod";
-import { resolveProjectRepositorySelection } from "../services/project-repositories.js";
+import { normalizeProjectRepositoryUrl, resolveProjectRepositorySelection } from "../services/project-repositories.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
@@ -47,10 +52,17 @@ export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
 
+  async function repositoryViewer(req: Request) {
+    if (req.actor.type === "board") return { userId: req.actor.userId ?? null, localTrusted: req.actor.source === "local_implicit" };
+    const context = await projectToolContext(db, req.actor);
+    if (!context.userId) throw forbidden("Repository access requires a responsible user");
+    return context;
+  }
+
   async function selectedRepositories(req: Request, companyId: string, ids: string[], existing: import("@paperclipai/shared").ProjectWorkspace[] = []) {
-    assertBoard(req);
+    const viewer = await repositoryViewer(req);
     if (!ids.length) return [];
-    const available = await toolAccessService(db).listProjectRepositories(companyId, req.actor.userId ?? null, req.actor.source === "local_implicit");
+    const available = await toolAccessService(db).listProjectRepositories(companyId, viewer.userId, viewer.localTrusted);
     return resolveProjectRepositorySelection(ids, available.repositories, existing);
   }
   const access = accessService(db);
@@ -173,10 +185,10 @@ export function projectRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/project-repositories", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await toolAccessService(db).listProjectRepositories(companyId, req.actor.userId ?? null, req.actor.source === "local_implicit"));
+    const viewer = await repositoryViewer(req);
+    res.json(await toolAccessService(db).listProjectRepositories(companyId, viewer.userId, viewer.localTrusted));
   });
 
   router.put("/projects/:id/repositories", validate(z.object({ repositoryIds: z.array(z.string().regex(/^\d+$/)) })), async (req, res) => {
@@ -226,7 +238,9 @@ export function projectRoutes(db: Db) {
       repositoryIds?: string[];
     };
 
-    const { workspace, repositoryIds, ...projectData } = req.body as CreateProjectPayload;
+    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
+      ? await projectToolContext(db, req.actor, true) : null;
     await assertProjectEnvironmentSelection(
       companyId,
       readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
@@ -246,48 +260,65 @@ export function projectRoutes(db: Db) {
         { strictMode: strictSecretsMode, fieldPath: "env" },
       );
     }
-    if (workspace && repositoryIds) throw unprocessable("Use either workspace or repositoryIds when creating a project");
+    if (workspace && (repositoryIds || repositoryUrls)) throw unprocessable("Use either workspace or repositoryIds/repositoryUrls when creating a project");
+    const urlRepositories = (repositoryUrls ?? []).map(normalizeProjectRepositoryUrl);
     const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
-    const project = repositories ? await svc.createWithRepositories(companyId, projectData, repositories) : await svc.create(companyId, projectData);
-    if (project.env) {
-      await secretsSvc.syncEnvBindingsForTarget?.(
-        companyId,
-        { targetType: "project", targetId: project.id },
-        project.env,
-      );
-    }
-    let createdWorkspaceId: string | null = null;
-    if (workspace) {
-      const createdWorkspace = await svc.createWorkspace(project.id, workspace);
-      if (!createdWorkspace) {
-        await svc.remove(project.id);
-        res.status(422).json({ error: "Invalid project workspace payload" });
-        return;
-      }
-      createdWorkspaceId = createdWorkspace.id;
-    }
-    const hydratedProject = workspace ? await svc.getById(project.id) : project;
-
     const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "project.created",
-      entityType: "project",
-      entityId: project.id,
-      details: {
-        name: project.name,
-        workspaceId: createdWorkspaceId,
-        envKeys: project.env ? Object.keys(project.env).sort() : [],
-      },
+    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls })).digest("hex");
+    const receiptKey = idempotencyKey ? `project:${companyId}:${actor.actorId}:${runContext?.issue.id ?? "board"}:${idempotencyKey}` : null;
+    const result = await db.transaction(async (tx) => {
+      if (receiptKey) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${receiptKey}, 0))`);
+        const [prior] = await tx.select().from(activityLog).where(and(
+          eq(activityLog.companyId, companyId), eq(activityLog.action, "project.created"),
+          sql`${activityLog.details}->>'idempotencyKey' = ${receiptKey}`,
+        ));
+        if (prior) {
+          if (prior.details?.fingerprint !== fingerprint) throw conflict("Project idempotency key was used with different inputs");
+          const project = await projectService(tx as unknown as Db).getById(prior.entityId);
+          if (!project) throw conflict("Previously created project is no longer available");
+          return { project, publication: null, duplicate: true };
+        }
+      }
+      if (runContext) await projectToolContext(tx as unknown as Db, req.actor, true);
+      const service = projectService(tx as unknown as Db);
+      const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
+      const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
+      const registeredUrls: typeof urlRepositories = [];
+      for (const repo of urlRepositories) {
+        if (attachedUrls.has(repo.url.toLowerCase())) continue;
+        attachedUrls.add(repo.url.toLowerCase());
+        await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url });
+        registeredUrls.push(repo);
+      }
+      const createdWorkspace = workspace ? await service.createWorkspace(project.id, workspace) : null;
+      if (workspace && !createdWorkspace) throw unprocessable("Invalid project workspace payload");
+      const hydrated = await service.getById(project.id);
+      const activity = await persistActivity(tx as unknown as Db, {
+        companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId,
+        runId: actor.runId, issueId: runContext?.issue.id,
+        action: "project.created", entityType: "project", entityId: project.id,
+        details: {
+          name: project.name, description: project.description, icon: project.icon,
+          sourceIssueId: runContext?.issue.id ?? null,
+          repositories: [...(repositories ?? []).map(repo => ({ id: repo.id, name: repo.fullName, url: repo.url })), ...registeredUrls.map(repo => ({ id: repo.url, name: repo.fullName, url: repo.url })),
+            ...(createdWorkspace?.repoUrl ? [{ id: createdWorkspace.id, name: createdWorkspace.name, url: createdWorkspace.repoUrl }] : []),
+          ],
+          workspaceId: createdWorkspace?.id ?? null,
+          envKeys: project.env ? Object.keys(project.env).sort() : [],
+          ...(receiptKey ? { idempotencyKey: receiptKey, fingerprint } : {}),
+        },
+      });
+      return { project: hydrated ?? project, publication: activity.publication, duplicate: false };
     });
+    if (result.publication) publishActivity(result.publication);
+    if (result.project.env) await secretsSvc.syncEnvBindingsForTarget?.(companyId, { targetType: "project", targetId: result.project.id }, result.project.env);
+    if (result.duplicate) { res.status(200).json(result.project); return; }
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
       trackProjectCreated(telemetryClient);
     }
-    res.status(201).json(hydratedProject ?? project);
+    res.status(result.duplicate ? 200 : 201).json(result.project);
   });
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {

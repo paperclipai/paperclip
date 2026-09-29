@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "@/lib/queryKeys";
 import { NewAgent } from "./NewAgent";
+import { ApiError } from "@/api/client";
 
 const api = vi.hoisted(() => ({
   get: vi.fn(),
@@ -14,6 +15,7 @@ const api = vi.hoisted(() => ({
   hire: vi.fn(),
   testEnvironment: vi.fn(),
   getAdapterAuthSignal: vi.fn(),
+  getClaudeOAuthTokenStatus: vi.fn(),
 }));
 const envApi = vi.hoisted(() => ({ list: vi.fn(), capabilities: vi.fn() }));
 const settings = vi.hoisted(() => ({
@@ -37,6 +39,11 @@ const state = vi.hoisted(() => ({
   navigate: vi.fn(),
   openNewIssue: vi.fn(),
 }));
+const managedApi = vi.hoisted(() => ({
+  list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
+  create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
+}));
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("@/api/agents", () => ({ agentsApi: api }));
 vi.mock("@/api/environments", () => ({ environmentsApi: envApi }));
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: settings }));
@@ -73,8 +80,8 @@ vi.mock("@/components/AgentConfigForm", () => ({
       onChange={(e) => onChange(e.target.value)}
     />
   ),
-  AdapterLoginPanel: ({ onStored }: { onStored: (id: string) => void }) => (
-    <button onClick={() => onStored("stored-claim")}>
+  AdapterLoginPanel: ({ onConnected }: { onConnected: (id: string) => void }) => (
+    <button onClick={() => onConnected("login-session")}>
       Complete subscription login
     </button>
   ),
@@ -165,6 +172,7 @@ beforeEach(() => {
   api.adapterModels.mockResolvedValue([]);
   api.list.mockResolvedValue([{ id: "ceo", role: "ceo", status: "idle" }]);
   api.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+  api.getClaudeOAuthTokenStatus.mockRejectedValue(new ApiError("Not found", 404, null));
   api.testEnvironment.mockResolvedValue(pass);
   api.hire.mockImplementation(async (_company, input) => ({
     agent: { ...input, id: "new-agent", status: "idle", urlKey: "atlas" },
@@ -190,7 +198,33 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
-  it("blocks direct runner setup links when the experiment is disabled", async () => {
+  it.each([false, true])("selects the Grok sandbox before connecting (managed-only=%s)", async (managedOnly) => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableManagedSandboxOnly: managedOnly });
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Local", status: "active", driver: "local", config: {} },
+      { id: "grok-sandbox", name: "Grok sandbox", status: "active", driver: "sandbox", config: { provider: "daytona" } },
+    ]);
+    secrets.listMyUserSecrets.mockResolvedValue([{
+      definition: { id: "grok-key", companyId: "company-1", key: "XAI_API_KEY", name: "Grok key", status: "active" },
+      secret: { companyId: "company-1", status: "active" },
+    }]);
+    await render("paperclip_runner", "grok");
+    const select = container.querySelector('select[aria-label="Environment"]') as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+    expect([...select.options].some((option) => option.value === "local-1")).toBe(!managedOnly);
+    await act(async () => {
+      select.value = "grok-sandbox";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    await click("GrokAPI");
+    await click("Use saved API key");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ environmentId: "grok-sandbox" }));
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].defaultEnvironmentId).toBe("grok-sandbox");
+  });
+  it.each([false, true])("blocks direct runner setup links when the experiment is disabled (cloud=%s)", async (cloud) => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud } });
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     await render("paperclip_runner");
     expect(container.textContent).toContain("This adapter is unavailable");
@@ -204,6 +238,60 @@ describe("New agent setup", () => {
     await render("pi_local");
     expect(container.textContent).toContain("This adapter is unavailable");
     expect(api.hire).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["grok_local", "subscription"], ["grok_local", "api_key"],
+    ["paperclip_runner", "subscription"], ["paperclip_runner", "api_key"],
+  ])("configures %s Grok on Cloud with an xAI %s connection", async (adapterType, method) => {
+    cache.setQueryData(queryKeys.health, {
+      status: "ok",
+      cloud: { managed: true },
+    });
+    envApi.list.mockResolvedValue([
+      { id: "sandbox-1", name: "Paperclip Cloud", driver: "sandbox", config: { provider: "daytona" } },
+    ]);
+    envApi.capabilities.mockResolvedValue({
+      sandboxProviders: { daytona: { supportsLoginPty: true } },
+    });
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true, enableNativeRunner: true });
+    api.getAdapterAuthSignal.mockResolvedValue({ status: "missing" });
+    api.testEnvironment.mockResolvedValue({ ...pass, adapterType });
+    await render(adapterType, "grok");
+    expect(container.textContent).toContain("Connect Atlas to Grok");
+    if (method === "subscription") {
+      await click("GrokSubscription");
+      await click("Complete subscription login");
+    } else {
+      await click("Use API key insteadUse subscription insteadUse API key instead");
+      await click("GrokAPI");
+      await fill("API key", "example-test-secret");
+      await click("Connect");
+      expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        provider: "xai", method: "api_key", apiKey: "example-test-secret",
+      }));
+    }
+    const model = adapterType === "paperclip_runner" ? "grok-4.7" : "grok-code-fast-1";
+    await fill("Model", model);
+    await click("Run test");
+    const binding = { provider: "xai", method, mode: "responsible_user" };
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", adapterType, expect.objectContaining({
+      environmentId: "sandbox-1",
+      adapterConfig: expect.objectContaining({ model, ...(adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "grok", acpxPermissionMode: "approve-all" } : {}) }),
+      aiConnection: binding,
+      testCredentials: {},
+    }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(api.hire.mock.calls[0][1]).toMatchObject({
+      adapterType,
+      defaultEnvironmentId: "sandbox-1",
+      adapterConfig: { model, ...(adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "grok", acpxPermissionMode: "approve-all" } : {}) },
+      runtimeConfig: { aiConnection: binding, heartbeat: { enabled: false } },
+    });
+    expect(JSON.stringify(api.testEnvironment.mock.calls)).not.toContain("example-test-secret");
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("example-test-secret");
+    expect(container.textContent).toContain("Your agent is ready");
   });
   it("sends Cursor Cloud repo/ref and transient API key, then saves an organization secret", async () => {
     await render("cursor_cloud");
@@ -284,9 +372,9 @@ describe("New agent setup", () => {
     expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
     expect(JSON.stringify(api.hire.mock.calls)).not.toContain("hermes-test-key");
   });
-  it("shows Grok login guidance and hides ignored Kimi and OpenCode effort controls", async () => {
+  it("uses the shared Grok connection flow and hides ignored Kimi and OpenCode effort controls", async () => {
     await render("grok_local");
-    expect(container.textContent).toContain("grok login");
+    expect(container.textContent).toContain("Connect Atlas to Grok");
     await render("opencode_local");
     expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
   });
@@ -371,19 +459,46 @@ describe("New agent setup", () => {
     ["codex_local", "codex", "OpenAI", "OPENAI_API_KEY"],
     ["paperclip_runner", "claude", "Claude", "ANTHROPIC_API_KEY"],
     ["paperclip_runner", "codex", "OpenAI", "OPENAI_API_KEY"],
-  ])("stores %s %s API credentials only when finishing", async (adapter, runner, provider, key) => {
+  ])("stores %s %s as a reusable connection before hiring", async (adapter, runner, provider, key) => {
     await render(adapter, runner);
     await click("Use API key insteadUse subscription insteadUse API key instead");
     await click(provider + "API");
     await fill("API key", "connection-key");
     await click("Connect");
-    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ [key]: "connection-key" });
+    const binding = { provider: key === "ANTHROPIC_API_KEY" ? "anthropic" : "openai", method: "api_key", mode: "responsible_user" };
+    expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ apiKey: "connection-key", provider: binding.provider }));
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({});
+    expect(api.testEnvironment.mock.calls[0][2].aiConnection).toEqual(binding);
     expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
     await click("Finish setup");
-    expect(api.hire.mock.calls[0][1].adapterConfig.env[key].type).toBe("user_secret_ref");
+    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual(binding);
+    expect(managedApi.create).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(api.hire.mock.calls)).not.toContain("connection-key");
   });
-  it.each(["opencode_local", "pi_local"])(
+  it.each([
+    ["claude_local", "claude", "Claude", "ANTHROPIC_API_KEY"],
+    ["codex_local", "codex", "OpenAI", "OPENAI_API_KEY"],
+    ["paperclip_runner", "claude", "Claude", "ANTHROPIC_API_KEY"],
+    ["paperclip_runner", "codex", "OpenAI", "OPENAI_API_KEY"],
+  ])("defaults %s %s to a saved key and preserves its reference through hire", async (adapter, runner, provider, key) => {
+    secrets.listMyUserSecrets.mockResolvedValue([{
+      definition: { id: "existing-key", companyId: "company-1", key, name: "Existing key", status: "active" },
+      secret: { companyId: "company-1", status: "active" },
+    }]);
+    await render(adapter, runner);
+    await click(provider + "API");
+    expect((container.querySelector("select[aria-label='Saved API key']") as HTMLSelectElement).value).toBe("user:existing-key");
+    await click("Use saved API key");
+    const binding = { type: "user_secret_ref", key, version: "latest" };
+    expect(api.testEnvironment.mock.calls[0][2].adapterConfig.env[key]).toEqual(binding);
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({});
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.env[key]).toEqual(binding);
+    expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
+    expect(secrets.createMyUserSecret).not.toHaveBeenCalled();
+    expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
+  });
+  it.each(["pi_local"])(
     "persists %s OpenRouter credentials only as a secret reference",
     async (adapter) => {
       await render(adapter);
@@ -408,6 +523,46 @@ describe("New agent setup", () => {
       expect(secrets.create).toHaveBeenCalledTimes(1);
     },
   );
+  it("connects OpenRouter before testing and hiring OpenCode without copying credentials into the agent", async () => {
+    await render("opencode_local");
+    const model = "openrouter/anthropic/claude-sonnet-4.6";
+    await fill("Model", model);
+    await click("Connect another account");
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog).toBeTruthy();
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    const input = dialog.querySelector('[aria-label="API key"]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "example-test-secret");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const connectButton = [...dialog.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Connect")!;
+    expect(connectButton.disabled).toBe(false);
+    await act(async () => connectButton.click());
+    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      provider: "openrouter", method: "api_key", apiKey: "example-test-secret",
+    }));
+    const binding = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls[0][2]).toEqual(expect.objectContaining({
+      aiConnection: binding, testCredentials: {},
+      adapterConfig: expect.objectContaining({ model }),
+    }));
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toEqual(expect.objectContaining({
+      adapterType: "opencode_local",
+      runtimeConfig: expect.objectContaining({ aiConnection: binding }),
+      adapterConfig: expect.objectContaining({ model }),
+    }));
+    expect(managedApi.create).toHaveBeenCalledTimes(1);
+    expect(secrets.create).not.toHaveBeenCalled();
+    expect(JSON.stringify(api.testEnvironment.mock.calls)).not.toContain("example-test-secret");
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("example-test-secret");
+  });
   it.each(["codex", "claude", "opencode"])(
     "uses the correct native %s runner",
     async (runner) => {
@@ -514,8 +669,10 @@ describe("New agent setup", () => {
     settings.getExperimental.mockResolvedValue({
       enableManagedSandboxOnly: true,
     });
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-oauth", latestVersion: 1 });
     await render("claude_local");
-    await connect("Claude");
+    await click("ClaudeSubscription");
+    await click("Use saved subscription");
     await click("Finish setup");
     expect(api.testEnvironment.mock.calls[0][2].environmentId).toBe(
       "sandbox-1",

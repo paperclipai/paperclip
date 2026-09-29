@@ -76,6 +76,18 @@ describe("stranded recovery notice seeds", () => {
 });
 
 describe("buildStrandedRecoveryEscalationNotice", () => {
+  it("names a workspace timeout and its repair instead of claiming generic continuation", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: "scan-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "workspace_git_scan_timeout" },
+    });
+    expect(notice.presentation.title).toBe("Workspace scan timed out");
+    expect(notice.body).toContain("before the agent started");
+    expect(notice.body).not.toContain("retried continuation");
+    expect(JSON.stringify(notice.metadata)).toContain("repository access and server load");
+  });
   const actionId = "6a2f8e64-6f5e-4b58-b7fd-111111111111";
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };
   const sourceRun = {
@@ -240,4 +252,13 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
       noticeMetadataReferencesRecoveryAction(notice.metadata, "1f2e3d4c-5b6a-4798-8899-444444444444"),
     ).toBe(false);
   });
+});
+
+
+it("names the unavailable AI account instead of suggesting secret bindings", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_unavailable", provider: "openai" });
+  expect(notice.nextAction).toContain("Reconnect the selected AI account");
+  expect(notice.title).toBe("AI connection needs attention");
+  expect(notice.body).toContain("Reconnect the account");
+  expect(notice.body).not.toContain("secret/env");
 });

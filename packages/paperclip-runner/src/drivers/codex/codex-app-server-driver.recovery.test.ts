@@ -42,6 +42,7 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
+import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 
 describe("Codex app-server Codex driver", () => {
   it.each([null, "checkpointed-prior-turn"])("recovers an autonomous goal turn beyond checkpoint %s", async (checkpointTurnId) => {
@@ -90,10 +91,108 @@ describe("Codex app-server Codex driver", () => {
     second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns } };
     await original.close({ reason: "controller lost" });
     await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
-      recovered: false, reason: "provider exposed ambiguous autonomous goal turn history",
+      recovered: false, reason: expect.stringMatching(/ambiguous autonomous goal turn history|codex_history_incomplete/),
     });
     expect(second.calls.some((call) => call.method === "turn/start" || call.method === "thread/goal/set")).toBe(false);
   });
+  it.each([
+    "initial-read",
+    "reconcile-read",
+    "goal-probe",
+    "plan-probe",
+  ] as const)(
+    "rethrows exact recovery integrity failure after cleanup at %s",
+    async (stage) => {
+      const originalTransport = new FakeCodexTransport();
+      const recoveryTransport = new FakeCodexTransport();
+      const fault = new NativeSessionProtocolIntegrityError(
+        "semantic_input_digest_mismatch",
+      );
+      const request = recoveryTransport.request.bind(recoveryTransport);
+      let reads = 0;
+      vi.spyOn(recoveryTransport, "request").mockImplementation(
+        async (method, params) => {
+          if (method === "thread/read") reads += 1;
+          if (
+            (stage === "initial-read" && method === "thread/read") ||
+            (stage === "reconcile-read" &&
+              method === "thread/read" &&
+              reads === 2) ||
+            (stage === "goal-probe" && method === "thread/goal/get") ||
+            (stage === "plan-probe" && method === "collaborationMode/list")
+          )
+            throw fault;
+          return request(method, params);
+        },
+      );
+      const close = vi.spyOn(recoveryTransport, "close");
+      // The integrity error remains primary even when required cleanup rejects.
+      close.mockRejectedValue(new Error("secondary cleanup failure"));
+      const driver = makeDriver(
+        [originalTransport, recoveryTransport],
+        stage === "plan-probe" ? { requestedCollaborationMode: "plan" } : {},
+      );
+      const original = await driver.openSession({
+        runId: "run-recovery-integrity",
+        normalizedSessionId: "session-recovery-integrity",
+        workingDirectory: WORKSPACE,
+      });
+      await original.startTurn({ message: { role: "user", text: "Work." } });
+      const checkpoint = await original.snapshot();
+      await original.close({ reason: "fixture disconnect" });
+      await expect(
+        driver.recoverSession!({
+          ...checkpoint,
+          providerRecoveryPolicy: "allow_replacement_after_resume_failure",
+        }),
+      ).rejects.toBe(fault);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(
+        recoveryTransport.calls.some((call) => call.method === "thread/start"),
+      ).toBe(false);
+    },
+  );
+
+  it.each(["completed", "interrupted", "failed", "cancelled"])(
+    "adopts a checkpointed active turn that became %s while disconnected",
+    async (status) => {
+      const first = new FakeCodexTransport();
+      const second = new FakeCodexTransport();
+      second.readResponse = {
+        thread: {
+          id: "thread-1",
+          sessionId: "provider-session-1",
+          cwd: WORKSPACE,
+          turns: [{ id: "turn-1", status, items: [] }],
+        },
+      };
+      const driver = makeDriver([first, second]);
+      const original = await driver.openSession({
+        runId: "run-disconnected-terminal",
+        normalizedSessionId: "normalized-disconnected-terminal",
+        workingDirectory: WORKSPACE,
+      });
+      await original.startTurn({ message: { role: "user", text: "Work." } });
+      const checkpoint = await original.snapshot();
+      await original.close({ reason: "transport disconnected" });
+
+      const recovery = await driver.recoverSession!(checkpoint);
+      expect(recovery.recovered).toBe(true);
+      const recovered = recovery.session!;
+      expect(await recovered.snapshot()).toMatchObject({
+        activeTurnId: null,
+        terminalTurns: [{ turnId: "turn-1" }],
+      });
+      const events = await collectUntilTerminal(recovered.events());
+      expect(
+        events.filter((event) => event.eventType === `turn.${status}`),
+      ).toHaveLength(1);
+      expect(second.calls.some((call) => call.method === "turn/start")).toBe(
+        false,
+      );
+      await recovered.close({ reason: "test complete" });
+    },
+  );
 
   it("persists and verifies the tagged runnerd provider identity on recovery", async () => {
     const providerIdentity = {
@@ -155,9 +254,13 @@ describe("Codex app-server Codex driver", () => {
     expect(second.calls.map((call) => call.method)).toEqual([
       "initialize",
       "thread/read",
+      "thread/turns/list",
       "thread/resume",
       "thread/goal/get",
       "thread/read",
+      "thread/turns/list",
+      "thread/read",
+      "thread/turns/list",
     ]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });
@@ -745,23 +848,10 @@ describe("Codex app-server Codex driver", () => {
           dispositionOnlyRecoveryTurnId:
             testCase.dispositionOnlyRecoveryTurnId,
         });
-        expect(recovery).toMatchObject({ recovered: true });
-        await expect(recovery!.session!.snapshot()).resolves.toMatchObject({
-          activeTurnId: null,
-          dispositionOnlyRecoveryConsumed: true,
-          dispositionOnlyRecoveryTurnId:
-            testCase.dispositionOnlyRecoveryTurnId,
-        });
-        await expect(recovery!.session!.startTurn({
-          message: {
-            role: "user",
-            text: "Do not repeat the task while provider history is unknown.",
-          },
-        })).rejects.toThrow("session cannot start another turn");
+        expect(recovery).toMatchObject({ recovered: false, reason: expect.stringContaining("codex_history_incomplete") });
         expect(
           second.calls.filter((call) => call.method === "turn/start"),
         ).toHaveLength(0);
-        await recovery!.session!.close({ reason: "test complete" });
       },
     );
   }
@@ -1065,15 +1155,11 @@ describe("Codex app-server Codex driver", () => {
       const snapshot = await original.snapshot();
       await original.close({ reason: "transport lost" });
       const recovery = await driver.recoverSession?.(snapshot);
-      expect(recovery?.session).toBeDefined();
-      await expect(
-        recovery!.session!.reconcile!(),
-      ).rejects.toMatchObject<HarnessReconciliationError>({
-        name: "HarnessReconciliationError",
-        recoverable: true,
-        message: expect.stringContaining(testCase.message),
+      expect(recovery).toMatchObject({
+        recovered: false,
+        reason: expect.stringContaining(testCase.message),
       });
-      await recovery!.session!.close({ reason: "test complete" });
+      expect(recovery?.session).toBeUndefined();
     }
   });
 

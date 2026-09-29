@@ -25,11 +25,23 @@ function renderRunner(config: Record<string, unknown>): string {
 }
 
 describe("Paperclip Runner Codex configuration", () => {
+  it.each([
+    [undefined, "Full auto (approve all)"],
+    ["approve-paperclip", "Automatic Paperclip actions"],
+    ["approve-reads", "Allow Paperclip reads"],
+    ["deny-all", "Deny all"],
+  ])("displays Grok's default or saved permission mode %s", (acpxPermissionMode, label) => {
+    const html = renderRunner({ provider: "acpx", acpxAgent: "grok", acpxPermissionMode });
+    expect(html).toContain('<option value="grok" selected="">Grok Build</option>');
+    expect(html).toContain('aria-label="Permission mode"');
+    expect(html).toContain(label);
+  });
+
   it("exposes all qualified provider choices", () => {
     const html = renderRunner({ provider: "codex" });
 
     expect(html).toContain('<option value="codex" selected="">Codex</option>');
-    expect(html).toContain("OpenCode 1.18.29");
+    expect(html).toContain("OpenCode 1.18.32");
     expect(html).toContain("ACPX");
     expect(html).not.toContain("Permission mode");
     expect(html).not.toContain("Ask when requested");
@@ -46,7 +58,7 @@ describe("Paperclip Runner Codex configuration", () => {
     });
 
     expect(html).toContain(
-      '<option value="opencode" selected="">OpenCode 1.18.29</option>',
+      '<option value="opencode" selected="">OpenCode 1.18.32</option>',
     );
     expect(html).toContain("Full auto (allow)");
     expect(html).toContain('aria-label="Permission mode"');
@@ -66,7 +78,7 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Codex via ACPX");
     expect(html).not.toContain("ACPX Codex");
     expect(html).not.toContain("Pi via ACPX");
-    expect(html).toContain("Conservative (fail closed)");
+    expect(html).toContain("Allow Paperclip reads");
   });
 
   it("falls back to the fail-closed Codex permission mode", () => {

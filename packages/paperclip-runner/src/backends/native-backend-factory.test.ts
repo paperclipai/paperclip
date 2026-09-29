@@ -1,12 +1,37 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
-import type { NativeExecutionInput } from "../contracts/native-execution.js";
+import { parseNativeExecutionInput, type NativeExecutionInput } from "../contracts/native-execution.js";
+import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION, nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest } from "../contracts/runtime-context.js";
+
+const contextRoots: string[] = [];
+afterEach(() => { for (const root of contextRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+function preparedExecution(base: NativeExecutionInput): NativeExecutionInput {
+  const root = mkdtempSync(join(tmpdir(), "paperclip-prepared-backend-"));
+  contextRoots.push(root);
+  writeFileSync(join(root, "AGENTS.md"), "Keep assigned instructions.");
+  const digest = "0".repeat(64);
+  const context = {
+    prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+    instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: root, fileCount: 1, totalBytes: 27 } },
+    skills: [], mcp: { assignmentSetId: "none", digest, bindingId: null },
+  };
+  return parseNativeExecutionInput({
+    ...base, schema: "paperclip.native-execution-input.v5", executionMode: "default", planningContext: null,
+    runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
+    completionContract: { ...base.completionContract, contract: { ...base.completionContract.contract, criteria: [{ id: "objective", requirement: "Complete the task." }] } },
+  });
+}
 import {
   FakeCodexTransport,
   WORKSPACE,
 } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { createNativeSessionBackend } from "../index.js";
 import { createCodexNativeSessionBackend } from "./codex-native-backend.js";
+import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
 function execution(
   provider: NativeExecutionInput["provider"] = {
@@ -93,7 +118,7 @@ function acpxExecution(
               ? "pi-acp"
               : "@agentclientprotocol/claude-agent-acp",
         agentServerVersion:
-          agent === "codex" ? "1.6.2" : agent === "pi" ? "0.0.33" : "0.70.0",
+          agent === "codex" ? "1.6.2" : agent === "pi" ? "0.0.33" : "0.73.0",
         agentRuntimePackage:
           agent === "pi"
             ? "@earendil-works/pi-coding-agent"
@@ -101,10 +126,10 @@ function acpxExecution(
               ? "@openai/codex"
               : "@anthropic-ai/claude-agent-sdk",
         agentRuntimeVersion:
-          agent === "pi" ? "0.84.2" : agent === "codex" ? "0.153.4" : "0.3.263",
+          agent === "pi" ? "0.84.2" : agent === "codex" ? "0.156.0" : "0.3.280",
         commandDigest:
           agent === "codex"
-            ? "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00"
+            ? "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3"
             : agent === "pi"
               ? "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f"
               : "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
@@ -266,7 +291,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.29",
+      version: "1.18.32",
       capabilities: {
         steering: false,
         resume: true,
@@ -418,7 +443,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.29",
+      version: "1.18.32",
       capabilities: {
         resume: true,
         interruption: true,
@@ -516,5 +541,46 @@ describe("native backend factory", () => {
         }),
       ),
     ).toThrow("Codex native backend requires provider kind codex");
+  });
+
+  it("selects prepared transport only for v5 native input and retains prepared constraints", async () => {
+    const input = preparedExecution(execution());
+    const transport = new FakeCodexTransport();
+    const backend = createCodexNativeSessionBackend(input, {
+      transportFactory: () => transport,
+      workingDirectoryAuthority: "remote_runner",
+      environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    });
+
+    await backend.openSession({
+      identity: {
+        companyId: "company",
+        agentId: "agent",
+        runId: "run",
+        sessionId: "session",
+      },
+      workingDirectory: WORKSPACE,
+    });
+
+    expect(
+      transport.calls.find((call) => call.method === "thread/start")?.params,
+    ).toMatchObject({ conversationMode: "prepared" });
+    expect(backend.preparedTaskConstraints).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Obtain one accepted result"),
+      ]),
+    );
+  });
+
+  it("projects v5 OpenCode constraints to the prepared runtime boundary", () => {
+    const input = preparedExecution(opencodeExecution());
+    const backend = createOpenCodeNativeSessionBackend(input, {
+      runtimeDirectory: "/tmp/paperclip-opencode-prepared-factory",
+    });
+    expect(backend.preparedTaskConstraints).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Obtain one accepted result"),
+      ]),
+    );
   });
 });

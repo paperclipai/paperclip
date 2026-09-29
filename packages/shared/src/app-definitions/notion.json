@@ -8,8 +8,7 @@
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "/brands/apps/notion.svg",
-    "darkLogoUrl": "/brands/apps/notion-dark.svg"
+    "logoUrl": "/brands/apps/notion.svg"
   },
   "urlPatterns": [
     "https://mcp.notion.com/*"

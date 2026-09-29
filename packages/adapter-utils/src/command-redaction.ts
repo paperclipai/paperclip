@@ -1,5 +1,16 @@
 export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
+// These exact public Executor helper addresses resemble dotted bearer tokens.
+// Do not exempt arbitrary provider paths, prefixes, or user-defined selectors.
+const PUBLIC_EXECUTOR_TOOL_SELECTORS = new Set([
+  "executor.coreTools.integrations.list",
+  "executor.coreTools.connections.list",
+  "executor.coreTools.policies.list",
+]);
+export function isPublicExecutorToolSelector(value: string): boolean {
+  return PUBLIC_EXECUTOR_TOOL_SELECTORS.has(value);
+}
+
 const SECRET_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
 
 const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
@@ -76,7 +87,12 @@ export function redactCommandText(
     )
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
-    .replace(COMMAND_JWT_RE, redactedValue);
+    .replace(COMMAND_JWT_RE, (match, offset: number, source: string) => {
+      // The JWT heuristic may match only the first three segments; inspect the
+      // complete address so a longer secret sharing a prefix stays redacted.
+      const address = source.slice(offset).match(/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/)?.[0];
+      return address && isPublicExecutorToolSelector(address) ? match : redactedValue;
+    });
 }
 
 // A JSON secret field is a key/value pair such as `"token":"opaque-value"`. The

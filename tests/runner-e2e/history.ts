@@ -1,3 +1,10 @@
+import { isIncompleteFirstTaskResult } from "./case-outcome.js";
+import { validateRetainedRunnerResult } from "./result-validation.js";
+import {
+  discoverReportCatalog,
+  parseReportExecutionId,
+  type ReportExecution,
+} from "./report-catalog.js";
 import { runnerMatrix, runnerSuites } from "./catalog.js";
 import {
   aggregateCampaignBilling,
@@ -20,11 +27,17 @@ export function canonicalExecutionId(id: string) {
 }
 
 export function upgradeRunnerResult(result: RunnerE2EResult): RunnerE2EResult {
+  validateRetainedRunnerResult(result);
   const executionId = canonicalExecutionId(result.executionId);
   const execution = runnerMatrix.find(
     (candidate) => candidate.id === executionId,
   );
-  if (!execution) return result;
+  if (!execution)
+    return {
+      ...result,
+      executionId,
+      suiteId: result.suiteId ?? parseReportExecutionId(executionId).suiteId,
+    };
   return {
     ...result,
     executionId,
@@ -49,25 +62,39 @@ export function buildRunnerCampaign(input: {
   expected: readonly string[];
   results: readonly RunnerE2EResult[];
   eventName?: string | null;
+  catalog?: readonly ReportExecution[];
 }): RunnerE2ECampaign {
   const expected = input.expected.map(canonicalExecutionId);
   const results = input.results.map((result) => ({
     ...upgradeRunnerResult(result),
     billing: result.billing ?? summarizeExecutionBilling(result),
   }));
+  const knownCatalog = input.catalog ?? runnerMatrix;
+  const catalog = discoverReportCatalog({
+    catalog: knownCatalog,
+    expected,
+    results,
+  });
+  const discoveredSuites = [
+    ...new Map(
+      catalog.map((execution) => [execution.suite.id, execution.suite]),
+    ).values(),
+  ];
   const resultSource = results.find((result) => result.source)?.source;
   const source = {
     ...resolveRunnerE2ESource(resultSource),
     eventName: input.eventName ?? process.env.GITHUB_EVENT_NAME ?? null,
   };
-  const suites = runnerSuites
+  const suites = discoveredSuites
     .map((suite) => {
       const suiteExpected = expected.filter((id) =>
         id.startsWith(`${suite.id}.`),
       );
       if (suiteExpected.length === 0) return null;
       const suiteResults = results.filter(
-        (result) => result.suiteId === suite.id,
+        (result) =>
+          expected.includes(result.executionId) &&
+          result.executionId.startsWith(`${suite.id}.`),
       );
       const passed = suiteResults.filter(
         (result) => result.status === "passed" && result.cleanup === "passed",
@@ -79,13 +106,14 @@ export function buildRunnerCampaign(input: {
         suiteId: suite.id,
         suiteDefinitionHash:
           suiteResults[0]?.suiteDefinitionHash ??
-          runnerMatrix.find((execution) => execution.suite.id === suite.id)!
+          catalog.find((execution) => execution.suite.id === suite.id)!
             .suiteDefinitionHash,
         expected: suite.expectedMatrixSize,
         selected: suiteExpected.length,
         executed,
         passed,
-        failed: suiteExpected.length - passed,
+        failed: suiteExpected.length - passed - suiteResults.filter(r => isIncompleteFirstTaskResult(r)).length,
+        incomplete: suiteResults.filter(r => isIncompleteFirstTaskResult(r)).length,
         retries: suiteResults.reduce(
           (total, result) => total + Math.max(0, result.attempt - 1),
           0,
@@ -93,7 +121,21 @@ export function buildRunnerCampaign(input: {
         cleanupPassed: suiteResults.every(
           (result) => result.cleanup === "passed",
         ),
-        complete: suiteExpected.length === suite.expectedMatrixSize,
+        complete:
+          suiteExpected.length === suite.expectedMatrixSize &&
+          knownCatalog.filter((execution) => execution.suite.id === suite.id)
+            .length === suiteExpected.length &&
+          knownCatalog
+            .filter((execution) => execution.suite.id === suite.id)
+            .every(
+              (execution) =>
+                suiteExpected.includes(execution.id) &&
+                suiteResults.every(
+                  (result) =>
+                    result.suiteDefinitionHash ===
+                    execution.suiteDefinitionHash,
+                ),
+            ),
         durationMs: suiteResults.reduce(
           (total, result) => total + result.durationMs,
           0,
@@ -135,7 +177,8 @@ export function buildRunnerCampaign(input: {
     selected: expected.length,
     executed: results.filter((result) => result.attempt > 0).length,
     passed,
-    failed: expected.length - passed,
+    failed: expected.length - passed - results.filter(r => isIncompleteFirstTaskResult(r)).length,
+    incomplete: results.filter(r => isIncompleteFirstTaskResult(r)).length,
     retries: results.reduce(
       (total, result) => total + Math.max(0, result.attempt - 1),
       0,
@@ -162,6 +205,7 @@ export function campaignHistoryRecord(
     executed: campaign.executed,
     passed: campaign.passed,
     failed: campaign.failed,
+    incomplete: campaign.incomplete ?? 0,
     retries: campaign.retries,
     cleanupPassed: campaign.cleanupPassed,
     publicUrl,
@@ -175,7 +219,7 @@ export function campaignHistoryRecord(
       caseId: result.caseId,
       provider: result.provider,
       model: result.model,
-      status: result.status,
+      status: isIncompleteFirstTaskResult(result) ? "incomplete" : result.status,
       durationMs: result.durationMs,
       attempt: result.attempt,
       cleanup: result.cleanup,
@@ -218,7 +262,7 @@ export function mergeRunnerHistory(
   for (const candidate of campaigns) {
     for (const suite of candidate.suites) {
       latestBySuite[suite.suiteId] ??= candidate.campaignId;
-      if (suite.complete && suite.failed === 0) {
+      if (suite.complete && suite.failed === 0 && (suite.incomplete ?? 0) === 0) {
         latestGreenBySuite[suite.suiteId] ??= candidate.campaignId;
       }
     }
@@ -229,7 +273,7 @@ export function mergeRunnerHistory(
     latestCampaignId: campaigns[0]?.campaignId ?? null,
     latestGreenCampaignId:
       campaigns.find(
-        (candidate) => candidate.complete && candidate.failed === 0,
+        (candidate) => candidate.complete && candidate.failed === 0 && (candidate.incomplete ?? 0) === 0,
       )?.campaignId ?? null,
     latestBySuite,
     latestGreenBySuite,

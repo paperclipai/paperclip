@@ -290,10 +290,11 @@ try {
   const payload = {
     pins: {
       nodeMinimum: minimumNodeVersion.join("."),
-      codex: "0.153.4",
-      opencode: "1.18.29",
+      codex: "0.156.0",
+      opencode: "1.18.32",
       acpx: "0.13.1",
-      claudeAcp: "0.70.0",
+      grok: "1.0.13",
+      claudeAcp: "0.73.0",
       codexAcp: "1.6.2",
     },
     target: { platform: process.platform, architecture: process.arch },
@@ -307,12 +308,17 @@ try {
       .update(distDigest)
       .digest("hex")}`,
     acpxProfileDigests: {
+      grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
       claude:
         "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
       codex:
-        "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
+        "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
     },
     artifacts: {
+      grokLauncher: {
+        path: "dist/providers/grok/launcher.cjs",
+        sha256: sha256File(join(temporaryRoot, "dist/providers/grok/launcher.cjs")),
+      },
       nodeCommand: {
         path: nodeCommand,
         sha256: sha256File(join(temporaryRoot, nodeCommand)),

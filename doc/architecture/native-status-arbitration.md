@@ -132,11 +132,13 @@ conditions before model disposition:
 | --- | --- | --- |
 | Issue is already `done` or `cancelled` | Preserve | `terminal_status_preserved` |
 | Workspace finalization failed | Preserve | Record a retryable finalization error |
+| Run performs a named native completion review | Preserve | The recorded review decision controls the child; unresolved review records a reviewer recovery action |
 | Run was cancelled | Preserve | Release run resources |
 | Run failed | Preserve | Schedule recovery |
 | Approval, interaction, or execution stage is pending | `in_review` | Materialize/bind the governance gate and notify its owner |
 | Completion satisfies its authority policy | `done` | Release checkout |
-| Runner reports `needs_review` | `in_review` | Bind a reviewer and notify the owner |
+| Runner reports a concrete attention request with a reviewer and decision | `in_review` | Bind the requested reviewer |
+| Runner reports `needs_review` without a decision, or an incomplete completion claim | Keep work with the agent | No automatic human approval; at most one corrective continuation, then a visible recovery action |
 | Runner reports a task-wide blocker | `blocked` | Persist blocker owner and unblock action |
 | Runner reports a current-track blocker | `in_progress` | Enqueue another productive track |
 | Runner reports `yielded` with a valid continuation | `in_progress` | Enqueue the declared continuation |
@@ -212,13 +214,29 @@ commit, and retryable or terminal failure.
 
 Examples:
 
-- a workspace-finalization failure preserves the claim and records a retryable
+- an unsafe workspace archive triggers one automatic export of confined entries,
+  omitting unsafe links; if it remains unsafe, discard the export and settle the saved
+  result with an informational run-log entry and no task warning or repair action;
+- other workspace-finalization failures preserve the claim and record a retryable
   error rather than falsely completing the issue;
 - a failed provider run preserves partial evidence and schedules recovery;
 - a status-version race causes bounded reassessment against current issue
   state; and
 - a materialization failure records the failed phase and next retry time rather
   than silently dropping the side effect.
+
+## Policy upgrades
+
+The policy version on an assessment is audit metadata. New runs use the current
+rules. A version change alone does not reassess an old run, change task status,
+or ask a person to review completion. New evidence and explicit status changes
+still use the existing reconciliation paths.
+
+Reconciliation also withdraws pending review cards created solely by the old
+policy-version check. It restores the previous status only if that exact decision
+and status version are still current and no other review gate is pending. A later
+user or agent decision takes precedence. The old assessments and decisions remain
+in the audit history; cleanup does not accept or reject the agent's work.
 
 ## Diagnosing an unexpected status
 
@@ -267,3 +285,76 @@ Common patterns:
 See also
 [`durable-continuation-scheduler.md`](./durable-continuation-scheduler.md) for
 the scheduler and recovery behavior that follows an `in_progress` decision.
+
+## Explicit completion reviews
+
+Ordinary task completion uses the agent's structured `done` claim under the
+contract's low-risk claim policy. Unknown evidence references remain diagnostic
+information; they do not create human approval requirements. Cancellation,
+newer task state, unresolved dependencies, and explicit governance still win.
+
+Paperclip no longer creates a generic "Native completion review" because a
+report is incomplete, verification failed, or the agent says `needs_review`.
+A new review interaction requires an explicit attention request naming the
+reviewer's responsibility and the decision. The card displays that request.
+Waiting for CI remains agent work, not a human completion approval.
+
+The native runner returns current approval/dependency constraints to the agent
+when it calls `paperclip_finish`. An empty `needs_review` report without an
+existing gate is rejected with instructions to correct it. The final reply must
+explain any required user action and link to the relevant task or approval.
+The tool acknowledges receipt, not a premature status commit: final status is
+committed only after the provider turn and workspace finalization settle.
+
+On upgrade, bounded cleanup withdraws only unanswered, system-created fallback
+cards proven by their decision/effect ledger, original prompt/target, empty
+attention request list, and low-risk claim policy. Explicit or answered reviews
+and stronger completion policies are preserved. Withdrawal has audit history
+and retires chat actions. Reconciliation reassesses only the current successful
+run's result, with the same task status/version and completion contract and no
+newer execution owner. It applies normal governance and dependency checks and
+appends a decision; it never marks every affected task done blindly. A persisted
+withdrawal marker makes restart between cleanup and reassessment retryable.
+
+
+### Agent review handoff
+
+A review request and its next action must be saved together. For a native
+completion review addressed to an agent, the status transaction saves both the
+review card and one durable wake for that agent. The wake identifies the card
+and the status decision. Retrying the transaction does not create another wake.
+
+The reviewer runs on the child task, even when the reviewer's own parent task
+is blocked on that child. The worker remains the child task's assignee. This
+review role gives access to the child context, history, and documents, plus
+`resolve_review`. It does not give access to ordinary task mutation tools.
+The usual company, invokability, budget, and workspace gates still apply.
+Human-only requests and governed actions do not acquire this review role.
+
+This restriction applies to Paperclip tools. It is not a read-only filesystem
+boundary. The reviewer retains the configured agent and environment permissions,
+including the ability to run tests and create temporary files. An operator who
+needs filesystem isolation must configure it in the execution environment.
+The review role does not raise the provider permission mode or bypass a sandbox.
+
+Admission claims the reviewer run, its wake, and the child execution lock in
+one transaction. If another run holds the lock, the reviewer stays queued.
+The provider does not start without this claim.
+
+`resolve_review` accepts or rejects the one card assigned to the run. Rejection
+requires specific requested changes. The server checks the reviewer, report,
+and current task version again before it accepts a decision. It also checks that
+the acting run is running, holds the execution lock, and names this exact card
+and decision. Another run for the same agent cannot resolve the card. An old or
+reassigned review does not grant access to newer work.
+
+The final required acceptance completes the child through the existing review
+resolution path and makes its blocked dependents eligible to run. Rejection
+returns the requested changes to the worker. A reviewer must record that decision
+before calling `paperclip_finish`. Finishing the review run cannot turn rejected
+work into Done. If the reviewer cannot act, `paperclip_block` preserves the task
+and records a recovery action for the reviewer without an automatic retry loop.
+
+Both Codex and ACPX providers wait for server completion feedback before their
+terminal tool call succeeds. A rejected completion report stays correctable in
+the same provider turn. The runner does not latch it as an accepted result.

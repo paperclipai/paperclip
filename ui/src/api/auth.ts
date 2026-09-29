@@ -1,5 +1,8 @@
 import {
   authSessionSchema,
+  currentUserPreferencesSchema,
+  type CurrentUserPreferences,
+  type UpdateCurrentUserPreferences,
   currentUserProfileSchema,
   type AuthSession,
   type CurrentUserProfile,
@@ -176,6 +179,23 @@ export const authApi = {
   signUpEmail: async (input: { name: string; email: string; password: string }) => {
     await authPost("/sign-up/email", input);
   },
+
+  getPreferences: async (expectedUserId: string): Promise<CurrentUserPreferences> => {
+    const res = await fetch(`/api/auth/preferences?expectedUserId=${encodeURIComponent(expectedUserId)}`, {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) {
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
+      throw extractAuthError(payload as AuthErrorBody, res.status);
+    }
+    return currentUserPreferencesSchema.parse(payload);
+  },
+
+  updatePreferences: (input: UpdateCurrentUserPreferences): Promise<CurrentUserPreferences> =>
+    authPatch("/preferences", input, (payload) => currentUserPreferencesSchema.parse(payload)),
 
   getProfile: async (): Promise<CurrentUserProfile> => {
     const res = await fetch("/api/auth/profile", {

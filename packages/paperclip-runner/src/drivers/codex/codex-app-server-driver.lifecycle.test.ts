@@ -340,6 +340,14 @@ describe("Codex app-server Codex driver", () => {
     await original.close({ reason: "prepare lazy ownership recovery" });
 
     const recoveryTransport = new FakeCodexTransport();
+    recoveryTransport.readResponse = {
+      thread: {
+        id: snapshot.driverSessionId,
+        sessionId: snapshot.providerSessionId,
+        cwd: WORKSPACE,
+        turns: [{ id: "turn-recovery-race", status: "inProgress", items: [] }],
+      },
+    };
     Object.assign(recoveryTransport, {
       processInfo: () => ({
         pid: recoveryTransport.calls.some(
@@ -362,6 +370,7 @@ describe("Codex app-server Codex driver", () => {
 
     expect(recovered.recovered).toBe(true);
     expect(transportFactory).toHaveBeenCalledWith({
+      workingDirectory: snapshot.workingDirectory,
       providerRecoveryPolicy: snapshot.providerRecoveryPolicy,
       persistedSession: {
         driverSessionId: snapshot.driverSessionId,
@@ -721,4 +730,43 @@ describe("Codex app-server Codex driver", () => {
       modelContextWindow: 128000,
     });
   });
+});
+
+
+it("sends explicit skill input on every requested turn", async () => {
+  const transport = new FakeCodexTransport();
+  const skillInputs = [{ type: "skill" as const, name: "first-task", path: "/runtime/assigned/first-task/SKILL.md" }];
+  const driver = makeDriver([transport], { conversationMode: "direct", skillInputs });
+  const session = await driver.openSession({ runId: "run-skills", normalizedSessionId: "session-skills", workingDirectory: WORKSPACE });
+  for (const text of ["Start onboarding", "Yes, I approve"]) {
+    const turn = await session.startTurn({ message: { role: "user", text } });
+    const call = transport.calls.filter((call) => call.method === "turn/start").at(-1);
+    expect(call?.params.input).toEqual([{ type: "text", text: `$first-task\n\n${text}`, text_elements: [] }, ...skillInputs]);
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+  }
+  await session.close();
+});
+
+
+it("reapplies explicit skills after recovery without persisting them into ordinary tasks", async () => {
+  const skillInputs = [{ type: "skill" as const, name: "first-task", path: "/runtime/onboarding/SKILL.md" }];
+  const first = new FakeCodexTransport();
+  const original = await makeDriver([first], { skillInputs }).openSession({
+    runId: "initial", normalizedSessionId: "skill-recovery", workingDirectory: WORKSPACE,
+  });
+  const snapshot = await original.snapshot();
+  await original.close();
+  for (const selected of [skillInputs, []]) {
+    const transport = new FakeCodexTransport();
+    const recovery = await makeDriver([transport], { skillInputs: selected }).recoverSession(snapshot);
+    expect(recovery.recovered).toBe(true);
+    const session = recovery.session!;
+    try {
+      await session.startTurn({ message: { role: "user", text: "Continue" } });
+      const items = transport.calls.find((call) => call.method === "turn/start")?.params.input as Array<{type:string}>;
+      expect(items.filter((item) => item.type === "skill")).toEqual(selected);
+    } finally { await session.close(); }
+  }
 });

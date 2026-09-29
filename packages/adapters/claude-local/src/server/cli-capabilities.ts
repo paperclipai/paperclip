@@ -6,11 +6,6 @@ const effortFlagSupportCache = new Map<string, Promise<boolean | null>>();
 
 export const CLAUDE_FABLE_5_1_MIN_CLI_VERSION = "2.1.251";
 
-const CLAUDE_FABLE_5_1_MODEL_IDS = new Set([
-  "claude-fable-5-1",
-  "us.anthropic.claude-fable-5-1",
-]);
-
 export function claudeCommandLooksLike(command: string, expected = "claude"): boolean {
   const base = path.basename(command).toLowerCase();
   return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
@@ -41,7 +36,9 @@ function cacheKeyForTarget(command: string, target: AdapterExecutionTarget | nul
 }
 
 export function minimumClaudeCliVersionForModel(model: string): string | null {
-  return CLAUDE_FABLE_5_1_MODEL_IDS.has(model.trim())
+  const modelId = model.trim().replace(/\[1m\]$/, "").replace(/^(?:(?:us|eu|apac|global)\.)?anthropic\./, "");
+  if (modelId === "claude-opus-5-5") return "2.1.280";
+  return modelId === "claude-fable-5-1"
     ? CLAUDE_FABLE_5_1_MIN_CLI_VERSION
     : null;
 }

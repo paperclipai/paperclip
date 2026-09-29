@@ -13,6 +13,23 @@ import {
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 describe("runner E2E Daytona image contract", () => {
+  it("keeps the qualified native Grok binary separate from the legacy command", async () => {
+    const [dockerfile, packBuilder, runnerPackage] = await Promise.all([
+      readFile(path.join(repositoryRoot, "docker/daytona-runner/Dockerfile"), "utf8"),
+      readFile(path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-provider-pack.mjs"), "utf8"),
+      readFile(path.join(repositoryRoot, "packages/paperclip-runner/package.json"), "utf8"),
+    ]);
+    expect(dockerfile).toMatch(/@xai-official\/grok@\d+\.\d+\.\d+/);
+    expect(dockerfile).not.toMatch(/for cli in[^;]*\bgrok\b/);
+    expect(packBuilder).not.toMatch(/writePortable\w+Shim\("grok"/);
+    expect(JSON.parse(runnerPackage).dependencies).not.toHaveProperty("@paperclipai/grok-acp");
+    expect(packBuilder).toContain('path: "dist/providers/grok/launcher.cjs"');
+    expect(dockerfile).toContain("scripts/provision-grok.mjs");
+    expect(dockerfile).toContain("/opt/paperclip/providers/grok/1.0.13/grok");
+    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain("packages/paperclip-runner/scripts/provision-grok.mjs");
+    expect(DAYTONA_IMAGE_INPUT_PATHS).not.toContain("packages/grok-acp/package.json");
+  });
+
   it("builds runnerd and the provider pack and verifies every required transport", async () => {
     const [dockerfile, dockerignore, workflow] = await Promise.all([
       readFile(
@@ -29,6 +46,8 @@ describe("runner E2E Daytona image contract", () => {
       ),
     ]);
     const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
+    const daytonaImageJob = workflow.match(/^  daytona_image:\n[\s\S]*?(?=^  \w+:)/m)?.[0];
+    expect(daytonaImageJob).toBeDefined();
     expect(dockerfile).toContain("--bin paperclip-runnerd");
     expect(dockerfile).toContain("build-provider-pack.mjs /provider-pack");
     expect(normalizedDockerfile).not.toContain(
@@ -38,10 +57,7 @@ describe("runner E2E Daytona image contract", () => {
       "COPY packages/paperclip-runner ./packages/paperclip-runner",
     );
     expect(dockerfile).toContain(
-      "COPY packages/paperclip-eval-kernel/src ./packages/paperclip-eval-kernel/src",
-    );
-    expect(dockerfile).toContain(
-      "COPY packages/paperclip-runner/src ./packages/paperclip-runner/src",
+      "COPY packages ./packages",
     );
     expect(dockerfile).toContain(
       "/opt/paperclip-runner/provider-pack/provider-pack.json",
@@ -96,6 +112,22 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(
       '--build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}"',
     );
+    expect(daytonaImageJob).toContain(
+      "TARGET_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}",
+    );
+    expect(daytonaImageJob).toContain(
+      '[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]',
+    );
+    expect(daytonaImageJob).toContain(
+      '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
+    );
+    expect(
+      daytonaImageJob!.indexOf('[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]'),
+    ).toBeLessThan(
+      daytonaImageJob!.indexOf(
+        '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
+      ),
+    );
     expect(workflow).toContain(
       "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
     );
@@ -114,7 +146,9 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
     expect(workflow).toContain(`--format '{{json .Image}}'`);
     expect(workflow).not.toContain(`docker --config "$anonymous_config" pull`);
-    expect(workflow).not.toContain("docker image inspect");
+    // Remote Daytona manifests must use registry inspection. Local oracle
+    // images in the test job can still use the Docker daemon.
+    expect(daytonaImageJob).not.toContain("docker image inspect");
     expect(workflow).not.toContain("docker buildx prune --all --force");
     expect(workflow).not.toContain("docker system prune --all --force");
     expect(workflow).toContain('.architecture == "amd64"');
@@ -137,20 +171,21 @@ describe("runner E2E Daytona image contract", () => {
       workflow.indexOf(`--format '{{json .Image}}'`),
     );
     const providerInstall = dockerfile.indexOf(
-      "RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'",
+      "pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'",
     );
     const runnerSourceCopy = dockerfile.indexOf(
-      "COPY packages/paperclip-runner/src ./packages/paperclip-runner/src",
+      "COPY packages ./packages",
     );
     const providerRevisionArg = dockerfile.indexOf(
       "ARG PAPERCLIP_RUNNER_SOURCE_REVISION",
     );
-    const cliInstall = dockerfile.indexOf("RUN npm install -g");
+    const cliInstall = dockerfile.indexOf("npm install -g");
     const finalMetadataArgs = dockerfile.lastIndexOf(
       "ARG PAPERCLIP_RUNNER_CONTENT_ID",
     );
     expect(providerInstall).toBeGreaterThan(0);
-    expect(providerInstall).toBeLessThan(runnerSourceCopy);
+    expect(runnerSourceCopy).toBeGreaterThan(0);
+    expect(runnerSourceCopy).toBeLessThan(providerInstall);
     expect(providerInstall).toBeLessThan(providerRevisionArg);
     expect(cliInstall).toBeGreaterThan(0);
     expect(cliInstall).toBeLessThan(finalMetadataArgs);

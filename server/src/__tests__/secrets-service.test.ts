@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { resolveCodexAuthCacheDir, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import {
   activityLog,
@@ -672,6 +672,79 @@ describeEmbeddedPostgres("secretService", () => {
     // provider write until the rotate's whole locked operation completes.
     // This final order is proof of mutual exclusion, not a timing guess.
     expect(events).toEqual(["rotate-provider-enter", "rotate-provider-exit", "create-provider-enter"]);
+  });
+
+  it("locks the parent secret row before its version rows during rotate, so a concurrent credential write-back cannot deadlock with it", async () => {
+    // Inserting the rotate's new version row needs a read lock on the
+    // parent secret row to satisfy the version table's foreign key, so a
+    // holder that locks the parent row first would block that insert and
+    // never reach the statements this test distinguishes. Lock the secret's
+    // existing version row instead: that does not touch the parent row, so
+    // the rotate call's insert proceeds and the call reaches its final
+    // transaction, where it then queues behind this same held row for its
+    // "mark the old version previous" update.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `lock-order-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "original-value",
+    });
+
+    const holderPidReady = deferred<number>();
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    const holder = db.transaction(async (tx) => {
+      await tx
+        .select({ id: companySecretVersions.id })
+        .from(companySecretVersions)
+        .where(and(eq(companySecretVersions.secretId, secret.id), eq(companySecretVersions.version, 1)))
+        .for("update");
+      const [backend] = (await tx.execute(sql`select pg_backend_pid() as pid`)) as unknown as Array<{ pid: number }>;
+      holderPidReady.resolve(backend.pid);
+      await holderReleased;
+    });
+    const holderPid = await holderPidReady.promise;
+
+    const rotateCall = svc.rotate(secret.id, { value: "rotated-value" });
+
+    // Poll until Postgres reports the rotate call's own backend blocked
+    // behind the lock holder above, instead of guessing how long that
+    // takes.
+    let rotateBlocked = false;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const rows = (await db.execute(
+        sql`select 1 from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))`,
+      )) as unknown as Array<unknown>;
+      if (rows[0]) {
+        rotateBlocked = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    try {
+      expect(rotateBlocked).toBe(true);
+      // The rotate call is confirmed blocked on the existing version row.
+      // If it had updated that row before the parent secret row — the
+      // opposite order this fix removes — the parent row would still be
+      // free here. A `nowait` probe from a third transaction settles which
+      // is true: it fails the instant the parent row already carries an
+      // uncommitted write from the blocked rotate call, and this fix makes
+      // that write happen first.
+      const probe = await db
+        .transaction(async (tx) => {
+          await tx.execute(sql`select 1 from company_secrets where id = ${secret.id} for update nowait`);
+        })
+        .then(() => null)
+        .catch((error: unknown) => error);
+      expect(String((probe as { cause?: unknown })?.cause ?? probe)).toMatch(/could not obtain lock/i);
+    } finally {
+      releaseHolder();
+    }
+    await holder;
+    await expect(rotateCall).resolves.toMatchObject({ latestVersion: 2 });
   });
 
   it("fails a queued local_encrypted create when an account-home cleanup removes its directory first", async () => {

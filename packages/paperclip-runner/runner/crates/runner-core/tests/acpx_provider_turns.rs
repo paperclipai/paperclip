@@ -46,6 +46,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
         system_instructions: "Complete the supplied task.".to_owned(),
+        runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
         expected_identity: None,
     }
@@ -276,11 +277,11 @@ fn rotates_settled_tool_receipts_between_reusable_turns() {
         reserved_session
             .start_turn(turn_id, "Please continue", &std::env::temp_dir())
             .unwrap();
-        assert!(reserved_session
-            .poll_event(Duration::from_secs(1))
-            .unwrap()
-            .unwrap()
-            .is_empty());
+        assert!(matches!(
+            &reserved_session.poll_event(Duration::from_secs(1)).unwrap().unwrap()[0],
+            AcpxProviderStateEvent::ToolCall { operation_id, .. }
+                if operation_id == "paperclip_finish"
+        ));
         let result = reserved_session
             .poll_event(Duration::from_secs(1))
             .unwrap()
@@ -465,7 +466,11 @@ fn reserved_terminal_results_require_an_authorized_correlated_invocation() {
             .unwrap();
 
         let invocation = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
-        assert!(invocation.is_empty());
+        assert!(matches!(
+            &invocation[0],
+            AcpxProviderStateEvent::ToolCall { operation_id, .. }
+                if operation_id == "paperclip_finish" || operation_id == "paperclip_block"
+        ));
         assert_eq!(
             session
                 .state()
@@ -496,6 +501,64 @@ fn reserved_terminal_results_require_an_authorized_correlated_invocation() {
 }
 
 #[test]
+fn reserved_completion_waits_for_feedback_and_allows_correction_in_same_turn() {
+    let mut session =
+        AcpxProviderSession::start(&config("turns-reserved-feedback-roundtrip")).unwrap();
+    session
+        .start_turn("turn-1", "Please complete", &std::env::temp_dir())
+        .unwrap();
+
+    let first = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        &first[0],
+        AcpxProviderStateEvent::ToolCall { call_id, operation_id, input }
+            if call_id == "call-finish" && operation_id == "paperclip_finish"
+                && input["reportedWorkDisposition"] == "needs_review"
+    ));
+    session
+        .deliver_tool_result(&paperclip_runner_core::provider_bridge::ToolResult {
+            call_id: "call-finish".to_owned(),
+            operation_id: "paperclip_finish".to_owned(),
+            result: json!({
+                "success":false,
+                "contentItems":[
+                    {"type":"inputText","text":"Name the reviewer and decision."}
+                ]
+            }),
+            is_error: true,
+        })
+        .unwrap();
+
+    let corrected = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        &corrected[0],
+        AcpxProviderStateEvent::ToolCall { call_id, operation_id, input }
+            if call_id == "call-finish-2" && operation_id == "paperclip_finish"
+                && input["reportedWorkDisposition"] == "done"
+    ));
+    session
+        .deliver_tool_result(&paperclip_runner_core::provider_bridge::ToolResult {
+            call_id: "call-finish-2".to_owned(),
+            operation_id: "paperclip_finish".to_owned(),
+            result: json!({
+                "schema":"paperclip.run_result.v1",
+                "reportedWorkDisposition":"done",
+                "summary":"Corrected completion.",
+                "completionClaim":{"contractRevision":"acpx-provider-turns-v1","objectiveSatisfied":true,"criteria":[],"remainingWork":[]},
+                "evidence":[],"verification":[],"attentionRequests":[],"artifacts":[],
+            }),
+            is_error: false,
+        })
+        .unwrap();
+    let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        terminal.last().unwrap(),
+        AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-1"
+    ));
+    session.shutdown("feedback roundtrip complete").unwrap();
+}
+
+#[test]
 fn correlates_reserved_results_by_raw_digest_without_exposing_sensitive_values() {
     let mut session =
         AcpxProviderSession::start(&config("turns-sensitive-reserved-result-terminal")).unwrap();
@@ -503,11 +566,11 @@ fn correlates_reserved_results_by_raw_digest_without_exposing_sensitive_values()
         .start_turn("turn-1", "Please help", &std::env::temp_dir())
         .unwrap();
 
-    assert!(session
-        .poll_event(Duration::from_secs(1))
-        .unwrap()
-        .unwrap()
-        .is_empty());
+    assert!(matches!(
+        &session.poll_event(Duration::from_secs(1)).unwrap().unwrap()[0],
+        AcpxProviderStateEvent::ToolCall { operation_id, .. }
+            if operation_id == "paperclip_finish"
+    ));
     let result_events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
     assert!(matches!(
         &result_events[0],
@@ -535,11 +598,11 @@ fn rejects_sensitive_reserved_results_that_only_match_after_redaction() {
     session
         .start_turn("turn-1", "Please help", &std::env::temp_dir())
         .unwrap();
-    assert!(session
-        .poll_event(Duration::from_secs(1))
-        .unwrap()
-        .unwrap()
-        .is_empty());
+    assert!(matches!(
+        &session.poll_event(Duration::from_secs(1)).unwrap().unwrap()[0],
+        AcpxProviderStateEvent::ToolCall { operation_id, .. }
+            if operation_id == "paperclip_finish"
+    ));
 
     let error = session
         .poll_event(Duration::from_secs(1))
@@ -580,11 +643,11 @@ fn fails_closed_before_returning_a_mismatched_reserved_result() {
     session
         .start_turn("turn-1", "Please help", &std::env::temp_dir())
         .unwrap();
-    assert!(session
-        .poll_event(Duration::from_secs(1))
-        .unwrap()
-        .unwrap()
-        .is_empty());
+    assert!(matches!(
+        &session.poll_event(Duration::from_secs(1)).unwrap().unwrap()[0],
+        AcpxProviderStateEvent::ToolCall { operation_id, .. }
+            if operation_id == "paperclip_finish"
+    ));
 
     let error = session
         .poll_event(Duration::from_secs(1))

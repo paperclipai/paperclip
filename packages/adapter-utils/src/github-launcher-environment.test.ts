@@ -1,14 +1,16 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { githubBrokerEnvironment } from "./github-launcher.js";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   prepareGitHubOperationLaunchers,
+  prepareGitHubExecutionEnvironment,
   runAdapterExecutionTargetProcess,
 } from "./execution-target.js";
 
@@ -65,6 +67,133 @@ async function sandbox(layout: string) {
 }
 
 describe("managed GitHub launcher environment", () => {
+  it.each(["module", "commonjs"])("runs managed GitHub launchers inside a %s project", async (type) => {
+    const fixture = await sandbox("usr/bin");
+    const packageJson = JSON.stringify({ type });
+    await writeFile(path.join(fixture.root, "package.json"), packageJson);
+    // Exercise real Git; gh uses the fixture CLI because it need not be installed.
+    await rm(path.join(fixture.bin, "git"));
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-package-type", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    for (const cli of ["git", "gh"]) {
+      const result = await fixture.runner.execute({
+        command: path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, cli), args: ["--version"], env,
+      });
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(cli === "git" ? /^git version / : /^gh started\n$/);
+    }
+    expect(await readFile(path.join(fixture.root, "package.json"), "utf8")).toBe(packageJson);
+  });
+
+  it("clears empty identity overrides in sandbox shells and preserves a captured identity", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-git-identity", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({ GIT_AUTHOR_NAME: "Host Author" }, { url: "", token: "" }),
+    });
+    const readIdentity = `node -e 'process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) => /^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)$/.test(key)))))'`;
+    const shell = await fixture.runner.execute({ command: "bash", args: ["--noprofile", "--norc", "-c", readIdentity], env });
+    expect(shell.exitCode, shell.stderr).toBe(0);
+    expect(JSON.parse(shell.stdout)).toEqual({});
+
+    const identity = { GIT_AUTHOR_NAME: "Captured Author", GIT_AUTHOR_EMAIL: "author@example.test",
+      GIT_COMMITTER_NAME: "Captured Committer", GIT_COMMITTER_EMAIL: "committer@example.test" };
+    for (const profile of [".profile", ".bash_profile", ".bashrc", ".zshenv", ".zprofile", ".zshrc"]) {
+      const script = await readFile(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, profile), "utf8");
+      for (const captured of [false, true]) {
+        const result = await fixture.runner.execute({ command: "sh", args: ["-c", `${script}\n${readIdentity}`],
+          env: { ...env, ...(captured ? identity : {}) } });
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual(captured ? identity : {});
+      }
+    }
+  });
+
+  it.each([false, true])("probes the remote workspace when the controller cwd is absent (host credentials: %s)", async (hostCredentials) => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubExecutionEnvironment({
+      target: fixture.target,
+      cwd: path.join(fixture.root, "controller-only", "agent-workspace"),
+      env: {},
+      hostCredentials,
+      networkAccess: true,
+    });
+
+    expect(env.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("enabled");
+    expect(env.PAPERCLIP_GIT_METADATA_ROOTS).toBe("[]");
+    expect(JSON.parse(env.PAPERCLIP_RUNNER_NETWORK_ROOTS!)).not.toHaveLength(0);
+    expect(fixture.runner.execute).toHaveBeenCalledWith(expect.objectContaining({ cwd: fixture.root }));
+  });
+
+  it("reads Git metadata from the SSH workspace instead of an existing controller directory", async () => {
+    const fixture = await sandbox("ssh-toolchain/bin");
+    // Use real Git for the probe, not the launcher fixture's stub.
+    await rm(path.join(fixture.bin, "git"));
+    await exec("git", ["init", fixture.root]);
+    const controllerCwd = path.join(fixture.root, "controller");
+    await mkdir(controllerCwd);
+    vi.spyOn(ssh, "createSshCommandManagedRuntimeRunner").mockReturnValue(fixture.runner);
+    const target = { kind: "remote" as const, transport: "ssh" as const, remoteCwd: fixture.root,
+      spec: { host: "sandbox.example.test", port: 22, username: "runner", remoteCwd: fixture.root,
+        remoteWorkspacePath: fixture.root, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+
+    const env = await prepareGitHubExecutionEnvironment({
+      target, cwd: controllerCwd, env: {}, hostCredentials: false, networkAccess: true,
+    });
+
+    expect(JSON.parse(env.PAPERCLIP_GIT_METADATA_ROOTS!)).toEqual([await realpath(path.join(fixture.root, ".git"))]);
+  });
+
+  it("uses target Git configuration without importing controller credentials", async () => {
+    const fixture = await sandbox("usr/bin");
+    vi.stubEnv("GH_TOKEN", "controller-secret");
+    await mkdir(path.join(fixture.root, ".config/gh"), { recursive: true });
+    await writeFile(path.join(fixture.root, ".config/gh/hosts.yml"), "host credential fixture");
+    const execute = fixture.runner.execute.getMockImplementation()!;
+    fixture.runner.execute.mockImplementation(async (input) => {
+      expect(input.command).toBe("sh"); // No Node executable is required on the SSH host.
+      const result = await execute(input);
+      return { ...result, stdout: `SSH login banner\n${result.stdout}\nlogout` };
+    });
+    const env = await prepareGitHubExecutionEnvironment({
+      target: fixture.target, cwd: fixture.root, env: {
+        PAPERCLIP_GIT_METADATA_ROOTS: '["/injected"]',
+        PAPERCLIP_RUNNER_NETWORK_ROOTS: '["/injected"]',
+        PAPERCLIP_GITHUB_HOST_HOME: "/injected",
+        PAPERCLIP_GITHUB_AUTH_MODE: "managed",
+        PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled",
+      }, hostCredentials: true, networkAccess: true,
+    });
+    expect(env.PAPERCLIP_GIT_METADATA_ROOTS).not.toContain("/injected");
+    expect(env.PAPERCLIP_RUNNER_NETWORK_ROOTS).not.toContain("/injected");
+    expect(env.PAPERCLIP_GITHUB_AUTH_MODE).toBe("host");
+    expect(env.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("enabled");
+    expect(env.PAPERCLIP_GITHUB_HOST_HOME).toBe(fixture.root);
+    expect(env.GH_CONFIG_DIR).toBe(path.join(fixture.root, ".config/gh"));
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.PAPERCLIP_GITHUB_LAUNCHER_DIR).toBeUndefined();
+  });
+
+  it("preserves local host credential helpers and validates worktree metadata", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-host-git-")); roots.push(root);
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("GH_TOKEN", "legacy-token");
+    await writeFile(path.join(root, ".gitconfig"), '[credential]\n  helper = store\n');
+    await exec("git", ["init", path.join(root, "repo")]);
+    const env = await prepareGitHubExecutionEnvironment({ target: null, cwd: path.join(root, "repo"), env: {}, hostCredentials: true, networkAccess: true });
+    expect(env.GH_TOKEN).toBe("legacy-token");
+    expect(env.GIT_CONFIG_GLOBAL).toBeUndefined();
+    expect(env.PAPERCLIP_GIT_METADATA_ROOTS).toContain("/repo/.git");
+    const config = await exec("git", ["config", "credential.helper"], { cwd: root, env: { ...process.env, ...env } });
+    expect(config.stdout.trim()).toBe("store");
+    const isolated = await prepareGitHubExecutionEnvironment({ target: null, cwd: root, env: {}, hostCredentials: false, networkAccess: false });
+    expect(isolated.GH_TOKEN).toBeUndefined();
+    expect(isolated.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("disabled");
+    expect(isolated.PAPERCLIP_GITHUB_HOST_HOME).toBeUndefined();
+  });
+
   it.each(["nvm/current/bin", "usr/local/bin", "tools with 'quotes'/bin"])(
     "preserves %s CLIs and keeps GitHub wrappers first in child shells",
     async (layout) => {

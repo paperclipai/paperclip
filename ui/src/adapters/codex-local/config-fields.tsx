@@ -161,7 +161,7 @@ export function CodexLocalConfigFields({
       {!hideEngineChoice && (
         <Field
           label="Execution engine"
-          hint="Auto uses ACP when prerequisites pass and falls back to Codex CLI with diagnostics."
+          hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it."
         >
           <select
             className={inputClass}
@@ -182,7 +182,7 @@ export function CodexLocalConfigFields({
                   );
             }}
           >
-            <option value="auto">Auto (ACP preferred)</option>
+            <option value="auto">Default (ACP)</option>
             <option value="cli">Codex CLI</option>
             <option value="acp">ACP</option>
           </select>
@@ -195,9 +195,10 @@ export function CodexLocalConfigFields({
         >
           <select
             className={inputClass}
-            value={runnerProvider}
+            value={runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "grok" ? "grok" : runnerProvider}
             onChange={(event) => {
-              const provider = isPaperclipRunnerProvider(event.target.value)
+              const grok = event.target.value === "grok";
+              const provider = grok ? "acpx" : isPaperclipRunnerProvider(event.target.value)
                 ? event.target.value
                 : "codex";
               const model =
@@ -208,7 +209,7 @@ export function CodexLocalConfigFields({
                     : provider === "aws_agentcore"
                       ? defaultAwsAgentCoreModel
                       : provider === "acpx"
-                        ? defaultAcpxClaudeModel
+                        ? grok ? "grok-4.7" : defaultAcpxClaudeModel
                         : DEFAULT_CODEX_LOCAL_MODEL;
               if (isCreate) {
                 set!({
@@ -216,23 +217,24 @@ export function CodexLocalConfigFields({
                   adapterSchemaValues: {
                     ...values!.adapterSchemaValues,
                     provider,
-                    ...(provider === "acpx" ? { acpxAgent: "claude" } : {}),
+                    ...(provider === "acpx" ? { acpxAgent: grok ? "grok" : "claude" } : {}),
                   },
                 });
               } else {
                 mark("adapterConfig", "provider", provider);
                 mark("adapterConfig", "model", model);
                 if (provider === "acpx") {
-                  mark("adapterConfig", "acpxAgent", "claude");
+                  mark("adapterConfig", "acpxAgent", grok ? "grok" : "claude");
                 }
               }
             }}
           >
             <option value="codex">Codex</option>
-            <option value="opencode">OpenCode 1.18.29</option>
+            <option value="opencode">OpenCode 1.18.32</option>
             <option value="claude_managed">Claude Managed</option>
             <option value="aws_agentcore">AWS AgentCore</option>
             <option value="acpx">ACPX Claude</option>
+            <option value="grok">Grok Build</option>
           </select>
         </Field>
       )}

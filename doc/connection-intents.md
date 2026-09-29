@@ -11,6 +11,8 @@ Connection intents let an agent ask the responsible user for a known service con
 
 Provider-specific setup must stay in the shared feature and `AppDefinition` metadata. Do not add provider forms or connection mutations to either host.
 
+When a task connection needs Paperclip Cloud enrollment, the shared dialog opens enrollment in a separate window. The task keeps its access selection and interaction ID. A new-tab link is available if the window does not open. The dialog reads server enrollment status and refreshes the provider catalog after approval; enrollment alone does not mark the app connected. OAuth retains the interaction ID even if setup resumes in the page host, so the verified callback can resolve the task card and queue its continuation.
+
 ## Agent tools
 
 Every active heartbeat with a responsible user receives two run-bound tools:

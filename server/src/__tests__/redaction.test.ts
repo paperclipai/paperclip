@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   PRP_V1_EVENT_TYPES,
+  PRP_V2_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
   redactEventPayload,
@@ -23,6 +24,31 @@ describe("redaction", () => {
     expect([...PRP_V1_EVENT_TYPES]).toEqual(schema.properties.eventType.enum);
   });
 
+  it("keeps the v2 additions in parity with the canonical v2 schema", () => {
+    const v1 = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../../packages/paperclip-runner/protocol/schemas/event.schema.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as { properties: { eventType: { enum: string[] } } };
+    const v2 = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../../packages/paperclip-runner/protocol/schemas/event-v2.schema.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as { properties: { eventType: { enum: string[] } } };
+    const v1Types = new Set(v1.properties.eventType.enum);
+    expect([...PRP_V2_EVENT_TYPES]).toEqual(
+      v2.properties.eventType.enum.filter((eventType) => !v1Types.has(eventType)),
+    );
+  });
+
   it("preserves every discriminator in the cross-language replay stream", () => {
     const fixture = JSON.parse(
       readFileSync(
@@ -41,6 +67,60 @@ describe("redaction", () => {
       expect(envelope.sourceEventId).toBe(event.sourceEventId);
       expect(envelope.payload).toEqual(event.payload);
     }
+  });
+
+  it("preserves current PRP v2 session discriminators", () => {
+    const schema = JSON.parse(readFileSync(
+      new URL("../../../packages/paperclip-runner/protocol/schemas/event-v2.schema.json", import.meta.url),
+      "utf8",
+    )) as { properties: { eventType: { enum: string[] } } };
+    for (const eventType of schema.properties.eventType.enum) {
+      const event = {
+        schema: "paperclip.prp.event.v2",
+        schemaVersion: 2,
+        eventType,
+        payload: { safe: true },
+      };
+      const sanitized = redactEventPayload({ prpEvent: event });
+      expect(sanitized?.prpEvent).toEqual(event);
+    }
+  });
+
+  it("redacts unknown or mismatched PRP discriminators", () => {
+    const unknown = redactEventPayload({
+      prpEvent: {
+        schema: "paperclip.prp.event.v2",
+        schemaVersion: 2,
+        eventType: "session.not-a-real.event",
+      },
+    });
+    expect((unknown?.prpEvent as Record<string, unknown>).eventType).toBe(
+      REDACTED_EVENT_VALUE,
+    );
+
+    const mismatched = redactEventPayload({
+      prpEvent: {
+        schema: "paperclip.prp.event.v1",
+        schemaVersion: 2,
+        eventType: "session.capabilities.updated",
+      },
+    });
+    expect((mismatched?.prpEvent as Record<string, unknown>).eventType).toBe(
+      REDACTED_EVENT_VALUE,
+    );
+
+    const secretPayload = redactEventPayload({
+      prpEvent: {
+        schema: "paperclip.prp.event.v2",
+        schemaVersion: 2,
+        eventType: "session.capabilities.updated",
+        payload: { authorization: "Bearer secret-value" },
+      },
+    });
+    expect(
+      ((secretPayload?.prpEvent as Record<string, unknown>).payload as Record<string, unknown>)
+        .authorization,
+    ).toBe(REDACTED_EVENT_VALUE);
   });
 
   it("redacts sensitive keys and nested secret values", () => {
@@ -133,6 +213,27 @@ describe("redaction", () => {
     });
   });
 
+  it("preserves native execution v5 and model envelope v3 schema identifiers", () => {
+    const input = {
+      schema: "paperclip.native-execution-input.v5",
+      nested: {
+        runtimeSchema: "paperclip.native-model-envelope.v3",
+        providerValue: "paperclip.native-execution-input.v5",
+      },
+    };
+    expect(sanitizeRecord(input)).toEqual({
+      schema: input.schema,
+      nested: {
+        runtimeSchema: input.nested.runtimeSchema,
+        providerValue: REDACTED_EVENT_VALUE,
+      },
+    });
+    expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v4", runtimeSchema: "paperclip.native-model-envelope.v2" })).toEqual({
+      schema: "paperclip.native-execution-input.v4",
+      runtimeSchema: "paperclip.native-model-envelope.v2",
+    });
+  });
+
   it("preserves only known PRP v1 event discriminators inside validated envelopes", () => {
     const payload = {
       prpEvent: {
@@ -206,6 +307,7 @@ describe("redaction", () => {
       "runner.turn.submit",
       "runner.session.startup",
       "provider.turn.queue",
+      "question_response.to_run_created",
       "native.session.execute",
       "native.result.finalize",
       "task.run.measured",

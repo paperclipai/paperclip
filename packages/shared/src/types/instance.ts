@@ -30,6 +30,7 @@ export type InstanceExecutionMode = "kubernetes" | "any";
 
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
+  /** @deprecated Legacy instance value. Use /auth/preferences for personal shortcuts. */
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
@@ -53,6 +54,13 @@ export interface InstanceExperimentalSettings {
    */
   enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
+  /**
+   * Move the execution workspace default for a project that carries no policy
+   * of its own from the shared project checkout to an isolated per-task
+   * worktree. Inert unless `enableIsolatedWorkspaces` is also on, and never
+   * overrides a project that stores its own policy.
+   */
+  enableIsolatedWorkspacesByDefault: boolean;
   enableStreamlinedLeftNavigation: boolean;
   /**
    * Use the streamlined shell, navigation, and contextual-sidebar experience.
@@ -62,8 +70,15 @@ export interface InstanceExperimentalSettings {
   enableStreamlinedUi: boolean;
   /** @deprecated Compatibility key only. Apps is always enabled. */
   enableApps: boolean;
+  /** Exposes chat connector setup and Board surfaces; existing delivery continues when hidden. */
+  enableChatConnectors: boolean;
+  /** @deprecated Compatibility key only. MCP aggregators are always enabled. */
+  enableMcpAggregators: boolean;
+  /** Show experimental memory connection setup. Existing connections remain usable. */
+  enableMemoryConnectors: boolean;
   enablePipelines: boolean;
   enableCases: boolean;
+  enableAgentChat: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;

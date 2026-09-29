@@ -61,6 +61,45 @@ the same origin as the artifact as an independent trust anchor.
 Each installer flag also has a `PAPERCLIP_INSTALL_*` environment-variable
 equivalent. This helps where passing arguments through a pipe is awkward.
 
+Codex ACP workspace sessions enable networking so agents can report task outcomes.
+To disable it explicitly, set `extraArgs` to
+`["-c", "sandbox_workspace_write.network_access=false"]`, or set
+`env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS="false"`. Execution-target network denial
+also remains enforced. Read-only ACP mode remains read-only.
+
+## Node runtime used by background services
+
+Check the Node executable used by the running service, not only `node --version`
+in an interactive shell. Systemd and launchd do not load shell version-manager
+configuration. A newer Node installed elsewhere does not upgrade a running
+service or change a custom startup script's `PATH`.
+
+Managed installs pin the validated Node executable in the `paperclipai` shim
+and prepend its directory to `PATH` for child tools, including ACP servers with
+an `/usr/bin/env node` shebang. Re-run the installer using the supported
+Node runtime after changing runtime installations, then restart the service.
+For example, put the supported Node's bin directory first on `PATH` and run
+`npx paperclipai@latest install --yes`. Do not use the old managed shim to
+re-pin Node: it intentionally continues launching its previously pinned runtime.
+Installs and updates refresh existing managed shims in place. Updates reject an
+unsupported running Node before installing or activating a payload; read-only
+update checks and rollback remain available for recovery. Global npm installs and
+source checkout services must configure their own executable and child-process `PATH`.
+
+For custom service wrappers, use an absolute, supported Node executable and put
+that executable's directory first on `PATH`. Keep required existing PATH entries.
+On Linux, verify the running executable with `/proc/<server-pid>/exe`; an
+interactive shell version check alone is insufficient. Use the guarded restart
+procedure in [DEVELOPING.md](DEVELOPING.md#hot-restart-deploys) when jobs are active.
+
+Legacy local adapters default to ACP, including configurations with no `engine`
+field or the old `auto` value. An unavailable ACP runtime fails the run and the
+agent environment test with a setup error; it never silently changes engines.
+Repair the reported prerequisite or explicitly select `engine: cli`. Local
+filesystem/network confinement and in-place Codex workspaces require explicit
+CLI selection. CLI sandbox defaults and explicit restrictions are described in
+the adapter configuration documentation.
+
 ## Managed Install Layout
 
 Managed code is separate from instance data:

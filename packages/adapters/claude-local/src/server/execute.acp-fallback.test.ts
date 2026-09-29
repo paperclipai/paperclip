@@ -39,10 +39,10 @@ const {
 
 vi.mock("./acp.js", () => ({
   createClaudeAcpExecutor: () => executeClaudeAcp,
-  formatClaudeAcpFallbackMessage: (reason: string) =>
-    `[paperclip] Claude ACP default unavailable; falling back to Claude CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`,
   resolveClaudeExecutionEngineForRun: async (ctx: { config: Record<string, unknown> }) =>
-    ctx.config.engine === "acp"
+    ctx.config.engine === "cli"
+      ? { engine: "cli", explicit: true }
+      : ctx.config.engine === "acp"
       ? { engine: "acp", explicit: true }
       : { engine: "acp", explicit: false },
 }));
@@ -93,28 +93,17 @@ describe("claude_local ACP startup fallback", () => {
     vi.unstubAllEnvs();
   });
 
-  it("falls back to Claude CLI when auto-selected ACP fails before execution starts", async () => {
+  it("does not start CLI after default ACP fails", async () => {
     const ctx = buildContext();
-
-    const result = await execute(ctx as never);
-
-    expect(result.exitCode).toBe(0);
+    await expect(execute(ctx as never)).rejects.toThrow('Unexpected "<<"');
     expect(executeClaudeAcp).toHaveBeenCalledTimes(1);
-    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
-    expect(ctx.onLog).toHaveBeenCalledWith(
-      "stderr",
-      expect.stringContaining("Claude ACP startup failed"),
-    );
-    expect(ctx.onLog).toHaveBeenCalledWith(
-      "stderr",
-      expect.stringContaining('Unexpected "<<"'),
-    );
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
 
   it("trusts the Paperclip API URL when network access is allowlisted", async () => {
     const paperclipApiUrl = "http://127.0.0.1:4310";
     vi.stubEnv("PAPERCLIP_API_URL", paperclipApiUrl);
-    const ctx = buildContext({ networkScope: "allowlist" });
+    const ctx = buildContext({ engine: "cli", networkScope: "allowlist" });
 
     await execute(ctx as never);
 

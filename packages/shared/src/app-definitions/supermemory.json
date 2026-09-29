@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "slug": "supermemory",
+  "name": "Supermemory",
+  "description": "Search and save shared memories, documents, and profiles.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/supermemory.png"
+  },
+  "urlPatterns": [
+    "https://mcp.supermemory.ai/*"
+  ],
+  "docsUrl": "https://supermemory.ai/docs/supermemory-mcp/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.supermemory.ai/mcp",
+        "scopesHint": [
+          "openid",
+          "profile",
+          "email",
+          "offline_access"
+        ]
+      },
+      "guidanceMd": "Sign in to Supermemory, then choose a workspace, read or write access, and optional tags. Use a separate space for unrelated work.",
+      "riskTier": "S3",
+      "label": "Sign in with Supermemory",
+      "consoleLinks": {
+        "docs": "https://supermemory.ai/docs/supermemory-mcp/mcp"
+      },
+      "warnings": [
+        "Sign in to Supermemory and select the spaces this connection may access. The hosted MCP uses OAuth, not a developer API key."
+      ],
+      "grantKinds": [
+        "user"
+      ]
+    }
+  ]
+}

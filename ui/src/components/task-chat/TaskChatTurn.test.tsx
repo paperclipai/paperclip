@@ -344,7 +344,7 @@ describe("TaskChatTurn", () => {
       ],
     });
 
-    expect(fold()?.textContent).toContain("c1");
+    expect(fold()?.textContent).not.toContain("c1");
     expect(fold()?.textContent).not.toContain("question-history");
     const history = container.querySelector(
       '[data-testid="task-chat-turn-persistent-history"]',
@@ -355,7 +355,9 @@ describe("TaskChatTurn", () => {
 
   it("toggles open on summary click", () => {
     renderTurn(SETTLED);
+    expect(fold()?.textContent).not.toContain("c1");
     flushSync(() => summaryBtn()!.click());
+    expect(fold()?.textContent).toContain("c1");
     expect(fold()?.getAttribute("data-folded")).toBe("false");
     expect(
       summaryBtn()
@@ -383,7 +385,10 @@ describe("TaskChatTurn", () => {
     expect(header?.textContent).toContain("Editing files…");
     expect(header?.textContent).toContain("Edit · server/src/routes/auth.ts");
     expect(header?.getAttribute("aria-expanded")).toBe("false");
-    expect(header?.firstElementChild?.firstElementChild?.tagName).toBe("svg");
+    expect(
+      header?.querySelector('[data-testid="task-chat-status-caret-slot"] svg')
+        ?.tagName,
+    ).toBe("svg");
     // All activity is folded behind it — no rows visible, no summary line.
     expect(fold()?.getAttribute("data-folded")).toBe("true");
     expect(summaryBtn()).toBeNull();

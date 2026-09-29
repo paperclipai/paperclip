@@ -1,3 +1,4 @@
+import { createLocalNativeQuestionBridge } from "./local-native-question-bridge.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
@@ -8,6 +9,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
@@ -199,12 +201,45 @@ describeEmbeddedPostgres("native question bridge", () => {
     };
   }
 
-  it("materializes, validates, and durably resumes a provider-neutral question response", async () => {
+  it("projects an executor question immediately and routes its durable answer into the same live turn", async () => {
+    await seed();
+    const event = runtimeRequestEvent();
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId, seq: 1,
+      eventType: event.eventType, stream: "system", level: "info", payload: { prpEvent: event } });
+    const resolve = vi.fn(async (input: any) => { await input.authorizeBeforeDispatch(); return { commandId: "live-response" }; });
+    const bridge = createLocalNativeQuestionBridge({ db, binding: binding(), resolve });
+    try {
+      await bridge.attach();
+      await bridge.observe(event);
+      await bridge.observe(event); // replay must not create a second card
+      const cards = await issueThreadInteractionService(db).listForIssue(issueId);
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ status: "pending", sourceRunId: runId, continuationPolicy: "none" });
+      const answered = await issueThreadInteractionService(db).answerQuestions(
+        { id: issueId, companyId, status: "in_progress" }, cards[0]!.id,
+        { answers: [{ questionId: "color", optionIds: ["green"] }] }, { userId: "operator-1" },
+      );
+      if (answered.kind !== "ask_user_questions") throw new Error("wrong question kind");
+      expect(await deliverNativeQuestionResponse(db, answered)).toBe("queued");
+      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ runId, requestId: "request-1", turnId: "turn-1",
+        resolution: { action: "submit", response: { schema: "paperclip.question_response.v1", answers: { color: { selectedOptionIds: ["green"] } } } },
+      }));
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+      await expect(resolve.mock.calls[0]![0].authorizeBeforeDispatch()).rejects.toThrow("native_question_not_pending");
+    } finally { bridge.close(); }
+  });
+
+  it.each(["codex", "claude"])("materializes, validates, and durably resumes a %s question response", async (provider) => {
     await seed();
     const interaction = await projectNativeRuntimeRequest({
       db,
       binding: binding(),
-      event: runtimeRequestEvent(),
+      event: { ...runtimeRequestEvent(), payload: {
+        request: { ...(runtimeRequestEvent().payload.request as Record<string, unknown>),
+          origin: { adapter: provider === "claude" ? "acpx-runtime-sidecar" : "codex-app-server", provider,
+            method: provider === "claude" ? "elicitation/create" : "item/tool/requestUserInput" },
+        },
+      } },
     });
 
     expect(interaction).toMatchObject({

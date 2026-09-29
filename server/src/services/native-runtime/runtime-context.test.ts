@@ -11,6 +11,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const serviceMocks = vi.hoisted(() => ({
   exportFiles: vi.fn(),
   getEffectiveProfilesForAgent: vi.fn(),
+  githubBotConnectionIdsForRun: vi.fn(),
+}));
+
+vi.mock("../chat-github-tools.js", () => ({
+  githubBotConnectionIdsForRun: serviceMocks.githubBotConnectionIdsForRun,
 }));
 
 vi.mock("../agent-instructions.js", () => ({
@@ -45,6 +50,7 @@ async function makeTreeWritable(target: string): Promise<void> {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set());
   previousPaperclipHome = process.env.PAPERCLIP_HOME;
   previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-native-context-"));
@@ -322,4 +328,20 @@ it("pins both permitted GitHub tool catalogs even when another user’s health p
   expect(snapshot.digest).toBe(expected);
   expect(snapshot.bindingId).toBe("native-mcp:run-1");
   expect(limit).toHaveBeenCalledOnce();
+});
+
+it("pins channel tools only when the current task run is bound to that bot", async () => {
+  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+    entries: [{ effect: "include", connectionId: "bot-connection" }],
+    installedConnections: [{
+      id: "bot-connection", status: "active", enabled: true, healthStatus: "healthy",
+      transport: "chat_sdk", config: { sourceTemplateKey: "github-chat" }, transportConfig: {},
+    }],
+    allowedTools: [{ id: "bot-read-pr", connectionId: "bot-connection" }],
+  });
+  const input = { db: {} as Db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" };
+  expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBeNull();
+  serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set(["bot-connection"]));
+  expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBe("native-mcp:run-1");
+  expect(serviceMocks.githubBotConnectionIdsForRun).toHaveBeenLastCalledWith(input.db, "company-1", "agent-1", "run-1");
 });

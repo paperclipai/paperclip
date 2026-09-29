@@ -144,6 +144,36 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 
 See [Supabase pricing](https://supabase.com/pricing) for current details.
 
+## Connection loss during a transaction
+
+When a database connection closes, its transaction fails. Paperclip does not
+replay that transaction. New requests can use a fresh connection from the pool.
+Queries from the failed transaction must keep failing, even after the pool
+reconnects.
+
+Source builds carry `patches/postgres@3.4.9.patch` for this behavior. It rejects
+queued and later queries from a disconnected transaction or reserved connection,
+and prevents a released, closed connection from returning to the open pool.
+The patch covers both ESM and CommonJS. The regression suite terminates real
+PostgreSQL backends and checks rejection, pool recovery, and transaction isolation.
+Remove the patch when an upstream release passes these tests. Installs of the
+unmodified `postgres` package outside this workspace do not include the patch.
+
+Trusted-header actor synchronization retries transient connection failures,
+including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
+idempotent actor synchronization operations, not arbitrary transactions. A
+persistent outage still fails the request after the bounded retries; each
+connection attempt remains subject to the configured database connect timeout.
+
+## Execution identity row locks
+
+Identity initialization, credential acquisition, and steering reconciliation lock
+the task before its run. These operations use `FOR NO KEY UPDATE`: they change
+identity state, not parent keys. The lock still serializes identity writers and
+blocks concurrent task or run updates. It allows audit inserts to retain their
+foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
+foreign keys and their deletion behavior remain enforced.
+
 ## Switching between modes
 
 The database mode is controlled by `DATABASE_URL`:
@@ -175,6 +205,7 @@ When authoring migrations or one-time backfills:
 
 - Create every migration with `pnpm --filter @paperclipai/db generate`. Do not hand-write a snapshot.
 - Do not hand-edit a snapshot to resolve a merge conflict. Renumber your migration and run `generate` again, as `packages/db/.gitattributes` describes.
+- The repo keeps only the newest 5 snapshots. `generate` runs `prune:snapshots` afterwards to delete older ones. Drizzle only reads the newest snapshot, and each snapshot is a full copy of the schema (over 1 MB each). Older snapshots are still in git history.
 - `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
 
 ## Cloud runtime identity singleton
@@ -271,6 +302,44 @@ and process-start evidence proves the prior controller is gone, or when the
 lease expires. Recovery generation changes do not increment the independent
 provider-attempt counter.
 
+## Chat communication snapshots
+
+Chat communication guidance uses two additive columns: endpoint
+`communication_instructions` defaults to empty, and conversation
+`communication_guidance` holds the immutable initial task snapshot. Existing
+conversations retain a null snapshot; there is no backfill that changes an
+ongoing conversation. New Slack tasks receive built-in guidance even when the
+endpoint has no additional instructions.
+
+## Telegram private draft identities
+
+`chat_telegram_draft_ids` is a content-free, instance-wide PostgreSQL sequence,
+not a company-owned record. Telegram's native Stop callback carries a draft ID
+but no actor or Paperclip generation. IDs therefore must not be recycled when
+a transaction rolls back or an endpoint/company is deleted and its bot is
+connected again. The sequence allocates positive 31-bit IDs without cycling;
+exhaustion refuses new draft allocation rather than wrapping or falling back to
+random IDs. Never reset it as part of chat cleanup.
+
+The matching `chat_actions` entry remains company/endpoint-scoped and binds the
+draft to its exact conversation, publication attempt, runtime, credential and
+approved text. Stop can suppress that private draft's final publication; it
+cannot cancel a task or model run. Logical backups preserve the sequence, but
+restoring an older database may roll back its high-water mark: disaster recovery
+must not assume stale provider Stop events are safe to reuse. That restore
+boundary is not qualified by the rollback/concurrency regression.
+
+## Attachment upload provenance
+
+`issue_attachments.originating_run_id` records server-derived run attribution at
+upload time. It is not writable through attachment or work-product update APIs.
+Legacy attachments and uploads without a registered run keep a null value; the
+migration deliberately does not infer attribution from mutable work products.
+Deleting the originating run clears the reference and fails closed for automatic
+chat handoff. An agent's external file selection must match the attachment's
+company, task, agent, and originating run. Editing or recreating a work-product
+record cannot reassign that authority to a later run.
+
 ## Question-response delivery receipts
 
 `issue_question_response_deliveries` is the retry-safe, content-free outbox for
@@ -357,3 +426,38 @@ pnpm secrets:migrate-inline-env --apply
 ```
 
 Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).
+
+### Persistent agent conversations
+
+Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
+
+## Legacy controller ownership
+
+Legacy run claims atomically record `controller_boot_id`, a database-clock
+`controller_lease_expires_at`, and `execution_stage` before workspace provisioning.
+The lease renews independently of output. A different container must not infer
+controller death from its own process map or numeric PIDs. Expiration grants
+cleanup authority; it does not prove that remote inference has stopped. Recovery
+revokes the previous boot identity with a conditional update. Its own claim also
+expires so another sweep can finish cleanup after a restart. Historical rows keep
+null ownership fields and follow the previous recovery path.
+
+## Large API response snapshots
+
+`assets.byte_size` uses PostgreSQL `bigint` so saved responses and byte ranges can
+exceed 2 GiB. The API and Drizzle mapping continue to expose a JavaScript number;
+response readers validate safe integer offsets. The type-widening migration
+rewrites the asset metadata table and needs an exclusive table lock. File bytes
+remain in local or object storage.
+
+### Runner API response reservations
+
+`runner_api_response_reservations` holds company-scoped API snapshot reservations.
+Before a capture spills, the server locks company admission and counts stored
+`runner-api` assets plus unattached reservations against a 20 GiB default quota.
+A committed asset replaces its reservation in that total. The asset foreign key
+cascades on deletion, while deleting a run sets `run_id` to null so an orphan
+reservation cannot silently disappear. Failed cleanup or an ambiguous storage
+write requires operator reconciliation before an unattached reservation is
+removed. The table stores no response bodies. See `doc/runner-api-tools.md` for
+limits and the operator override.

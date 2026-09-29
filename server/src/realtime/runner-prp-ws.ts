@@ -249,7 +249,13 @@ export function queueRunnerPrpRuntimeRequestResolution(input: {
   readonly resolution: HarnessRuntimeRequestResolution;
 }): { readonly commandId: string } {
   const registration = registrations.get(input.runId);
-  if (!registration || registration.companyId !== input.companyId) {
+  if (
+    !registration
+    || registration.companyId !== input.companyId
+    // Warm attachment briefly registers two routes for the same mutable core.
+    // A route is not dispatch authority before or after its exact run epoch.
+    || registration.authority.store.state.identity.runId !== input.runId
+  ) {
     throw new RunnerPrpRuntimeRequestResolutionError(
       "runner_prp_authority_not_active",
     );

@@ -2,6 +2,9 @@ export const CREDENTIAL_NAMES = [
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
   "OPENROUTER_API_KEY",
+  "KIMI_MODEL_API_KEY",
+  "XAI_API_KEY",
+  "GROK_AUTH_JSON",
   "DAYTONA_API_KEY",
 ] as const;
 
@@ -10,6 +13,13 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "everyday_workflow"
+  | "context_integrity"
+
+  | "continuation_accounting"
+  | "continuation"
+  | "first_task"
+  | "agent_chat"
   | "governed_tool_review"
   | "single_turn"
   | "plan_revision_acceptance"
@@ -120,10 +130,12 @@ export interface RunnerTaskFixture {
   workMode: RunnerTaskWorkMode;
   flow: RunnerTaskFlow;
   expectedRunCount: number;
+  /** Optional lower bound; expectedRunCount remains the maximum/cost estimate. */
+  minimumExpectedRunCount?: number;
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;
   expectedTerminalState: {
-    issue: "done";
-    run: "succeeded";
+    issue: "done" | "in_review" | "blocked" | "in_progress";
+    run: "succeeded" | "failed" | "cancelled";
   };
   buildTitle(nonce: string): string;
   buildPrompt(nonce: string): string;
@@ -167,6 +179,8 @@ export interface RunnerSuiteFixture {
   excludedExecutionIds?: readonly string[];
   expectedMatrixSize: number;
   definitionMetadata?: Readonly<Record<string, unknown>>;
+  /** Requires an explicit suite or execution ID; excluded from scheduled --all. */
+  manualOnly?: boolean;
 }
 
 export interface MatrixJob {
@@ -233,8 +247,10 @@ export interface RunnerE2EBillingSummary {
   reportedCostUsd: number;
   /** Public-list-price estimate for metered execution infrastructure. */
   estimatedRuntimeCostUsd: number;
-  /** Reported model subtotal plus the runtime list-price estimate. */
-  observedAndEstimatedCostUsd: number;
+  /** Separately recorded post-processing judge usage; absent when not judged. */
+  judge?: { inputTokens: number | null; outputTokens: number | null; estimatedCostUsd: number | null; reservedCostUsd: number };
+  /** Reported model subtotal plus runtime and judge list-price estimates. */
+  observedAndEstimatedCostUsd: number | null;
   complete: boolean;
 }
 
@@ -295,7 +311,11 @@ export interface RunnerE2EResult {
     label: string;
     file: string;
     publication?: "public-runner-fixture";
+    /** Absent in historical results; new captures bind the exact PNG bytes. */
+    sha256?: string;
   }>;
+  firstTask?: import("./first-task-scoring.js").FirstTaskEvidence;
+  firstTaskQuality?: import("./first-task-quality.js").FirstTaskQuality;
   cleanup: "not_started" | "passed" | "failed";
 }
 
@@ -307,6 +327,7 @@ export interface RunnerE2ESuiteSummary {
   executed: number;
   passed: number;
   failed: number;
+  incomplete?: number;
   retries: number;
   cleanupPassed: boolean;
   complete: boolean;
@@ -314,14 +335,24 @@ export interface RunnerE2ESuiteSummary {
   billing: RunnerE2EAggregateBillingSummary;
 }
 
+export interface RunnerE2EJudgeBillingSummary {
+  attempts: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number | null;
+  reservedCostUsd: number;
+  attemptsWithUnknownUsage: number;
+}
+
 export interface RunnerE2EAggregateBillingSummary {
+  judge?: RunnerE2EJudgeBillingSummary;
   testCount: number;
   agentRunDurationMs: number;
   leaseDurationMs: number;
   llm: RunnerE2EBillingSummary["llm"];
   reportedLlmCostUsd: number;
   estimatedRuntimeCostUsd: number;
-  observedAndEstimatedCostUsd: number;
+  observedAndEstimatedCostUsd: number | null;
   testsWithCompleteBilling: number;
 }
 
@@ -341,6 +372,7 @@ export interface RunnerE2ECampaign {
   executed: number;
   passed: number;
   failed: number;
+  incomplete?: number;
   retries: number;
   cleanupPassed: boolean;
   rankingSnapshots: Array<{
@@ -361,7 +393,7 @@ export interface RunnerE2EHistoryExecution {
   caseId: string;
   provider: string;
   model: string;
-  status: "passed" | "failed";
+  status: "passed" | "failed" | "incomplete";
   durationMs: number;
   attempt: number;
   cleanup: RunnerE2EResult["cleanup"];
@@ -377,6 +409,7 @@ export interface RunnerE2EHistoryCampaign {
   executed: number;
   passed: number;
   failed: number;
+  incomplete?: number;
   retries: number;
   cleanupPassed: boolean;
   publicUrl: string;

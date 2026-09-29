@@ -17,18 +17,18 @@ types as the final authority for emitted first-party telemetry shapes.
 
 Use these files when reviewing or changing telemetry code:
 
-| Contract item | Public source |
-| --- | --- |
-| First-party event names | `PaperclipEventName` in `generated/paperclip-telemetry.ts` |
-| Per-event dimensions and optionality | `EventDimensionsMap` in `generated/paperclip-telemetry.ts` |
-| Enum descriptions for telemetry dimensions | `PAPERCLIP_ENUM_DESCRIPTIONS` in `generated/paperclip-telemetry.ts` |
-| Schema version and event envelope helpers | `SCHEMA_VERSION`, `makeEvent()`, and `makeBatch()` in `generated/paperclip-telemetry.ts` |
-| Runtime-safe event names and dimensions | `TelemetryEventName` and `TelemetryEventDimensions` in `types.ts` |
-| Allowed primitive dimension values | `TelemetryDimensionValue` in `types.ts` |
-| Shared reusable enum domains | Named exports in `constants.ts` |
-| First-party typed emit helpers | `events.ts` |
-| Generic client behavior | `client.ts` |
-| Retention windows and event class assignments | `RETENTION_DAYS` and `EVENT_RETENTION_CLASS` in `retention.ts` |
+| Contract item                                 | Public source                                                                            |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| First-party event names                       | `PaperclipEventName` in `generated/paperclip-telemetry.ts`                               |
+| Per-event dimensions and optionality          | `EventDimensionsMap` in `generated/paperclip-telemetry.ts`                               |
+| Enum descriptions for telemetry dimensions    | `PAPERCLIP_ENUM_DESCRIPTIONS` in `generated/paperclip-telemetry.ts`                      |
+| Schema version and event envelope helpers     | `SCHEMA_VERSION`, `makeEvent()`, and `makeBatch()` in `generated/paperclip-telemetry.ts` |
+| Runtime-safe event names and dimensions       | `TelemetryEventName` and `TelemetryEventDimensions` in `types.ts`                        |
+| Allowed primitive dimension values            | `TelemetryDimensionValue` in `types.ts`                                                  |
+| Shared reusable enum domains                  | Named exports in `constants.ts`                                                          |
+| First-party typed emit helpers                | `events.ts`                                                                              |
+| Generic client behavior                       | `client.ts`                                                                              |
+| Retention windows and event class assignments | `RETENTION_DAYS` and `EVENT_RETENTION_CLASS` in `retention.ts`                           |
 
 Do not copy generated event lists or dimension tables into this README. They
 will drift as the generated contract changes.
@@ -56,6 +56,14 @@ the generated telemetry contract specifically requires that emitted value.
 If a dimension is privacy-protected before emission, emit only the protected
 value and its matching public marker as defined by the typed helper or generated
 contract. Do not emit private source material in telemetry dimensions.
+
+Credential-bearing chat setup failures replace provider-controlled error names,
+messages, and stacks with a fresh generic error before the HTTP error handler
+reports the crash. The existing `error.handler_crash` event still uses its
+generated `error_code: string` contract; this path emits only `Error`, never a
+provider-supplied error name that may contain a credential. This is a privacy
+boundary, not enum canonicalization. Test the value reaching the telemetry
+helper as well as the separate crash-reporting and local logging sinks.
 
 ## Interaction Resolver Events
 
@@ -180,8 +188,8 @@ concern — updating a retention window does not require a schema version bump.
 
 Current classes:
 
-| Class | Window | Description |
-| --- | --- | --- |
+| Class                    | Window  | Description                                                  |
+| ------------------------ | ------- | ------------------------------------------------------------ |
 | `operational_enum_count` | 90 days | Enum/boolean/count/bucket events. No token material, no PII. |
 
 When a new event carries only enums, booleans, counts, or coarse buckets and

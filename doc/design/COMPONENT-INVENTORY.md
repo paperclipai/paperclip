@@ -6,6 +6,22 @@ Run scope: `ui/src/components/` and `ui/src/pages/` on branch `design/token-extr
 
 ## Counts
 
+### Independent MCP connection setup — 2026-09-21
+
+`ui/src/features/connections/remote-mcp/RemoteMcpConnectionSetup.tsx` is the controlled
+Access → Connect and management composition for Zapier, Arcade,
+Composio and Executor. It reuses Gmail’s StepHeader and AccessStepContent, plus SetupWizardFooter,
+AppLogo, InlineBanner and existing form/dialog primitives. Saved connections reuse
+the canonical PermissionsPanel ActionsSection and its ActionTestDialog; there is
+no separate setup test or permission list. Each
+provider has an independent state and controller. It does not initiate network
+authentication requests or persist credentials. The shared Test dialog uses normal
+API calls, intercepted by scoped in-memory Storybook fixtures. The first milestone is design review; production
+routes do not use it yet. See `/design-guide` and Storybook **Apps / Connections**
+for the provider variants and complete interactive state matrix.
+
+Execution recovery reuses the existing transcript header and task status. Routine phases add no list badges, status cards, or reconciliation dialogs. Only a transient reconnection changes the header text. Automatic recovery decisions remain in the local run log. Storybook **Tasks / Execution recovery** demonstrates quiet task lists, native and legacy transcript headers, and dashboard composition.
+
 | Area | Count |
 |---|---:|
 | Shared primitives (`ui/src/components/ui/`) | 24 |
@@ -128,7 +144,6 @@ Grouped by rough domain area. One line each; variants column is props-based wher
 | `ExternalObjectStatusIcon.tsx` / `ExternalObjectStatusSummary.tsx` / `ExternalObjectPill.tsx` | External-object (linked PR/doc/etc.) status glyph, rollup summary, and inline pill — a third, deliberately separate status-presentation family |
 | `BlockedReasonChip.tsx` | Chip explaining why a task is blocked |
 | `SourceTrustBadge.tsx` / `SourceResolvedFoldBadge.tsx` / `SourceResolvedFoldCallout.tsx` | Trust/fold badges for external content sources |
-| `ProductivityReviewBadge.tsx` | Review-status badge |
 
 **KNOWN-DUPLICATES.md lead verified:** StatusIcon / inline-mention chips / task chips are intentionally three separate systems (StatusIcon+StatusGlyph = task status glyph family; `ExternalObjectStatusIcon`/`Pill`/`Summary` = a second, external-object-specific family; mention chips in `lib/mention-chips.ts` + markdown CSS = a third, generic "chip in prose" family). **Documented here per instruction, not merged.**
 
@@ -417,3 +432,15 @@ Per-component rationale:
 | Setup completion | `ConnectionSetupCompletionScreen` in the shared setup module | Page and dialog; identity, granted agent access and enabled actions |
 
 Independently addressable examples live under `Connections/In-task connections` in Storybook. The task composer remains available while a card is pending. These components use the existing token and primitive layers.
+
+## Announcements
+
+- `AnnouncementCard`: image, eyebrow, headline, description, navigation links and dismissal; accepts an announcement and `onDismiss`.
+- `AnnouncementWell`: one app-shell placement that owns eligibility, dismissal sync, modal deferral and toast priority. Use only once in Layout.
+- Preview variants live in `/design-guide` and Storybook under `Announcements/AnnouncementCard`.
+
+## Shared setup wizard (2026-09-19)
+
+`ui/src/components/SetupWizard.tsx` extracts the Slack setup navigation into reusable numbered steps, a portal sidebar, an optional section-menu takeover outlet, and a single-row footer. `SetupWizardSidebarProvider` owns the portal target and takeover lifecycle. Chat exports retain their existing names and defaults for compatibility. The Design Guide demonstrates the components. The production routine trigger wizard and its Storybook previews share the sidebar takeover, navigation, and footer. `routine-triggers/TriggerWizard.tsx`, `TriggerCard.tsx`, and `WebhookFields.tsx` provide the shared trigger setup, compact editable cards, copyable credentials, and agent instructions.
+
+`routine-triggers/WebhookUrlWarning.tsx` uses `InlineBanner` for non-blocking localhost, private-network, Tailscale, and HTTP guidance. Setup and saved webhook editors share it; the Design Guide shows each warning. URL classification is heuristic, not a public reachability test.

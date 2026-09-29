@@ -22,6 +22,7 @@ import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { cn } from "@/lib/utils";
+import { Link } from "@/lib/router";
 import type { AppDetailSectionProps } from "./types";
 import { RevokeGrantDialog } from "./IdentitiesSection";
 
@@ -29,7 +30,6 @@ export function AdvancedPanel({
   connection,
   appName,
   galleryEntry,
-  childConnectionCount,
   removing,
   onRemove,
   onReplaced,
@@ -46,7 +46,6 @@ export function AdvancedPanel({
   onRevokeIdentity,
 }: Pick<AppDetailSectionProps, "connection" | "appName" | "galleryEntry"> & {
   removing: boolean;
-  childConnectionCount?: number;
   onRemove: () => void;
   onReplaced: () => void;
   canReplaceCredential?: boolean;
@@ -68,7 +67,6 @@ export function AdvancedPanel({
         appName={appName}
         connection={connection}
         galleryEntry={galleryEntry}
-        childConnectionCount={childConnectionCount}
         removing={removing}
         onRemove={onRemove}
         onReplaced={onReplaced}
@@ -86,6 +84,15 @@ export function AdvancedPanel({
       />
     </div>
   );
+}
+
+function connectionMethodUnavailable(connection: ToolConnection, galleryEntry: AppDefinition | null): boolean {
+  const methodKey = connection.config?.connectionMethodKey;
+  return typeof methodKey === "string"
+    && methodKey.length > 0
+    && !!galleryEntry
+    && Array.isArray(galleryEntry.methods)
+    && !getAvailableConnectionMethod(galleryEntry, methodKey);
 }
 
 function KeySection({
@@ -141,12 +148,14 @@ export function ReconnectCard({
   connection,
   galleryEntry,
   onReconnected,
+  onReconnect,
   canReconnect = true,
   reconnectUnavailableMessage,
 }: {
   connection: ToolConnection;
   galleryEntry: AppDefinition | null;
   onReconnected: () => void;
+  onReconnect?: () => void;
   canReconnect?: boolean;
   reconnectUnavailableMessage?: string;
 }) {
@@ -198,15 +207,18 @@ export function ReconnectCard({
   });
   const oauth = connection.authKind === "oauth";
   const managedByVercel = connection.credentialSource === "vercel_connect";
+  const methodUnavailable = connectionMethodUnavailable(connection, galleryEntry);
 
   return (
     <div className="flex flex-col gap-4 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-          {oauth ? "Reconnect required" : "This app needs reconnecting"}
+          {methodUnavailable ? "Connection no longer supported" : oauth ? "Reconnect required" : "This app needs reconnecting"}
         </h2>
         <p className="mt-0.5 text-sm text-amber-800 dark:text-amber-200">
-          {connection.healthMessage?.trim() || (oauth
+          {methodUnavailable
+            ? "Add a supported connection from Connectors, then remove this connection."
+            : connection.healthMessage?.trim() || (oauth
             ? "Authorization expired or was revoked. Sign in again to restore access."
             : "The key stopped working. Paste a new one to get it back online.")}
         </p>
@@ -216,6 +228,14 @@ export function ReconnectCard({
           <p className="text-sm text-amber-800 dark:text-amber-200">
             {reconnectUnavailableMessage ?? "You don't have permission to reconnect this identity."}
           </p>
+        ) : methodUnavailable ? (
+          <Button size="sm" variant="outline" asChild>
+            <Link to={`/apps/connect?source=${encodeURIComponent(galleryEntry!.slug)}`}>
+              Add supported connection
+            </Link>
+          </Button>
+        ) : onReconnect ? (
+          <Button size="sm" variant="outline" onClick={onReconnect}>Reconnect</Button>
         ) : managedByVercel && !oauth ? (
           <div className="flex items-center gap-2">
             <Button type="button" size="sm" variant="outline" asChild>
@@ -271,7 +291,7 @@ function ReconnectForm({
     : null;
   const fields = (method?.credentialFields ?? []).map((field) => ({
     ...field,
-    configPath: credentialConfigPath(field),
+    configPath: credentialConfigPath(field, method),
     helpUrl: method?.consoleLinks?.keys ?? method?.consoleLinks?.docs ?? "",
   }));
   const [values, setValues] = useState<Record<string, string>>({});
@@ -404,7 +424,6 @@ export function DangerZone({
   appName,
   connection,
   galleryEntry = null,
-  childConnectionCount = 0,
   removing,
   onRemove,
   onReplaced,
@@ -423,7 +442,6 @@ export function DangerZone({
   appName: string;
   connection?: ToolConnection;
   galleryEntry?: AppDefinition | null;
-  childConnectionCount?: number;
   removing: boolean;
   onRemove: () => void;
   onReplaced?: () => void;
@@ -445,6 +463,7 @@ export function DangerZone({
   const paused = connection
     ? connection.enabled === false || connection.status === "disabled"
     : false;
+  const methodUnavailable = connection ? connectionMethodUnavailable(connection, galleryEntry) : false;
 
   return (
     <Collapsible
@@ -483,7 +502,7 @@ export function DangerZone({
               </div>
             ) : null}
 
-            {connection && connection.authKind !== "oauth" ? (
+            {connection && !methodUnavailable && connection.authKind !== "oauth" ? (
               <div className="py-4">
                 <KeySection
                   connection={connection}
@@ -495,7 +514,7 @@ export function DangerZone({
               </div>
             ) : null}
 
-            {connection?.authKind === "oauth" && (onReconnectIdentity || !canReplaceCredential) ? (
+            {connection?.authKind === "oauth" && !methodUnavailable && (onReconnectIdentity || !canReplaceCredential) ? (
               <div className="flex flex-wrap items-center justify-between gap-3 py-4">
                 <div>
                   <p className="text-sm font-medium text-foreground">Reconnect</p>
@@ -543,9 +562,7 @@ export function DangerZone({
               <div>
                 <p className="text-sm font-medium text-foreground">Remove this app</p>
                 <p className="text-xs text-muted-foreground">
-                  {childConnectionCount > 0
-                    ? `Deletes credentials for ${appName} and ${childConnectionCount} connected ${childConnectionCount === 1 ? "service" : "services"}.`
-                    : `Deletes credentials for ${appName} and removes agent access. Reconnecting requires a new sign-in or key.`}
+                  {`Deletes credentials for ${appName} and removes agent access. Reconnecting requires a new sign-in or key.`}
                 </p>
               </div>
               {confirming ? (

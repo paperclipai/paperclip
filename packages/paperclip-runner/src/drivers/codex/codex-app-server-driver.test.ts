@@ -155,9 +155,9 @@ class FakeCodexTransport implements CodexAppServerTransport {
           cwd: TEST_WORKING_DIRECTORY,
           turns: [],
           activePermissionProfile: {
-            id: planMode
+            id: params.permissions ?? (planMode
               ? "paperclip-runner-workspace-read-only"
-              : "paperclip-runner-workspace-only",
+              : "paperclip-runner-workspace-only"),
           },
         },
         model: "gpt-test",
@@ -198,8 +198,18 @@ class FakeCodexTransport implements CodexAppServerTransport {
       this.goalState = null;
       return {};
     }
+    if (method === "thread/turns/list") {
+      const snapshot = this.readResponse ?? { thread: { turns: [{ id: "turn-1", status: "inProgress", items: [] }] } };
+      const turns = (snapshot.thread as Record<string, unknown>).turns;
+      return { data: Array.isArray(turns) ? turns.map(turn => ({ ...turn, items: [], itemsView: "notLoaded" })) : turns, nextCursor: null };
+    }
+    if (method === "thread/items/list") {
+      const turns = ((this.readResponse?.thread as Record<string, unknown> | undefined)?.turns ?? []) as Array<Record<string, unknown>>;
+      const turn = turns.find(value => value.id === params.turnId);
+      return { data: ((turn?.items ?? []) as Array<Record<string, unknown>>).map(item => ({ turnId: params.turnId, item })), nextCursor: null };
+    }
     if (method === "thread/read") {
-      return (
+      return structuredClone(
         this.readResponse ?? {
           thread: {
             id: this.threadId,
@@ -1241,7 +1251,7 @@ describe("Codex app-server Codex driver", () => {
       model: "gpt-test",
       modelProvider: "openai",
       workingDirectory: TEST_WORKING_DIRECTORY,
-      approvalPolicy: "untrusted",
+      approvalPolicy: "never",
       instructionSources: [],
       instructionPolicy: {
         skillInstructions: false,
@@ -1257,7 +1267,7 @@ describe("Codex app-server Codex driver", () => {
     expect(
       transport.calls.find((call) => call.method === "thread/start")?.params,
     ).toMatchObject({
-      approvalPolicy: "untrusted",
+      approvalPolicy: "never",
       config: {
         "skills.include_instructions": false,
         include_apps_instructions: false,
@@ -1342,6 +1352,25 @@ describe("Codex app-server Codex driver", () => {
       await recovered?.session?.close({ reason: "policy recovery complete" });
     },
   );
+
+  it.each([false, true])("requires trusted continuation metadata before omitting task context (%s)", async (continuation) => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], {
+      skillInputs: [{ type: "skill", name: "first-task", path: "/skills/first-task/SKILL.md" }],
+    }).openSession({ runId: "run-delta", normalizedSessionId: "session-delta", workingDirectory: TEST_WORKING_DIRECTORY });
+    const text = JSON.stringify({ schema: "paperclip.native-continuation.v1", events: '{"messages":[{"body":"Go ahead"}]}', completion: { revision: "2", criterionIds: ["comment"] } });
+    await session.startTurn({ message: { role: "user", text }, ...(continuation ? { continuation: true as const } : {}) });
+    const params = transport.calls.find((call) => call.method === "turn/start")!.params;
+    if (continuation) {
+      expect(params.input).toEqual([{ type: "text", text, text_elements: [] }]);
+      expect(JSON.stringify(params.input)).not.toContain("constraints");
+      expect(JSON.stringify(params.input)).not.toContain("first-task");
+    } else {
+      expect(JSON.stringify(params.input)).toContain("constraints");
+      expect(params.input).toContainEqual({ type: "skill", name: "first-task", path: "/skills/first-task/SKILL.md" });
+    }
+    await session.close({ reason: "test complete" });
+  });
 
   it("allows eval fixtures to opt out of Codex collaboration instructions", async () => {
     const transport = new FakeCodexTransport();
@@ -2448,6 +2477,138 @@ describe("Codex app-server Codex driver", () => {
     await session.close({ reason: "test complete" });
   });
 
+  it("exposes and dispatches only explicit chat tools across fresh and resumed direct chat", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const registerDeliverable = {
+      name: "register_deliverable",
+      description: "Prepare one requested file.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const readCurrentWakeComments = {
+      name: "read_current_wake_comments",
+      description: "Read only comments bound into the current wake.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const requestHumanInput = {
+      name: "request_human_input",
+      description: "Ask one structured question through Paperclip.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const listChatAttachments = {
+      name: "list_chat_attachments",
+      description: "List same-conversation attachment metadata.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const reuseChatAttachment = {
+      name: "reuse_chat_attachment",
+      description: "Prepare one same-conversation attachment again.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const readChatAttachment = {
+      name: "read_chat_attachment",
+      description: "Read one same-conversation file without resending it.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const handler = vi.fn(async (call) => ({
+      interaction: { id: "interaction-direct-question", status: "pending" },
+      callId: call.callId,
+    }));
+    const driver = makeDriver([first, second], {
+      conversationMode: "direct",
+      dynamicTools: [
+        registerDeliverable,
+        readCurrentWakeComments,
+        requestHumanInput,
+        listChatAttachments,
+        reuseChatAttachment,
+        readChatAttachment,
+        {
+          name: "report_progress",
+          description: "Must remain unavailable in direct chat.",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+      dynamicToolHandler: handler,
+    });
+    const original = await driver.openSession({
+      runId: "run-direct-file",
+      normalizedSessionId: "normalized-direct-file",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    await original.startTurn({
+      message: { role: "user", text: "Please return one file." },
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "transport lost" });
+
+    expect(
+      first.calls.find((call) => call.method === "thread/start")?.params
+        .dynamicTools,
+    ).toEqual([
+      registerDeliverable,
+      readCurrentWakeComments,
+      requestHumanInput,
+      listChatAttachments,
+      reuseChatAttachment,
+      readChatAttachment,
+    ]);
+
+    const freshQuestion = await first.invoke({
+      id: "rpc-direct-question-fresh",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-direct-question-fresh",
+        tool: "request_human_input",
+        arguments: { interactionKind: "questions" },
+      },
+    });
+    expect(freshQuestion).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "request_human_input",
+        callId: "call-direct-question-fresh",
+        arguments: { interactionKind: "questions" },
+      }),
+    );
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    expect(
+      second.calls.find((call) => call.method === "thread/resume")?.params
+        .dynamicTools,
+    ).toEqual([
+      registerDeliverable,
+      readCurrentWakeComments,
+      requestHumanInput,
+      listChatAttachments,
+      reuseChatAttachment,
+      readChatAttachment,
+    ]);
+    const resumedQuestion = await second.invoke({
+      id: "rpc-direct-question-resumed",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-direct-question-resumed",
+        tool: "request_human_input",
+        arguments: { interactionKind: "confirmation" },
+      },
+    });
+    expect(resumedQuestion).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "request_human_input",
+        callId: "call-direct-question-resumed",
+        arguments: { interactionKind: "confirmation" },
+      }),
+    );
+    await recovery?.session?.close({ reason: "test complete" });
+  });
+
   it("lets an answer claimed before expiry win the terminal-event race", async () => {
     const transport = new FakeCodexTransport();
     let releaseResolution!: () => void;
@@ -3238,9 +3399,13 @@ describe("Codex app-server Codex driver", () => {
     expect(second.calls.map((call) => call.method)).toEqual([
       "initialize",
       "thread/read",
+      "thread/turns/list",
       "thread/resume",
       "thread/goal/get",
       "thread/read",
+      "thread/turns/list",
+      "thread/read",
+      "thread/turns/list",
     ]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });
@@ -3529,15 +3694,11 @@ describe("Codex app-server Codex driver", () => {
       const snapshot = await original.snapshot();
       await original.close({ reason: "transport lost" });
       const recovery = await driver.recoverSession?.(snapshot);
-      expect(recovery?.session).toBeDefined();
-      await expect(
-        recovery!.session!.reconcile!(),
-      ).rejects.toMatchObject<HarnessReconciliationError>({
-        name: "HarnessReconciliationError",
-        recoverable: true,
-        message: expect.stringContaining(testCase.message),
+      expect(recovery).toMatchObject({
+        recovered: false,
+        reason: expect.stringContaining(testCase.message),
       });
-      await recovery!.session!.close({ reason: "test complete" });
+      expect(recovery?.session).toBeUndefined();
     }
   });
 

@@ -21,6 +21,9 @@ Paperclip V1 must provide a full control-plane loop for autonomous agents:
 4. All work is tracked through tasks/comments with audit visibility.
 5. Token/cost usage is reported and budget limits can stop work.
 6. The board can intervene anywhere (pause agents/tasks, override decisions).
+   An effective task or ancestor pause replaces the message composer with an
+   amber Resume takeover. New board messages, including updates with comments,
+   are rejected until the hold is released. Drafts survive pause and resume.
 
 Success means one operator can run a small AI-native company end-to-end with clear visibility and control.
 
@@ -38,7 +41,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree; for issue-thread interaction resolution it is an ordinary agent subject to the same audience and containment checks, not board authority, active-run output monitoring, or general liveness recovery. |
-| Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
+| Recovery | Liveness/watchdog recovery preserves explicit ownership: continue interrupted local conversations with bounded fresh turns and preserved history, never replay tool calls automatically; retain native ownership and real execution gates; preserve verified stop evidence and reconsider saved post-stop user messages after cleanup; otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
@@ -244,11 +247,15 @@ See `doc/project-repositories.md` for the API and UI contract.
 - `created_by_user_id` uuid fk `users.id` null
 - identifier fields: `issue_number`, `identifier`
 - origin fields: `origin_kind`, `origin_id`, `origin_run_id`, `origin_fingerprint`
+- Creation stores the actor run in `origin_run_id` unless an explicit origin run is supplied. `GET /api/companies/:companyId/issues?createdFromIssueId=<uuid>` selects tasks created by runs bound to that source task, using native run issue identity or persisted legacy task context. Historical rows without an origin run may use their recorded creation activity; comments and shared creators do not establish provenance. Source, run, activity and result are company-scoped.
+- Relation lists can use `sortField=id&sortDir=asc&afterId=<uuid>` for stable pagination. The cursor excludes earlier IDs and cannot be combined with an offset or activity-based order.
+- The streamlined task page's Tasks tab keeps two independent memberships: the existing subtask tree, and created tasks grouped by their current project (or No project). A created subtask appears in both. Only Subtasks has completion progress; groups collapse independently and unfinished tasks sort above finished tasks.
 - `request_depth` int not null default 0
 - `work_mode` text not null default `standard`; supported values:
   - `standard`: normal autonomous execution. Agents may investigate, edit files, create artifacts, and complete the task.
   - `ask`: answer-only execution. Agents may use tools for investigation or temporary scratch work, but the deliverable is an issue-thread answer; they must not write implementation code or produce an implementation plan.
   - `planning`: plan-only execution. Agents create or revise the plan without implementation work. Accepting a fresh confirmation for the issue's current `plan` revision atomically changes this mode to `standard`, so the continuation may implement the approved plan on the source issue.
+- Work mode is explicit persisted state. Titles, descriptions, and requested deliverables never select or change it. A `standard` task may deliver a requested plan, including a canonical `plan` document, and complete without entering `planning` mode. Existing explicit approval requirements still apply.
 - `billing_code` text null
 - `assignee_adapter_overrides` jsonb null
 - `execution_policy` jsonb null
@@ -407,7 +414,7 @@ Operational policy:
   - `provider` enum/text (`local_disk | s3`)
   - `object_key` text not null
   - `content_type` text not null
-  - `byte_size` int not null
+  - `byte_size` bigint not null (safe integer byte count in the API)
   - `sha256` text not null
   - `original_filename` text null
   - `created_by_agent_id` uuid fk null
@@ -520,6 +527,7 @@ V1 non-terminal liveness rule:
 - heartbeat finalization evaluates liveness from persisted Paperclip state; an issue cannot remain healthy `in_progress` solely because the exiting heartbeat started a local/background watcher
 - a continuation cancelled as `issue_continuation_waiting_on_review` first converts a current typed wait target into a first-class wait; without a current target it is classified as `deliberate_wait_without_target` and gives the invokable original owner five normal-model disposition-repair attempts (immediate, then after 60, 120, 240, and 480 seconds, with up to 10 percent jitter)
 - disposition repair revalidates blockers, children, interactions, approvals, monitors, execution stages, queued wakes, active runs, work products, owner invokability, budgets, and governance before every attempt; the attempt bound is keyed by durable source state, so comments or equivalent parked prose do not reset it while durable source-state changes may establish a new fingerprint
+- exhausted disposition repair appears in both task threads as “Agent needs attention,” with recorded attempt details and an explicit retry action; display uses structured recovery evidence, and the server rechecks the exact action, current task state, original owner, pause/approval/dependency/budget gates before restoring the task to todo
 - backwards-compatible upgrades count consecutive historical `issue_continuation_waiting_on_review` cancellations for the unchanged accepted-interaction source state against the same five-attempt disposition-repair ceiling; missing pre-upgrade recovery-action rows do not reset the budget
 - the source fingerprint, source-attempt count, next due time, source owner, and return owner persist in the recovery action; startup and periodic reconciliation resume that exact lineage without duplicate wakes, fold it when a current typed wait appears, and reschedule or escalate an expired action that has no live scheduled run
 - source-attempt exhaustion opens one board-owned source-scoped recovery action without changing the source assignee and without waking a substitute agent; the board explicitly chooses whether to repair, retry the original owner, reassign, or resolve
@@ -689,6 +697,11 @@ administrator remediation rather than promising a nonexistent approval step.
 Issue-thread interactions are coordination records, not grants of authority. Every
 interaction kind defaults to resolver policy `anyone` when the create request omits
 `resolverPolicy`. Restrictions are opt-in.
+
+Question, confirmation, checkbox confirmation, and item verdict cards stay pending
+when a user sends an ordinary task comment. Their `supersedeOnUserComment` flag
+defaults to `false`. A creator may set it to `true` when a comment should replace
+the pending request, as the opening onboarding question does.
 
 Canonical resolver policies are:
 
@@ -987,7 +1000,16 @@ On a Paperclip Cloud-managed instance, `POST /companies` returns `403` with
 code `cloud_managed`; the trusted-header provisioning path and company import
 routes remain the only company-creation paths there.
 
-## 10.1.1 Cloud Stack Portfolio
+## 10.1.1 Organization navigation and Cloud invitations
+
+Core's built-in organization switcher lists this instance's companies. An
+installed plugin can replace it through the generic `organizationSwitcher`
+slot. The built-in menu remains available when no unique usable contribution
+exists. Core does not fetch or render Cloud portfolios in its switcher. Managed
+hosts do not expose local company creation in that built-in menu; their extension
+owns the creation action.
+
+The Cloud Members-page invitation action still uses the following route:
 
 - `GET /cloud/stacks`
 
@@ -996,6 +1018,13 @@ The route exists only on a Cloud-managed instance, requires a trusted
 stack id to the Cloud tenant portfolio endpoint. Client-supplied user ids are
 never forwarded. Successful responses are cached briefly per user; self-hosted
 instances return `404`.
+
+On Cloud-managed instances, the Members page offers **Invite people** to the
+current stack's owner/admin. It opens that stack's Cloud People settings with a
+full-page navigation. The destination uses the configured Cloud origin and the
+current stack from the authenticated portfolio. The action stays hidden until
+that role is known, or when the portfolio request fails. Hiding the tenant-local
+Invites tab does not hide this Cloud action.
 
 ## 10.2 Goals
 
@@ -1136,6 +1165,9 @@ The current app also exposes V1-supporting surfaces for:
 - company-scoped summary slots for projects, the workspaces overview, project workspaces, and individual execution workspaces; execution-workspace slots are keyed by execution workspace id so a new workspace never inherits another workspace's summary
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) with the open-default resolver contract in §9.8.1
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
+- task search uses shared PostgreSQL matching/ranking for company search and task-list quick search;
+  all query terms contribute, quoted phrases stay literal, exact identifiers and direct title matches
+  lead relevance ordering, and the UI preserves server result order (see `doc/SEARCH.md`)
 - company search through `GET /companies/:companyId/search` plus agent-oriented bulk extraction through
   `GET /companies/:companyId/search/extract`; extraction accepts a server-escaped literal `contains`, optional
   server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
@@ -1175,6 +1207,17 @@ interface AgentAdapter {
   cancel(run: HeartbeatRun): Promise<void>;
 }
 ```
+
+### Local adapter engine availability
+
+For the legacy Codex, Claude, Gemini, and Kimi local adapters, an omitted engine
+or legacy `auto` value selects ACP deterministically. Missing prerequisites or
+ACP execution failures fail the run; they must not launch a different engine
+with different session, permission, or sandbox semantics. CLI execution requires
+explicit selection. Environment tests report the same engine availability error
+as execution. Codex CLI defaults permit workspace writes and network access for
+Paperclip coordination without disabling its sandbox; explicit operator
+restrictions and execution-target network denials remain effective.
 
 ## 11.2 Process Adapter
 
@@ -1244,6 +1287,11 @@ Scheduler must skip invocation when:
 - an existing run is active
 - hard budget limit has been hit
 
+Legacy execution records a renewable controller lease when claiming a queued run,
+before provisioning. A live lease protects the run during overlapping service
+deployments. An expired controller loses dispatch authority; a recovery worker
+must establish that the previous execution stopped before starting a successor.
+
 ## 11.7 Durable agent session goals
 
 Runner Protocol v2 negotiates a required `sessionGoals` capability and typed
@@ -1305,7 +1353,8 @@ Board can at any time:
 
 Ask-first connection calls use a server-owned tool-action confirmation linked to
 the authoritative action request. The task feed retains a stable record; dismissal
-only hides the composer takeover. Task and Connections decisions share one
+only hides the pending card above the composer. The ordinary composer remains
+available while the card is open. Task and Connections decisions share one
 transaction. Approval runs stored, signed arguments once; decline runs nothing.
 The human decision remains distinct from provider execution success or failure.
 
@@ -1550,3 +1599,140 @@ Export/import behavior in V1:
 - import supports preview (dry-run) before apply
 - import preview reports skill-policy and legacy-grant mappings before apply and rejects unknown policy schema versions
 - GitHub imports warn on unpinned refs instead of blocking
+
+## Agent visual identity
+
+Agent appearances are stable, versioned ClipLab end-cap personas, separate from
+behavioral instructions. Compact surfaces use on-demand cached PNG URLs; larger
+placements may use a lazy live character. See [agent-personas.md](agent-personas.md)
+for persistence, migration, rendering, and integration contracts.
+### Experimental task-backed agent chat (2026-09-10)
+
+`enableAgentChat` is an instance experimental flag, default false. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
+
+`GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue on first send/upload. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
+
+The server owns conversation state: `waiting` plus `in_review` denotes a healthy idle conversation, and `active` denotes an unanswered or executing turn. Successful replies settle a turn; they do not finish the issue. Idle containers are excluded from execution-work counts, ordinary task lists, timer work, and recovery invocations. Failed/unanswered turns retain normal handling. Child completion never wakes or completes the conversation. Search and direct task access preserve history.
+
+Standalone `/new` is an ordered queue command with no model response. It advances a durable session generation and boundary comment, resets only this issue's provider context, and preserves the issue ID and history. Generation checks reject stale context writes and replies. Fresh replay excludes earlier messages and summaries. The shared transcript renders a session divider.
+
+Chat prompts retain agent instructions and tools while directing clarification and task creation. Substantial execution belongs to linked, assigned ordinary issues. Ask mode remains non-mutating. Feature disablement prevents new turns and resets while retaining data and lifecycle protection; already-running turns may settle normally.
+
+### Agent chat project handoff (2026-09-11)
+
+Chat supports research and full plan drafting/revision in its existing plan document. On handoff, each ordinary assigned task receives the relevant plan in its own `plan` document, committed with task creation before execution is scheduled. The source plan remains in the conversation. Plan acceptance hands off execution; it never switches the conversation into implementation.
+
+Chat instructions require selecting a suitable project, reusing an existing one where appropriate. The project requirement is prompt-only; ordinary projectless tasks remain supported. New parent relationships beneath conversation tasks are rejected by task services, including direct API creation and reparenting. Existing children remain readable/editable and can be moved elsewhere. The Subtasks panel is unchanged.
+
+The `create_project` runtime tool uses the normal project API with durable idempotency. `list_projects` and `list_project_repositories` support selection. Multiple `repositoryIds` select authorized catalog entries; multiple HTTPS GitHub `repositoryUrls` register existing repositories absent from the catalog. IDs and URLs may be combined, but cannot accompany an explicit `workspace`. URLs do not create repositories on GitHub or grant credentials. Execution uses normal repository access rules. Repository IDs are revalidated against the authenticated run's responsible user and connection grants. Agents should consider proper available repositories, clarify material ambiguity, and use repository-free projects when appropriate for non-code work.
+
+Confirmed project creation appears as a durable card in the shared task transcript, including selected repository links. Tasks are linked inline. Failed creation never produces a success card. Tool evals cover planning/handoff, project/repository selection, retries, permission and mode denials, and ordinary delegation regressions using the production chat directive.
+
+### User continuation after execution recovery stops
+
+An authenticated user message or an exact failed-run Retry can start a fresh
+native or legacy conversation turn once the prior execution is confirmed stopped. Retain the source history and uncertain
+action outcomes; do not replay tool calls or reset the failed incident's automatic
+retry budget. Existing pause, approval, budget, ownership, and dependency gates
+remain in effect. See `doc/execution-semantics.md` for admission and stop-proof
+requirements.
+
+### Managed AI authentication
+
+AI credentials can be adopted into the existing Connections system. A typed
+`runtimeConfig.aiConnection` selects the responsible user’s personal default, an
+explicit shared grant. The existing human-audience and agent-access permissions
+apply; AI credentials have no separate agent-delegation exception. Selection preserves
+harness/model routing and fails closed without ambient credential fallback.
+Legacy agents retain their authentication until validated adoption. See
+[AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
+methods, lifecycle, runtime enforcement, and migration details.
+### Experimental task-bound email
+
+AgentMail channel connections extend the experimental conversation/task pipeline
+with explicit email publication. Each owned inbox/provider thread binds one task;
+external email senders do not gain board authority. Incoming correspondence uses
+the assigned agent's normal execution controls. Internal task activity never
+implicitly sends email. New outgoing conversations create child tasks and durable
+send intents before provider contact. The board directs email work through the
+normal task conversation; rich email cards show the correspondence and delivery
+outcomes without a separate email composer. See
+[AgentMail connections](connections/AGENTMAIL.md) for setup, transports, recovery,
+authorization, and the API/CLI contract.
+
+### Experimental iMessage Photon channel
+
+A Photon Cloud project can represent one agent through the existing
+experimental channel subsystem. DMs and explicitly enabled groups create or
+continue task-bound conversations. Linked sender identity is the default;
+telephone numbers, email addresses, names, and group membership do not grant
+Paperclip authority. Photos/files and ordinary questions/confirmations use the
+existing attachment, interaction, continuation, and publication contracts.
+Pause and Disconnect govern runtime behavior independently of the UI gate.
+Local Mac access, unsolicited conversations, and SMS/RCS
+fallback are excluded. Live qualification is required before release readiness.
+Pro shared allocation supports DMs only, with sender enrollment in Photon and
+separate identity linking in Paperclip. Shared channels reserve one project, not
+a pool phone number; group admission and publication are disabled. Dedicated
+allocation retains one selected number and individually enabled groups.
+
+iMessage task completion ends a turn, not its conversation. Subsequent messages
+reopen the same task, including after restart; only explicit `/new` or `/close`
+allows the next message to start another task. The open task receives committed
+inbound comments live, with “Sent from iMessage” attribution on user bubbles.
+
+See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
+contract, setup, recovery, boundaries, and qualification status.
+
+### Native task completion
+
+For ordinary low-risk tasks, accept the current agent's structured `done` claim
+subject to explicit workflow constraints. Missing independent evidence or a
+`needs_review` label alone must not create a human approval. Require a concrete
+reviewer decision for a new review request. Keep unfinished work with the agent,
+with bounded continuation and visible recovery. Preserve explicit approvals,
+current task ownership, cancellation, dependencies, and newer task state. See
+`doc/architecture/native-status-arbitration.md` for finish feedback and the
+provenance-checked cleanup of historical automatic completion reviews.
+
+### In-app announcements
+
+A versioned remote JSON manifest supplies one optional board announcement.
+The instance validates/caches content, proxies its raster image, and stores
+user-scoped dismissals. Closing or following an action dismisses the ID; copy
+edits retain it. Writes are board-only, idempotent and transactionally audited
+using an authorized company's context. Viewers may dismiss their own card.
+This is an explicit exception to company-scoped business entities: the
+preference follows one account across companies on the instance. A separate
+instance-level registry retains validated publication IDs, allowing offline
+dismissal retries after withdrawal while rejecting caller-invented IDs. It
+stores no announcement content, account data or interaction events.
+See [Announcements](ANNOUNCEMENTS.md) for API and publishing details.
+
+### Personal keyboard shortcut preference
+
+Keyboard shortcuts are off by default and are enabled in Settings → Profile.
+The preference is stored on the signed-in user, applies across companies and
+devices, and does not require instance administrator access. The local trusted
+board user has the same preference. `GET /api/auth/preferences` returns only the
+current board user's preference. `PATCH /api/auth/preferences` updates only that
+user and requires an accessible `companyId` for the activity log, including viewer
+memberships. The preference and audit record commit in one transaction. Both
+requests require `expectedUserId` (GET query parameter or PATCH body) matching
+the authenticated actor, so a cookie change cannot mix accounts in the cache.
+Agents cannot
+read or change these preferences. The legacy instance general setting is retained
+for API compatibility but no longer controls shortcut behavior in the app;
+users opt in individually after the upgrade.
+
+### Unsafe native workspace exports
+
+An unsafe workspace link does not fail an accepted native task result. Retry
+export automatically with confined entries only and keep archive confinement in
+place. If the export remains unsafe, omit it and finish the saved result under
+normal completion rules. Record diagnostics only in run logs; do not add a task
+warning or manual repair action. This also applies to historical unsafe failures:
+omit the already-rejected export, clear stale repair notices, and finalize the
+accepted result without another provider turn, even when its old sandbox is
+unavailable. Preserve current ownership and newer-work fences. See
+`native-workspace-finalization-recovery.md`.

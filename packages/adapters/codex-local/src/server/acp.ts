@@ -29,15 +29,18 @@ import type {
   AcpxEngineExecutorOptions,
   AcpxRemoteManagedHomeContext,
   AcpxRemoteManagedHomeResult,
+  AcpxTerminalFailureClassification,
+  AcpxTerminalSessionFailure,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
+  asStringArray,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { normalizeCodexModel } from "../index.js";
-import { classifyCodexAuthRefreshFailure } from "./parse.js";
+import { classifyCodexAuthRefreshFailure, extractCodexRetryNotBefore } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
@@ -56,7 +59,7 @@ export type CodexExecutionEngine = "cli" | "acp";
 export interface CodexEngineSelection {
   engine: CodexExecutionEngine;
   explicit: boolean;
-  fallbackReason?: string;
+  unavailableReason?: string;
 }
 
 type CodexEngineResolutionInput =
@@ -85,45 +88,27 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  // Engine availability must never change the agent's execution or permission contract.
+  if (selection.engine === "cli") return selection;
+  const unavailable = (reason: string): CodexEngineSelection => ({
+    ...selection,
+    unavailableReason: `${reason} Repair the ACP setup, or explicitly set engine=cli to use the CLI engine.`,
+  });
   const target = readAdapterExecutionTarget({
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
   if (target?.workspaceRealization?.mode === "in_place") {
-    if (selection.explicit && selection.engine === "acp") {
-      throw new Error("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
-    }
-    return {
-      engine: "cli",
-      explicit: selection.explicit,
-      ...(!selection.explicit
-        ? { fallbackReason: "In-place workspace realization must run without ACP archive staging." }
-        : {}),
-    };
+    return unavailable("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
   }
   const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
   const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
   if (filesystemScope || networkScope) {
-    if (selection.explicit && selection.engine === "acp") {
-      throw new Error("Local filesystem/network confinement requires the Codex CLI engine; ACP confinement is not supported.");
-    }
-    return {
-      engine: "cli",
-      explicit: selection.explicit,
-      ...(!selection.explicit
-        ? { fallbackReason: "Local filesystem/network scope requires spawn-level confinement in the CLI lane." }
-        : {}),
-    };
+    return unavailable("Local filesystem/network confinement requires the Codex CLI engine; ACP confinement is not supported.");
   }
-  if (selection.explicit || selection.engine !== "acp") return selection;
 
-  const fallbackReason = await defaultCodexAcpFallbackReason(input);
-  if (!fallbackReason) return selection;
-  return { engine: "cli", explicit: false, fallbackReason };
-}
-
-export function formatCodexAcpFallbackMessage(reason: string): string {
-  return `[paperclip] Codex ACP default unavailable; falling back to Codex CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`;
+  const reason = await codexAcpUnavailableReason(input);
+  return reason ? unavailable(reason) : selection;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
@@ -155,8 +140,17 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     typeof config.model === "string" ? config.model : "",
   );
 
+  const env = parseObject(config.env);
+  let networkAccess = env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS !== "false";
+  const extraArgs = asStringArray(config.extraArgs);
+  for (const arg of extraArgs.length > 0 ? extraArgs : asStringArray(config.args)) {
+    const match = /^(?:(?:--config=|-c=?)\s*)?sandbox_workspace_write\.network_access\s*=\s*(true|false)\s*$/.exec(arg);
+    if (match) networkAccess = match[1] === "true";
+  }
+
   return {
     ...config,
+    env: { ...env, PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: String(networkAccess) },
     agent: "codex",
     mode,
     permissionMode,
@@ -172,17 +166,16 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
  * Codex remote managed-home seed + auth copy-back for the runner-backed remote
  * sandbox ACP lane. Mirrors the codex CLI lane (`codex-local/execute.ts`): stage
  * the managed `CODEX_HOME` (auth.json + config.toml + skills) into the sandbox
- * as the `home` asset — carrying the inbound auth-merge `provision` and the
- * outbound `restore` copy-back seams — then repoint `CODEX_HOME` onto the
- * in-sandbox `assetDirs.home` path. The copy-back rides the asset `restore`,
- * which fires inside `restoreWorkspace()` at teardown.
+ * as the `home` asset, then repoint `CODEX_HOME` onto the in-sandbox
+ * `assetDirs.home` path. Subscription runs also use inbound auth merge and
+ * outbound copy-back through `restoreWorkspace()` at teardown.
  *
  * The engine already resolved+seeded the host managed Codex home and set
  * `env.CODEX_HOME` to it (a HOST path) before this seam runs, so `env.CODEX_HOME`
- * is exactly the home to stage. Seed inbound and copy-back outbound land together
- * (never seed-without-copy-back): Codex refresh tokens are single-use, so a
- * refreshed sandbox token that is never copied back would spend the host's token
- * and corrupt the host credential.
+ * is exactly the home to stage. Subscription auth merge and copy-back stay
+ * paired: Codex refresh tokens are single-use, so a refreshed sandbox token
+ * that is never copied back would spend the host's token. API-key runs skip
+ * both auth seams and never touch the shared subscription credential.
  */
 async function prepareCodexRemoteManagedHome(
   input: AcpxRemoteManagedHomeContext,
@@ -195,6 +188,12 @@ async function prepareCodexRemoteManagedHome(
     // workspace with no home asset, identical to the no-seam fallback.
     return { stagedRuntime: await input.stage([]) };
   }
+  // API-key runs do not rotate a subscription refresh token. Keep their
+  // sandbox auth out of the shared subscription copy-back path altogether.
+  const apiKeyAuth = Boolean(
+    env.OPENAI_API_KEY?.trim() || env.CODEX_API_KEY?.trim()
+    || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim(),
+  );
   // Curated allowlist temp dir (auth/config/skills only); caller owns cleanup.
   const stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
   let stagedRuntime;
@@ -204,17 +203,16 @@ async function prepareCodexRemoteManagedHome(
         key: "home",
         localDir: stagedCodexHomeDir,
         followSymlinks: true,
-        // Inbound (host→sandbox) auth-merge: keeps whichever credential is newer
-        // when the sandbox image already carries a Codex auth.json.
-        provision: buildCodexAuthInboundProvision(),
-        // Outbound (sandbox→host) copy-back at teardown, under the same
+        // Subscription-only inbound auth merge keeps the newer credential.
+        provision: apiKeyAuth ? undefined : buildCodexAuthInboundProvision(),
+        // Subscription-only outbound copy-back at teardown, under the same
         // direction-agnostic decision predicate + directory merge-lock +
         // atomic-rename + 0600 guard. Target is the SHARED host auth.json
         // (the symlink source managed homes point at), never an in-sandbox copy.
-        restore: async ({ assetDir, readFile }) =>
+        restore: apiKeyAuth ? undefined : async ({ assetDir, readFile }) =>
           void (await copyBackCodexAuth({
             readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-            hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+            hostAuthPath: path.join(input.config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
             log: (line) => onLog("stdout", `${line}\n`),
           })),
       },
@@ -230,7 +228,7 @@ async function prepareCodexRemoteManagedHome(
 
   return {
     stagedRuntime,
-    // Per-run copy-back: fires on EVERY run's teardown (including a compatible
+    // Subscription copy-back fires on EVERY run's teardown (including a compatible
     // resume that reuses this staged runtime). It reads the sandbox auth.json /
     // workspace live and copies back to the host; it does NOT remove the staged
     // in-sandbox home, so re-running it across resumes can't leave a later run
@@ -244,7 +242,9 @@ async function prepareCodexRemoteManagedHome(
     teardown: createWorkspaceRestoreTeardown({
       stagedRuntime,
       onLog,
-      startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+      startMessage: apiKeyAuth
+        ? "[paperclip] Restoring workspace changes from the sandbox.\n"
+        : "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
       failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
     }),
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
@@ -265,10 +265,31 @@ async function prepareCodexRemoteManagedHome(
   };
 }
 
+export function classifyCodexTerminalSessionFailure(
+  failure: AcpxTerminalSessionFailure,
+  now: Date,
+): AcpxTerminalFailureClassification | null {
+  // ACP's `limit` also covers context, turn, rate and configured budget limits.
+  // Require explicit usage exhaustion; the CLI's broader capacity matcher would
+  // also match a context/storage capacity limit and defer the wrong failure.
+  if (failure.category !== "limit") return null;
+  const surface = { errorMessage: [failure.title, failure.details].filter(Boolean).join("\n") };
+  if (!/\b(?:you(?:'|’)ve hit your usage limit|usage limit (?:reached|exceeded))\b/i.test(surface.errorMessage)) {
+    return null;
+  }
+  const retryNotBefore = extractCodexRetryNotBefore(surface, now)?.toISOString();
+  return {
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    ...(retryNotBefore ? { retryNotBefore } : {}),
+  };
+}
+
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
     prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
+    classifyTerminalSessionFailure: classifyCodexTerminalSessionFailure,
     ...options,
     adapterType: "codex_local",
     moduleDir,
@@ -451,7 +472,7 @@ async function resolveCodexAcpCommandForTarget(
   return resolveCodexAcpCommand(config);
 }
 
-async function defaultCodexAcpFallbackReason(
+async function codexAcpUnavailableReason(
   input: CodexEngineResolutionInput,
 ): Promise<string | null> {
   const target = readAdapterExecutionTarget({
@@ -465,7 +486,7 @@ async function defaultCodexAcpFallbackReason(
     return "Codex ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsCodexAcpMinimum()) {
-    return `Node ${process.version} does not satisfy Codex ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
+    return `Node ${process.version} (${process.execPath}) does not satisfy Codex ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
   const command = await resolveCodexAcpCommandForTarget(input.config, target);
   if (!(await commandIsResolvable(command, input))) {
@@ -531,7 +552,7 @@ export async function testCodexAcpEnvironment(
     level: nodeVersionMeetsCodexAcpMinimum() ? "info" : "error",
     message: nodeVersionMeetsCodexAcpMinimum()
       ? `Node ${process.version} satisfies ACP runtime requirements.`
-      : `Node ${process.version} does not satisfy ACP runtime requirements.`,
+      : `Node ${process.version} (${process.execPath}) does not satisfy ACP runtime requirements.`,
     hint: nodeVersionMeetsCodexAcpMinimum()
       ? undefined
       : `Run Codex ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,

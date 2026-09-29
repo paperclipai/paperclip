@@ -41,10 +41,17 @@ export function normalizeIssueQueuedCommentQueue(
         typeof entry?.position === "number" && Number.isFinite(entry.position)
           ? entry.position
           : sourcePosition;
+      const response = record(entry?.source);
       return [
         {
           comment: comment as unknown as IssueComment,
           position,
+          ...(response?.kind === "interaction" && typeof response.interactionId === "string"
+            && typeof response.interactionKind === "string" ? { source: {
+              kind: "interaction" as const, interactionId: response.interactionId,
+              interactionKind: response.interactionKind,
+              requiresFreshSession: response.requiresFreshSession === true,
+            } } : {}),
           canEdit: entry?.canEdit === true,
           canDiscard: entry?.canDiscard === true,
         },
@@ -54,6 +61,7 @@ export function normalizeIssueQueuedCommentQueue(
     .map((entry, position) => ({ ...entry, position }));
   const disposition = source?.steeringDisposition;
   const state = source?.state;
+  const wait = record(source?.executionWait);
 
   return {
     issueId:
@@ -80,6 +88,9 @@ export function normalizeIssueQueuedCommentQueue(
         ? (disposition as IssueQueuedCommentSteeringDisposition)
         : "unsupported",
     entries,
+    executionWait: typeof wait?.reason === "string" && typeof wait?.message === "string"
+      ? { reason: wait.reason, message: wait.message }
+      : null,
   };
 }
 
@@ -145,5 +156,6 @@ export function mergePendingIssueQueuedComments(params: {
         ? "temporarily_unavailable"
         : "unsupported"),
     entries,
+    executionWait: params.authoritativeQueue?.executionWait ?? null,
   };
 }

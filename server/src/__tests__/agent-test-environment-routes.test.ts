@@ -45,6 +45,7 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null as string | null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
   getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
 }));
@@ -100,6 +101,56 @@ const externalAdapter: ServerAdapterModule = {
   testEnvironment: testEnvironmentSpy,
 };
 
+// Only the runtime preparation is replaced: it needs a database and a stored
+// grant, and these tests exercise the route's verdict, not credential
+// resolution. Everything else in the module stays real. The same goes for
+// validateAiApiKey — it calls the provider's real endpoint, and these tests
+// direct its verdict instead of the network.
+const mockPrepareManagedAiRuntime = vi.hoisted(() => vi.fn());
+vi.mock("../services/ai-connection-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/ai-connection-runtime.js")>()),
+  prepareManagedAiRuntime: mockPrepareManagedAiRuntime,
+}));
+const mockValidateAiApiKey = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../routes/ai-connections.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../routes/ai-connections.js")>()),
+  validateAiApiKey: mockValidateAiApiKey,
+}));
+
+function mockManagedRuntime(method: "api_key" | "subscription") {
+  mockPrepareManagedAiRuntime.mockImplementation(
+    async (_db: unknown, input: { config: Record<string, unknown> }) => ({
+      config: {
+        ...input.config,
+        // The real preparation injects the credential under the provider's
+        // env key; the adoption re-verification reads it from there.
+        env: { ...(method === "api_key" ? { ANTHROPIC_API_KEY: "sk-ant-test-key" } : {}) },
+        managedAiConnection: {
+          connectionId: "conn-1",
+          grantId: "grant-1",
+          provider: "anthropic",
+          method,
+          mode: "responsible_user",
+          responsibleUserId: "local-board",
+          identity: "grant-1:local-board:0000000000000000",
+        },
+      },
+      attribution: {
+        connectionId: "conn-1",
+        grantId: "grant-1",
+        provider: "anthropic",
+        method,
+        mode: "responsible_user",
+        responsibleUserId: "local-board",
+      },
+      accountName: "My Claude Account",
+      accountOwnerUserId: "local-board",
+      identity: "grant-1:local-board:0000000000000000",
+      cleanup: vi.fn(async () => {}),
+    }),
+  );
+}
+
 async function createApp() {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
@@ -131,6 +182,9 @@ describe("agent test-environment route", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       reason: "allow_explicit_grant",
@@ -189,6 +243,139 @@ describe("agent test-environment route", () => {
     await unregisterTestAdapter("external_test");
   });
 
+  it("tests the instance default sandbox when the agent inherits its environment", async () => {
+    const environmentId = "11111111-1111-4111-8111-111111111111";
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: environmentId });
+    const target = {
+      kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
+      providerKey: "daytona", runner: { execute: vi.fn() },
+    };
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue(target);
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ adapterConfig: {}, environmentId: null });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalled();
+    expect(testEnvironmentSpy).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target }));
+    expect(mockReleaseRunLease).toHaveBeenCalled();
+  });
+
+  it.each([
+    { selection: "omitted", environmentId: undefined, expectedId: "22222222-2222-4222-8222-222222222222" },
+    { selection: "cleared", environmentId: null, expectedId: "11111111-1111-4111-8111-111111111111" },
+    { selection: "replaced", environmentId: "33333333-3333-4333-8333-333333333333", expectedId: "33333333-3333-4333-8333-333333333333" },
+  ])("resolves the saved agent environment when the request selection is $selection", async ({ environmentId, expectedId }) => {
+    const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId, companyId: "company-1", adapterType: "external_test",
+      adapterConfig: {}, runtimeConfig: {}, defaultEnvironmentId: "22222222-2222-4222-8222-222222222222",
+    });
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    mockEnvironmentService.getById.mockImplementation(async (id) => ({
+      id, name: "Selected sandbox", driver: "sandbox", status: "active", config: { provider: "fake-plugin" },
+    }));
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn() } };
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue(target);
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ agentId, adapterConfig: {}, ...(environmentId === undefined ? {} : { environmentId }) });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({
+      environment: expect.objectContaining({ id: expectedId }),
+    }));
+    expect(mockSecretService.resolveAdapterConfigForRuntime).toHaveBeenCalledWith(
+      "company-1", {}, expect.objectContaining({ consumerType: "environment", consumerId: expectedId }),
+      expect.any(Object),
+    );
+    expect(testEnvironmentSpy).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target }));
+  });
+
+  it("keeps an explicit local override ahead of the instance sandbox default", async () => {
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    mockEnvironmentService.getById.mockResolvedValue({ id: "33333333-3333-4333-8333-333333333333", name: "Local", driver: "local", status: "active", config: {} });
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ environmentId: "33333333-3333-4333-8333-333333333333" });
+    expect(res.status).toBe(200);
+    expect(mockInstanceSettingsService.get).not.toHaveBeenCalled();
+    expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+    expect(testEnvironmentSpy).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: null }));
+  });
+
+  it("uses the managed sandbox when managed-only execution has no configured default", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({ id: "11111111-1111-4111-8111-111111111111" });
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn() } };
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue(target);
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ environmentId: null });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(testEnvironmentSpy).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target }));
+  });
+
+  it("checks the inherited environment's company before resolving credentials", async () => {
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-2"]);
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ adapterConfig: {} });
+    expect(res.status).toBe(403);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    expect(testEnvironmentSpy).not.toHaveBeenCalled();
+  });
+
+  it("never probes the host when an inherited environment is missing", async () => {
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    mockEnvironmentService.getById.mockResolvedValue(null);
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ adapterConfig: {} });
+    expect(res.body.checks).toEqual([expect.objectContaining({ code: "environment_not_found" })]);
+    expect(testEnvironmentSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not probe locally when managed-only execution has no default or sandbox", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ adapterConfig: {} });
+    expect(res.status).toBe(422);
+    expect(res.body.details.code).toBe("managed_sandbox_unavailable");
+    expect(testEnvironmentSpy).not.toHaveBeenCalled();
+  });
+
+  it("tests a prospective adapter switch before saving the agent", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {},
+    });
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", adapterConfig: { model: "prospective-model" } });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(testEnvironmentSpy).toHaveBeenCalledWith(expect.objectContaining({ config: { model: "prospective-model" } }));
+  });
+
+  it("requires agent update permission to test a prospective adapter switch", async () => {
+    mockAgentService.getById.mockResolvedValue({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", adapterType: "codex_local", adapterConfig: {} });
+    mockAccessService.decide.mockImplementation(async ({ action }) => ({ allowed: action !== "agent_config:update", reason: "test", explanation: "Update denied" }));
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", adapterConfig: {} });
+    expect(res.status).toBe(403);
+    expect(testEnvironmentSpy).not.toHaveBeenCalled();
+  });
+
   it.each(["CURSOR_API_KEY", "KIMI_MODEL_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "MINIMAX_API_KEY"])("accepts %s as a probe-only credential", async (key) => {
     const app = await createApp();
     const res = await request(app)
@@ -215,6 +402,95 @@ describe("agent test-environment route", () => {
       expect(JSON.stringify(res.body)).not.toContain("gateway-probe-key");
     } finally {
       unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  // The managed-adoption verdict, all three ways. An api_key account is
+  // re-verified against the provider's endpoint at adoption — the same check
+  // its save performed, catching a key revoked since — but never through the
+  // CLI-lane hello probe, which a clean machine without a provider CLI can
+  // never pass (the regression that walled off onboarding's API-key path in
+  // the nightly release smoke). A stored subscription login still needs the
+  // hello probe: only a real turn proves the runtime lane can consume it.
+  it("adopts an api_key connection on the engine's verdict plus a live key check, without a CLI hello probe", async () => {
+    mockManagedRuntime("api_key");
+    // A sentinel in claude_local's slot: the forced CLI-lane fallback would
+    // land here, so the fix is proven by this never being consulted — not by
+    // whatever verdict the host machine's real adapter would return.
+    const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("claude_local");
+    unregisterServerAdapter("claude_local");
+    const cliProbeSpy = vi.fn(async () => ({
+      adapterType: "claude_local",
+      status: "fail" as const,
+      checks: [{ code: "adapter_command_missing", level: "error" as const, message: 'Command not found in PATH: "claude"' }],
+      testedAt: new Date(0).toISOString(),
+    }));
+    registerServerAdapter({ ...externalAdapter, type: "claude_local", testEnvironment: cliProbeSpy });
+    try {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          adapterConfig: { cwd: "/" },
+          aiConnection: { provider: "anthropic", method: "api_key", mode: "responsible_user" },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("pass");
+      expect(JSON.stringify(res.body)).not.toContain("ai_connection_validation_incomplete");
+      expect(res.body.checks.map((check: { code: string }) => check.code)).toContain("ai_connection_api_key_reverified");
+      expect(mockValidateAiApiKey).toHaveBeenCalledWith("anthropic", "sk-ant-test-key");
+      expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+      expect(cliProbeSpy).not.toHaveBeenCalled();
+    } finally {
+      unregisterServerAdapter("claude_local");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  it("fails adoption of an api_key connection the provider no longer accepts", async () => {
+    mockManagedRuntime("api_key");
+    mockValidateAiApiKey.mockRejectedValueOnce(Object.assign(new Error("The provider rejected this API key."), { status: 422 }));
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({
+        adapterConfig: { cwd: "/" },
+        aiConnection: { provider: "anthropic", method: "api_key", mode: "responsible_user" },
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("fail");
+    expect(res.body.checks.map((check: { code: string }) => check.code)).toContain("ai_connection_api_key_rejected");
+  });
+
+  it("still fails subscription adoption when no hello probe can run", async () => {
+    mockManagedRuntime("subscription");
+    const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("claude_local");
+    unregisterServerAdapter("claude_local");
+    const cliProbeSpy = vi.fn(async () => ({
+      adapterType: "claude_local",
+      status: "fail" as const,
+      checks: [{ code: "adapter_command_missing", level: "error" as const, message: 'Command not found in PATH: "claude"' }],
+      testedAt: new Date(0).toISOString(),
+    }));
+    registerServerAdapter({ ...externalAdapter, type: "claude_local", testEnvironment: cliProbeSpy });
+    try {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          adapterConfig: { cwd: "/" },
+          aiConnection: { provider: "anthropic", method: "subscription", mode: "responsible_user" },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("fail");
+      expect(res.body.checks.map((check: { code: string }) => check.code)).toContain("ai_connection_validation_incomplete");
+      expect(cliProbeSpy).toHaveBeenCalledTimes(1);
+      expect(cliProbeSpy.mock.calls[0]?.[0]?.config.engine).toBe("cli");
+    } finally {
+      unregisterServerAdapter("claude_local");
       if (previous) registerServerAdapter(previous);
     }
   });

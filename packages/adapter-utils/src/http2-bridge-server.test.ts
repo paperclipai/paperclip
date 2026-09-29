@@ -1910,6 +1910,38 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     }
   });
 
+  it("serves only exact GET schema discovery through HTTP/2", async () => {
+    const schema = { openapi: "3.1.0", paths: {} };
+    const forwarded: string[] = [];
+    const { gateway, handle } = createTestPair({
+      forwardRequest: async (request) => {
+        forwarded.push(`${request.method} ${request.pathname}`);
+        return { status: 200, body: Buffer.from(JSON.stringify(schema)) };
+      },
+    });
+    try {
+      for (const [method, path, status] of [
+        ["GET", "/api/openapi.json", 200],
+        ["POST", "/api/openapi.json", 403],
+        ["PATCH", "/api/openapi.json", 403],
+        ["DELETE", "/api/openapi.json", 403],
+        ["GET", "/api/openapi.json/extra", 403],
+        ["GET", "/api/openapiXjson", 403],
+        ["GET", "/api/secrets", 403],
+      ] as const) {
+        const response = await gateway.forwardRequest({
+          method, path, query: "", headers: {}, body: Buffer.alloc(0), receivedToken: BRIDGE_TOKEN,
+        });
+        expect(response.status).toBe(status);
+        if (status === 200) expect(JSON.parse(response.body!.toString())).toEqual(schema);
+      }
+      expect(forwarded).toEqual(["GET /api/openapi.json"]);
+    } finally {
+      await gateway.close();
+      await handle.close();
+    }
+  });
+
   it("rejects a route the allowlist does not carry, before the forwarder runs", async () => {
     const forwarderTracker = createForwarderCallTracker();
     const { gateway, handle } = createTestPair({

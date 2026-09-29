@@ -90,3 +90,28 @@ export async function reserveRunnerE2EServerPort(
     `Failed to reserve a conflict-free Paperclip/Vite port pair after ${maxAttempts} attempts`,
   );
 }
+
+/** Hold an OS-assigned database port until the isolated server is ready to spawn.
+ * Using ephemeral allocation avoids concurrent cells scanning the same default
+ * Postgres fallback range. The child cannot inherit this socket, so an unrelated
+ * process can still claim it in the short close-to-spawn interval.
+ */
+export async function reserveRunnerE2EDatabasePort(
+  serverPort: number,
+  options: { maxAttempts?: number; openPort?: OpenLoopbackPort } = {},
+): Promise<LoopbackPortReservation> {
+  const openPort = options.openPort ?? openLoopbackPort;
+  const maxAttempts = options.maxAttempts ?? 32;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const reservation = await openPort(0);
+    if (
+      !runnerE2EServerPortConflictsWithDatabase(serverPort, reservation.port)
+    ) {
+      return reservation;
+    }
+    await reservation.close();
+  }
+  throw new Error(
+    `Failed to reserve an isolated database port after ${maxAttempts} attempts`,
+  );
+}
