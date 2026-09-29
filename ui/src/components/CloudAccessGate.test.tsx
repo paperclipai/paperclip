@@ -129,14 +129,47 @@ describe("CloudAccessGate restart recovery", () => {
     expect(container.querySelector("textarea")).not.toBeNull();
   });
 
-  it("opens the board when valid startup health is followed by successful access checks", async () => {
+  it("waits for ready health before opening the board even when access checks succeed", async () => {
+    failingPath = "/api/health";
+    failure = () => Response.json({ status: "starting", deploymentMode: "authenticated", bootstrapStatus: "ready" });
+    await render();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("Reconnecting");
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual(checks.map(([path]) => path));
+    await vi.advanceTimersByTimeAsync(5_100);
+    expect(container.querySelector("textarea")).toBeNull();
+    failingPath = null;
+    await vi.advanceTimersByTimeAsync(5_100);
+    await flushReact();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.textContent).not.toContain("Reconnecting");
+  });
+
+  it("supports manual retry while startup health is pending", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({ status: "starting", deploymentMode: "local_trusted" }));
+    await render();
+    expect(container.querySelector("textarea")).toBeNull();
+    container.querySelector("button")!.click();
+    await flushReact();
+    expect(container.querySelector("textarea")).not.toBeNull();
+  });
+
+  it("preserves an open editor while health reports startup recovery", async () => {
+    await render();
+    const editor = container.querySelector("textarea")!;
+    editor.value = "Keep my unsaved changes";
     fetchMock.mockResolvedValueOnce(Response.json({
       status: "starting", deploymentMode: "authenticated", bootstrapStatus: "ready",
     }));
-    await render();
-    expect(container.querySelector("textarea")).not.toBeNull();
+    await client.refetchQueries({ queryKey: queryKeys.health });
+    await flushReact();
+    expect(container.querySelector("textarea")).toBe(editor);
+    expect(container.textContent).toContain("Reconnecting automatically");
+    await vi.advanceTimersByTimeAsync(5_100);
+    await flushReact();
+    expect(container.querySelector("textarea")).toBe(editor);
+    expect(editor.value).toBe("Keep my unsaved changes");
     expect(container.textContent).not.toContain("Reconnecting");
-    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual(checks.map(([path]) => path));
   });
 
   it("offers immediate retry while waiting for the next automatic check", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Navigate, Outlet, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -68,15 +68,15 @@ function NoBoardAccessPage() {
 export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembershipRequest?: boolean } = {}) {
   const location = useLocation();
   const queryClient = useQueryClient();
+  const [hasOpenedBoard, setHasOpenedBoard] = useState(false);
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
     retry: false,
     refetchInterval: (query) => {
       if (query.state.error) return isTemporaryApiError(query.state.error) ? RECONNECT_INTERVAL_MS : false;
-      const data = query.state.data as
-        | { deploymentMode?: "local_trusted" | "authenticated"; bootstrapStatus?: "ready" | "bootstrap_pending" }
-        | undefined;
+      const data = query.state.data;
+      if (data?.status === "starting") return RECONNECT_INTERVAL_MS;
       return data?.deploymentMode === "authenticated" && data.bootstrapStatus === "bootstrap_pending"
         ? 2000
         : false;
@@ -123,7 +123,8 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     ...(isAuthenticatedMode ? [sessionQuery] : []),
     ...(isAuthenticatedMode && !isBootstrapPending && sessionQuery.data ? [boardAccessQuery] : []),
   ];
-  const temporaryError = activeQueries.some((query) => isTemporaryApiError(query.error));
+  const isServerStarting = healthQuery.data?.status === "starting";
+  const isReconnecting = isServerStarting || activeQueries.some((query) => isTemporaryApiError(query.error));
   // A background outage must not unmount editors and discard drafts. Cached
   // access is only retained for transport failures; 401/403 still fail closed.
   const blockingError = activeQueries.find((query) => query.error
@@ -132,9 +133,17 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     healthQuery.isLoading ||
     (isAuthenticatedMode && sessionQuery.isLoading) ||
     (isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data && boardAccessQuery.isLoading);
+  const hasBoardAccess = allowMembershipRequest || !isAuthenticatedMode
+    || !!boardAccessQuery.data?.isInstanceAdmin || (boardAccessQuery.data?.companyIds.length ?? 0) > 0;
+  const canAccessBoard = !isLoading && !blockingError && !isBootstrapPending
+    && (!isAuthenticatedMode || !!sessionQuery.data) && hasBoardAccess;
+  useEffect(() => {
+    if (!canAccessBoard) setHasOpenedBoard(false);
+    else if (healthQuery.data?.status === "ok") setHasOpenedBoard(true);
+  }, [canAccessBoard, healthQuery.data?.status]);
   const wasReconnecting = useRef(false);
   useEffect(() => {
-    if (temporaryError) {
+    if (isReconnecting) {
       wasReconnecting.current = true;
     } else if (wasReconnecting.current && !isLoading && !blockingError) {
       wasReconnecting.current = false;
@@ -142,16 +151,18 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
       // Refresh those too so recovery does not strand the user on a second error.
       void queryClient.invalidateQueries({ predicate: (query) => isTemporaryApiError(query.state.error) });
     }
-  }, [temporaryError, isLoading, blockingError, queryClient]);
+  }, [isReconnecting, isLoading, blockingError, queryClient]);
 
-  if (blockingError) {
+  if (blockingError || (isServerStarting && !hasOpenedBoard)) {
     return (
       <CloudAccessError
-        temporary={isTemporaryApiError(blockingError)}
+        temporary={blockingError ? isTemporaryApiError(blockingError) : true}
         retrying={activeQueries.some((query) => query.isFetching)}
         onRetry={() => {
           for (const query of activeQueries) {
-            if (query.error) void query.refetch({ cancelRefetch: false });
+            if (query.error || (query === healthQuery && isServerStarting)) {
+              void query.refetch({ cancelRefetch: false });
+            }
           }
         }}
       />
@@ -195,19 +206,13 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
 
   // Private invitation pages may let signed-in nonmembers request access.
   // Their token APIs still enforce membership before granting any authority.
-  if (
-    !allowMembershipRequest &&
-    isAuthenticatedMode &&
-    sessionQuery.data &&
-    !boardAccessQuery.data?.isInstanceAdmin &&
-    (boardAccessQuery.data?.companyIds.length ?? 0) === 0
-  ) {
+  if (!hasBoardAccess) {
     return <NoBoardAccessPage />;
   }
 
   return (
     <>
-      {temporaryError && (
+      {isReconnecting && (
         <div role="status" className="bg-muted px-4 py-2 text-center text-sm text-muted-foreground">
           Connection interrupted. Reconnecting automatically…
         </div>
