@@ -1,5 +1,7 @@
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { collectRunFailureDiagnostics, sanitizeRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
+import type { heartbeatRuns } from "@paperclipai/db";
 
 // Sentry is an optional peer. When installed, exercise the real SDK with an
 // in-memory transport, including its context behavior without an OTel manager.
@@ -76,7 +78,17 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
       exitCode: null,
       signal: "SIGKILL",
     };
-    captureRunFailure(first);
+    const original = Object.assign(new Error(first.errorMessage, { cause: Object.assign(new Error("upstream connection reset"), {
+      code: "ECONNRESET", requestId: "request-123", status: 503,
+      stack: "Error: upstream connection reset\n    at socketRead (/app/provider.js:19:7)",
+      response: { body: "private-response" },
+    }) }), { stack: "Error: first run failed\n    at originalAdapter (/app/adapter.js:42:7)", request: { headers: "private-headers" } });
+    const diagnostics = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics({
+      runtimeMode: "legacy", resultJson: { terminalSessionFailure: {
+        category: "service", title: "Provider failed", details: "d".repeat(9000),
+      } },
+    } as unknown as typeof heartbeatRuns.$inferSelect, { error: original, phase: "execute" }));
+    captureRunFailure({ ...first, diagnostics });
     await Promise.resolve();
     captureException(new Error("unrelated database error"));
     captureRunFailure(second);
@@ -91,7 +103,7 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
 
     expect(events).toHaveLength(5);
     const captured = (message: string) => events.find((event) =>
-      (event.exception as { values: Array<{ value: string }> }).values[0]?.value === message,
+      (event.exception as { values: Array<{ value: string }> }).values.some((value) => value.value === message),
     );
     for (const run of [first, second]) {
       expect(captured(run.errorMessage)).toMatchObject({
@@ -108,10 +120,25 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
       fingerprint: [first.errorCode, first.agentAdapter],
     });
     expect(JSON.stringify(events)).not.toContain("private-signal-payload");
+    const firstCapture = captured(first.errorMessage)!;
+    const exceptions = (firstCapture.exception as { values: Array<Record<string, unknown>> }).values;
+    expect(exceptions).toHaveLength(2);
+    expect(JSON.stringify(exceptions)).toContain("originalAdapter");
+    expect(JSON.stringify(exceptions)).toContain("socketRead");
+    expect(JSON.stringify(exceptions)).not.toContain("captureRunFailure");
+    expect(JSON.stringify(captured(second.errorMessage)?.exception)).not.toContain("captureRunFailure");
+    expect(firstCapture).toMatchObject({ contexts: {
+      provider_failure: { category: "service", details: "d".repeat(9000) },
+      run_exception_1: { code: "ECONNRESET", requestId: "request-123", status: 503 },
+    } });
+    expect(JSON.stringify(events)).not.toContain("private-");
     for (const message of ["unrelated database error", "unrelated filesystem error"]) {
       const event = captured(message);
       expect(event).toBeDefined();
       expect(event).not.toHaveProperty("contexts.run_failure");
+      for (const context of ["run_execution", "adapter_failure", "provider_failure", "run_exception_0", "run_exception_1"]) {
+        expect(event).not.toHaveProperty(`contexts.${context}`);
+      }
       expect(event).not.toHaveProperty("fingerprint");
       for (const tag of ["run_id", "task_id", "error_code", "agent_adapter", "run_status"]) {
         expect(event).not.toHaveProperty(`tags.${tag}`);

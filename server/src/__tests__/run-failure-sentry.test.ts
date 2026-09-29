@@ -215,6 +215,31 @@ describe("captureRunFailure", () => {
     expect((received as Error).message).toBe("boom");
   });
 
+  it("uses sanitized original stacks and causes instead of the reporting stack", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    sentryModule.captureRunFailure(baseEvent({ diagnostics: {
+      execution: { runtimeMode: "native", failurePhase: "setup" },
+      adapter: {}, provider: {}, truncatedFields: [],
+      exceptions: [
+        { name: "TypeError", message: "setup failed", stack: "TypeError: setup failed\n    at originalSetup (/app/setup.js:42:7)" },
+        { name: "Error", message: "connection reset", stack: "Error: connection reset\n    at socketRead (/app/network.js:9:4)", code: "ECONNRESET", requestId: "req-123" },
+      ],
+    } }));
+    const [error, context] = captureException.mock.calls[0]!;
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ name: "TypeError", message: "setup failed", cause: { message: "connection reset" } });
+    expect((error as Error).stack).toContain("originalSetup");
+    expect((error as Error).stack).not.toContain("captureRunFailure");
+    expect(context?.contexts.run_exception_1).toMatchObject({ code: "ECONNRESET", requestId: "req-123" });
+    expect(context?.contexts.run_execution).toMatchObject({ failurePhase: "setup" });
+  });
+
+  it("does not invent a reporter stack for a saved result with no original exception", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    sentryModule.captureRunFailure(baseEvent());
+    expect((captureException.mock.calls[0]![0] as Error).stack).toBeUndefined();
+  });
+
   it("does not throw and captures nothing when the gate is closed", async () => {
     vi.resetModules();
     const sentryModule = await import("../sentry.js");

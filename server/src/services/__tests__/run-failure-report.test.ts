@@ -9,6 +9,11 @@ import {
 
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
 const mockRedactCurrentUserText = vi.hoisted(() => vi.fn());
+const mockResolveSecret = vi.hoisted(() => vi.fn());
+
+vi.mock("../../secrets/provider-registry.js", () => ({
+  getSecretProvider: () => ({ resolveVersion: mockResolveSecret }),
+}));
 
 vi.mock("../../sentry.js", () => ({
   captureRunFailure: mockCaptureRunFailure,
@@ -42,6 +47,8 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -139,6 +146,88 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       expect(captured).not.toHaveProperty("stderrExcerpt");
       expect(captured).not.toHaveProperty("resultJson");
     }
+  });
+
+  it("reports selected provider diagnostics and the original cause without copying arbitrary payloads", async () => {
+    await seedCompanyAndAgent();
+    const cause = Object.assign(new Error("provider unreachable"), {
+      code: "ECONNRESET", requestId: "request-123", status: 503,
+      response: { body: "private-response" },
+    });
+    const error = new Error("adapter threw", { cause });
+    const run = buildRun({
+      runtimeMode: "legacy",
+      executionStage: "execute",
+      error: "adapter threw",
+      stderrExcerpt: "private-stderr",
+      stdoutExcerpt: "private-stdout",
+      contextSnapshot: { prompt: "private-prompt" },
+      resultJson: {
+        terminalSessionFailure: { category: "service", title: "Provider unavailable", details: "request-123 failed", raw: "private-provider-raw" },
+        timeoutFired: false, summary: "private-summary", env: { SECRET: "private-env" },
+      },
+    });
+    await reportRunFailure(db, run, { error, phase: "execute", adapterErrorMeta: { phase: "turn", retryable: true, response: "private-adapter-response" } });
+    const captured = mockCaptureRunFailure.mock.calls[0][0];
+    expect(captured.diagnostics).toMatchObject({
+      execution: { runtimeMode: "legacy", executionStage: "execute", failurePhase: "execute", timeoutFired: false },
+      adapter: { phase: "turn", retryable: true },
+      provider: { category: "service", title: "Provider unavailable", details: "request-123 failed" },
+      exceptions: [{ message: "adapter threw" }, { message: "provider unreachable", code: "ECONNRESET", status: 503, requestId: "request-123" }],
+    });
+    expect(captured.diagnostics.exceptions[0].stack).toContain("run-failure-report.test.ts");
+    expect(JSON.stringify(captured)).not.toContain("private-");
+    expect(error.cause).toBe(cause);
+  });
+
+  it.each([false, true])("redacts registered run secrets and fails closed when resolution fails: %s", async (fails) => {
+    await seedCompanyAndAgent();
+    const secret = "opaque-registered-value";
+    const run = buildRun({
+      error: `connection failed: ${secret}`,
+      contextSnapshot: { paperclipSecretRedactions: [{ fingerprintSha256: "fixture", material: { encrypted: "fixture" } }] },
+      resultJson: { terminalSessionFailure: { category: "service", details: `upstream rejected ${secret}` } },
+    });
+    await db.insert(heartbeatRuns).values(run);
+    if (fails) mockResolveSecret.mockRejectedValueOnce(new Error("fixture resolution failed"));
+    else mockResolveSecret.mockResolvedValueOnce(secret);
+
+    await expect(reportRunFailure(db, run, {
+      error: new Error(`failed ${secret}`, { cause: new Error(`cause ${secret}`) }),
+      adapterErrorMeta: { causeMessage: `adapter ${secret}` },
+    })).resolves.toBeUndefined();
+    expect(mockResolveSecret).toHaveBeenCalledTimes(1);
+    if (fails) {
+      expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    } else {
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+      const captured = mockCaptureRunFailure.mock.calls[0][0];
+      expect(JSON.stringify(captured)).not.toContain(secret);
+      expect(captured.diagnostics.provider.details).toContain(REDACTED_EVENT_VALUE);
+      expect(captured.diagnostics.exceptions[1].message).toContain(REDACTED_EVENT_VALUE);
+    }
+  });
+
+  it("redacts runtime and host environment secret values even without a persisted registry", async () => {
+    await seedCompanyAndAgent();
+    const runtimeSecret = "opaque-runtime-value";
+    const hostSecret = "opaque-host-value";
+    vi.stubEnv("FIXTURE_ACCESS_TOKEN", hostSecret);
+    const text = `connection failed: ${runtimeSecret} ${hostSecret}`;
+    const run = buildRun({ error: text, contextSnapshot: null,
+      resultJson: { terminalSessionFailure: { details: text } },
+    });
+    await reportRunFailure(db, run, {
+      error: new Error(text, { cause: new Error(text) }),
+      adapterErrorMeta: { causeMessage: text, stackPreview: text },
+      secretValues: [runtimeSecret],
+    });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    const captured = mockCaptureRunFailure.mock.calls[0][0];
+    expect(JSON.stringify(captured)).not.toContain(runtimeSecret);
+    expect(JSON.stringify(captured)).not.toContain(hostSecret);
+    expect(captured.diagnostics.exceptions).toHaveLength(2);
+    expect(captured).not.toHaveProperty("secretValues");
   });
 
   it("captures nothing for succeeded, cancelled, and interrupted", async () => {
@@ -276,7 +365,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     const { errorMessage } = mockCaptureRunFailure.mock.calls[0][0];
     expect(errorMessage).toHaveLength(MAX_ERROR_MESSAGE_LENGTH);
-    expect(errorMessage).toBe("x".repeat(MAX_ERROR_MESSAGE_LENGTH));
+    expect(errorMessage).toBe("x".repeat(MAX_ERROR_MESSAGE_LENGTH - 12) + "\n[truncated]");
   });
 
   it("does not change a short error message", async () => {
@@ -326,7 +415,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     const { errorCode } = mockCaptureRunFailure.mock.calls[0][0];
     expect(errorCode).toHaveLength(MAX_ERROR_CODE_LENGTH);
-    expect(errorCode).toBe("y".repeat(MAX_ERROR_CODE_LENGTH));
+    expect(errorCode).toBe("y".repeat(MAX_ERROR_CODE_LENGTH - 12) + "\n[truncated]");
   });
 
   it("sends errorCode null unchanged when the run holds no error code", async () => {
