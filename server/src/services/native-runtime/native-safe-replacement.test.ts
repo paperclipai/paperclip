@@ -479,6 +479,87 @@ const support = externalDatabaseUrl
       expect(actions[0]).toMatchObject({ status: "resolved", evidence: { continuationDelivery: "pending", executionReconciliation: { runId: source.runId } } });
       await db.update(issueRecoveryActions).set({ evidence: { ...actions[0]!.evidence, continuationDelivery: "invalidated" } }).where(eq(issueRecoveryActions.id, action!.id));
     });
+    it("does not regenerate a hold after automatic no-replay settlement for the same failed-before-launch run", async () => {
+      const source = await seed();
+      const [run] = await db.update(heartbeatRuns).set({
+        runtimeMode: "legacy",
+        status: "running",
+        processPid: null,
+        processStartedAt: null,
+        error: "Process adapter missing command",
+        resultJson: {
+          stopReason: "adapter_failed",
+          timeoutFired: false,
+          timeoutSource: "config",
+          timeoutConfigured: false,
+          effectiveTimeoutSec: 0,
+        },
+      }).where(eq(heartbeatRuns.id, source.runId)).returning();
+      await terminalizeLegacyExecution({
+        db,
+        run,
+        status: "failed",
+        fromStatuses: ["running"],
+        patch: { errorCode: "adapter_failed", finishedAt: new Date() },
+      });
+      const first = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(first).toHaveLength(1);
+      await settleUnrecoverableExecutions(db);
+      const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, first[0]!.id));
+      expect(settled).toMatchObject({
+        status: "resolved",
+        outcome: "blocked",
+        evidence: { runId: source.runId, automaticRecovery: { replay: "blocked" } },
+      });
+      const [terminal] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
+      await terminalizeLegacyExecution({ db, run: terminal!, status: terminal!.status });
+      await settleUnrecoverableExecutions(db);
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(actions).toHaveLength(1);
+      expect(actions[0]!.id).toBe(first[0]!.id);
+      expect(actions[0]).toMatchObject({
+        status: "resolved",
+        evidence: { runId: source.runId, automaticRecovery: { replay: "blocked" } },
+      });
+    });
+    it("does not regenerate a hold after operator not_performed reconciliation for the same run", async () => {
+      const source = await seed();
+      const [run] = await db.update(heartbeatRuns).set({
+        runtimeMode: "legacy",
+        status: "running",
+        processPid: null,
+        processStartedAt: null,
+      }).where(eq(heartbeatRuns.id, source.runId)).returning();
+      await terminalizeLegacyExecution({
+        db,
+        run,
+        status: "failed",
+        fromStatuses: ["running"],
+        patch: { errorCode: "adapter_failed", finishedAt: new Date() },
+      });
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      await settleUnrecoverableExecutions(db);
+      await markExecutionReconciliation(db, action!, {
+        runId: source.runId,
+        providerStopped: true,
+        actionOutcome: "not_performed",
+        outcomeEvidence: "Provider never launched; processPid stayed null and stdout was empty.",
+      }, "board");
+      await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored" }).where(eq(issueRecoveryActions.id, action!.id));
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, source.issueId));
+      const [terminal] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
+      await terminalizeLegacyExecution({ db, run: terminal!, status: terminal!.status });
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(actions).toHaveLength(1);
+      expect(actions[0]!.id).toBe(action!.id);
+      expect(actions[0]).toMatchObject({
+        status: "resolved",
+        evidence: { executionReconciliation: { runId: source.runId, actionOutcome: "not_performed" } },
+      });
+      expect(actions[0]!.evidence).not.toHaveProperty("automaticRecovery");
+      const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(task!.status).toBe("todo");
+    });
     it("surfaces a failed current reviewer without transferring the original assignment", async () => {
       const source = await seed();
       const reviewerId = randomUUID();

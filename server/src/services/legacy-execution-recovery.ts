@@ -12,6 +12,54 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
 
+/**
+ * Local process adapters that record processPid/processStartedAt on spawn.
+ * Keep aligned with GIT_SENSITIVE_LOCAL_ADAPTER_TYPES in heartbeat.ts plus the
+ * generic `process` adapter. HTTP/cloud types are intentionally excluded —
+ * null PID after entry is not bootstrap for those.
+ */
+export const PROCESS_PRE_SPAWN_ADAPTER_TYPES = new Set([
+  "process",
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "grok_local",
+  "hermes_local",
+  "kimi_local",
+  "opencode_local",
+  "pi_local",
+]);
+
+export function isProcessPreSpawnAdapterType(
+  adapterType: string | null | undefined,
+): boolean {
+  return PROCESS_PRE_SPAWN_ADAPTER_TYPES.has(adapterType ?? "");
+}
+
+/**
+ * Decide whether a failed legacy run should record bootstrap evidence
+ * (`executionRecovery.kind = "bootstrap"`, provider never started).
+ *
+ * Missing processPid after adapter entry means the process never launched
+ * (e.g. missing command) for process adapters. HTTP/cloud adapters do not
+ * use those fields, so a null PID after entry must not be classified as
+ * bootstrap — recovery would skip holds for unknown post-dispatch outcomes.
+ */
+export function shouldStampBootstrapExecutionRecovery(input: {
+  legacyAdapterEntered: boolean;
+  runtimeMode: string | null | undefined;
+  adapterType: string | null | undefined;
+  processPid?: number | null;
+  processStartedAt?: Date | string | null;
+}): boolean {
+  if (input.runtimeMode === "native") return false;
+  if (!input.legacyAdapterEntered) return true;
+  if (!isProcessPreSpawnAdapterType(input.adapterType)) return false;
+  return input.processPid == null && input.processStartedAt == null;
+}
+
+
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
   run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
@@ -118,9 +166,9 @@ export async function terminalizeLegacyExecution(input: {
       (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
       !["done", "cancelled"].includes(task.status)
     ) {
-      // Periodic stranded-work checks may revisit this terminal run before its
-      // reconciled continuation is dispatched. Preserve the recorded decision
-      // and an existing unsafe-workspace hold instead of creating another one.
+      // Periodic stranded-work checks may revisit this terminal run after an
+      // automatic no-replay disposition or operator reconciliation. Preserve
+      // either recorded decision instead of regenerating a hold for the same run.
       const [reconciled] = await tx.select({ id: issueRecoveryActions.id })
         .from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, run.companyId),
@@ -130,7 +178,6 @@ export async function terminalizeLegacyExecution(input: {
             sql`${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}`,
             and(
               sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
-              sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
               sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
             ),
           ),

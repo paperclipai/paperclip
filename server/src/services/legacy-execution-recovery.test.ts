@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
+import { legacyExecutionNeedsReconciliation, shouldStampBootstrapExecutionRecovery } from "./legacy-execution-recovery.js";
 
 const stopped = {
   runtimeMode: "legacy", status: "cancelled", errorCode: "cancelled",
@@ -85,4 +85,36 @@ it("retains conversation retry eligibility for a transient restore lock timeout"
   expect(legacyExecutionNeedsReconciliation({ runtimeMode: "legacy", status: "failed", errorCode: "workspace_restore_failed", resultJson: {
     workspaceRestoreFailure: "restore_lock_timeout", conversationContinuation: "continue_conversation_v1",
   } })).toBe(false);
+});
+
+
+it("stamps bootstrap for process adapters that fail before spawn, not HTTP post-dispatch", () => {
+  const base = {
+    legacyAdapterEntered: true,
+    runtimeMode: "legacy" as const,
+    processPid: null,
+    processStartedAt: null,
+  };
+  // Process / pre-spawn: missing command leaves null PID → bootstrap.
+  expect(shouldStampBootstrapExecutionRecovery({ ...base, adapterType: "process" })).toBe(true);
+  expect(shouldStampBootstrapExecutionRecovery({ ...base, adapterType: "cursor" })).toBe(true);
+  expect(shouldStampBootstrapExecutionRecovery({ ...base, adapterType: "claude_local" })).toBe(true);
+  expect(shouldStampBootstrapExecutionRecovery({ ...base, adapterType: "grok_local" })).toBe(true);
+  // HTTP/cloud adapters do not record processPid; null PID after entry is not bootstrap.
+  expect(shouldStampBootstrapExecutionRecovery({ ...base, adapterType: "http" })).toBe(false);
+  expect(shouldStampBootstrapExecutionRecovery({ ...base, adapterType: "cursor_cloud" })).toBe(false);
+  expect(shouldStampBootstrapExecutionRecovery({ ...base, adapterType: "hermes_gateway" })).toBe(false);
+  expect(shouldStampBootstrapExecutionRecovery({ ...base, adapterType: "openclaw_gateway" })).toBe(false);
+  expect(shouldStampBootstrapExecutionRecovery({ ...base, adapterType: null })).toBe(false);
+  // Spawned process adapters already started provider work.
+  expect(shouldStampBootstrapExecutionRecovery({
+    ...base, adapterType: "cursor", processPid: 4242, processStartedAt: new Date(),
+  })).toBe(false);
+  // Adapter never entered remains bootstrap for any adapter type.
+  expect(shouldStampBootstrapExecutionRecovery({
+    legacyAdapterEntered: false, runtimeMode: "legacy", adapterType: "http",
+  })).toBe(true);
+  expect(shouldStampBootstrapExecutionRecovery({
+    legacyAdapterEntered: false, runtimeMode: "native", adapterType: "cursor",
+  })).toBe(false);
 });

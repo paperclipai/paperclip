@@ -3527,6 +3527,100 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(settled?.status).toBe("succeeded");
   });
 
+  it("does not stamp bootstrap when a process adapter spawns then throws", async () => {
+    let spawnedPid: number | null = null;
+    mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+      const input = rawInput as {
+        onSpawn?: (meta: {
+          pid: number;
+          processGroupId: number | null;
+          startedAt: string;
+        }) => Promise<void>;
+      };
+      const child = spawnAliveProcess();
+      childProcesses.add(child);
+      if (!child.pid) {
+        throw new Error("Test process child did not expose a pid");
+      }
+      spawnedPid = child.pid;
+      await input.onSpawn?.({
+        pid: child.pid,
+        processGroupId: null,
+        startedAt: new Date("2026-07-30T07:00:00.000Z").toISOString(),
+      });
+      throw new Error("provider crashed after spawn");
+    });
+
+    const { runId } = await seedRunFixture({
+      adapterType: "process",
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const failedRun = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "failed" ? row : null;
+    });
+
+    expect(failedRun).toMatchObject({
+      id: runId,
+      status: "failed",
+      processPid: spawnedPid,
+    });
+    expect(failedRun?.resultJson?.executionRecovery).not.toEqual(
+      expect.objectContaining({ kind: "bootstrap" }),
+    );
+  });
+
+  it("stamps bootstrap when a process adapter throws before spawn", async () => {
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      throw new Error("command not found before spawn");
+    });
+
+    const { runId } = await seedRunFixture({
+      adapterType: "process",
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const failedRun = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "failed" ? row : null;
+    });
+
+    expect(failedRun).toMatchObject({
+      id: runId,
+      status: "failed",
+      processPid: null,
+      resultJson: {
+        executionRecovery: {
+          kind: "bootstrap",
+          providerWorkStarted: false,
+        },
+      },
+    });
+  });
+
   it("reports adopted hot-restart runs before startup reap can mark them process_lost", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
