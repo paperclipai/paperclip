@@ -145,7 +145,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
     });
   });
 
-  it("returns summary list rows without heavy run detail fields", async () => {
+  it.each([false, true])("preserves run ownership in list rows (summary=%s)", async (summary) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -176,6 +176,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       agentId,
       invocationSource: "assignment",
       status: "failed",
+      responsibleUserId: "run-owner",
       error: "Failed after doing useful work",
       usageJson: {
         provider: "openai",
@@ -199,7 +200,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       },
     });
 
-    const runs = await heartbeatService(db).list(companyId, undefined, 5, { summary: true });
+    const runs = await heartbeatService(db).list(companyId, undefined, 5, { summary });
 
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({
@@ -207,16 +208,19 @@ describeEmbeddedPostgres("heartbeat list", () => {
       companyId,
       agentId,
       status: "failed",
+      responsibleUserId: "run-owner",
       error: "Failed after doing useful work",
-      usageJson: null,
-      resultJson: null,
-      sessionIdBefore: null,
-      sessionIdAfter: null,
-      logStore: null,
-      logRef: null,
-      logSha256: null,
-      externalRunId: null,
-      processPid: null,
+      ...(summary ? {
+        usageJson: null,
+        resultJson: null,
+        sessionIdBefore: null,
+        sessionIdAfter: null,
+        logStore: null,
+        logRef: null,
+        logSha256: null,
+        externalRunId: null,
+        processPid: null,
+      } : {}),
       contextSnapshot: {
         issueId,
         wakeReason: "issue_assigned",

@@ -4,7 +4,6 @@ import { and, eq } from "drizzle-orm";
 import { inboxDismissals, joinRequests } from "@paperclipai/db";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { accessService } from "../services/access.js";
-import { dashboardService } from "../services/dashboard.js";
 import { collapseDuplicatePendingHumanJoinRequests } from "../lib/join-request-dedupe.js";
 import { assertCompanyAccess } from "./authz.js";
 
@@ -28,7 +27,6 @@ export function sidebarBadgeRoutes(db: Db) {
   const router = Router();
   const svc = sidebarBadgeService(db);
   const access = accessService(db);
-  const dashboard = dashboardService(db);
 
   router.get("/companies/:companyId/sidebar-badges", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -78,16 +76,12 @@ export function sidebarBadgeRoutes(db: Db) {
           .then(buildDismissedAtByKey)
         : new Map<string, number>();
 
+    // Company health alerts belong in All, not the personal inbox badge.
     const badges = await svc.get(companyId, {
+      currentUserId: req.actor.type === "board" ? req.actor.userId ?? null : undefined,
       dismissals: dismissedAtByKey,
       joinRequests: visibleJoinRequests,
     });
-    const summary = await dashboard.summary(companyId);
-    const hasFailedRuns = badges.failedRuns > 0;
-    const alertsCount =
-      (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +
-      (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
-    badges.inbox = badges.failedRuns + alertsCount + badges.joinRequests + badges.approvals;
 
     res.json(badges);
   });

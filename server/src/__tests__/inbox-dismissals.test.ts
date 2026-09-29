@@ -20,6 +20,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { inboxDismissalRoutes } from "../routes/inbox-dismissals.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.ts";
+import { sidebarBadgeRoutes } from "../routes/sidebar-badges.js";
 import { sidebarBadgeService } from "../services/sidebar-badges.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -57,6 +58,42 @@ describeEmbeddedPostgres("inbox dismissals", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it.each([
+    { userId: "user-1", expected: 1 },
+    { userId: "user-2", expected: 1 },
+    { userId: "uninvolved-user", expected: 0 },
+    { userId: "local-board", expected: 1 },
+  ])("scopes failed-run badges to $userId", async ({ userId, expected }) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "PAP" });
+    for (const responsibleUserId of ["user-1", "user-2", null]) {
+      const agentId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId, name: "Agent", role: "engineer", status: "error" });
+      await db.insert(heartbeatRuns).values({
+        companyId, agentId, responsibleUserId, invocationSource: "manual",
+        status: responsibleUserId === "user-2" ? "timed_out" : "failed",
+      });
+    }
+    // Pick the latest run before filtering by user, so a shared agent cannot
+    // resurrect this user's older failure after somebody else's success.
+    const sharedAgentId = randomUUID();
+    await db.insert(agents).values({ id: sharedAgentId, companyId, name: "Shared", role: "engineer" });
+    await db.insert(heartbeatRuns).values([
+      { companyId, agentId: sharedAgentId, responsibleUserId: "user-1", invocationSource: "manual", status: "failed", createdAt: new Date("2026-03-11T01:00:00Z") },
+      { companyId, agentId: sharedAgentId, responsibleUserId: "user-2", invocationSource: "manual", status: "succeeded", createdAt: new Date("2026-03-11T02:00:00Z") },
+    ]);
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: userId === "local-board" ? "local_implicit" : "session", userId, companyIds: [companyId], isInstanceAdmin: true };
+      next();
+    });
+    app.use("/api", sidebarBadgeRoutes(db));
+    app.use(errorHandler);
+    const response = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+    expect(response.body.failedRuns).toBe(expected);
+    expect(response.body.inbox).toBe(expected);
   });
 
   it("upserts a single dismissal record per user and inbox item key", async () => {

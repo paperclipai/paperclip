@@ -3311,6 +3311,7 @@ const heartbeatRunProcessGroupIdColumn =
 
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
+  responsibleUserId: heartbeatRuns.responsibleUserId,
   companyId: heartbeatRuns.companyId,
   agentId: heartbeatRuns.agentId,
   invocationSource: heartbeatRuns.invocationSource,

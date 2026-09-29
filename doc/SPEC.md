@@ -282,6 +282,7 @@ Experimental Agent Chat presents one persistent task per person and agent as a s
 ### Implications
 
 - An agent's "inbox" is: tasks assigned to them + comments on tasks they're involved in
+- A human's Mine inbox and its badge include failed runs attributed to that human, not another user's runs. All retains company-wide failure visibility. Historical unattributed runs remain in the local single-user board's Mine view; see `SPEC-implementation.md` for the routing contract.
 - The CEO delegates by creating tasks assigned to the CTO
 - The CTO breaks those down into sub-tasks assigned to engineers
 - Discussion happens in task comments, not a side channel

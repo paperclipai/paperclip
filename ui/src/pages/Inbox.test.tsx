@@ -389,6 +389,44 @@ describe("Inbox toolbar", () => {
     container.remove();
   });
 
+  it.each([
+    { tab: "mine", userId: "user-1", visible: ["own-failure"], hidden: ["other-failure", "unowned-failure"] },
+    { tab: "mine", userId: "user-2", visible: ["other-failure"], hidden: ["own-failure", "unowned-failure"] },
+    { tab: "mine", userId: "local-board", visible: ["unowned-failure"], hidden: ["own-failure", "other-failure"] },
+    { tab: "mine", userId: null, visible: [], hidden: ["own-failure", "other-failure", "unowned-failure"] },
+    { tab: "all", userId: "user-1", visible: ["own-failure", "other-failure", "unowned-failure"], hidden: [] },
+  ].flatMap((scenario) => [true, false].map((streamlined) => ({ ...scenario, streamlined }))))(
+    "scopes failed runs on $tab for $userId (streamlined=$streamlined)",
+    async ({ tab, userId, visible, hidden, streamlined }) => {
+      apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined });
+      routerMock.location.pathname = `/inbox/${tab}`;
+      apiMocks.authSession.mockResolvedValue(userId ? { user: { id: userId }, session: { userId } } : null);
+      apiMocks.heartbeatRunsList.mockResolvedValue([
+        createFailedRun({ id: "own-failure", agentId: "agent-1", responsibleUserId: "user-1" }),
+        createFailedRun({ id: "other-failure", agentId: "agent-2", responsibleUserId: "user-2", status: "timed_out" }),
+        createFailedRun({ id: "unowned-failure", agentId: "agent-3" }),
+      ]);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+      try {
+        await act(async () => {
+          root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+        });
+        await vi.waitFor(() => {
+          expect(apiMocks.heartbeatRunsList).toHaveBeenCalled();
+          expect(queryClient.isFetching()).toBe(0);
+          for (const id of visible) expect(container.querySelector(`a[to$="/runs/${id}"]`)).not.toBeNull();
+          for (const id of hidden) expect(container.querySelector(`a[to$="/runs/${id}"]`)).toBeNull();
+        });
+      } finally {
+        act(() => root.unmount());
+        queryClient.clear();
+      }
+    },
+  );
+
   it("restores the legacy toolbar and issue-row presentation when Streamlined UI is off", async () => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({
