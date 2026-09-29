@@ -1120,9 +1120,9 @@ Readers still attempt bounded reads when size is unknown. Legacy comment
 attribution retains its existing 2 MB scan limit and allows three seconds per
 log. Storage errors or timeouts preserve any evidence already read and leave
 the comments available without additional derived attribution.
-At most eight attribution storage reads can be outstanding across the process.
-A timed-out read retains its slot until the storage request settles; optional
-lookups skip further reads while all slots are occupied.
+The read deadline aborts local file streams, S3 HEAD and GET requests, and S3
+response streams. Each listing retains its existing batches of eight reads;
+concurrent listings do not skip healthy logs because another listing is busy.
 
 ### Preinstalled remote runner runtime
 

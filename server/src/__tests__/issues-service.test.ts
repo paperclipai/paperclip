@@ -152,10 +152,22 @@ describeEmbeddedPostgres("issueService run attachment artifacts", () => {
 });
 
 describe("readIssueCommentRunLogText", () => {
-  it("retains concurrency slots until timed-out storage reads actually settle", async () => {
-    const releases: Array<(value: { content: string }) => void> = [];
-    const read = vi.spyOn(getRunLogStore(), "read").mockImplementation(() =>
-      new Promise((resolve) => { releases.push(resolve); }),
+  it("cancels timed-out storage reads so later listings can recover", async () => {
+    let active = 0;
+    const cleanups: Array<() => void> = [];
+    const read = vi.spyOn(getRunLogStore(), "read").mockImplementation((_handle, options) =>
+      new Promise((_resolve, reject) => {
+        active += 1;
+        let settled = false;
+        const abort = () => {
+          if (settled) return;
+          settled = true;
+          active -= 1;
+          reject(new DOMException("Read aborted", "AbortError"));
+        };
+        cleanups.push(abort);
+        options?.signal?.addEventListener("abort", abort, { once: true });
+      }),
     );
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null };
@@ -163,20 +175,39 @@ describe("readIssueCommentRunLogText", () => {
     try {
       await vi.advanceTimersByTimeAsync(3_000);
       expect(await Promise.all(firstBatch)).toEqual(Array(8).fill(""));
-      const nextBatch = Array.from({ length: 16 }, () => readIssueCommentRunLogText(run));
-      await vi.advanceTimersByTimeAsync(3_000);
-      expect(await Promise.all(nextBatch)).toEqual(Array(16).fill(""));
-      expect(read).toHaveBeenCalledTimes(8);
-      for (const release of releases) release({ content: "too late" });
-      await vi.advanceTimersByTimeAsync(0);
+      expect(active).toBe(0);
       read.mockResolvedValueOnce({ content: "storage recovered" });
       await expect(readIssueCommentRunLogText(run)).resolves.toBe("storage recovered");
       expect(read).toHaveBeenCalledTimes(9);
     } finally {
-      for (const release of releases) release({ content: "" });
+      for (const cleanup of cleanups) cleanup();
       await Promise.allSettled(firstBatch);
       await vi.advanceTimersByTimeAsync(0);
       vi.useRealTimers();
+      read.mockRestore();
+    }
+  });
+
+  it("keeps readable attribution evidence for concurrent listings", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(getRunLogStore(), "read").mockImplementation(async () => {
+      await gate;
+      return { content: "comment id: legacy-comment" };
+    });
+    const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null };
+    const listings = Array.from({ length: 2 }, () =>
+      Promise.all(Array.from({ length: 8 }, () => readIssueCommentRunLogText(run))),
+    );
+    try {
+      release();
+      for (const listing of listings) {
+        expect(await listing).toEqual(Array(8).fill("comment id: legacy-comment"));
+      }
+      expect(read).toHaveBeenCalledTimes(16);
+    } finally {
+      release();
+      await Promise.allSettled(listings);
       read.mockRestore();
     }
   });
@@ -195,10 +226,17 @@ describe("readIssueCommentRunLogText", () => {
 
   it("bounds stalled attribution reads and stops pagination after the deadline", async () => {
     let release!: (value: { content: string; nextOffset: number }) => void;
-    const stalled = new Promise<{ content: string; nextOffset: number }>((resolve) => { release = resolve; });
+    let rejectRead!: (reason: unknown) => void;
+    const stalled = new Promise<{ content: string; nextOffset: number }>((resolve, reject) => {
+      release = resolve;
+      rejectRead = reject;
+    });
     const read = vi.spyOn(getRunLogStore(), "read")
       .mockResolvedValueOnce({ content: "earlier evidence", nextOffset: 16 })
-      .mockReturnValueOnce(stalled);
+      .mockImplementationOnce((_handle, options) => {
+        options?.signal?.addEventListener("abort", () => rejectRead(options.signal?.reason), { once: true });
+        return stalled;
+      });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let result: string | undefined;
     const pending = readIssueCommentRunLogText({

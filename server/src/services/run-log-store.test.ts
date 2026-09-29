@@ -260,25 +260,15 @@ describe("createDurableRunLogStore", () => {
     expect(caughtUp.nextOffset).toBeUndefined();
   });
 
-  it("falls back to S3 when the local file vanishes between stat() and open (TOCTOU race)", async () => {
-    const { provider } = createMemoryProvider();
-    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, keyPrefix: "run-logs" } });
+  it("reads local pages without waiting for a separate metadata request", async () => {
+    const store = createDurableRunLogStore({ basePath: baseDir });
     const handle = await store.begin(begin);
-    await store.append(handle, { stream: "stdout", chunk: "raced-line", ts: "t1" });
-    await store.finalize(handle);
-    // Delete the local file DURING stat(), i.e. after it reports the file
-    // present but before createReadStream opens it -> the open hits ENOENT.
-    const realStat = fs.stat.bind(fs);
-    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (target, ...rest) => {
-      const result = await realStat(target as Parameters<typeof realStat>[0], ...(rest as []));
-      if (String(target).endsWith(".ndjson")) {
-        await fs.rm(target as string, { force: true });
-      }
-      return result;
-    });
+    await fs.writeFile(path.join(baseDir, handle.logRef), "0123456789");
+    const statSpy = vi.spyOn(fs, "stat").mockRejectedValue(new Error("Metadata unavailable"));
     try {
-      const res = await store.read(handle);
-      expect(res.content).toContain("raced-line");
+      expect(await store.read(handle, { offset: 2, limitBytes: 4 })).toEqual({ content: "2345", nextOffset: 6 });
+      expect(await store.read(handle, { offset: 6, limitBytes: 4 })).toEqual({ content: "6789", nextOffset: undefined });
+      expect(await store.read(handle, { offset: 20, limitBytes: 4 })).toEqual({ content: "", nextOffset: undefined });
     } finally {
       statSpy.mockRestore();
     }
