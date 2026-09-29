@@ -69095,6 +69095,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           status: "failed",
           result: { retryable: true, providerConfirmed: false },
         });
+        // Keep the retry pending until the explicit post-restart transition below.
+        // A busy runner can otherwise exhaust the real one-second backoff here.
+        await db
+          .update(chatActions)
+          .set({
+            result: { ...action!.result, retryAt: "2099-01-01T00:00:00.000Z" },
+          })
+          .where(eq(chatActions.id, action!.id));
         expect((await lane.send("unknown-subscription"))?.state).toBe(
           "published",
         );
