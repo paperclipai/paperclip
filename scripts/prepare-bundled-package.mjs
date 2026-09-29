@@ -187,6 +187,16 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
     }
   }
 
+  if (bundledDependencies.includes("@agentclientprotocol/codex-acp")) {
+    const codexAcpSource = readFileSync(
+      resolve(destinationDir, "node_modules/@agentclientprotocol/codex-acp/dist/index.js"),
+      "utf8",
+    );
+    if (!codexAcpSource.includes("paperclipSandboxPolicy(agentMode.sandboxPolicy)")) {
+      throw new Error("staged codex-acp runtime is missing the Paperclip per-turn network patch");
+    }
+  }
+
   if (bundledDependencies.includes("embedded-postgres")) {
     const embeddedPostgresSource = readFileSync(
       resolve(destinationDir, "node_modules/embedded-postgres/dist/index.js"),
