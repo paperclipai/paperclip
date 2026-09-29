@@ -369,6 +369,8 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   });
 
   it("does not change a short error message", async () => {
+    vi.stubEnv("PAPERCLIP_DB_BACKUP_ENABLED", "false");
+    vi.stubEnv("PAPERCLIP_DB_BACKUP_RETENTION_DAYS", "1");
     await seedCompanyAndAgent();
     const shortError = "the provider process exited with code 1";
     const run = buildRun({ status: "failed", error: shortError });

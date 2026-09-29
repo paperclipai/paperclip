@@ -72,6 +72,13 @@ const PUBLIC_BOOLEAN_ENV_KEYS = new Set([
   "CI", "NO_COLOR", "FORCE_COLOR",
   "VITEST", "MALLOCNANOZONE", "CODEX_CI", "CODEX_SHELL", "CODEX_SAGE_BACKFILL_TRACKER_TAB_REUSE",
   "DEV", "PROD", "SSR", "PAPERCLIP_REQUIRE_SENTRY_TEST_SDK",
+  "PAPERCLIP_DB_BACKUP_ENABLED", "PAPERCLIP_AUTH_DISABLE_SIGN_UP", "PAPERCLIP_ENABLE_COMPANY_DELETION",
+  "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE", "PAPERCLIP_SECRETS_STRICT_MODE",
+  "SERVE_UI", "PAPERCLIP_UI_DEV_MIDDLEWARE", "HEARTBEAT_SCHEDULER_ENABLED", "PAPERCLIP_ANNOUNCEMENTS_ENABLED",
+]);
+const PUBLIC_NUMBER_ENV_KEYS = new Set([
+  "PORT", "PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES", "PAPERCLIP_DB_BACKUP_RETENTION_DAYS",
+  "PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS", "HEARTBEAT_SCHEDULER_INTERVAL_MS",
 ]);
 
 /** Include declared bindings and unknown values, not just credential-like keys. */
@@ -88,6 +95,7 @@ export function collectRunFailureSecretValues(
     if (!value) continue;
     const publicSetting = (inherited && (
       PUBLIC_ENV_KEYS.has(key.toUpperCase()) ||
+      (PUBLIC_NUMBER_ENV_KEYS.has(key.toUpperCase()) && /^\d+$/.test(value)) ||
       (key === "BASE_URL" && value === "/") ||
       (key === "MODE" && /^(?:test|development|production)$/.test(value))
     )) ||

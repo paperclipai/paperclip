@@ -23,6 +23,14 @@ describe("run failure diagnostics", () => {
     expect(result.status).toBe(503);
     expect(result.text).not.toContain("***[REDACTED]");
   });
+
+  it("preserves known boolean and numeric settings without exempting unknown or declared secrets", () => {
+    const env = { PAPERCLIP_DB_BACKUP_ENABLED: "false", PAPERCLIP_DB_BACKUP_RETENTION_DAYS: "1" };
+    expect(collectRunFailureSecretValues(env, [], true)).toEqual([]);
+    expect(collectRunFailureSecretValues(env, ["PAPERCLIP_DB_BACKUP_ENABLED"], true)).toEqual(["false"]);
+    expect(collectRunFailureSecretValues({ CUSTOM_BINDING: "1" }, [], true)).toEqual(["1"]);
+    expect(collectRunFailureSecretValues({ PAPERCLIP_DB_BACKUP_ENABLED: "opaque" }, [], true)).toEqual(["opaque"]);
+  });
   it("preserves generic exceptions, numeric codes and nested network causes", () => {
     const root = Object.assign(new Error("network failed"), { code: "ECONNRESET", statusCode: 502, request_id: "req-123" });
     const outer = Object.assign(new TypeError("adapter failed", { cause: root }), { code: -32000 });
