@@ -77,7 +77,7 @@ function registerRouteMocks() {
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),
     routineService: () => ({}),
-    workProductService: () => ({}),
+    workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
   }));
 }
 

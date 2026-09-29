@@ -155,7 +155,7 @@ function registerServiceMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({}),
+    workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
   }));
 }
 

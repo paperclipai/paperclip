@@ -202,7 +202,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
-  workProductService: () => ({}),
+  workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
 }));
 
 vi.mock("../services/external-objects.js", () => ({
