@@ -87,6 +87,7 @@ import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
+const TITLE_ERROR_ID = "new-issue-title-error";
 
 type VisualViewportLayout = {
   height: number;
@@ -382,6 +383,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   projectSelectorRef,
   titleInputRef,
   titleError,
+  titleErrorId,
   onChange,
 }: {
   value: string;
@@ -393,6 +395,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   projectSelectorRef: RefObject<HTMLButtonElement | null>;
   titleInputRef: RefObject<HTMLTextAreaElement | null>;
   titleError: boolean;
+  titleErrorId: string;
   onChange: (value: string) => void;
 }) {
   const [draftValue, setDraftValue] = useState(value);
@@ -410,6 +413,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
       )}
       placeholder="Task title"
       aria-invalid={titleError || undefined}
+      aria-describedby={titleError ? titleErrorId : undefined}
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -728,6 +732,7 @@ export function NewIssueDialog() {
     setDescription(nextDescription);
     setTitleHasText(nextTitle.trim().length > 0);
     setDraftHasText(nextTitle.trim().length > 0 || nextDescription.trim().length > 0);
+    setTitleError(false);
   }, []);
 
   const queueDraftSave = useCallback((overrides: { title?: string; description?: string } = {}) => {
@@ -1508,10 +1513,12 @@ export function NewIssueDialog() {
               projectSelectorRef={projectSelectorRef}
               titleInputRef={titleInputRef}
               titleError={titleError}
+              titleErrorId={TITLE_ERROR_ID}
               onChange={handleTitleChange}
             />
             {titleError ? (
               <p
+                id={TITLE_ERROR_ID}
                 data-testid="new-issue-title-error"
                 className="mt-1 text-xs text-destructive"
                 role="alert"
@@ -2391,7 +2398,7 @@ export function NewIssueDialog() {
             <Button
               size="sm"
               className="min-w-(--sz-8_5rem)"
-              disabled={createIssue.isPending}
+              disabled={createIssue.isPending || !effectiveCompanyId}
               onClick={handleSubmit}
               aria-busy={createIssue.isPending}
             >

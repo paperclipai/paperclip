@@ -1638,14 +1638,12 @@ describe("NewIssueDialog", () => {
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Create Task"));
     expect(submitButton).not.toBeUndefined();
-    // The button is disabled while the title is empty, so submit via the
-    // keyboard shortcut path (Cmd/Ctrl+Enter) which reaches handleSubmit.
+    // The button stays enabled with an empty title so clicking it reports the
+    // missing title instead of silently doing nothing.
+    expect(submitButton?.hasAttribute("disabled")).toBe(false);
+
     await act(async () => {
-      titleInput!.dispatchEvent(new KeyboardEvent("keydown", {
-        bubbles: true,
-        key: "Enter",
-        metaKey: true,
-      }));
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
