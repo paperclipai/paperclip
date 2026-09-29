@@ -1,5 +1,5 @@
 diff --git a/dist/client-CxNllqui.d.ts b/dist/client-CxNllqui.d.ts
-index 5e2113a..b7b5151 100644
+index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..b7b5151f3da45b5e0d12aea55e9f3b071ab54a8d 100644
 --- a/dist/client-CxNllqui.d.ts
 +++ b/dist/client-CxNllqui.d.ts
 @@ -135,6 +135,7 @@ declare class AcpClient {
@@ -11,7 +11,7 @@ index 5e2113a..b7b5151 100644
    private setSessionModelThroughConfig;
    private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
-index d454fd7..4312cdd 100644
+index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d2e777e9e 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
 @@ -1068,6 +1068,7 @@ function serializeSessionRecordForDisk(record) {
@@ -530,7 +530,7 @@ index d454fd7..4312cdd 100644
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt, params.onPromptRequestStarted, params.onElicitation);
-@@ -6444,7 +6639,21 @@ async function runPromptTurn(params) {
+@@ -6444,7 +6639,22 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
@@ -538,13 +538,14 @@ index d454fd7..4312cdd 100644
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
 +		const terminalFailureCategory = typedTerminalSessionFailureCategory(response);
 +		if (terminalFailureCategory !== null) {
-+			// Inspect provider text only in memory, before emitting the safe category.
++			// Pass complete provider text to the diagnostic callback. Consumers redact
++			// before bounding it; truncating here can split and expose a credential.
 +			const failure = response._meta.jetbrains.air.sessionFailure;
 +			try {
 +				params.onTerminalSessionFailure?.({
 +					category: terminalFailureCategory,
-+					...(typeof failure.title === "string" ? { title: failure.title.slice(0, 4096) } : {}),
-+					...(typeof failure.details === "string" ? { details: failure.details.slice(0, 4096) } : {})
++					...(typeof failure.title === "string" ? { title: failure.title } : {}),
++					...(typeof failure.details === "string" ? { details: failure.details } : {})
 +				});
 +			} catch {}
 +			throw new Error(`ACP agent reported a terminal ${terminalFailureCategory} failure.`);
@@ -552,15 +553,8 @@ index d454fd7..4312cdd 100644
  		return {
  			stopReason: response.stopReason,
  			source: "rpc"
-@@ -6518,4 +6727,4 @@ var LiveSessionCheckpoint = class {
- //#endregion
- export { writeSessionRecord as $, PERMISSION_POLICY_ACTIONS as $t, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE as A, TimeoutError as At, getAcpxVersion as B, formatErrorMessage as Bt, mergeSessionOptions as C, PromptInputValidationError as Ct, applyLifecycleSnapshotToRecord as D, promptToDisplayText as Dt, applyConversation as E, parsePromptSource as Et, modelStateFromConfigOptions as F, normalizeAgentName$1 as Ft, findSession as G, toAcpErrorPayload as Gt, DEFAULT_HISTORY_LIMIT as H, normalizeOutputError as Ht, normalizeAgentCommandInput as I, resolveAgentArgv as It, listSessions as J, NON_INTERACTIVE_PERMISSION_POLICIES as Jt, findSessionByDirectoryWalk as K, AUTH_POLICIES as Kt, renderArgvIdentity as L, resolveAgentCommand as Lt, RequestedModelUnsupportedError as M, withTimeout as Mt, assertRequestedModelSupported as N, DEFAULT_AGENT_NAME as Nt, reconcileAgentSessionId as O, textPrompt as Ot, isRequestedModelUnsupportedError as P, listBuiltInAgents as Pt, resolveSessionRecord as Q, PERMISSION_MODES as Qt, runTimedExecFile as R, resolveCanonicalAgentName as Rt, advertisedModelState as S, parsePromptStopReason as St, sessionOptionsFromRecord as T, mergePromptSourceWithText as Tt, absolutePath as U, extractAcpError as Ut, permissionModeSatisfies as V, isRetryablePromptError as Vt, findGitRepositoryRoot as W, isAcpResourceNotFoundError as Wt, normalizeName as X, OUTPUT_ERROR_ORIGINS as Xt, listSessionsForAgent as Y, OUTPUT_ERROR_CODES as Yt, pruneSessions as Z, OUTPUT_FORMATS as Zt, createSessionConversation as _, sessionEventLockPath as _t, applyRequestedModelIfAdvertised as a, measurePerf as at, recordSessionUpdate as b, isAcpJsonRpcMessage as bt, setCurrentModelId as c, setPerfGauge as ct, setDesiredModelId as d, serializeSessionRecordForDisk as dt, SESSION_RECORD_SCHEMA as en, createAtomicWriteTempPath as et, syncAdvertisedModelState as f, normalizeRuntimeSessionId as ft, cloneSessionConversation as g, sessionEventActivePath as gt, cloneSessionAcpxState as h, sessionBaseDir$1 as ht, connectAndLoadSession as i, QueueProtocolError as in, incrementPerfCounter as it, REQUESTED_MODEL_UNSUPPORTED_REASONS as j, withInterrupt as jt, AcpClient as k, InterruptedError as kt, setDesiredConfigOption as l, startPerfTimer as lt, applyConfigOptionsToState as m, defaultSessionEventLog as mt, runPromptTurn as n, AgentSpawnError as nn, formatPerfMetric as nt, currentModelIdFromSetModelResponse as o, recordPerfDuration as ot, applyConfigOptionsToRecord as p, DEFAULT_EVENT_SEGMENT_MAX_BYTES as pt, isoNow$2 as q, EXIT_CODES as qt, withConnectedSession as r, QueueConnectionError as rn, getPerfMetricsSnapshot as rt, clearDesiredConfigOption as s, resetPerfMetrics as st, LiveSessionCheckpoint as t, AcpxOperationalError as tn, assertPersistedKeyPolicy as tt, setDesiredModeId as u, parseSessionRecord as ut, recordClientOperation as v, sessionEventSegmentPath as vt, persistSessionOptions as w, isPromptInput as wt, trimConversationForRuntime as x, parseJsonRpcErrorMessage as xt, recordPromptSubmission as y, extractSessionUpdateNotification as yt, splitCommandLine as z, exitCodeForOutputErrorCode as zt };
- 
--//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
-\ No newline at end of file
-+//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index e8102ac..d3a9ba6 100644
+index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415d1fba4bf 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -1,7 +1,8 @@
@@ -671,7 +665,7 @@ index e8102ac..d3a9ba6 100644
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70..fe2484d 100644
+index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd43b1a0f77 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -875,15 +869,8 @@ index a1f4a70..fe2484d 100644
  	async cancel(input) {
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
-@@ -2178,4 +2264,4 @@ function createRuntimeStore(options) {
- //#endregion
- export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
- 
--//# sourceMappingURL=runtime.js.map
-\ No newline at end of file
-+//# sourceMappingURL=runtime.js.map
 diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
-index c3da164..5ccc8dd 100644
+index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd2731855ce2e51 100644
 --- a/dist/session-options-DwRDODlr.d.ts
 +++ b/dist/session-options-DwRDODlr.d.ts
 @@ -1,4 +1,5 @@
@@ -963,10 +950,3 @@ index c3da164..5ccc8dd 100644
    acpx?: SessionAcpxState;
    importedFrom?: SessionImportedFrom;
  };
-@@ -295,4 +332,4 @@ type SessionAgentOptions = {
- };
- //#endregion
- export { SessionRecord as _, AcpElicitationHandler as a, AcpElicitationResponse as c, AuthPolicy as d, McpServer$1 as f, PermissionStats as g, PermissionPolicy as h, AcpElicitationContext as i, AcpPermissionDecision as l, PermissionMode as m, SystemPromptOption as n, AcpElicitationMode as o, NonInteractivePermissionPolicy as p, AcpClientOptions as r, AcpElicitationRequest as s, SessionAgentOptions as t, AcpPermissionRequest as u, PromptInput as v };
--//# sourceMappingURL=session-options-DwRDODlr.d.ts.map
-\ No newline at end of file
-+//# sourceMappingURL=session-options-DwRDODlr.d.ts.map

@@ -155,6 +155,30 @@ The payload never carries a command, an argument, a path, an environment value,
 or a raw identifier. The event rides the `ctx.onEvent` run-event bridge and is
 run-log-only. It needs no OTLP endpoint.
 
+## ACP terminal failure diagnostics
+
+The shared ACP adapter engine preserves typed terminal session failures in the
+run error, the `acpx.error` transcript record, and
+`heartbeat_runs.result_json.terminalSessionFailure`. The structured diagnostic
+contains the provider category, title, and details. It works when raw provider
+tracing is disabled. The existing UI and CLI render the diagnostic as an error,
+not as assistant output or an automatic task response.
+
+Both pinned ACPX patches pass complete title and detail strings to the in-memory
+callback. The engine redacts known sensitive environment values, the run API key,
+and common credential forms before truncation. It removes control characters,
+retains line breaks for JSON and stack traces, and preserves up to 4,096 title
+characters and 24,576 detail characters. These bounds also keep the escaped
+transcript JSON below the server's 64 KiB chunk limit. Longer fields end with an explicit
+omission count and appear in `truncatedFields`. The error message includes the
+same sanitized text. Other provider metadata and action payloads are not copied.
+
+Recovery still uses the typed failure category and the adapter's existing
+classifier. Provider warnings do not become failures, and timeouts or lost
+control channels keep their authoritative failure messages. These diagnostics
+stay in the instance's run records and configured run-log storage. They add no
+Paperclip Telemetry or OpenTelemetry export.
+
 ## Related instrumentation
 
 The sandbox duplex transport also writes one run-log event as one of its three

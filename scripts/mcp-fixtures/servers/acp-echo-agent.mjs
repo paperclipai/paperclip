@@ -44,6 +44,9 @@ async function handleRequest(request) {
         category: process.env.PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY ?? "request",
         severity: "error",
         title: typedFailureCanary,
+        ...(process.env.PAPERCLIP_ACPX_TYPED_FAILURE_DETAILS
+          ? { details: process.env.PAPERCLIP_ACPX_TYPED_FAILURE_DETAILS }
+          : {}),
         actions: [],
       };
       writeMessage({

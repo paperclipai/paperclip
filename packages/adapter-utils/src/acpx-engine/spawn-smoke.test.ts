@@ -61,7 +61,7 @@ it("spawns a real Node ACP agent with per-session env on this platform", async (
   expect(stderr).toContain("paperclip-acp-echo-agent started");
 });
 
-it("fails closed on a typed ACP session failure without exposing its provider text", async () => {
+it("retains a typed ACP failure as diagnostics without making it assistant output", async () => {
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "paperclip-acpx-typed-failure-"),
   );
@@ -89,8 +89,10 @@ it("fails closed on a typed ACP session failure without exposing its provider te
 
   expect(result.exitCode).toBe(1);
   expect(result.errorCode).toBe("acpx_turn_failed");
-  expect(JSON.stringify(result)).not.toContain(providerText);
-  expect(logs.join("\n")).not.toContain(providerText);
+  expect(result.errorMessage).toContain(providerText);
+  expect(result.resultJson?.terminalSessionFailure).toMatchObject({ title: providerText });
+  expect(result.summary).not.toContain(providerText);
+  expect(logs.join("\n")).toContain(providerText);
   expect(result.summary).toContain("terminal request failure");
 });
 
@@ -123,8 +125,10 @@ it("fails closed on a typed ACP session failure in persistent mode", async () =>
 
   expect(result.exitCode).toBe(1);
   expect(result.errorCode).toBe("acpx_turn_failed");
-  expect(JSON.stringify(result)).not.toContain(providerText);
-  expect(logs.join("\n")).not.toContain(providerText);
+  expect(result.errorMessage).toContain(providerText);
+  expect(result.resultJson?.terminalSessionFailure).toMatchObject({ title: providerText });
+  expect(result.summary).not.toContain(providerText);
+  expect(logs.join("\n")).toContain(providerText);
   expect(result.summary).toContain("terminal request failure");
 });
 
