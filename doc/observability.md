@@ -406,6 +406,46 @@ They do not change the ambient Sentry scope, whose isolation is unavailable
 without an OpenTelemetry context manager. Later, unrelated exceptions must
 not inherit a previous run's identity or fingerprint.
 
+The `run_failure` context also includes the recorded process `exitCode` and
+`signal`, so a generic adapter error can still distinguish a nonzero exit from
+a signal termination. Exit codes must fit the database's signed 32-bit integer;
+missing or malformed values become `null`. Signals must match the reporting
+host's Node signal constants; missing values become `null` and unrecognized
+values become `unknown`. A signal such as `SIGKILL` does not establish who sent
+it or prove an out-of-memory kill. These fields do not change error grouping
+or run outcomes, and do not include process output or adapter result payloads.
+
+The shared reporter also attaches bounded diagnostic contexts for both legacy
+and native runs:
+
+- `run_execution`: runtime mode, execution stage/native phase, driver and version,
+  duration, failure phase, stop reason, error family, and timeout settings when available.
+- `adapter_failure`: selected adapter error fields such as phase, category,
+  protocol code, retryability, cause message, stack preview, HTTP status, and request ID.
+- `provider_failure`: the saved provider failure category, title, and details.
+- `run_exception_0` through `run_exception_3`: exception names, codes, HTTP
+  statuses, and request IDs for a caught exception and up to three causes.
+
+The execution and setup catch paths pass the original exception to the reporter.
+It snapshots and rebuilds only these selected fields and the original message and
+stack. Sentry receives the sanitized cause chain rather than a stack created at
+the reporting call. Saved adapter results use an available adapter stack preview;
+without one, the report has no synthetic reporting stack.
+
+Credential patterns, the current user's home path, registered run-secret values,
+and known host/runtime environment credentials are removed before truncation.
+Declared environment secret bindings are included even when their key has no
+credential-like name. Runtime values are used only for redaction and are never
+copied into an event. Stack fields are limited to 8,192 characters,
+exception messages to 2,048, provider titles to 4,096, and provider details to
+12,288. Other diagnostic strings are limited to 200 characters (adapter cause
+messages: 2,048). Truncation is marked in the text and in
+`run_execution.truncatedFields`; cyclic and deeper cause chains are marked too.
+Request/response objects, headers, environment/configuration, prompts, stdout,
+stderr, and arbitrary adapter result fields are not copied. The existing DSN
+opt-in gate and error-code/adapter fingerprint remain unchanged. These reports
+cannot recover diagnostic data that a provider or adapter discarded upstream.
+
 ### Browser data
 
 The browser sends no page URL, no referrer, no user agent, and no
@@ -418,13 +458,21 @@ Application and route error-boundary reports also include:
   URLs, arguments, and unrecognized lines are omitted. Parsing examines at
   most 16 KiB of input. Production builds preserve function names so this
   trace remains useful after minification; this adds some bundle size.
+
+All browser error reports, including global promise rejections, include:
+
+- `browser_build_mode`: `development` or `production`, from the loaded bundle.
+- `browser_rejection_kind`: the primitive type of an unhandled rejected value
+  (or `null`). The diagnostic does not read object properties or copy the value.
 - `browser_state`: document readiness, visibility, and a boolean indicating
   the `translated-ltr` or `translated-rtl` root class used by browser translation.
   The marker is evidence of DOM translation, not proof of the error's cause;
   its absence does not exclude other translators or DOM-changing extensions.
 
-These fields are captured at the failure, before asynchronous reporting, and
-attached only to that event. They include no component props, DOM text, HTML,
+Boundary state is captured at the failure, before asynchronous reporting.
+Global reports without that snapshot read document state before sending.
+All fields are attached only to that event. They include no component props,
+DOM text, HTML,
 element identifiers, arbitrary CSS classes, route, or query string. Failed
 diagnostic reads do not prevent the original exception from being reported.
 The monitoring gate and sign-out behavior still apply. This context does not
@@ -477,6 +525,17 @@ These fields contain build identifiers; they add no tenant or user identity.
   event carries five context fields: `taskId`, `runId`, `errorMessage`,
   `errorCode`, and `agentAdapter`. The server redacts the error message and
   the error code before it sends the event.
+
+Native runner identity and harness failures retain their existing error prefixes.
+Their terminal messages now include a bounded guard reason, such as
+`session_scope_mismatch`, `durable_identity_unreadable`, or
+`backup_without_reusable_lease`. Provider-pack read failures distinguish a missing
+file, invalid JSON, permission denial, invalid path type, and other I/O errors.
+These reasons contain no session identifiers, provider output, or filesystem
+paths. They help diagnose recurrence; they do not authorize a retry, quarantine,
+replacement, or a weaker identity check. Existing chat recovery recognizes the
+same failure category with or without a reason suffix; it still requires the
+exact cleanup receipt, checkpoint, and absence of provider work.
 
 **Server events the default integrations add**
 

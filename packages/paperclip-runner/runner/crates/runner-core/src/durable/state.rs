@@ -533,6 +533,8 @@ impl DurableState {
             ));
         }
         let sanitized_payload =
+            preserve_bounded_display_content(event_type.as_str(), &payload, sanitized_payload)?;
+        let sanitized_payload =
             finalize_semantic_tool_input_payload(event_type.as_str(), &payload, sanitized_payload)?;
 
         let source_seq = self.next_source_seq;
@@ -1592,6 +1594,79 @@ pub(crate) fn sanitize_value(value: &Value) -> Value {
     }
 }
 
+fn sanitize_bounded_display_value(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| {
+                    let value = if protocol_authorization_boundary(key, value) {
+                        value.clone()
+                    } else if sensitive_key(key, value) {
+                        Value::String("[REDACTED]".to_owned())
+                    } else {
+                        sanitize_bounded_display_value(value)
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(values) => {
+            Value::Array(values.iter().map(sanitize_bounded_display_value).collect())
+        }
+        Value::String(text) => Value::String(redact_sensitive_text_values(text)),
+        value => value.clone(),
+    }
+}
+
+fn preserve_bounded_display_content(
+    event_type: &str,
+    original: &Value,
+    mut sanitized: Value,
+) -> Result<Value, DurableRunnerError> {
+    use crate::acpx_event_payload::{has_bounded_rich_display_shape, validate_question_set};
+
+    // Rich display payloads are already closed and byte-bounded by their exact
+    // protocol schemas. Applying a diagnostic preview cap again would silently
+    // change complete output into a truncated artifact without its metadata.
+    if has_bounded_rich_display_shape(event_type, original) {
+        let preserved = sanitize_bounded_display_value(original);
+        if !has_bounded_rich_display_shape(event_type, &preserved) {
+            return Err(DurableRunnerError::invalid(
+                "redacted display activity exceeds its schema bounds",
+            ));
+        }
+        return Ok(preserved);
+    }
+    if matches!(
+        event_type,
+        "runtime_request.created" | "runtime_request.expired" | "runtime_request.cancelled"
+    ) {
+        if let Some(input) = original.pointer("/request/input") {
+            if input.get("schema").and_then(Value::as_str) == Some("paperclip.question_set.v1") {
+                validate_question_set(input)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                let mut preserved = sanitize_bounded_display_value(input);
+                if &preserved != input {
+                    let description = preserved
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    preserved["description"] = Value::String(format!(
+                        "Sensitive values were redacted from this request.\n\n{description}"
+                    ));
+                }
+                validate_question_set(&preserved)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                if let Some(target) = sanitized.pointer_mut("/request/input") {
+                    *target = preserved;
+                }
+            }
+        }
+    }
+    Ok(sanitized)
+}
+
 pub(crate) fn sanitize_semantic_tool_input(
     operation_id: &str,
     input: &Value,
@@ -1741,7 +1816,7 @@ pub(crate) fn redact_text(input: &str) -> String {
     redacted
 }
 
-fn redact_sensitive_text_values(input: &str) -> String {
+pub(crate) fn redact_sensitive_text_values(input: &str) -> String {
     redact_sensitive_text_values_with_context(input, false)
 }
 
@@ -3144,6 +3219,78 @@ mod tests {
             Some(&json!("api_key=[REDACTED]"))
         );
         assert_eq!(payload["diagnostic"], json!("token=[REDACTED]"));
+    }
+
+    #[test]
+    fn durable_display_content_preserves_complete_utf8_plans_and_tool_output() {
+        let mut config = config(PathBuf::from("unused"));
+        config.max_outbox_bytes = 512 * 1024;
+        config.max_frame_bytes = 256 * 1024;
+        let mut state = DurableState::new(&config);
+        let text = "Review 漢字\n".repeat(2_000);
+        let input = json!({
+            "schema":"paperclip.question_set.v1",
+            "description":text,
+            "questions":[{"id":"revision-123","prompt":"Approve?","required":true,"answerMode":"single_select","options":[{"id":"accept","label":"Accept"},{"id":"reject","label":"Reject"}]}]
+        });
+        state.enqueue_event(&config, "runtime_request.created", EventPriority::P0, json!({
+            "request":{"schema":"paperclip.runtime_request.v2","requestId":"request-1","type":"input","status":"pending","input":input},
+            "diagnostic":text
+        })).unwrap();
+        let stored = state.outbox[0]
+            .envelope
+            .pointer("/payload/payload")
+            .unwrap();
+        assert_eq!(
+            stored.pointer("/request/input/description"),
+            Some(&json!(text))
+        );
+        assert!(stored["diagnostic"]
+            .as_str()
+            .unwrap()
+            .ends_with("…[truncated]"));
+
+        state.enqueue_event(&config, "tool.execution.completed", EventPriority::P1, json!({
+            "schema":"paperclip.tool.execution.v1","executionId":"tool-1","transport":"builtin","operation":"read","status":"completed",
+            "output":text,"outputBytes":text.len(),"outputTruncated":false,"outputDigest":null
+        })).unwrap();
+        let stored = state.outbox[1]
+            .envelope
+            .pointer("/payload/payload")
+            .unwrap();
+        assert_eq!(stored["output"], text);
+        assert_eq!(stored["outputTruncated"], false);
+
+        for event_type in ["runtime_request.expired", "runtime_request.cancelled"] {
+            state.enqueue_event(&config, event_type, EventPriority::P0, json!({
+                "requestId":"request-1", "replayAllowed":false,
+                "request":{"schema":"paperclip.runtime_request.v2","requestId":"request-1","type":"input","status":"pending","input":input}
+            })).unwrap();
+            assert_eq!(
+                state
+                    .outbox
+                    .last()
+                    .unwrap()
+                    .envelope
+                    .pointer("/payload/payload/request/input/description"),
+                Some(&json!(text))
+            );
+        }
+
+        let mut oversized = input;
+        oversized["description"] = json!("漢".repeat(70_000));
+        assert!(state
+            .enqueue_event(
+                &config,
+                "runtime_request.created",
+                EventPriority::P0,
+                json!({
+                    "request":{"input":oversized}
+                })
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("196 KiB"));
     }
 
     #[test]

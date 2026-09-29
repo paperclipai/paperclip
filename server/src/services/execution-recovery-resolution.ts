@@ -1,6 +1,6 @@
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
-import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { claimedAdapterType, conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
@@ -481,6 +481,7 @@ export async function settleUnrecoverableExecutions(
             : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
+        let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
         if (current) {
           const [projected] = await tx
             .update(issues)
@@ -495,6 +496,10 @@ export async function settleUnrecoverableExecutions(
           // An already-blocked task may have a separate human/dependency hold.
           if (task.status !== "blocked" && run.runtimeMode === "native") {
             nativeFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion };
+          }
+          if (task.status !== "blocked" && run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+              run.errorCode === "server_shutdown_interrupted" && claimedAdapterType(run) === "paperclip_runner") {
+            nativeBootstrapFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
           }
         }
         await tx
@@ -511,6 +516,7 @@ export async function settleUnrecoverableExecutions(
             evidence: {
               ...action.evidence,
               ...(nativeFailureBlock ? { nativeFailureBlock } : {}),
+              ...(nativeBootstrapFailureBlock ? { nativeBootstrapFailureBlock } : {}),
               automaticRecovery: {
                 policy: "preserve_without_replay_v1",
                 runId: run.id,

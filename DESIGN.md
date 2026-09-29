@@ -56,6 +56,11 @@ paused.” and “Resume this task to send a message.” with a “Resume task�
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.
 
+Pending questions, confirmations, and other task-thread inputs appear in a separate
+card directly above the ordinary composer. The composer stays available for new
+messages while the card is open. Dismissing a card leaves a pending indicator that
+can reopen it; resolving or skipping the input removes that indicator.
+
 ## Enforcement (what "compliant" means for the extraction run)
 
 - **Zero visual change is proven, not promised:** Storybook visual snapshots are baselined before any refactor, and all snapshots match baseline after it. A change that alters rendered output must be intentional and human-approved.

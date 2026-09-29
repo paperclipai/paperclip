@@ -1565,8 +1565,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     "continuation_task_ownership_changed",
   ])("retains untyped continuation setup failures: %s", async (message) => {
     const { runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const error = new Error(message, { cause: Object.assign(new Error("upstream setup failed"), { code: "ECONNRESET" }) });
     const build = vi.spyOn(executionContinuation, "buildExecutionContinuation")
-      .mockRejectedValueOnce(new Error(message));
+      .mockRejectedValueOnce(error);
     try {
       const heartbeat = heartbeatService(db);
       await heartbeat.resumeQueuedRuns();
@@ -1575,6 +1576,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(build).toHaveBeenCalled();
       expect(await heartbeat.getRun(runId)).toMatchObject({
         status: "failed", errorCode: "setup_failed", error: message,
+      });
+      const report = await waitForValue(async () => mockCaptureRunFailure.mock.calls.find(([event]) => event.runId === runId)?.[0]);
+      expect(report?.diagnostics).toMatchObject({
+        execution: { failurePhase: "setup" },
+        exceptions: [{ message, stack: expect.stringContaining("heartbeat-process-recovery.test.ts") }, { code: "ECONNRESET" }],
       });
       const [wakeup] = await db.select().from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.id, wakeupRequestId));
@@ -4801,6 +4807,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(failedRun?.error).toContain(
       "is not installed or its plugin worker is not running",
     );
+    const report = await waitForValue(async () => mockCaptureRunFailure.mock.calls.find(([event]) => event.runId === runId)?.[0]);
+    expect(report?.diagnostics).toMatchObject({
+      execution: { failurePhase: "execute" },
+      exceptions: [{ stack: expect.stringContaining("heartbeat-process-recovery.test.ts") }],
+    });
 
     const interaction = await waitForValue(async () => {
       const row = await db
@@ -5280,6 +5291,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     });
     expect(validationComment).toBeTruthy();
+  });
+
+  it.each(["throw", "result"])("redacts opaque environment-bound credentials from Sentry diagnostics: %s", async (mode) => {
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const svc = secretService(db);
+    const value = "opaque-runtime-credential-fixture";
+    const secret = await svc.create(companyId, {
+      name: `sentry-redaction-${randomUUID()}`, provider: "local_encrypted", value,
+    });
+    const env = { CUSTOM_BINDING: { type: "secret_ref", secretId: secret.id, version: "latest" } };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: agentId }, env);
+    await db.update(agents).set({ adapterConfig: { env } }).where(eq(agents.id, agentId));
+    mockAdapterExecute.mockImplementationOnce(async (input) => {
+      expect(input.config.env.CUSTOM_BINDING).toBe(value);
+      const message = `upstream rejected ${value}`;
+      if (mode === "throw") throw new Error(message, { cause: new Error(message) });
+      return {
+        exitCode: 1, signal: null, timedOut: false, errorMessage: message, errorCode: "adapter_failed",
+        errorMeta: { causeMessage: message },
+        resultJson: { terminalSessionFailure: { category: "service", details: message } },
+      };
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await heartbeat.waitForRunExecutionDrain(runId);
+    const report = await waitForValue(async () => mockCaptureRunFailure.mock.calls.find(([event]) => event.runId === runId)?.[0]);
+    expect(report).toBeDefined();
+    expect(report.errorMessage).toContain("upstream rejected");
+    expect(JSON.stringify(report)).not.toContain(value);
+    if (mode === "throw") expect(report.diagnostics.exceptions).toHaveLength(2);
+    else expect(report.diagnostics.provider.category).toBe("service");
   });
 
   it("blocks before dispatch when a declared secret ref has no binding instead of emitting an opaque setup failure", async () => {

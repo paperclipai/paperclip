@@ -9,6 +9,10 @@ export type CompletionObservation = {
   comments: Row[];
   runs: Row[];
   marker: string;
+  /** Synthetic user request and released brief, never inferred from the reply. */
+  fixtureRequest?: string;
+  /** Only other tasks explicitly delegated by this isolated fixture. */
+  relatedTasks?: Array<{ task: Row; documents: Row[] }>;
   renderedLinks?: Array<{ commentId: string; href: string }>;
 };
 export const completionReviewRubric = [
@@ -16,6 +20,7 @@ export const completionReviewRubric = [
   "Does it describe the saved result rather than repeat an earlier handoff promise?",
   "Can the user access that result without asking another question?",
   "Does it avoid inventing verification, publication, or other work not in the evidence?",
+  "Does it avoid repeated completion announcements or redundant acknowledgements, while allowing corrections and updates about different tasks?",
 ] as const;
 
 /** The start time exists only in the brief released after the source is idle. */
@@ -34,10 +39,13 @@ export function completionDelivery(observation: CompletionObservation) {
       r.contextSnapshot?.issueId === sourceId && r.status === "succeeded"));
   responses.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   const latestResponse = responses.at(-1);
+  const correlated = responses.filter(c => runs.some(r => r.id === c.createdByRunId &&
+    Array.isArray(r.contextSnapshot?.chatCompletionUpdates) &&
+    r.contextSnapshot.chatCompletionUpdates.some((update: Row) => update.id === worker.id && update.status === "done")));
   const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
   // Delivery remains valid if a subsequent clarification omits the same link.
   // Keep the latest reply separately for semantic review of the whole exchange.
-  const deliveries = responses.map(response => {
+  const deliveries = correlated.map(response => {
     const body = String(response.body ?? "");
     const links = (observation.renderedLinks ?? []).filter(link => link.commentId === response.id).map(link => link.href);
     const resultLinks = links.filter(link => {
@@ -60,6 +68,7 @@ export function completionDelivery(observation: CompletionObservation) {
       { id: "completion-worker-done", passed: worker.status === "done" && Number.isFinite(completedAt), detail: "The delegated task is durably Done, not merely a successful run" },
       { id: "completion-output-saved", passed: outputs.length > 0, detail: "The worker saved a non-plan deliverable containing the requested reference" },
       { id: "completion-source-response", passed: Boolean(final), detail: "The originating thread has a run-attributed agent reply after task completion" },
+      { id: "completion-source-correlated", passed: correlated.length > 0, detail: "A reply run received authoritative completion facts for this task; a late initial handoff reply does not qualify" },
       { id: "completion-result-access", passed: Boolean(final) && (resultLinks.length > 0 || quotedOutput), detail: "That reply links to the completed task/output or includes the actual saved output" },
     ],
     response: final ?? null,

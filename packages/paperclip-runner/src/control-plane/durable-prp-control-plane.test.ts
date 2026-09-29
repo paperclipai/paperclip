@@ -20,7 +20,8 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
-import { createCapabilityRunnerdCodexTransport } from "../live/runnerd-codex-transport.js";
+import { createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment } from "../live/runnerd-codex-transport.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
@@ -531,6 +532,53 @@ it("preserves the controller-selected ACPX provider package root", () => {
     launches[0]!.environment.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
   ).toBe("/verified/provider-pack/package.json");
   expect(launches[0]!.environment.NODE_PATH).toBeUndefined();
+});
+
+it.each([
+  ["pi", "OPENROUTER_API_KEY"],
+  ["cursor", "CURSOR_API_KEY"],
+  ["cursor", "CURSOR_AUTH_TOKEN"],
+  ["copilot", "COPILOT_GITHUB_TOKEN"],
+] as const)("preserves explicit %s %s binding through the actual runner launch boundary", (agent, key) => {
+  const launches: RunnerProcessLaunchSpec[] = [];
+  vi.stubEnv(key, "ambient-must-not-cross");
+  vi.stubEnv(ACPX_CREDENTIAL_BINDING_ENV, "ambient-forged-marker");
+  try {
+    for (const explicit of [true, false]) {
+      const environment = createCapabilityRunnerdProviderEnvironment({
+        provider: "acpx", identity, codexHome: "/fixture/home",
+        runtimeContextPath: "/fixture/context.json", hasRuntimeContext: false,
+        options: { acpxAgent: agent,
+          environment: explicit ? { [key]: "explicit-fixture-credential", [ACPX_CREDENTIAL_BINDING_ENV]: "caller-forged-marker", DATABASE_URL: "must-not-cross" } : undefined },
+      });
+      const handle = spawnRunner({
+        connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+        stateDirectory: "/tmp/paperclip-runner-test", identity,
+        ticket: "bootstrap-ticket", maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+        runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest, environment,
+        processLauncher: spec => {
+          launches.push(spec);
+          return { child: { pid: 42, exitCode: null, signalCode: null, kill: () => true },
+            completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }) };
+        },
+      });
+      handle.restart("replacement-ticket");
+      for (const launch of launches.splice(0)) {
+        expect(launch.environment[key]).toBe(explicit ? "explicit-fixture-credential" : undefined);
+        const receipt = launch.environment[ACPX_CREDENTIAL_BINDING_ENV];
+        expect(receipt).toBeDefined();
+        expect(JSON.parse(receipt!)).toEqual({ schema: "paperclip.acpx_credential_binding.v1", agent,
+          sessionId: identity.normalizedSessionId, names: explicit ? [key] : [] });
+        expect(receipt).not.toContain("fixture-credential");
+        expect(launch.environment.DATABASE_URL).toBeUndefined();
+        const provider = createAcpxSidecarHostEnvironment(launch.environment, agent, identity.normalizedSessionId);
+        expect(provider[key]).toBe(explicit ? "explicit-fixture-credential" : undefined);
+        expect(provider[ACPX_CREDENTIAL_BINDING_ENV]).toBeUndefined();
+        expect(() => createAcpxSidecarHostEnvironment(launch.environment, agent, "stale-session"))
+          .toThrow("explicit matching session binding");
+      }
+    }
+  } finally { vi.unstubAllEnvs(); }
 });
 
 it("preserves file-backed AWS workload identity at the runner spawn boundary", () => {

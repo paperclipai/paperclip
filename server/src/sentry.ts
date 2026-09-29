@@ -56,6 +56,7 @@
 // `instrumentation.ts`.
 
 import os from "node:os";
+import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
@@ -132,6 +133,30 @@ export interface RunFailureEvent {
   agentAdapter: string;
   /** The run status that triggered this report. */
   runStatus: RunFailureStatus;
+  /** Bounded, redacted diagnostics selected by the run failure reporter. */
+  diagnostics?: RunFailureDiagnostics;
+  /** Recorded process exit evidence, when available. Validated before capture. */
+  exitCode?: number | null;
+  signal?: string | null;
+}
+
+function normalizeRunExitCode(value: unknown): number | null {
+  // Match the persisted PostgreSQL integer. Do not coerce adapter-supplied text.
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= -2147483648 &&
+    value <= 2147483647
+    ? value
+    : null;
+}
+
+function normalizeRunSignal(value: unknown): string | null {
+  if (value == null) return null;
+  // Only host signal constants may leave the process; arbitrary adapter text
+  // can contain output or credentials even when stored in the signal column.
+  return typeof value === "string" && Object.hasOwn(os.constants.signals, value)
+    ? value
+    : "unknown";
 }
 
 /**
@@ -152,7 +177,33 @@ export function captureRunFailure(event: RunFailureEvent): void {
     // Sentry's async scope isolation is absent when OTel setup is skipped.
     // A withScope mutation can then persist into unrelated later captures.
     // Pass these fields on this event only; do not mutate the ambient scope.
-    handle.captureException(new Error(event.errorMessage), {
+    const diagnostics = event.diagnostics;
+    const contexts: Record<string, Record<string, unknown>> = {};
+    if (diagnostics) {
+      contexts.run_execution = { ...diagnostics.execution, truncatedFields: diagnostics.truncatedFields };
+      if (Object.keys(diagnostics.adapter).length) contexts.adapter_failure = diagnostics.adapter;
+      if (Object.keys(diagnostics.provider).length) contexts.provider_failure = diagnostics.provider;
+      diagnostics.exceptions.forEach(({ name, code, status, requestId }, index) => {
+        contexts[`run_exception_${index}`] = { name, code, status, requestId };
+      });
+    }
+    // Rebuild only sanitized exception fields. Passing a raw SDK Error can
+    // serialize its request/response, headers, or other enumerable properties.
+    let cause: Error | undefined;
+    for (const entry of [...(diagnostics?.exceptions ?? [])].reverse()) {
+      const error: Error = new Error(entry.message ?? event.errorMessage, cause ? { cause } : undefined);
+      error.name = entry.name ?? "Error";
+      error.stack = entry.stack;
+      cause = error;
+    }
+    const exception = cause ?? new Error(event.errorMessage);
+    if (!cause) {
+      // A saved adapter result is not a thrown Error. Do not pretend that the
+      // reporter's own stack is the failure location.
+      exception.stack = typeof diagnostics?.adapter.stackPreview === "string"
+        ? diagnostics.adapter.stackPreview : undefined;
+    }
+    handle.captureException(exception, {
       tags: {
         run_id: event.runId,
         task_id: event.taskId,
@@ -161,12 +212,15 @@ export function captureRunFailure(event: RunFailureEvent): void {
         run_status: event.runStatus,
       },
       contexts: {
+        ...contexts,
         run_failure: {
           taskId: event.taskId,
           runId: event.runId,
           errorMessage: event.errorMessage,
           errorCode,
           agentAdapter: event.agentAdapter,
+          exitCode: normalizeRunExitCode(event.exitCode),
+          signal: normalizeRunSignal(event.signal),
         },
       },
       fingerprint: [errorCode, event.agentAdapter],

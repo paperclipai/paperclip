@@ -39,6 +39,13 @@ import {
 import { captureLocalProcess, capturedProcessExited, killCapturedLocalProcess } from "./local-process-control.js";
 import type { DuplexLossReason } from "../duplex-observability.js";
 import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
+import {
+  formatTerminalSessionFailure,
+  sanitizeTerminalSessionFailure,
+  type AcpxTerminalSessionFailure,
+  type AcpxTerminalSessionFailureDiagnostic,
+} from "./terminal-session-failure.js";
+export type { AcpxTerminalSessionFailure } from "./terminal-session-failure.js";
 import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
 import {
   classifyWorkspaceRestoreFailure,
@@ -351,12 +358,6 @@ export interface AcpxRemoteManagedHomeResult {
    * temp.
    */
   disposeStaged?: () => Promise<void>;
-}
-
-export interface AcpxTerminalSessionFailure {
-  category: string;
-  title?: string;
-  details?: string;
 }
 
 export type AcpxTerminalFailureClassification = Pick<
@@ -812,6 +813,10 @@ function resolveManagedCodexHomeDir(companyId: string): string {
   return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "codex-home");
 }
 
+function resolveManagedCodexApiKeyHomeDir(companyId: string, agentId: string): string {
+  return path.join(defaultStateDir(companyId, agentId), "codex-home");
+}
+
 // Mirrors `resolveManagedGrokHomeDir` in
 // `packages/adapters/grok-local/src/server/grok-home.ts` — this package
 // cannot import that adapter package (it would invert the dependency
@@ -1006,15 +1011,30 @@ async function prepareManagedCodexHome(input: {
   companyId: string;
   sourceHome: string;
   targetHome: string;
+  apiKey?: string;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<string> {
-  const { sourceHome, targetHome, onLog } = input;
+  const { sourceHome, targetHome, apiKey, onLog } = input;
   if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  const authJson = path.join(sourceHome, "auth.json");
-  if (await pathExists(authJson)) await ensureSymlink(path.join(targetHome, "auth.json"), authJson);
+  const targetAuth = path.join(targetHome, "auth.json");
+  if (apiKey) {
+    // Codex reads auth.json ahead of the process environment. Never leave a
+    // shared ChatGPT-login symlink in an API-key agent's managed home, and never
+    // write through that symlink into the operator's own Codex credentials.
+    // Atomic replacement also keeps concurrent turns from seeing a missing or
+    // partially written credential file.
+    await writeFileAtomically({
+      target: targetAuth,
+      contents: JSON.stringify({ OPENAI_API_KEY: apiKey }),
+      mode: 0o600,
+    });
+  } else {
+    const sourceAuth = path.join(sourceHome, "auth.json");
+    if (await pathExists(sourceAuth)) await ensureSymlink(targetAuth, sourceAuth);
+  }
 
   for (const name of ["config.json", "config.toml", "instructions.md"]) {
     const source = path.join(sourceHome, name);
@@ -1259,6 +1279,7 @@ async function reconcileManagedCodexSkills(input: {
 
 async function prepareCodexSkillRuntime(input: {
   companyId: string;
+  agentId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
   moduleDir: string;
@@ -1286,12 +1307,19 @@ async function prepareCodexSkillRuntime(input: {
     typeof process.env.CODEX_HOME === "string" && process.env.CODEX_HOME.trim().length > 0
       ? path.resolve(process.env.CODEX_HOME.trim())
       : path.join(os.homedir(), ".codex");
-  const managedCodexHome = resolveManagedCodexHomeDir(input.companyId);
+  const apiKey = input.env.OPENAI_API_KEY?.trim() || input.env.CODEX_API_KEY?.trim()
+    || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim();
+  // Keep API-key auth separate from the company home used by subscription
+  // agents, so one agent cannot switch another agent's login on its next turn.
+  const managedCodexHome = apiKey
+    ? resolveManagedCodexApiKeyHomeDir(input.companyId, input.agentId)
+    : resolveManagedCodexHomeDir(input.companyId);
   const effectiveCodexHome = configuredCodexHome ??
     await prepareManagedCodexHome({
       companyId: input.companyId,
       sourceHome: sourceCodexHome,
       targetHome: managedCodexHome,
+      apiKey,
       onLog: input.onLog,
     });
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
@@ -2035,7 +2063,11 @@ async function buildRuntime(input: {
     paperclipClaudeSettings = await writePaperclipClaudeSettings({
       cwd,
       stateDir,
-      agentHome,
+      // A run's writable AGENT_HOME moves, but the existing permission root
+      // must not invalidate its resumable conversation. Run copies are covered
+      // by the company root already granted in these settings; the process env
+      // still receives this run's actual AGENT_HOME.
+      agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
     });
     skillCommandNotes.push(
@@ -2050,6 +2082,7 @@ async function buildRuntime(input: {
     const preparedSkills = await measureStartupStep(input.ctx, nowMs, "codex-home.seed", () =>
       prepareCodexSkillRuntime({
         companyId: agent.companyId,
+        agentId: agent.id,
         config,
         env,
         moduleDir: input.engine.moduleDir,
@@ -4070,6 +4103,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // (the cancel-before-close order). The turn wrapper assigns it in `turnStart`.
       let activeTurn: AcpRuntimeTurn | null = null;
       let terminalFailureClassification: AcpxTerminalFailureClassification | null = null;
+      let terminalSessionFailure: AcpxTerminalSessionFailureDiagnostic | null = null;
       // How the settlement `endSession` step must release the runtime for the path
       // this run took. Each exit path that acquired the runtime records it before it
       // returns; a build or create-runtime failure never registers the runtime, so
@@ -4751,14 +4785,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           timeoutMs: startTimeoutMs,
           signal,
           // The callback belongs to this turn, including when a runtime is reused.
-          // Raw provider text must never enter the result or the run log.
-          ...(deps.classifyTerminalSessionFailure
-            ? {
-                onTerminalSessionFailure: (failure: AcpxTerminalSessionFailure) => {
-                  terminalFailureClassification = deps.classifyTerminalSessionFailure!(failure, new Date(now()));
-                },
-              }
-            : {}),
+          // Diagnostics are retained even when an adapter has no recovery
+          // classifier. Redact before bounding so partial secrets cannot leak.
+          onTerminalSessionFailure: (failure: AcpxTerminalSessionFailure) => {
+            terminalSessionFailure = sanitizeTerminalSessionFailure(
+              failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),
+            );
+            terminalFailureClassification = deps.classifyTerminalSessionFailure?.(failure, new Date(now())) ?? null;
+          },
         });
         activeTurn = turn;
         // A latched sandbox duplex-channel loss otherwise has no way to reach
@@ -4974,11 +5008,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const classifiedFailure = !timedOut && !channelLost && terminal.status === "failed"
           ? terminalFailureClassification
           : null;
+        const failureDiagnostic = !timedOut && !channelLost && terminal.status === "failed"
+          ? terminalSessionFailure
+          : null;
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : channelLost
             ? channelLostMessage
-            : classifiedFailure?.errorMessage ?? resultErrorMessage(terminal);
+            // A classifier's fixed message replaces only the generic headline;
+            // the redacted provider diagnostics still follow it.
+            : formatTerminalSessionFailure(
+              classifiedFailure?.errorMessage ?? resultErrorMessage(terminal),
+              failureDiagnostic,
+            );
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
@@ -5014,6 +5056,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           costUsd: turnUsage.costUsd,
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
+            ...(failureDiagnostic ? { terminalSessionFailure: failureDiagnostic } : {}),
             ...(classifiedFailure?.errorFamily ? { errorFamily: classifiedFailure.errorFamily } : {}),
             ...(classifiedFailure?.retryNotBefore
               ? {

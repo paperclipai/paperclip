@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { canonicalDocumentIssueId, contextCommentGateSelected, holdCommittedDocumentResponse, release, waitUntilHeld } from "./context-comment-gate.js";
+import { arm, isArmed, clear, canonicalDocumentIssueId, contextCommentGateSelected, holdCommittedDocumentResponse, release, waitUntilHeld } from "./context-comment-gate.js";
 
 const express = createRequire(import.meta.url)("../../server/node_modules/express");
 
@@ -82,6 +82,22 @@ describe("context comment gate", () => {
     await expect(held).resolves.toBeUndefined();
     await expect(readFile(path.join(root, "context-comment-gates", "issue-1", "held"))).resolves.toBeTruthy();
     await expect(holdCommittedDocumentResponse("issue-1", Date.now() + 100)).resolves.toBeUndefined();
+  });
+
+  it("arms only the selected conversation and clears stale gate state", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "completion-document-gate-"));
+    roots.push(root);
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_PRIVATE_DIR", root);
+    expect(await isArmed("source")).toBe(false);
+    await arm("source");
+    expect(await isArmed("source")).toBe(true);
+    expect(await isArmed("worker")).toBe(false);
+    const held = holdCommittedDocumentResponse("source", Date.now() + 2_000);
+    await waitUntilHeld("source", Date.now() + 2_000);
+    await release("source");
+    await held;
+    await clear("source");
+    expect(await isArmed("source")).toBe(false);
   });
 
   it("times out without release", async () => {

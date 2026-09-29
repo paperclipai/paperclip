@@ -1,3 +1,4 @@
+import { resolveAcpxQualification } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
@@ -585,6 +586,19 @@ export function buildNativeProviderEnvironment(
     environment.PAPERCLIP_WORKSPACE_CWD = assignedWorkspaceCwd;
   }
   return environment;
+}
+
+/** Missing candidate bindings must not turn the controller's ambient credentials into explicit input. */
+export function resolveNativeProviderEnvironment(
+  provider: NativeExecutionInput["provider"],
+  configured: NodeJS.ProcessEnv | undefined,
+  host: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (configured !== undefined) return configured;
+  if (provider.kind === "acpx" && ["pi", "cursor", "copilot"].includes(provider.agent)) {
+    return buildNativeProviderEnvironment({}, host);
+  }
+  return host;
 }
 
 type PlanSynchronization = {
@@ -1691,7 +1705,7 @@ function migrateLegacyRunnerdStateRoot(input: {
     // A legacy path does not encode the full session scope. A mismatch may be
     // valid live state owned by another agent/workspace, so refusing the claim
     // is safe but moving that ambiguous directory is not.
-    throw new Error("runner_state_identity_mismatch");
+    throw new Error("runner_state_identity_mismatch: legacy_owner_unverified");
   }
   if (
     exactRun &&
@@ -1704,7 +1718,7 @@ function migrateLegacyRunnerdStateRoot(input: {
     )
   ) {
     quarantineRunnerdStateRoot(input.legacy, "identity_indeterminate");
-    throw new Error("runner_state_identity_mismatch");
+    throw new Error("runner_state_identity_mismatch: legacy_authority_indeterminate");
   }
   try {
     renameSync(input.legacy, input.scoped);
@@ -1728,7 +1742,7 @@ function migrateLegacyRunnerdStateRoot(input: {
       durableIdentityMatchesSession(scopedIdentity, input.execution),
     );
     if (!exactScopedRun && !sameVerifiedPriorRun) {
-      throw new Error("runner_state_identity_mismatch");
+      throw new Error("runner_state_identity_mismatch: migration_destination_owner_changed");
     }
   }
   return input.scoped;
@@ -4573,7 +4587,7 @@ async function migrateRunnerdStateRootForExecution(input: {
     await recoverQuiescentRunnerdState({ ...input, scoped });
   }
   if (input.restartRecovery?.kind === "reattach_remote_runner" && !existsSync(scoped)) {
-    throw new Error("runner_state_identity_mismatch");
+    throw new Error("runner_state_identity_mismatch: remote_reattach_root_missing");
   }
   if (existsSync(scoped)) {
     if (!isSafeNativeStateDirectory(scoped)) {
@@ -4593,14 +4607,14 @@ async function migrateRunnerdStateRootForExecution(input: {
           input.restartRecovery?.kind !== "reattach_remote_runner") {
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
       }
-      throw new Error("runner_state_identity_mismatch");
+      throw new Error("runner_state_identity_mismatch: durable_identity_unreadable");
     }
     if (!durableIdentityMatchesSession(identity, input.execution)) {
       if (input.restartRecovery?.kind !== "reattach_existing_runner" &&
           input.restartRecovery?.kind !== "reattach_remote_runner") {
         quarantineRunnerdStateRoot(scoped, "identity_mismatch");
       }
-      throw new Error("runner_state_identity_mismatch");
+      throw new Error("runner_state_identity_mismatch: session_scope_mismatch");
     }
     if (input.restartRecovery?.kind === "bootstrap_incomplete") {
       if (runnerdStateProvesIncompleteBootstrap(scoped)) {
@@ -4610,7 +4624,7 @@ async function migrateRunnerdStateRootForExecution(input: {
       // Database evidence alone cannot distinguish a never-connected runner
       // from a partially-persisted provider bootstrap. Only the durable PRP
       // root can authorize a fresh bootstrap; anything else stays fail-closed.
-      throw new Error("runner_state_identity_mismatch");
+      throw new Error("runner_state_identity_mismatch: bootstrap_not_proven_incomplete");
     }
     if (input.restartRecovery?.kind === "reattach_remote_runner") {
       await verifyRemoteRunnerReattachment({
@@ -4631,7 +4645,7 @@ async function migrateRunnerdStateRootForExecution(input: {
         if (input.restartRecovery?.kind !== "reattach_existing_runner") {
           quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         }
-        throw new Error("runner_state_identity_mismatch");
+        throw new Error("runner_state_identity_mismatch: authority_indeterminate");
       }
     } else {
       const verification = await verifyPriorRunnerdStateForSessionScope({
@@ -4654,7 +4668,7 @@ async function migrateRunnerdStateRootForExecution(input: {
               : "identity_indeterminate",
           );
         }
-        throw new Error("runner_state_identity_mismatch");
+        throw new Error(`runner_state_identity_mismatch: prior_owner_${verification}`);
       }
     }
     return;
@@ -4672,7 +4686,7 @@ async function migrateRunnerdStateRootForExecution(input: {
       // Unlike the full-scope target above, this legacy name can legitimately
       // belong to another scope. Leave it in place for its owner and fail the
       // attempted migration visibly.
-      throw new Error("runner_state_identity_mismatch");
+      throw new Error("runner_state_identity_mismatch: legacy_session_scope_mismatch");
     }
     let verifiedPriorRunId: string | undefined;
     if (!durableIdentityMatchesExecution(identity, input.execution)) {
@@ -4695,7 +4709,7 @@ async function migrateRunnerdStateRootForExecution(input: {
           // untouched because the legacy name may still belong to them.
           quarantineRunnerdStateRoot(legacy, "identity_indeterminate");
         }
-        throw new Error("runner_state_identity_mismatch");
+        throw new Error(`runner_state_identity_mismatch: legacy_prior_owner_${verification}`);
       }
       verifiedPriorRunId = identity.runId;
     }
@@ -4745,7 +4759,7 @@ async function recoverQuiescentRunnerdState(input: {
   ) {
     // Do not roll back to an older valid checkpoint when a newer quarantined
     // root contains unconfirmed work, even if the newer root is unreadable.
-    throw new Error("runner_state_identity_mismatch");
+    throw new Error("runner_state_identity_mismatch: quarantine_candidates_ambiguous");
   }
   const verified: Array<{
     root: string;
@@ -4932,7 +4946,7 @@ async function recoverQuiescentRunnerdState(input: {
     ) {
       // Known provider history is not permission to start a replacement when
       // recovery cannot prove a unique, settled owner.
-      throw new Error("runner_state_identity_mismatch");
+      throw new Error("runner_state_identity_mismatch: quarantine_owner_unverified");
     }
     return;
   }
@@ -4951,14 +4965,14 @@ async function recoverQuiescentRunnerdState(input: {
         "recovery_state_too_large",
       ).toString("utf8") !== expected
     ) {
-      throw new Error("runner_state_identity_mismatch");
+      throw new Error("runner_state_identity_mismatch: recovery_evidence_changed");
     }
   }
   if (
     !localProcessDefinitelyGone(candidate.processPid) ||
     !localProcessDefinitelyGone(candidate.processGroupId, true)
   ) {
-    throw new Error("runner_state_identity_mismatch");
+    throw new Error("runner_state_identity_mismatch: recovery_process_not_gone");
   }
   if (candidate.root !== input.scoped) {
     if (existsSync(input.scoped)) {
@@ -5673,12 +5687,12 @@ export function buildNativeHarnessBackupManifest(input: {
   completedAt?: string;
 }): NativeHarnessBackupManifest {
   if (!providerSessionIdentityIsPresent(input.providerSessionIdentity)) {
-    throw new Error("runner_harness_state_mismatch");
+    throw new Error("runner_harness_state_mismatch: backup_provider_identity_missing");
   }
   const profile = resolveNativeHarnessPersistenceProfile(input.execution);
   const directories = profile.directories.map((directory) => {
     const path = resolve(input.backupRoot, directory.name);
-    if (!existsSync(path)) throw new Error("runner_harness_state_mismatch");
+    if (!existsSync(path)) throw new Error("runner_harness_state_mismatch: backup_directory_missing");
     return { name: directory.name, ...digestBackupDirectory(path) };
   });
   return {
@@ -7167,6 +7181,12 @@ export async function executePaperclipNativeSession(input: {
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
+  /** Only this run's registered private instruction entry.
+   * Probe at terminal; persist only after owned shutdown. */
+  instructionWorkingCopy?: {
+    hasChanges: () => Promise<boolean>;
+    collectStopped: () => Promise<void>;
+  };
   /** Persist task-level continuity before a durable goal can outlive this run. */
   onGoalCheckpoint?: (snapshot: PersistedNativeSession) => Promise<void>;
   sessionGoalControl?: NativeSessionGoalControl | null;
@@ -7355,10 +7375,11 @@ async function executePaperclipNativeSessionWithinScope(
   }
   if (
     input.execution.provider.kind === "acpx" &&
-    input.execution.provider.agent === "pi"
+    ["pi", "cursor", "copilot"].includes(input.execution.provider.agent) &&
+    !resolveAcpxQualification(input.execution.provider, process.env)
   ) {
     throw new Error(
-      "paperclip_runner_provider_unsupported: ACPX Pi is unavailable until descriptor-confined verified launch is implemented",
+      "paperclip_runner_provider_unsupported: ACPX candidate requires exact host qualification authorization",
     );
   }
   const preparationSpans = input.preparationSpans ?? [];
@@ -8192,7 +8213,7 @@ async function executePaperclipNativeSessionWithinScope(
         scope: input.execution.binding,
         target: input.runnerExecutionTarget,
         cwd: input.execution.workspace.cwd,
-        env: input.runnerEnvironment ?? process.env,
+        env: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
         resolveCredentials: (binding) => resolveGitHubOperationCredentials(input.db, binding),
         onLog: input.onLog,
       });
@@ -8257,8 +8278,8 @@ async function executePaperclipNativeSessionWithinScope(
               createNativeSessionBackend(input.execution, {
                 runnerInstanceId: input.runnerInstanceId,
                 onSpawn: input.onSpawn,
-                opencodeEnvironment: input.runnerEnvironment ?? process.env,
-                acpxEnvironment: input.runnerEnvironment ?? process.env,
+                opencodeEnvironment: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
+                acpxEnvironment: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
                 opencodeRuntimeDirectory: resolve(
                   resolvePaperclipInstanceRoot(),
                   "runtime",
@@ -8305,7 +8326,8 @@ async function executePaperclipNativeSessionWithinScope(
             resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
             // Every durable runner must finish its bounded suspension before
             // the next run verifies and rotates the saved authority.
-            requireSessionCloseBeforeReturn: runnerdBackend !== null,
+            requireSessionCloseBeforeReturn: runnerdBackend !== null || input.instructionWorkingCopy !== undefined,
+            onSessionClosed: input.instructionWorkingCopy?.collectStopped,
             onCheckpoint: async (snapshot) => {
               if (warmSessionId !== null && warmConfigDigest !== null) {
                 await persistWarmNativeCheckpoint(
@@ -9065,12 +9087,22 @@ async function executePaperclipNativeSessionWithinScope(
   // A following run cannot attach until the prior run's durable finalization
   // is committed. Provider completion alone is not an authority boundary.
   if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
+    const instructionCopy = input.instructionWorkingCopy;
+    const ownedSession = warmNativeSessions.get(warmSessionId);
+    const collectInstructions = Boolean(instructionCopy && ownedSession?.ownerToken === warmSessionOwnerToken &&
+      await instructionCopy.hasChanges());
+    if (collectInstructions && ownedSession) {
+      // Keep the unchanged warm path intact. A changed private instruction copy
+      // requires the existing checkpoint-and-close boundary before collection.
+      ownedSession.closeOnReleaseReason = "registered instruction edits require stopped-provider collection";
+    }
     await releaseWarmNativeSession(
       warmSessionId,
       warmSessionOwnerToken,
       lifecyclePolicy.idleTimeoutMs,
       false,
     );
+    if (collectInstructions) await instructionCopy!.collectStopped();
   }
   const adapterResult: AdapterExecutionResult = {
     exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,
@@ -9089,10 +9121,10 @@ async function executePaperclipNativeSessionWithinScope(
     summary: native.result.summary,
     sessionId: native.normalizedSessionId,
     sessionDisplayId: native.providerSessionId ?? native.normalizedSessionId,
-    provider: "openai",
+    provider: nativeUsageBiller(input.execution.provider),
     model: input.execution.provider.model,
     usage: normalizeNativeUsage(native.usage),
-    costUsd: nativeUsageCostUsd(native.usage),
+    costUsd: nativeUsageCostUsd(native.usage, input.execution.provider),
     usageBasis: "per_run",
     nativeFinalization: finalization,
   };
@@ -9148,7 +9180,23 @@ function nativeUsageMeasurement(usage: Record<string, unknown>) {
   );
 }
 
-export function nativeUsageCostUsd(usage: Record<string, unknown> | null) {
+export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): string {
+  if (provider.kind === "acpx") {
+    if (provider.agent === "cursor") return "cursor";
+    if (provider.agent === "copilot") return "github";
+    if (provider.agent === "pi") return "openrouter";
+  }
+  return "openai";
+}
+
+export function nativeUsageCostUsd(
+  usage: Record<string, unknown> | null,
+  provider?: NativeExecutionInput["provider"],
+) {
+  // The ACP normalization contract fills absent per-turn cost with zero and
+  // reports actual cost cumulatively. Until it carries an authoritative run
+  // delta with provenance, neither value is a candidate's billed USD receipt.
+  if (provider?.kind === "acpx" && ["cursor", "copilot", "pi"].includes(provider.agent)) return undefined;
   if (!usage) return undefined;
   const measurement = nativeUsageMeasurement(usage);
   const direct =
@@ -9294,6 +9342,10 @@ type RemoteProviderPackManifest = {
     distDigest: string;
     bridgeDigest: string;
     acpxProfileDigests: typeof REMOTE_PROVIDER_PACK_PROFILE_DIGESTS;
+    candidateProviders?: Partial<Record<"cursor" | "copilot" | "pi", {
+      version: string; profileDigest: string; closureDigest: string; qualification: "pending";
+      path: string; sha256: string;
+    }>>;
     artifacts: {
       grokLauncher: { path: string; sha256: string };
       nodeCommand: { path: string; sha256: string };
@@ -9364,14 +9416,22 @@ export function readRemoteProviderPackManifest(
       readFileSync(resolve(packRoot, "provider-pack.json"), "utf8"),
     ) as RemoteProviderPackManifest;
   } catch (error) {
+    // The terminal run report keeps the outer message, not the cause chain.
+    // Keep a bounded reason there; raw filesystem errors include private paths.
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    const reason = error instanceof SyntaxError ? "invalid_json"
+      : code === "ENOENT" ? "missing"
+      : code === "EACCES" || code === "EPERM" ? "permission_denied"
+      : code === "EISDIR" || code === "ENOTDIR" ? "invalid_path_type"
+      : "io_error";
     throw new Error(
-      "runner_remote_provider_artifact_incompatible: provider-pack.json is unreadable",
+      `runner_remote_provider_artifact_incompatible: provider-pack.json is unreadable (${reason})`,
       { cause: error },
     );
   }
   const payload = manifest?.payload;
   if (
-    manifest.schema !== REMOTE_PROVIDER_PACK_SCHEMA ||
+    manifest?.schema !== REMOTE_PROVIDER_PACK_SCHEMA ||
     !payload ||
     canonicalJson(payload.pins) !== canonicalJson(REMOTE_PROVIDER_PACK_PINS) ||
     canonicalJson(payload.acpxProfileDigests) !==
@@ -9449,6 +9509,28 @@ export function readRemoteProviderPackManifest(
     throw new Error(
       "runner_remote_provider_artifact_incompatible: provider dist tree digest mismatch",
     );
+  }
+  if (payload.candidateProviders !== undefined) {
+    const candidates = payload.candidateProviders;
+    if (!candidates || typeof candidates !== "object" || Array.isArray(candidates) || Object.keys(candidates).length > 3) {
+      throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate inventory");
+    }
+    for (const [provider, candidate] of Object.entries(candidates)) {
+      const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
+      if (!["cursor", "copilot", "pi"].includes(provider) || !candidate
+        || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
+        || candidate.qualification !== "pending" || candidate.path !== expectedPath
+        || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
+        || !/^sha256:[a-f0-9]{64}$/.test(candidate.profileDigest)
+        || !/^sha256:[a-f0-9]{64}$/.test(candidate.closureDigest)
+        || !/^sha256:[a-f0-9]{64}$/.test(candidate.sha256)) {
+        throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate identity");
+      }
+      const candidatePath = providerPackRelativePath(candidate.path, "candidate assets");
+      if (sha256DirectoryTree(resolve(packRoot, candidatePath)) !== candidate.sha256) {
+        throw new Error("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");
+      }
+    }
   }
   const bridgeDigest = `sha256:${createHash("sha256")
     .update(payload.artifacts.opencodeProxy.sha256)
@@ -10856,6 +10938,7 @@ async function createRunnerdBackendWithinSessionClaim(
       "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
       "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
       "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
+      "for(const candidate of Object.values(manifest.payload.candidateProviders||{})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
       "const version=process.versions.node.split('.').map(Number)",
       "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
       "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
@@ -11543,7 +11626,7 @@ async function createRunnerdBackendWithinSessionClaim(
       async () => {
         for (const directory of persistenceProfile.directories) {
           const targetPath = remotePersistencePath(directory);
-          if (!targetPath) throw new Error("runner_harness_state_mismatch");
+          if (!targetPath) throw new Error("runner_harness_state_mismatch: restore_target_unavailable");
           await stageRemoteRunnerDirectory({
             target: remoteTarget,
             runner: remoteCommandRunner,
@@ -11571,7 +11654,7 @@ async function createRunnerdBackendWithinSessionClaim(
       canonicalJson(restored.providerSessionIdentity) !==
         canonicalJson(backup.manifest.providerSessionIdentity)
     ) {
-      throw new Error("runner_harness_state_mismatch");
+      throw new Error("runner_harness_state_mismatch: restored_provider_identity_changed");
     }
     // A deliberately non-reusable environment receives a fresh provider lease
     // for every turn. Stamp that new lease as soon as the verified host backup
@@ -11586,7 +11669,7 @@ async function createRunnerdBackendWithinSessionClaim(
     for (const directory of persistenceProfile.directories) {
       if (directory.location !== "filesystem") continue;
       const targetPath = remotePersistencePath(directory);
-      if (!targetPath) throw new Error("runner_harness_state_mismatch");
+      if (!targetPath) throw new Error("runner_harness_state_mismatch: bootstrap_target_unavailable");
       const escapedTarget = targetPath.replaceAll("'", "'\\''");
       const created = await remoteCommandRunner.execute({
         command: "sh",
@@ -11766,7 +11849,7 @@ async function createRunnerdBackendWithinSessionClaim(
                       // A continuation that has a durable backup but no recorded reusable
                       // lease was not provider-confirmed lost. Never silently create a new
                       // provider session from that ambiguous state.
-                      throw new Error("runner_harness_state_mismatch");
+                      throw new Error("runner_harness_state_mismatch: backup_without_reusable_lease");
                     }
                   }
                 } else if (remoteTarget && remoteCommandRunner) {
@@ -11950,7 +12033,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 !verified.runnerState ||
                 !verified.providerSessionIdentity
               ) {
-                throw new Error("runner_harness_state_mismatch");
+                throw new Error("runner_harness_state_mismatch: checkpoint_identity_incomplete");
               }
               const providerSessionIdentity = verified.providerSessionIdentity;
 
@@ -11965,7 +12048,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 for (const directory of persistenceProfile.directories) {
                   const sourcePath = remotePersistencePath(directory);
                   if (!sourcePath)
-                    throw new Error("runner_harness_state_mismatch");
+                    throw new Error("runner_harness_state_mismatch: checkpoint_source_unavailable");
                   const targetPath = resolve(pendingRoot, directory.name);
                   await syncRemoteRunnerDirectoryOut({
                     runner: remoteCommandRunner,
@@ -11975,7 +12058,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     excludeEntries: directory.excludeEntries,
                   });
                   if (!existsSync(targetPath)) {
-                    throw new Error("runner_harness_state_mismatch");
+                    throw new Error("runner_harness_state_mismatch: checkpoint_directory_missing");
                   }
                 }
                 const manifest = buildNativeHarnessBackupManifest({
@@ -12154,7 +12237,9 @@ async function createRunnerdBackendWithinSessionClaim(
     : input.execution;
   const isGrok = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "grok";
   let effectiveRunnerEnvironmentBase: NodeJS.ProcessEnv = {
-    ...(input.runnerEnvironment ?? (isGrok ? {} : process.env)),
+    ...(isGrok
+      ? input.runnerEnvironment ?? {}
+      : resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment)),
   };
   const grokCredential = isGrok ? await prepareGrokRunnerCredentials({
     companyId: input.execution.binding.companyId, environment: effectiveRunnerEnvironmentBase, remote: Boolean(remoteTarget),
@@ -12309,6 +12394,8 @@ async function createRunnerdBackendWithinSessionClaim(
         ...(input.execution.provider.kind === "acpx"
           ? {
               acpxAgent: input.execution.provider.agent,
+              // Read only the server operator environment, never agent/runtime env.
+              acpxCandidateProfile: resolveAcpxQualification(input.execution.provider, process.env),
               acpxPermissionMode: input.execution.provider.permissionMode,
               acpxPermissionModePinned:
                 input.execution.schema === "paperclip.native-execution-input.v4" ||
@@ -12404,7 +12491,7 @@ async function createRunnerdBackendWithinSessionClaim(
         runnerBinary: controllerRunnerBinary,
         codexCommand: remoteCodexBinary ?? undefined,
         sourceCodexHome: remoteTarget
-          ? resolveSourceCodexHome(input.runnerEnvironment ?? process.env)
+          ? resolveSourceCodexHome(resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment))
           : undefined,
         runnerProcessLauncher: remoteProcessLauncher,
         runnerReconnectGraceMs: remoteTarget ? 120_000 : undefined,

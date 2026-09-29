@@ -404,6 +404,15 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       };
     }
     if (profile.provider === "acpx") {
+      if (["cursor", "copilot", "pi"].includes(profile.acpxAgent)) {
+        // The profile resolver already validated the isolated host's exact
+        // qualification pair. Do not report a production readiness pass.
+        return {
+          adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+          checks: [{ code: "acpx_candidate_qualification_only", level: "warn" as const,
+            message: "This exact candidate and model are admitted for operator-controlled qualification only. Verified runtime installation, bound credentials, and model access are checked before execution; production support remains pending." }],
+        };
+      }
       try {
         if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok") throw new Error("Select Codex to use the native Codex runner.");
         const target = context.executionTarget;
@@ -510,7 +519,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.156.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build through the Rust Paperclip runner and authenticated PRP transport. Cursor, GitHub Copilot, and Pi are awaiting local and Daytona qualification and are not enabled for production runs. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({
     fields: [
       {
@@ -523,9 +532,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           { value: "opencode", label: `OpenCode ${QUALIFIED_OPENCODE_RUNNER_VERSION}` },
           { value: "claude_managed", label: "Claude Managed" },
           { value: "aws_agentcore", label: "AWS AgentCore" },
-          { value: "acpx", label: "ACPX (Claude / Grok Build)" },
+          { value: "acpx", label: "ACP agents" },
         ],
-        hint: "Select a local provider, company-qualified managed provider, or Claude or Grok Build through ACPX.",
+        hint: "Select a local provider, company-qualified managed provider, or an ACP agent.",
       },
       {
         key: "acpxAgent", label: "ACP agent", type: "select" as const, default: "claude",
@@ -1033,13 +1042,22 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
+function declaredModelsForAdapter(type: string): { id: string; label: string }[] | null {
+  const declared = getDeclaredAdapterModels()?.[type];
+  return declared?.length
+    ? declared.map((model) => ({ id: model.id, label: model.label ?? model.id }))
+    : null;
+}
+
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
-  const declaredModels = getDeclaredAdapterModels();
-  if (declaredModels && declaredModels[type]?.length) {
-    return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
-  }
+  const declaredModels = declaredModelsForAdapter(type);
+  if (declaredModels) return declaredModels;
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
+  // The built-in Codex adapter's OpenAI discovery includes image, audio, and
+  // embedding models that Codex cannot run. Use its curated list; declared
+  // models above and custom adapter discovery remain authoritative.
+  if (adapter === codexLocalAdapter) return adapter.models ?? [];
   if (adapter.listModels) {
     const discovered = await adapter.listModels();
     if (discovered.length > 0) return discovered;
@@ -1048,6 +1066,9 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
 }
 
 export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+  const declaredModels = declaredModelsForAdapter(type);
+  if (declaredModels) return declaredModels;
+  if (findActiveServerAdapter(type) === codexLocalAdapter) return listAdapterModels(type);
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.refreshModels) {

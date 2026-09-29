@@ -6,7 +6,7 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { putS3Multipart } from "./s3-multipart.js";
-import { Readable } from "node:stream";
+import { addAbortSignal, Readable } from "node:stream";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -106,10 +106,13 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
             Key: key,
             Range: input.range ? `bytes=${input.range.start}-${input.range.end}` : undefined,
           }),
+          { abortSignal: input.signal },
         );
 
+        const stream = await toReadableStream(output.Body);
+        if (input.signal) addAbortSignal(input.signal, stream);
         return {
-          stream: await toReadableStream(output.Body),
+          stream,
           contentType: output.ContentType,
           contentLength: output.ContentLength,
           etag: output.ETag,
@@ -130,6 +133,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
             Bucket: bucket,
             Key: key,
           }),
+          { abortSignal: input.signal },
         );
 
         return {

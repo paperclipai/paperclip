@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   access,
   cp,
@@ -34,6 +35,7 @@ import {
   validatePrpEvent,
   parseNativeExecutionInput,
   type NativeExecutionInputV1,
+  type NativeExecutionInput,
   type PrpEvent,
 } from "@paperclipai/paperclip-runner";
 import { createHash } from "node:crypto";
@@ -55,6 +57,11 @@ import { nativeToolContractFingerprintForTarget } from "./native-session-resume.
 import { buildNativeHeartbeatPreparationSpans } from "./native-run-trace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 
 const githubAccess = vi.hoisted(() => ({
   activate: vi.fn((_binding: { runId: string }) => vi.fn()),
@@ -264,6 +271,7 @@ vi.mock("./native-codex-runner.js", () => ({
 import {
   continuingPendingInteractionIds,
   buildNativeProviderEnvironment,
+  resolveNativeProviderEnvironment,
   buildNativeHarnessBackupManifest,
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
@@ -293,6 +301,7 @@ import {
   buildRemoteCodexLauncherCommand,
   mayUsePreinstalledRunnerArtifact,
   nativeUsageCostUsd,
+  nativeUsageBiller,
   normalizeNativeUsage,
   parseRemoteRunnerProcessIdentity,
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
@@ -967,6 +976,13 @@ describe("native incomplete-bootstrap evidence", () => {
 });
 
 describe("native provider usage normalization", () => {
+  it.each([["cursor", "cursor"], ["copilot", "github"], ["pi", "openrouter"]] as const)("keeps %s cost unknown and attributes its actual biller", (agent, biller) => {
+    const provider = { kind: "acpx", agent, model: "exact-model" } as NativeExecutionInput["provider"];
+    expect(nativeUsageBiller(provider)).toBe(biller);
+    const usage = { runDelta: { inputTokens: 100, outputTokens: 12, providerCostUsd: 0 }, cumulative: { providerCostUsd: 0.44 } };
+    expect(nativeUsageCostUsd(usage, provider)).toBeUndefined();
+    expect(normalizeNativeUsage(usage)).toMatchObject({ inputTokens: 100, outputTokens: 12 });
+  });
   it("reads remote runner run-delta tokens and provider cost", () => {
     const usage = {
       total: {
@@ -1132,6 +1148,26 @@ describe("remote provider pack manifest", () => {
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
       "1.18.32",
     );
+    const candidatePath = "provider-assets/pi/linux-x64";
+    await mkdir(join(root, candidatePath), { recursive: true });
+    await writeFile(join(root, candidatePath, "runtime"), "pinned runtime");
+    const candidates = { pi: { version: "0.0.33", profileDigest: digest("profile"),
+      closureDigest: digest("closure"), qualification: "pending", path: candidatePath,
+      sha256: sha256DirectoryTree(join(root, candidatePath)) } };
+    Object.assign(payload, { candidateProviders: candidates });
+    await writeManifest();
+    expect(readRemoteProviderPackManifest(root).payload.candidateProviders?.pi?.qualification).toBe("pending");
+    await writeFile(join(root, candidatePath, "runtime"), "substitute runtime");
+    expect(() => readRemoteProviderPackManifest(root)).toThrow("candidate asset tree digest mismatch");
+    await writeFile(join(root, candidatePath, "runtime"), "pinned runtime");
+    for (const invalid of [{ path: "../outside" }, { qualification: "qualified" }]) {
+      const original = { ...candidates.pi };
+      Object.assign(candidates.pi, invalid);
+      await writeManifest();
+      expect(() => readRemoteProviderPackManifest(root)).toThrow("invalid candidate identity");
+      candidates.pi = original;
+    }
+    await writeManifest();
     for (const [artifactName, substituteName] of [
       ["nodeCommand", "productionLock"],
       ["opencodeExecutable", "opencodeCommand"],
@@ -1168,6 +1204,54 @@ describe("remote provider pack manifest", () => {
       "provider dist tree digest mismatch",
     );
     await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("provider pack read diagnostics", () => {
+  it.each([
+    ["EACCES", "permission_denied"],
+    ["EPERM", "permission_denied"],
+    ["EIO", "io_error"],
+  ])("reports %s without exposing the underlying filesystem message", (code, reason) => {
+    const root = join(tmpdir(), "private-provider-pack");
+    const manifestPath = join(root, "provider-pack.json");
+    const cause = Object.assign(new Error(`${code}: cannot read ${manifestPath}`), {
+      code,
+      path: manifestPath,
+    });
+    vi.mocked(readFileSync).mockImplementationOnce(() => { throw cause; });
+    let failure: Error | undefined;
+    try { readRemoteProviderPackManifest(root); } catch (error) { failure = error as Error; }
+    expect(readFileSync).toHaveBeenLastCalledWith(manifestPath, "utf8");
+    expect(failure?.message).toBe(`runner_remote_provider_artifact_incompatible: provider-pack.json is unreadable (${reason})`);
+    expect(failure?.message).not.toContain(root);
+    expect(failure?.message).not.toContain(code);
+    expect(failure?.cause).toBe(cause);
+  });
+
+  it("classifies a JSON null manifest as incompatible instead of a TypeError", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-null-pack-"));
+    try {
+      await writeFile(join(root, "provider-pack.json"), "null");
+      expect(() => readRemoteProviderPackManifest(root)).toThrow(
+        "runner_remote_provider_artifact_incompatible: provider pack pins or source revision do not match",
+      );
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["missing", "invalid_json", "invalid_path_type"])("reports %s without putting the path in the terminal message", async (reason) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-private-pack-"));
+    try {
+      const manifestPath = join(root, "provider-pack.json");
+      if (reason === "invalid_json") await writeFile(manifestPath, "{ private-invalid-json");
+      if (reason === "invalid_path_type") await mkdir(manifestPath);
+      let failure: Error | undefined;
+      try { readRemoteProviderPackManifest(root); } catch (error) { failure = error as Error; }
+      expect(failure?.message).toBe(`runner_remote_provider_artifact_incompatible: provider-pack.json is unreadable (${reason})`);
+      expect(failure?.message).not.toContain(root);
+      expect(failure?.message).not.toContain("private-invalid-json");
+      expect(failure?.cause).toBeDefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
 
@@ -1477,7 +1561,7 @@ describe("verified native harness backups", () => {
           },
           sourceProviderLeaseId: "sandbox-1",
         }),
-      ).toThrow("runner_harness_state_mismatch");
+      ).toThrow("runner_harness_state_mismatch: backup_provider_identity_missing");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2438,6 +2522,23 @@ describe("runtime question fallback", () => {
 });
 
 describe("native provider bootstrap environment", () => {
+  it.each(["pi", "cursor", "copilot"] as const)("does not promote ambient %s credentials when bindings are omitted", agent => {
+    const provider = { kind: "acpx", agent } as NativeExecutionInput["provider"];
+    const host = { PATH: "/host/bin", HOME: "/host/home", OPENROUTER_API_KEY: "ambient-pi",
+      CURSOR_API_KEY: "ambient-cursor", CURSOR_AUTH_TOKEN: "ambient-cursor-login", COPILOT_GITHUB_TOKEN: "ambient-copilot",
+      PAPERCLIP_ACPX_CREDENTIAL_BINDING: "ambient-forged-binding" };
+    expect(resolveNativeProviderEnvironment(provider, undefined, host)).toEqual({ PATH: "/host/bin", HOME: "/host/home" });
+    const explicit = { COPILOT_GITHUB_TOKEN: "explicit-company-binding" };
+    expect(resolveNativeProviderEnvironment(provider, explicit, host)).toBe(explicit);
+  });
+
+  it("preserves existing qualified and legacy missing-environment behavior", () => {
+    const host = { OPENAI_API_KEY: "existing-host-key", OPENROUTER_API_KEY: "existing-opencode-key" };
+    for (const provider of [{ kind: "codex" }, { kind: "opencode" }, { kind: "acpx", agent: "codex" }, { kind: "acpx", agent: "claude" }]) {
+      expect(resolveNativeProviderEnvironment(provider as NativeExecutionInput["provider"], undefined, host)).toBe(host);
+    }
+  });
+
   it("inherits the host executable and credential-home context", () => {
     expect(
       buildNativeProviderEnvironment(
@@ -5816,6 +5917,57 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  it.each([
+    { changed: false, closeFails: false },
+    { changed: true, closeFails: false },
+    { changed: true, closeFails: true },
+  ])("collects changed instructions only after the owned warm provider stops (changed=$changed, close fails=$closeFails)", async ({ changed, closeFails }) => {
+    const identity = `instruction-close-${changed}-${closeFails}`;
+    let releaseClose!: () => void;
+    const closed = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const close = vi.fn(async () => { await closed; if (closeFails) throw new Error("instruction provider close failed"); });
+    const collectStopped = vi.fn(async () => {});
+    const hasChanges = vi.fn(async () => changed);
+    const warmExecution = { ...execution,
+      binding: { ...execution.binding, runId: identity, executionWorkspaceId: identity },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      expect(options.requireSessionCloseBeforeReturn).toBe(true);
+      expect(options.onSessionClosed).toBe(collectStopped);
+      await options.onSession?.({ close });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const running = executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution,
+      runnerInstanceId: identity, runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity, remoteCwd: `/tmp/${identity}` },
+      instructionWorkingCopy: { hasChanges, collectStopped } });
+    const observed = running.then(() => null, error => error);
+    try {
+      if (changed) {
+        await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+        expect(collectStopped).not.toHaveBeenCalled();
+        releaseClose();
+        const error = await observed;
+        if (closeFails) {
+          expect(error?.message).toBe("instruction provider close failed");
+          expect(collectStopped).not.toHaveBeenCalled();
+        } else {
+          expect(error).toBeNull();
+          expect(collectStopped).toHaveBeenCalledOnce();
+        }
+      } else {
+        expect(await observed).toBeNull();
+        expect(close).not.toHaveBeenCalled();
+        expect(collectStopped).not.toHaveBeenCalled();
+      }
+    } finally {
+      releaseClose();
+      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
+    }
+  });
+
   describe("warm session identity transitions", () => {
     let previousHome: string | undefined;
     let isolatedHome: string;
@@ -7754,11 +7906,11 @@ describe("native process ownership", () => {
     },
   );
 
-  it("rejects ACPX Pi before constructing a backend", async () => {
+  it.each(["pi", "cursor", "copilot"])("rejects ACPX candidate %s without host authorization before constructing a backend", async (agent) => {
     const piExecution = {
       ...execution,
       binding: { ...execution.binding, runId: "run-acpx-pi-rejected" },
-      provider: { kind: "acpx", agent: "pi", model: "pi-model" },
+      provider: { kind: "acpx", agent, model: "pi-model" },
       session: { ...execution.session, driverKind: "acpx_runtime" },
     } as unknown as NativeExecutionInputV1;
     state.createBackend.mockClear();
@@ -7769,7 +7921,7 @@ describe("native process ownership", () => {
         execution: piExecution,
         runnerInstanceId: "runner",
       }),
-    ).rejects.toThrow("descriptor-confined verified launch");
+    ).rejects.toThrow("exact host qualification authorization");
     expect(state.createBackend).not.toHaveBeenCalled();
   });
 });
@@ -9119,7 +9271,7 @@ describe("runnerd provider runtime wiring", () => {
           execution: currentExecution,
           runnerInstanceId: "runner-after-running-prior-scope",
         }),
-      ).rejects.toThrow("runner_state_identity_mismatch");
+      ).rejects.toThrow("runner_state_identity_mismatch: prior_owner_active");
       await expect(access(scopedRoot)).resolves.toBeUndefined();
       await expect(access(join(stateBase, "quarantine"))).rejects.toThrow();
       expect(state.createBackend).not.toHaveBeenCalled();
@@ -10691,7 +10843,7 @@ describe("runnerd provider runtime wiring", () => {
     }
     // Ambiguous ordinary recovery must still fail closed. Only the runtime's
     // explicitly admitted replacement may retire these prior-session backups.
-    await expect(prepareReplacement()).rejects.toThrow("runner_harness_state_mismatch");
+    await expect(prepareReplacement()).rejects.toThrow("runner_harness_state_mismatch: backup_without_reusable_lease");
     await expect(backend.openReplacementSession!({
       identity: { runId: execution.binding.runId }, workingDirectory: execution.workspace.cwd,
     } as never, {} as never)).resolves.toBe(replacement);

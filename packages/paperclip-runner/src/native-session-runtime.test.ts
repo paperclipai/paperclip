@@ -4014,6 +4014,45 @@ describe("executeNativeSession recovery", () => {
     },
   );
 
+  it("collects a failed run's private instructions only after its owned provider close joins", async () => {
+    const scopedIdentity = { ...identity, companyId: "instruction-close-company", runId: "instruction-close-run" };
+    let finishClose!: () => void;
+    const closed = new Promise<void>((resolve) => { finishClose = resolve; });
+    const order: string[] = [];
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+    const session: NativeSession = {
+      identity: () => scopedIdentity,
+      capabilities: async () => capabilities,
+      async *events() { throw new Error("provider failed after editing instructions"); },
+      startTurn: async () => ({ turnId: "instruction-turn" }),
+      result: async () => null,
+      snapshot: async () => ({ backendKind: "local", sessionId: "instruction-session", identity: scopedIdentity,
+        providerSessionId: "instruction-provider", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }),
+      close: async () => { order.push("closing"); await closed; order.push("stopped"); },
+    };
+    const backend: NativeSessionBackend = {
+      descriptor: async () => ({ kind: "local", name: "instruction-close-test", version: "1", capabilities }),
+      openSession: async () => session,
+    };
+    const controlPlane: ControlPlanePort = {
+      openRun: async () => {}, checkpointSession: async () => {},
+      appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
+      replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }), completeRun: async () => {},
+    };
+    const options = {
+      input: { ...input, binding: { ...input.binding, companyId: scopedIdentity.companyId, runId: scopedIdentity.runId } },
+      backend, controlPlane, runnerInstanceId: "instruction-runner", controlPlaneInstanceId: "control",
+      requireSessionCloseBeforeReturn: true,
+      onSessionClosed: async () => { order.push("collected"); },
+    };
+    const execution = executeNativeSession(options);
+    const failed = expect(execution).rejects.toThrow("provider failed after editing instructions");
+    await vi.waitFor(() => expect(order).toEqual(["closing"]));
+    finishClose();
+    await failed;
+    expect(order).toEqual(["closing", "stopped", "collected"]);
+  });
+
   it("retires only the terminated remote resource, including two sandboxes for one run", async () => {
     const scopedIdentity = { ...identity, companyId: "remote-stop-company", runId: "remote-stop-run" };
     const binding = { ...scopedIdentity, remoteCleanupScope: "first-sandbox" };
@@ -4107,6 +4146,7 @@ describe("executeNativeSession recovery", () => {
     vi.useFakeTimers();
     try {
       const closeFailure = new Error("required remote checkpoint close failed");
+      const onSessionClosed = vi.fn(async () => {});
       const close = vi.fn(({ reason }: { reason: string }) =>
         reason === "native session quarantined cleanup recovery"
           ? Promise.resolve()
@@ -4191,11 +4231,13 @@ describe("executeNativeSession recovery", () => {
           runnerInstanceId: "runner-recovery",
           controlPlaneInstanceId: "control-recovery",
           requireSessionCloseBeforeReturn: true,
+          onSessionClosed,
         }),
       ).rejects.toThrow(closeFailure);
       await vi.advanceTimersByTimeAsync(3_000);
       await execution;
       expect(close).toHaveBeenCalledTimes(5);
+      expect(onSessionClosed).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
