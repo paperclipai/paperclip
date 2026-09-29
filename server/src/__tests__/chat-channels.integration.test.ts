@@ -1044,16 +1044,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   // after its assertions so another case (or shard order) cannot claim them.
   const fixtureCompanies = new Set<string>();
   const fixtureServices = new Set<ChatChannelService>();
-  const reclaimedLeaseEndpointIds = new Set<string>();
+  const reclaimedLeaseTokens = new Set<string>();
   afterEach(async () => {
     try {
       await Promise.all([...fixtureServices].map((service) => service.shutdown()));
     } finally {
       await retireFixtureState([...fixtureCompanies]);
-      await releaseReclaimedLeases([...reclaimedLeaseEndpointIds]);
+      await releaseReclaimedLeases([...reclaimedLeaseTokens]);
       fixtureServices.clear();
       fixtureCompanies.clear();
-      reclaimedLeaseEndpointIds.clear();
+      reclaimedLeaseTokens.clear();
     }
   });
 
@@ -1062,22 +1062,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   // rows and the row outlives the case by its full TTL, failing every later
   // acquirer with 409 until then. The rewritten row is whichever one that
   // service was renewing, and a global sweep can hand it a *foreign* company's
-  // endpoint, which `retireFixtureState` cannot reach — so record the row by
-  // endpoint as it is orphaned and release it here.
-  function reclaimedLeaseTakeover(endpointId: string) {
-    reclaimedLeaseEndpointIds.add(endpointId);
+  // endpoint, which `retireFixtureState` cannot reach. Record our exact token
+  // so cleanup cannot delete unrelated leases or a replacement owner.
+  function reclaimedLeaseTakeover() {
+    const token = `reclaimed-${randomUUID()}`;
+    reclaimedLeaseTokens.add(token);
     return {
-      token: `reclaimed-${randomUUID()}`,
+      token,
       expiresAt: new Date(Date.now() + 90_000),
       updatedAt: new Date(),
     };
   }
 
-  async function releaseReclaimedLeases(endpointIds: string[]) {
-    if (endpointIds.length === 0) return;
+  async function releaseReclaimedLeases(tokens: string[]) {
+    if (tokens.length === 0) return;
     await db
       .delete(chatEndpointLeases)
-      .where(inArray(chatEndpointLeases.endpointId, endpointIds));
+      .where(inArray(chatEndpointLeases.token, tokens));
   }
 
   async function retireFixtureState(companyIds: string[]) {
@@ -1176,6 +1177,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((row) => row.issuePrefix)).size).toBe(2);
     for (const row of rows) expect(row.issuePrefix).toMatch(/^C[A-F0-9]{7}$/);
+  });
+
+  it("cleans only synthetic takeover tokens and preserves other lease owners", async () => {
+    const fixture = await seedCompany();
+    const { endpoint } = await configuredTelegramEndpoint(fixture);
+    const synthetic = reclaimedLeaseTakeover();
+    const replaced = reclaimedLeaseTakeover();
+    const replacementToken = randomUUID();
+    const unrelatedToken = randomUUID();
+    const keys = ["cleanup-owned", "cleanup-replaced", "cleanup-unrelated"];
+    await db.insert(chatEndpointLeases).values([
+      { ...synthetic, leaseKey: keys[0]! },
+      { ...replaced, leaseKey: keys[1]! },
+      { token: unrelatedToken, expiresAt: synthetic.expiresAt, leaseKey: keys[2]! },
+    ].map((lease) => ({ ...lease, companyId: fixture.companyId, endpointId: endpoint.id })));
+    await db.update(chatEndpointLeases).set({ token: replacementToken })
+      .where(eq(chatEndpointLeases.token, replaced.token));
+
+    await releaseReclaimedLeases([...reclaimedLeaseTokens]);
+
+    const remaining = await db.select({ token: chatEndpointLeases.token })
+      .from(chatEndpointLeases)
+      .where(and(eq(chatEndpointLeases.endpointId, endpoint.id), inArray(chatEndpointLeases.leaseKey, keys)));
+    expect(remaining.map((row) => row.token).sort()).toEqual([replacementToken, unrelatedToken].sort());
   });
 
   // A truthy return is not a durable scheduler receipt. These transport tests
@@ -31062,7 +31087,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (!reclaimLease) return true;
         const reclaimed = await db
           .update(chatEndpointLeases)
-          .set(reclaimedLeaseTakeover(input.endpointId))
+          .set(reclaimedLeaseTakeover())
           .where(
             and(
               eq(chatEndpointLeases.endpointId, input.endpointId),
@@ -31229,7 +31254,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (!reclaimLease) return true;
         const reclaimed = await db
           .update(chatEndpointLeases)
-          .set(reclaimedLeaseTakeover(input.endpointId))
+          .set(reclaimedLeaseTakeover())
           .where(
             and(
               eq(chatEndpointLeases.endpointId, input.endpointId),
@@ -31355,7 +31380,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           if (!reclaimLease) return true;
           const reclaimed = await db
             .update(chatEndpointLeases)
-            .set(reclaimedLeaseTakeover(input.endpointId))
+            .set(reclaimedLeaseTakeover())
             .where(
               and(
                 eq(chatEndpointLeases.endpointId, input.endpointId),
@@ -31425,7 +31450,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           if (!loseFinalOwnership) return true;
           await db
             .update(chatEndpointLeases)
-            .set(reclaimedLeaseTakeover(input.endpointId))
+            .set(reclaimedLeaseTakeover())
             .where(
               and(
                 eq(chatEndpointLeases.endpointId, input.endpointId),
@@ -31492,7 +31517,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await db.transaction(async (tx) => {
             const [reclaimed] = await tx
               .update(chatEndpointLeases)
-              .set(reclaimedLeaseTakeover(endpoint.id))
+              .set(reclaimedLeaseTakeover())
               .where(
                 and(
                   eq(chatEndpointLeases.endpointId, endpoint.id),
