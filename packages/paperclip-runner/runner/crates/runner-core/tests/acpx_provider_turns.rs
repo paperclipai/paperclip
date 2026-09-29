@@ -36,8 +36,18 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
             request_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
         },
-        agent: "codex".to_owned(),
-        model: "gpt-5.6-sol".to_owned(),
+        agent: if mode.starts_with("controls") {
+            "pi"
+        } else {
+            "codex"
+        }
+        .to_owned(),
+        model: if mode.starts_with("controls") {
+            "openrouter/deepseek/deepseek-v4-flash-0731"
+        } else {
+            "gpt-5.6-sol"
+        }
+        .to_owned(),
         run_id: "run-1".to_owned(),
         catalog_revision: 1,
         runtime_directory: std::env::temp_dir(),
@@ -45,6 +55,15 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
+        provider_policy: if mode.starts_with("controls") {
+            Some(
+                paperclip_runner_core::acpx_provider_session::AcpxProviderRuntimePolicy {
+                    read_only: false,
+                },
+            )
+        } else {
+            None
+        },
         system_instructions: "Complete the supplied task.".to_owned(),
         runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
@@ -692,4 +711,70 @@ fn fails_closed_before_returning_an_unauthorized_tool_call() {
     assert!(error.contains("unauthorized tool issues.delete"), "{error}");
     assert!(session.state().pending_tool("call-1").is_none());
     assert!(session.shutdown("already closed").is_ok());
+}
+
+#[test]
+fn turn_controls_preserve_mode_and_reject_stale_duplicate_and_oversized_delivery() {
+    let mut session = AcpxProviderSession::start(&config("controls")).unwrap();
+    assert!(session
+        .steer_turn("turn-1", "control-1", "steer", "message")
+        .is_err());
+    session
+        .start_turn("turn-1", "Work", &std::env::temp_dir())
+        .unwrap();
+    let first = session
+        .steer_turn("turn-1", "control-1", "steer", "Change focus")
+        .unwrap();
+    assert_eq!(first["mode"], "steer");
+    assert!(session
+        .steer_turn("turn-1", "control-1", "follow_up", "Duplicate")
+        .unwrap_err()
+        .to_string()
+        .contains("already attempted"));
+    let queued = session
+        .steer_turn("turn-1", "control-2", "follow_up", "Then validate")
+        .unwrap();
+    assert_eq!(queued["mode"], "follow_up");
+    assert!(session
+        .steer_turn("turn-2", "control-3", "steer", "Stale")
+        .is_err());
+    assert!(session
+        .steer_turn("turn-1", "control-3", "cancel", "Wrong")
+        .is_err());
+    assert!(session
+        .steer_turn("turn-1", "control-3", "steer", &"a".repeat(65_537))
+        .is_err());
+    session.shutdown("verified controls").unwrap();
+}
+
+#[test]
+fn turn_controls_fail_closed_on_mismatched_acknowledgement() {
+    let mut session = AcpxProviderSession::start(&config("controls-wrong-ack")).unwrap();
+    session
+        .start_turn("turn-1", "Work", &std::env::temp_dir())
+        .unwrap();
+    assert!(session
+        .steer_turn("turn-1", "control-1", "steer", "Change focus")
+        .unwrap_err()
+        .to_string()
+        .contains("exact turn control"));
+    assert!(session
+        .steer_turn("turn-1", "control-2", "follow_up", "Do not replay")
+        .is_err());
+}
+
+#[test]
+fn lazy_warm_handshake_updates_live_turn_control_discovery() {
+    let mut session = AcpxProviderSession::start(&config("controls-lazy")).unwrap();
+    assert!(!session.turn_control_capabilities().steering);
+    assert!(!session.turn_control_capabilities().queued_follow_up);
+    session
+        .start_turn("turn-lazy", "Work", &std::env::temp_dir())
+        .unwrap();
+    assert!(session.turn_control_capabilities().steering);
+    assert!(session.turn_control_capabilities().queued_follow_up);
+    session
+        .steer_turn("turn-lazy", "control-1", "follow_up", "Then validate")
+        .unwrap();
+    session.shutdown("verified live handshake").unwrap();
 }

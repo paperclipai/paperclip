@@ -1398,6 +1398,8 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
+  "issue_execution_deferred",
+  "chat_task_completed",
   "issue_assigned",
   "issue_blockers_resolved",
   "issue_commented",
@@ -14972,6 +14974,7 @@ export function issueRoutes(
                 completedChildIssueId: issue.id,
                 childIssueIds: parent.childIssueIds,
                 childIssueSummaries: parent.childIssueSummaries,
+                onboardingCompletion: parent.onboardingCompletion,
                 childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
               },
               requestedByActorType: actor.actorType,
@@ -14984,6 +14987,7 @@ export function issueRoutes(
                 completedChildIssueId: issue.id,
                 childIssueIds: parent.childIssueIds,
                 childIssueSummaries: parent.childIssueSummaries,
+                onboardingCompletion: parent.onboardingCompletion,
                 childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
               },
             });
@@ -18326,6 +18330,7 @@ export function issueRoutes(
                 completedChildIssueId: currentIssue.id,
                 childIssueIds: parent.childIssueIds,
                 childIssueSummaries: parent.childIssueSummaries,
+                onboardingCompletion: parent.onboardingCompletion,
                 childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
               },
               requestedByActorType: actor.actorType,
@@ -18338,6 +18343,7 @@ export function issueRoutes(
                 completedChildIssueId: currentIssue.id,
                 childIssueIds: parent.childIssueIds,
                 childIssueSummaries: parent.childIssueSummaries,
+                onboardingCompletion: parent.onboardingCompletion,
                 childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
               },
             });

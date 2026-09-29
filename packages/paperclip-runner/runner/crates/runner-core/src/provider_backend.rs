@@ -3185,6 +3185,14 @@ impl CodexCommandExecutor {
     }
 
     fn steer_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
+        if payload
+            .get("mode")
+            .is_some_and(|mode| mode.as_str() != Some("steer"))
+        {
+            return Err(DurableRunnerError::invalid(
+                "Codex does not expose queued follow-up through turn.steer",
+            ));
+        }
         let text = payload
             .get("text")
             .and_then(Value::as_str)

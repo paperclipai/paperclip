@@ -99,6 +99,7 @@ function createFakeHost(overrides: Partial<WakeQueueHost> = {}): WakeQueueHost {
 function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): WakeQueueTransaction {
   return {
     findInvokableAgent: vi.fn(async () => AGENT),
+    isCompletedOnboardingHandoffWake: vi.fn(async () => false),
     findNextDeferredWake: vi.fn(async () => null),
     getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [], containedSelfAuthoredComment: false })),
     cancelDeferredWake: vi.fn(async () => true),
@@ -508,6 +509,27 @@ describe("releaseIssueExecution", () => {
     expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
     expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
     expect(result.outcome.kind).toBe("released");
+  });
+
+  it.each(["verified", "unverified", "cancelled", "ordinary-task"])("handles a completed onboarding handoff report: %s", async scenario => {
+    const queue = [wakeCandidate({ agentId: ISSUE.assigneeAgentId!, requestedByActorType: "system",
+      reason: "issue_children_completed", wakeReason: "issue_children_completed",
+      deferredContextSeed: { completedChildIssueId: "child", onboardingCompletion: true } })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      isCompletedOnboardingHandoffWake: vi.fn(async () => scenario !== "unverified"),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE,
+        originKind: scenario === "ordinary-task" ? "manual" : "onboarding_first_task",
+        status: scenario === "cancelled" ? "cancelled" : "done" }),
+      recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe(scenario === "verified" ? "promoted" : "released");
+    expect(transaction.reopenIssue).not.toHaveBeenCalled();
+    expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(scenario === "verified" ? 1 : 0);
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(scenario === "verified" ? 0 : 1);
   });
 
   it("reopens a completed task before promoting its assignee's human follow-up", async () => {

@@ -115,6 +115,12 @@ pending card.
 Use **Composer → Model and effort picker** to review harness-specific model
 choices. Codex uses the curated adapter catalog unless the instance declares
 `PAPERCLIP_ADAPTER_MODELS`; general OpenAI API models are not Codex choices.
+The Paperclip Runner Codex profile shows the same known model effort levels.
+Its selected effort is saved with the run and sent to Codex for each turn.
+Claude Code uses model-specific effort levels; Haiku has no effort slider.
+Grok uses its adapter's reasoning levels, including for its default model.
+Kimi shows effort only when its agent uses the CLI engine, including with its
+default model, because the default ACP engine ignores effort.
 
 The Storybook visual regression suite uses external PNG baselines instead of
 committed screenshots:
@@ -237,6 +243,17 @@ lockfile changes remain local to the worktree; the repository's lockfile bot
 owns committed updates.
 
 ## Hot-Restart Deploys
+
+During a restart, the board's health, session, and access checks retry temporary
+network/gateway failures and non-JSON API responses every five seconds. A new
+page shows **Reconnecting to Paperclip** with a **Try again** action and waits
+for startup health to become ready. Valid startup metadata remains available to
+sign-in and invitation pages. An already
+open page stays mounted during temporary background failures so unsaved edits
+survive. Successful checks resume the same route and refresh other failed reads;
+this recovery does not reload the browser or replay mutations. Authorization
+failures still require sign-in or an explicit retry. Storybook **App / Connection
+recovery** shows the startup recovery states.
 
 Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:
 

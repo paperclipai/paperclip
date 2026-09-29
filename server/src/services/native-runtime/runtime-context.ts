@@ -21,7 +21,8 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../vendor/paperclip-runner/index.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
-import { agentInstructionsService } from "../agent-instructions.js";
+import { agentInstructionsService, agentInstructionsBundleMode } from "../agent-instructions.js";
+import { agentInstructionRevisionService } from "../agent-instruction-revisions.js";
 import { toolAccessService } from "../tool-access.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 
@@ -145,8 +146,24 @@ export async function materializeAsset(files: AssetFile[]): Promise<NativeRuntim
   return { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest: assetDigest, manifestDigest, rootPath, fileCount: manifestFiles.length, totalBytes };
 }
 
-async function materializeInstructionBundle(agent: RuntimeAgent) {
+async function materializeInstructionBundle(db: Db, agent: RuntimeAgent, agentFiles = false) {
+  if (agentFiles) {
+    const current = await agentInstructionRevisionService(db).readCommittedForRuntime({ companyId: agent.companyId, agentId: agent.id });
+    if (!current) throw new Error("Configured instruction entry is missing");
+    const entryPath = safeRelativePath(current.revision.entryFile, "instruction entry path");
+    return { entryPath, bundle: await materializeAsset([{ path: entryPath, content: Buffer.from(current.content, "utf8"), mode: 0o444 }]) };
+  }
   const exported = await agentInstructionsService().exportFiles(agent, { rejectSymlinks: true });
+  if (agentInstructionsBundleMode(agent) === "managed") {
+    // The database head remains authoritative when a saved revision could not
+    // update its disk projection. Overlay the exact committed snapshot directly;
+    // a repair followed by a separate export can race another pending commit.
+    const current = await agentInstructionRevisionService(db).readCommittedForRuntime({ companyId: agent.companyId, agentId: agent.id });
+    if (current) {
+      exported.entryFile = current.revision.entryFile;
+      exported.files[current.revision.entryFile] = current.content;
+    }
+  }
   const entryPath = safeRelativePath(exported.entryFile, "instruction entry path");
   if (!(entryPath in exported.files)) throw new Error(`configured instruction entry is missing: ${entryPath}`);
   const files = Object.entries(exported.files).map(([relativePath, content]) => ({ path: safeRelativePath(relativePath, "instruction path"), content: Buffer.from(content, "utf8"), mode: 0o444 }));
@@ -222,12 +239,17 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
   return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length ? `native-mcp:${input.runId}` : null };
 }
 
-export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[] }): Promise<NativeRuntimeContextSnapshot> {
+export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {
   const [instructions, skills, mcp] = await Promise.all([
-    materializeInstructionBundle(input.agent),
+    materializeInstructionBundle(input.db, input.agent, input.instructionWorkingCopy?.kind === "agent_files"),
     materializeSelectedSkills(input.runtimeConfig, input.runtimeSkillEntries, input.agent.adapterType === "paperclip_runner"),
     resolveNativeRuntimeMcpSnapshot({ db: input.db, agent: input.agent, runId: input.runId }),
   ]);
-  const snapshot = { prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() }, instructions, skills, mcp };
+  const snapshot = {
+    prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+    instructions: { ...instructions, ...(input.instructionWorkingCopy ? { workingCopy: input.instructionWorkingCopy } : {}) },
+    skills,
+    mcp,
+  };
   return parseNativeRuntimeContext({ ...snapshot, aggregateDigest: canonicalNativeRuntimeContextDigest(snapshot) });
 }

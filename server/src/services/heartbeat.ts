@@ -1,3 +1,6 @@
+import { CHAT_COMPLETION_WAKE_REASON, prepareChatCompletionTurn, chatCompletionInstruction, isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
+import { isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
+
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { restoreNativeWorkspaceBestEffort } from "./native-runtime/native-workspace-best-effort.js";
 import {
@@ -34,6 +37,7 @@ import { claimQueuedNativeReviewRun } from "./native-runtime/native-review-dispa
 import { buildNativeReviewRequest } from "./native-runtime/native-review-prompt.js";
 import {
   legacyExecutionNeedsReconciliation,
+  settleInterruptedNativeBootstrap,
   terminalizeLegacyExecution,
 } from "./legacy-execution-recovery.js";
 import {
@@ -67,6 +71,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentService } from "./agents.js";
+import { agentInstructionWorkingCopyService, instructionWorkingCopyGuidance } from "./agent-instruction-working-copies.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -250,6 +255,7 @@ import {
 import {
   assertAgentCoreProfileRecoveryBinding,
   assertManagedProfileRecoveryBinding,
+  projectPaperclipRunnerTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
 import {
@@ -340,6 +346,7 @@ import {
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
+  summarizeRunErrorForModel,
   type RunPresentationDecision,
 } from "./heartbeat-run-summary.js";
 import {
@@ -1239,6 +1246,7 @@ function mergeAdapterRecoveryMetadata(input: {
   };
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
+  CHAT_COMPLETION_WAKE_REASON,
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   "issue_recovery_action_restored",
@@ -3308,6 +3316,7 @@ const heartbeatRunProcessGroupIdColumn =
 
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
+  responsibleUserId: heartbeatRuns.responsibleUserId,
   companyId: heartbeatRuns.companyId,
   agentId: heartbeatRuns.agentId,
   invocationSource: heartbeatRuns.invocationSource,
@@ -3429,6 +3438,18 @@ const heartbeatRunListResultColumns = {
   >`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
 } as const;
 
+// Reserve at most 9 KiB for diagnostics in the reduced result. An oversized
+// multibyte field uses a conservative four-byte-per-character prefix, with a
+// visible pointer to the full (adapter-bounded) run error and transcript.
+const diagnosticRetrievalTitleBytes = 1024;
+const diagnosticRetrievalDetailsBytes = 8192;
+function boundedRunDiagnosticText(field: "title" | "details", maxBytes: number) {
+  const value = sql`${heartbeatRuns.resultJson} #>> ARRAY['terminalSessionFailure', ${field}]`;
+  return sql`case when octet_length(${value}) <= ${maxBytes} then ${value}
+    else left(${value}, ${Math.floor((maxBytes - 100) / 4)})
+      || E'\\n[truncated for run retrieval; full text in run error/transcript]' end`;
+}
+
 const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
   case
     when ${heartbeatRuns.resultJson} is null then null
@@ -3442,6 +3463,28 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
         'error', left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
         'stdout', left(${heartbeatRuns.resultJson} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
         'stderr', left(${heartbeatRuns.resultJson} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
+        'terminalSessionFailure', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
+          then jsonb_strip_nulls(jsonb_build_object(
+            'category', left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32),
+            'title', ${boundedRunDiagnosticText("title", diagnosticRetrievalTitleBytes)},
+            'details', ${boundedRunDiagnosticText("details", diagnosticRetrievalDetailsBytes)},
+            'retrievalTruncated', case when
+              octet_length(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,title}') > ${diagnosticRetrievalTitleBytes}
+              or octet_length(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,details}') > ${diagnosticRetrievalDetailsBytes}
+              then to_jsonb(true) end,
+            'truncatedFields', case when ${heartbeatRuns.resultJson} #> '{terminalSessionFailure,truncatedFields}'
+              in ('["title"]'::jsonb, '["details"]'::jsonb, '["title","details"]'::jsonb)
+              then ${heartbeatRuns.resultJson} #> '{terminalSessionFailure,truncatedFields}' end
+          )) end,
+        'instructionSave', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'instructionSave') = 'object'
+          then jsonb_strip_nulls(jsonb_build_object(
+            'state', left(${heartbeatRuns.resultJson} #>> '{instructionSave,state}', 32),
+            'contract', left(${heartbeatRuns.resultJson} #>> '{instructionSave,contract}', 32),
+            'entryFile', left(${heartbeatRuns.resultJson} #>> '{instructionSave,entryFile}', 512),
+            'errorCode', left(${heartbeatRuns.resultJson} #>> '{instructionSave,errorCode}', 128),
+            'errorMessage', left(${heartbeatRuns.resultJson} #>> '{instructionSave,errorMessage}', 1024),
+            'storageWarning', left(${heartbeatRuns.resultJson} #>> '{instructionSave,storageWarning}', 1024)
+          )) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
           in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
@@ -5238,11 +5281,13 @@ export function resolveLedgerCostStatus(input: {
   cachedInputTokens: number;
   outputTokens: number;
 }): CostStatus {
-  const hasTokenUsage =
-    input.inputTokens > 0 ||
-    input.cachedInputTokens > 0 ||
-    input.outputTokens > 0;
-  return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
+  // A paused turn can have neither a token receipt nor a cost receipt. Zero
+  // normalized counters do not establish that its billed cost was zero.
+  return typeof input.costUsd === "number" &&
+    Number.isFinite(input.costUsd) &&
+    input.costUsd >= 0
+    ? "reported"
+    : "unpriced";
 }
 
 export function resolveCacheAdjustedCostUsd(input: {
@@ -6985,6 +7030,7 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
     return true;
   }
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
+  if (wakeReason === "issue_children_completed" && input.contextSnapshot?.onboardingCompletion === true) return true;
   return Boolean(
     wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason),
   );
@@ -8058,6 +8104,7 @@ export async function buildPaperclipWakePayload(input: {
   const payload = {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     executionContinuation: input.contextSnapshot.executionContinuation ?? null,
+    chatCompletionUpdates: input.contextSnapshot.chatCompletionUpdates ?? null,
     attachmentOmissions,
     externalChatProvider,
     recovery:
@@ -9500,6 +9547,7 @@ export function heartbeatService(
     environmentRuntimeService(db, {
       pluginWorkerManager: options.pluginWorkerManager,
     });
+  const instructionCopies = agentInstructionWorkingCopyService(db, { environmentRuntime });
   const envOrchestrator = environmentRunOrchestrator(db, {
     pluginWorkerManager: options.pluginWorkerManager,
     environmentRuntime,
@@ -12039,6 +12087,9 @@ export function heartbeatService(
         createdAt: heartbeatRuns.createdAt,
         usageJson: heartbeatRuns.usageJson,
         error: heartbeatRuns.error,
+        terminalFailureCategory: sql<string | null>`case
+          when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
+          then coalesce(left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32), 'unknown') end`,
         ...heartbeatRunListResultColumns,
       })
       .from(heartbeatRuns)
@@ -12116,7 +12167,7 @@ export function heartbeatService(
       readNonEmptyString(latestSummary?.summary) ??
       readNonEmptyString(latestSummary?.result) ??
       readNonEmptyString(latestSummary?.message) ??
-      readNonEmptyString(latestRun.error);
+      readNonEmptyString(summarizeRunErrorForModel(latestRun.error, latestRun.terminalFailureCategory));
 
     const handoffMarkdown = [
       "Paperclip session handoff:",
@@ -14364,6 +14415,10 @@ export function heartbeatService(
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
+    // Completion deliveries own their durable bounded retry and reply identity.
+    // A second process-loss retry would compete for the same outbox input.
+    if (run.contextSnapshot?.wakeReason === CHAT_COMPLETION_WAKE_REASON &&
+        Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds)) return null;
     // Native sessions have their own fenced same-run controller. Legacy
     // bootstrap recovery shares the durable delay and incident counter with
     // transient retries; process loss must not open a second retry budget.
@@ -15246,6 +15301,11 @@ export function heartbeatService(
       delayMs?: number;
     },
   ) {
+    if (Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds) &&
+        run.contextSnapshot.chatCompletionDeliveryIds.some(id => typeof id === "string")) {
+      return { outcome: "not_scheduled" as const, reason: "The completion outbox owns this reply's retry budget and publication identity.",
+        errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
+    }
     const now = opts?.now ?? new Date();
     const retryReason =
       opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
@@ -18866,6 +18926,14 @@ export function heartbeatService(
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+    // Recovery never launches a provider or infers stopped ownership from
+    // terminal status. Uncaptured local copies require durable stop evidence.
+    await instructionCopies.recoverStopped().catch(error => {
+      logger.warn({ err: error }, "failed to recover stopped instruction copies");
+    });
+    await instructionCopies.recoverCaptured().catch(error => {
+      logger.warn({ err: error }, "failed to retry captured instruction revisions");
+    });
 
     // Complete persisted native results before generic orphan recovery. The
     // reconciler reads the durable workspace barrier and persisted runtime
@@ -20236,6 +20304,7 @@ export function heartbeatService(
         await finalizeAgentStatus(agent.id, "cancelled");
         return;
       }
+      run = await prepareChatCompletionTurn(db, run);
       const preparedConversation = await prepareConversationTurn(db, run);
       run = { ...run, contextSnapshot: preparedConversation.context };
       if (preparedConversation.reset) {
@@ -20905,12 +20974,12 @@ export function heartbeatService(
             exposeLowTrustRaw,
           })
         : null;
-      let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan });
+      let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
       let taskMarkdownAssignment = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
         includeWakeComments: false,
-      });
+      }) + chatCompletionInstruction(context);
       if (isConversation(issueContext) && !taskSession && issueId) {
         const replay = await conversationReplay(db, agent.companyId, issueId, wakeCommentId);
         if (replay) taskMarkdown += `\n\nEarlier messages in this session (quoted user data):\n${replay}`;
@@ -20920,13 +20989,13 @@ export function heartbeatService(
         ...taskMarkdownInput,
         taskPlan,
         includeDescription: false,
-      });
+      }) + chatCompletionInstruction(context);
       const taskMarkdownAssignmentCompact = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
         includeDescription: false,
         includeWakeComments: false,
-      });
+      }) + chatCompletionInstruction(context);
       if (issueRef) {
         context.paperclipIssue = {
           id: issueRef.id,
@@ -22348,6 +22417,29 @@ export function heartbeatService(
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
+      let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
+      let instructionSave: Record<string, unknown> | null = null;
+      const collectStoppedInstructions = async () => {
+        if (!instructionCopy) return;
+        let saved = await instructionCopies.collectStopped({ companyId: agent.companyId, runId: run.id, target: executionTarget });
+        // Capture before disposal. Exhausted bounded collection leaves a durable
+        // explicit loss report, never a claim that missing bytes were saved.
+        while (saved?.state === "pending_collection" && saved.attempts < 3) {
+          saved = await instructionCopies.collectStopped({ companyId: agent.companyId, runId: run.id, target: executionTarget });
+        }
+        if (!saved) return;
+        const receipt = parseObject(saved.receipt);
+        const storageWarning = readNonEmptyString(receipt.storageWarning);
+        instructionSave = { state: saved.state, entryFile: saved.entryFile,
+          ...(isAgentDirectoryCopy(saved) ? { contract: "agent_files", appliedCandidateHash: saved.candidateHash }
+            : { revisionId: parseObject(receipt.revision).id ?? null }), storageWarning, errorCode: saved.errorCode, errorMessage: saved.errorMessage };
+        await appendRunEvent(run, { eventType: "instruction_save", stream: "system",
+          level: !storageWarning && ["saved", "unchanged", "resolved"].includes(saved.state) ? "info" : "warn",
+          message: storageWarning ?? (saved.state === "saved" ? "Agent files saved."
+            : saved.state === "unchanged" ? "Instruction working copy is unchanged."
+              : saved.errorMessage ?? "Instruction edits were not saved. Review the preserved candidate in the agent instruction editor."),
+          payload: instructionSave });
+      };
       if (managedAiRuntime && aiBinding) {
         try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
         catch { throw new ConfigurationIncompleteFailure("Project authentication conflicts with this agent’s managed AI connection", { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agent.id}/runtime` } }); }
@@ -23157,6 +23249,62 @@ export function heartbeatService(
           target: executionTarget,
           workspaceId: persistedExecutionWorkspace?.id ?? null,
         });
+        const hasInstructionFilesystem = nativeRuntimeResolution.kind !== "native"
+          ? adapter.supportsInstructionsBundle === true
+          : !["claude_managed_agents_api", "aws_agentcore_harness_api"].includes(nativeRuntimeResolution.profile.backend);
+        if (hasInstructionFilesystem) {
+          try {
+            // Missing contract fields on a restored session mean the deployed
+            // legacy format. New sessions opt into whole-directory persistence.
+            const priorFileRun = taskSessionForRun?.lastRunId
+              ? await db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns).where(and(
+                  eq(heartbeatRuns.id, taskSessionForRun.lastRunId), eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id))).then(rows => rows[0])
+              : null;
+            const savedFileInput = parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput);
+            const priorFileInput = Object.keys(savedFileInput).length ? savedFileInput : parseObject(parseObject(priorFileRun?.profile).nativeExecutionInput);
+            const priorWorkingCopy = parseObject(parseObject(parseObject(priorFileInput.runtimeContext).instructions).workingCopy);
+            instructionCopy = await instructionCopies.prepare({
+              companyId: agent.companyId, agentId: agent.id, runId: run.id,
+              target: executionTarget, cwd: executionWorkspace.cwd,
+              legacy: Object.keys(priorFileInput).length > 0 && priorWorkingCopy.kind !== "agent_files",
+            });
+          } catch (error) {
+            if ((error as { status?: number }).status !== 403) throw error;
+            // Missing write identity must not break a background run's read-only
+            // prompt. It must also never imply that ordinary file edits will save.
+            await appendRunEvent(run, { eventType: "instruction_save", stream: "system", level: "warn",
+              message: "Persistent instruction editing is unavailable. Use an authenticated user with instruction edit access and a managed instruction bundle.",
+              payload: { state: "unavailable", code: "INSTRUCTION_COPY_UNAVAILABLE" } });
+            const guidance = "No editable agent instruction working copy is registered for this turn. Use authenticated agent file tools for persistent edits; do not edit a private copy named in an earlier turn or claim its changes will persist.";
+            for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownCompact"]) {
+              context[key] = [readNonEmptyString(context[key]), guidance].filter(Boolean).join("\n\n");
+            }
+          }
+          if (instructionCopy) {
+            const storageWarning = readNonEmptyString(instructionCopy.receipt?.storageWarning);
+            if (storageWarning) {
+              instructionSave = { state: "prepared", contract: "agent_files", storageWarning };
+              // This is an advisory on the run, never an agent pause, execution
+              // failure, or scheduling gate. Keep it visible while work runs.
+              await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ instructionSave })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+              await appendRunEvent(run, { eventType: "instruction_save", stream: "system", level: "warn",
+                message: storageWarning, payload: instructionSave });
+            }
+            runtimeConfig = { ...runtimeConfig, instructionsFilePath: path.join(instructionCopy.localRoot, instructionCopy.entryFile) };
+            if (isAgentDirectoryCopy(instructionCopy)) {
+              const workspace = parseObject(context.paperclipWorkspace);
+              context.paperclipWorkspace = { ...workspace, agentHome: instructionCopy.executionRoot,
+                // Keep the pre-existing permission root stable for ACP session
+                // identity. The per-run copy is already under the company root.
+                agentHomeForPermissions: workspace.agentHome,
+              };
+            }
+            const guidance = instructionWorkingCopyGuidance(instructionCopy);
+            for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownCompact"]) {
+              context[key] = [readNonEmptyString(context[key]), guidance].filter(Boolean).join("\n\n");
+            }
+          }
+        }
         let nativeExecution: NativeExecutionInput | null = null;
         let nativeRunnerInstanceId: string | null = null;
         if (nativeRuntimeResolution.kind === "native") {
@@ -23586,6 +23734,7 @@ export function heartbeatService(
               runId: run.id,
               runtimeConfig,
               runtimeSkillEntries,
+              instructionWorkingCopy: instructionCopy ? { rootPath: instructionCopy.executionRoot, entryPath: instructionCopy.entryFile, ...(isAgentDirectoryCopy(instructionCopy) ? { kind: "agent_files" as const } : {}) } : undefined,
             });
             const nativeExecutionWithCheckpoint =
               buildNativeExecutionWithCheckpoint({
@@ -23667,7 +23816,14 @@ export function heartbeatService(
                         : null,
                     ...resolvePaperclipRunnerNativeProviderInput({
                       backend: nativeRuntimeResolution.profile.backend,
-                      adapterConfig: agent.adapterConfig,
+                      adapterConfig: nativeRuntimeResolution.profile.backend === "codex_app_server"
+                        || nativeRuntimeResolution.profile.backend === "opencode_server"
+                        ? projectPaperclipRunnerTaskConfig(
+                            nativeRuntimeResolution.profile.backend,
+                            agent.adapterConfig,
+                            issueAssigneeOverrides?.adapterConfig,
+                          )
+                        : agent.adapterConfig,
                       managedProfile,
                       agentCoreProfile,
                     }),
@@ -24293,6 +24449,10 @@ export function heartbeatService(
                     },
                     onLog,
                     onEvent: onAdapterEvent,
+                    instructionWorkingCopy: instructionCopy ? {
+                      hasChanges: () => instructionCopies.hasChanges({ companyId: agent.companyId, runId: run.id, target: executionTarget }),
+                      collectStopped: collectStoppedInstructions,
+                    } : undefined,
                     preparationSpans: nativeRunnerPreparationSpans,
                     // Bootstrap with executable/home discovery while keeping
                     // configured provider values and the server-selected
@@ -24306,6 +24466,7 @@ export function heartbeatService(
                         process.env,
                         executionWorkspace.cwd,
                       ),
+                      ...(instructionCopy && isAgentDirectoryCopy(instructionCopy) ? { AGENT_HOME: instructionCopy.executionRoot } : {}),
                       ...(nativeMcpServer
                         ? {
                             PAPERCLIP_NATIVE_MCP_NAME: nativeMcpServer.name,
@@ -24486,6 +24647,7 @@ export function heartbeatService(
                         issueId,
                       );
                     },
+                    onProviderStopped: collectStoppedInstructions,
                     onDispatch: markDispatchStarted,
                     signal: executionControl.controller.signal,
                     ...(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? {
@@ -24534,6 +24696,7 @@ export function heartbeatService(
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
           }
+          if (instructionSave) adapterResult.resultJson = { ...adapterResult.resultJson, instructionSave };
           adapterResult = applyWorkspaceRestoreFailure(adapterResult);
           // A returned result can include a failed restore. Keep the workspace
           // barrier closed until required files have been restored.
@@ -24769,6 +24932,7 @@ export function heartbeatService(
               "failed to revoke heartbeat-run MCP gateway tokens",
             );
           }
+          await instructionCopies.release(agent.companyId, run.id);
         }
         // Reconcile the referenced-project set against the real remote staging outcome. A referenced
         // project can pass authorization and clone locally at run prep, then fail to stage into the
@@ -25239,7 +25403,7 @@ export function heartbeatService(
                 issueId,
                 resolved.text,
                 { agentId: agent.id, runId: livenessRun.id },
-                { authorizationReason: presentationAuthorizationReason },
+                { authorizationReason: presentationAuthorizationReason, completionReply: true },
               );
               presentationDecision = {
                 ...presentationDecision,
@@ -26160,6 +26324,15 @@ export function heartbeatService(
               },
             );
           }
+          // A retained or unverified process stays above this release boundary.
+          // If no stopped-copy capture occurred, preserve an explicit loss report.
+          const uncapturedInstructions = await instructionCopies.reportUnavailable(run.companyId, run.id);
+          if (uncapturedInstructions?.state === "unavailable") {
+            await appendRunEvent(run, { eventType: "instruction_save", stream: "system", level: "warn",
+              message: "Instruction edits could not be recovered before environment release. No instruction save is claimed.",
+              payload: { state: "unavailable", code: uncapturedInstructions.errorCode } });
+          }
+          await instructionCopies.release(run.companyId, run.id);
           await releaseEnvironmentLeasesForRun({
             runId: run.id,
             companyId: run.companyId,
@@ -26229,6 +26402,11 @@ export function heartbeatService(
               );
             });
           }
+        }
+        if (latestRun?.status === "interrupted" && latestRun.errorCode === "server_shutdown_interrupted") {
+          latestRun = await settleInterruptedNativeBootstrap(db, { run: latestRun,
+            providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
+          }) ?? latestRun;
         }
         if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld &&
             (latestRun.runtimeMode === "native" ||
@@ -26363,6 +26541,7 @@ export function heartbeatService(
     if (!agent) throw notFound("Agent not found");
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
+      if (reason === "issue_children_completed" && conversation?.originKind === "onboarding_first_task") enrichedContextSnapshot.onboardingCompletion = true;
       if (isConversation(conversation)) {
         if (opts.manualUserWake && conversation!.conversationUserId !== opts.requestedByActorId) {
           throw new HttpError(403, "Only the conversation owner can start a chat run");
@@ -26370,7 +26549,7 @@ export function heartbeatService(
         if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
         if (agent.id !== conversation!.conversationAgentId) return null;
         if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
-        if (!wakeCommentId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot)) return null;
+        if (!wakeCommentId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot) && reason !== CHAT_COMPLETION_WAKE_REASON) return null;
       }
     }
     if (agent.adapterType === "paperclip_runner") {
@@ -28643,10 +28822,12 @@ export function heartbeatService(
         continue;
       }
 
+      let completedOnboardingGuard: WakeupOptions["issueStateGuard"];
       if (issueId) {
         const targetIssue = await db
           .select({
             status: issues.status,
+            statusVersion: issues.statusVersion,
             assigneeAgentId: issues.assigneeAgentId,
           })
           .from(issues)
@@ -28664,9 +28845,14 @@ export function heartbeatService(
               contextSnapshot: wakeContext,
             })
           : null;
+        const onboardingResultReport = targetIssue?.status === "done" && await isCompletedOnboardingHandoffWake(db, {
+          companyId: candidate.companyId, issueId, agentId: candidate.agentId,
+          reason: candidate.reason, contextSnapshot: wakeContext,
+        });
+        if (onboardingResultReport) completedOnboardingGuard = { assigneeAgentId: candidate.agentId, statuses: ["done"], statusVersion: targetIssue!.statusVersion };
         if (
           !targetIssue ||
-          ["done", "cancelled"].includes(targetIssue.status) ||
+          (["done", "cancelled"].includes(targetIssue.status) && !onboardingResultReport) ||
           (targetIssue.assigneeAgentId !== candidate.agentId && !nativeReview) ||
           (candidate.reason === "native_completion_review" && !nativeReview)
         ) {
@@ -28698,6 +28884,7 @@ export function heartbeatService(
           idempotencyKey: candidate.idempotencyKey,
           requestedByActorType: "system",
           requestedByActorId: dispatchActorId,
+          ...(completedOnboardingGuard ? { issueStateGuard: completedOnboardingGuard } : {}),
           contextSnapshot: {
             ...wakeContext,
             ...(issueId ? { issueId, taskId: issueId } : {}),

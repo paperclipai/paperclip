@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +31,7 @@ import {
   expectedEvalSessionDriver,
   parseEvalSessionRequest,
   type EvalSessionRequest,
+  type EvalCandidateProfile,
   type EvalSessionUsage,
 } from "./eval-session-contract.js";
 import { evalProviderTransportOptions } from "./eval-provider-runtime.js";
@@ -37,6 +39,7 @@ import { evalProviderTransportOptions } from "./eval-provider-runtime.js";
 interface EvalSessionCliOptions {
   requestPath: string;
   outputPath: string;
+  candidateProfile?: EvalCandidateProfile;
 }
 
 function argument(args: string[], name: string): string {
@@ -47,14 +50,23 @@ function argument(args: string[], name: string): string {
 }
 
 export function parseEvalSessionCliArgs(args: string[]): EvalSessionCliOptions {
-  const allowed = new Set(["--request", "--output"]);
+  const allowed = new Set(["--request", "--output", "--candidate-profile"]);
+  const seen = new Set<string>();
   for (let index = 0; index < args.length; index += 2) {
     if (!allowed.has(args[index] ?? "")) {
       throw new Error(`unknown argument: ${args[index] ?? ""}`);
     }
-    if (args[index + 1] === undefined) throw new Error(`missing ${args[index]}`);
+    if (seen.has(args[index]!)) throw new Error(`duplicate argument: ${args[index]}`);
+    seen.add(args[index]!);
+    if (args[index + 1] === undefined || args[index + 1]!.startsWith("--")) throw new Error(`missing ${args[index]}`);
+  }
+  const candidateIndex = args.indexOf("--candidate-profile");
+  const candidateProfile = candidateIndex < 0 ? undefined : args[candidateIndex + 1];
+  if (candidateProfile !== undefined && candidateProfile !== "pi" && candidateProfile !== "cursor" && candidateProfile !== "copilot") {
+    throw new Error("--candidate-profile must be pi, cursor, or copilot");
   }
   return {
+    ...(candidateProfile === undefined ? {} : { candidateProfile }),
     requestPath: argument(args, "--request"),
     outputPath: argument(args, "--output"),
   };
@@ -180,12 +192,22 @@ export function evalSessionProviderVersion(
   return null;
 }
 
+class EvalSessionBudgetError extends Error {
+  constructor(message: string, readonly coverageUnknown = false) {
+    super(message);
+    this.name = "EvalSessionBudgetError";
+  }
+}
+
 function failureClass(error: unknown): {
   class: string;
   category: string;
   retryable: boolean;
   diagnostics: Record<string, never>;
 } {
+  if (error instanceof EvalSessionBudgetError && error.coverageUnknown) {
+    return { class: "provider_budget_coverage_unknown", category: "provider_budget", retryable: false, diagnostics: {} };
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (/timed? ?out|timeout/i.test(message)) {
     return {
@@ -235,25 +257,48 @@ export function boundedEvalSessionUsage(
   request: EvalSessionRequest,
   turn: CapabilityLiveTurnResult,
 ): EvalSessionUsage | null {
-  if (turn.status !== "completed" ||
-      (request.provider === "acpx" && request.acpxAgent === "grok" && !turn.snapshot.usageLedger?.length)) {
+  if (turn.status !== "completed") {
     return usageIfAvailable(request, turn.snapshot);
   }
-  const usage = evalSessionUsage(request.model, turn.snapshot);
-  if (usage.agentTurns > request.limits.maxAgentTurns) {
-    throw new Error("agent turn limit exceeded");
+  if (request.provider === "acpx" && request.acpxAgent === "grok" && !turn.snapshot.usageLedger?.length) {
+    throw new EvalSessionBudgetError("budget cost coverage is unavailable for the completed Grok turn", true);
+  }
+  const candidate = request.provider === "acpx"
+    && request.acpxAgent !== undefined
+    && ["pi", "cursor", "copilot"].includes(request.acpxAgent)
+    && turn.snapshot.config.provider === "acpx"
+    && turn.snapshot.config.acpxAgent === request.acpxAgent;
+  const measuredTurns = new Set(turn.snapshot.usageLedger?.map((entry) => entry.turnId));
+  const unavailableTurnIds = new Set(candidate
+    ? turn.snapshot.usageUnavailable?.filter((entry) => entry.agent === request.acpxAgent
+      && entry.reason === "provider_did_not_report_usage"
+      && entry.tokenUsage === null && entry.costNanodollars === null
+      && !measuredTurns.has(entry.turnId)).map((entry) => entry.turnId)
+    : []);
+  const unavailable = unavailableTurnIds.size > 0;
+  const usage = unavailable && (unavailableTurnIds.has(turn.turnId) || turn.snapshot.usageLedger?.length)
+    ? usageIfAvailable(request, turn.snapshot)
+    : evalSessionUsage(request.model, turn.snapshot);
+  const unavailableTurns = unavailableTurnIds.size;
+  if ((usage?.agentTurns ?? 0) + unavailableTurns > request.limits.maxAgentTurns) {
+    throw new EvalSessionBudgetError("agent turn limit exceeded");
   }
   if (
+    usage !== null && usage.estimatedCostNanodollars !== null &&
     usage.estimatedCostNanodollars >
     request.limits.maxEstimatedCostNanodollars
   ) {
-    throw new Error("estimated cost limit exceeded");
+    throw new EvalSessionBudgetError("estimated cost limit exceeded");
   }
   if (
+    usage !== null && usage.providerReportedCostNanodollars !== null &&
     usage.providerReportedCostNanodollars >
     request.limits.maxEstimatedCostNanodollars
   ) {
-    throw new Error("provider-reported cost limit exceeded");
+    throw new EvalSessionBudgetError("provider-reported cost limit exceeded");
+  }
+  if (unavailable || usage === null || (usage.estimatedCostNanodollars === null && usage.providerReportedCostNanodollars === null)) {
+    throw new EvalSessionBudgetError("budget cost coverage is unavailable for one or more completed turns", true);
   }
   return usage;
 }
@@ -277,6 +322,7 @@ export async function runEvalSessionCli(
   const cli = parseEvalSessionCliArgs(args);
   const request = parseEvalSessionRequest(
     JSON.parse(await readFile(cli.requestPath, "utf8")),
+    { candidateProfile: cli.candidateProfile },
   );
   const runnerdPath = resolve(request.runnerd.path);
   const actualDigest = await sha256(runnerdPath);
@@ -300,6 +346,7 @@ export async function runEvalSessionCli(
       transportOptions: {
         ...evalProviderTransportOptions(requestedProvider, request.limits.turnTimeoutMs),
         runnerBinary: runnerdPath,
+        ...(cli.candidateProfile === undefined ? {} : { acpxCandidateProfile: cli.candidateProfile }),
         runtimeContext,
         baseInstructions: evalRuntimeSystemInstructions(runtimeContext),
         // The transport performs the provider-specific allowlisting. Supplying
@@ -338,10 +385,21 @@ export async function runEvalSessionCli(
     } as unknown as CreateCapabilityLiveSessionInput;
     session = await service.create(createInput);
     turn = await session.sendMessage(request.prompt);
-    const usage = boundedEvalSessionUsage(request, turn);
+    let usage: EvalSessionUsage | null;
+    let accountingError: EvalSessionBudgetError | null = null;
+    try {
+      usage = boundedEvalSessionUsage(request, turn);
+    } catch (error) {
+      if (!(error instanceof EvalSessionBudgetError)) throw error;
+      // A completed provider outcome remains inspectable even when its budget
+      // cannot be verified. Never turn unknown cost into a successful CLI run.
+      accountingError = error;
+      usage = usageIfAvailable(request, turn.snapshot);
+    }
     await session.completeAttempt(
-      turn.status === "completed" ? "succeeded" : "failed",
-      turn.status === "completed" ? null : `provider_turn_${turn.status}`,
+      accountingError === null && turn.status === "completed" ? "succeeded" : "failed",
+      accountingError !== null ? failureClass(accountingError).class
+        : turn.status === "completed" ? null : `provider_turn_${turn.status}`,
     );
     await closeSession(session, "eval session complete");
     snapshot = session.snapshot();
@@ -352,6 +410,7 @@ export async function runEvalSessionCli(
       build: PAPERCLIP_RUNNER_BUILD_METADATA,
       runnerd: { path: "[withheld]", sha256: `sha256:${actualDigest}` },
       requestedModel: request.model,
+      ...(cli.candidateProfile === undefined ? {} : { diagnosticCandidateProfile: cli.candidateProfile }),
       provider: requestedProvider,
       driver: requestedDriver,
       providerVersion: requestedProviderVersion,
@@ -379,6 +438,10 @@ export async function runEvalSessionCli(
         : {}),
       turn,
       snapshot,
+      ...(accountingError === null ? {} : {
+        accountingError: accountingError.message,
+        accountingFailure: failureClass(accountingError),
+      }),
       devtools: projectCapabilityDevtools(snapshot),
       issueThread: projectCapabilityIssueThread({
         snapshot,
@@ -392,7 +455,7 @@ export async function runEvalSessionCli(
         durationMs: Date.now() - startedAtMs,
       },
     }, null, 2)}\n`);
-    return 0;
+    return accountingError === null ? 0 : 2;
   } catch (error) {
     if (session !== null) {
       snapshot = session.snapshot();
@@ -425,6 +488,7 @@ export async function runEvalSessionCli(
       build: PAPERCLIP_RUNNER_BUILD_METADATA,
       runnerd: { path: "[withheld]", sha256: `sha256:${actualDigest}` },
       requestedModel: request.model,
+      ...(cli.candidateProfile === undefined ? {} : { diagnosticCandidateProfile: cli.candidateProfile }),
       provider: requestedProvider,
       driver: requestedDriver,
       providerVersion: requestedProviderVersion,
@@ -453,10 +517,18 @@ export async function runEvalSessionCli(
   }
 }
 
-if (
-  process.argv[1] !== undefined &&
-  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
-) {
+function isEvalSessionEntrypoint(): boolean {
+  if (process.argv[1] === undefined) return false;
+  try {
+    // Node resolves module URLs through symlinks, including /tmp on macOS and
+    // package-manager bin links. Compare the same physical paths on both sides.
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEvalSessionEntrypoint()) {
   void runEvalSessionCli(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code;

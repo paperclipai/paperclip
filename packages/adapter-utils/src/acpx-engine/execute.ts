@@ -39,6 +39,13 @@ import {
 import { captureLocalProcess, capturedProcessExited, killCapturedLocalProcess } from "./local-process-control.js";
 import type { DuplexLossReason } from "../duplex-observability.js";
 import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
+import {
+  formatTerminalSessionFailure,
+  sanitizeTerminalSessionFailure,
+  type AcpxTerminalSessionFailure,
+  type AcpxTerminalSessionFailureDiagnostic,
+} from "./terminal-session-failure.js";
+export type { AcpxTerminalSessionFailure } from "./terminal-session-failure.js";
 import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
 import {
   classifyWorkspaceRestoreFailure,
@@ -351,12 +358,6 @@ export interface AcpxRemoteManagedHomeResult {
    * temp.
    */
   disposeStaged?: () => Promise<void>;
-}
-
-export interface AcpxTerminalSessionFailure {
-  category: string;
-  title?: string;
-  details?: string;
 }
 
 export type AcpxTerminalFailureClassification = Pick<
@@ -2058,7 +2059,11 @@ async function buildRuntime(input: {
     paperclipClaudeSettings = await writePaperclipClaudeSettings({
       cwd,
       stateDir,
-      agentHome,
+      // A run's writable AGENT_HOME moves, but the existing permission root
+      // must not invalidate its resumable conversation. Run copies are covered
+      // by the company root already granted in these settings; the process env
+      // still receives this run's actual AGENT_HOME.
+      agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
     });
     skillCommandNotes.push(
@@ -4094,6 +4099,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // (the cancel-before-close order). The turn wrapper assigns it in `turnStart`.
       let activeTurn: AcpRuntimeTurn | null = null;
       let terminalFailureClassification: AcpxTerminalFailureClassification | null = null;
+      let terminalSessionFailure: AcpxTerminalSessionFailureDiagnostic | null = null;
       // How the settlement `endSession` step must release the runtime for the path
       // this run took. Each exit path that acquired the runtime records it before it
       // returns; a build or create-runtime failure never registers the runtime, so
@@ -4775,14 +4781,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           timeoutMs: startTimeoutMs,
           signal,
           // The callback belongs to this turn, including when a runtime is reused.
-          // Raw provider text must never enter the result or the run log.
-          ...(deps.classifyTerminalSessionFailure
-            ? {
-                onTerminalSessionFailure: (failure: AcpxTerminalSessionFailure) => {
-                  terminalFailureClassification = deps.classifyTerminalSessionFailure!(failure, new Date(now()));
-                },
-              }
-            : {}),
+          // Diagnostics are retained even when an adapter has no recovery
+          // classifier. Redact before bounding so partial secrets cannot leak.
+          onTerminalSessionFailure: (failure: AcpxTerminalSessionFailure) => {
+            terminalSessionFailure = sanitizeTerminalSessionFailure(
+              failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),
+            );
+            terminalFailureClassification = deps.classifyTerminalSessionFailure?.(failure, new Date(now())) ?? null;
+          },
         });
         activeTurn = turn;
         // A latched sandbox duplex-channel loss otherwise has no way to reach
@@ -4995,11 +5001,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           skipRemoteClose: channelLost,
         };
 
+        const failureDiagnostic = !timedOut && !channelLost && terminal.status === "failed"
+          ? terminalSessionFailure
+          : null;
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : channelLost
             ? channelLostMessage
-            : resultErrorMessage(terminal);
+            : formatTerminalSessionFailure(resultErrorMessage(terminal), failureDiagnostic);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         const classifiedFailure = !timedOut && !channelLost && terminal.status === "failed"
           ? terminalFailureClassification
@@ -5038,6 +5047,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           costUsd: turnUsage.costUsd,
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
+            ...(failureDiagnostic ? { terminalSessionFailure: failureDiagnostic } : {}),
             ...(classifiedFailure?.errorFamily ? { errorFamily: classifiedFailure.errorFamily } : {}),
             ...(classifiedFailure?.retryNotBefore
               ? {

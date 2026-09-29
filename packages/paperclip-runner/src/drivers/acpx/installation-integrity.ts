@@ -1,4 +1,6 @@
 import { MAX_ACPX_RUNTIME_EXECUTABLE_BYTES, ACPX_PRIVATE_SNAPSHOT_ENV, createAcpxPrivateSnapshot, type AcpxPrivateSnapshot } from "./private-snapshot.js";
+import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_BOOTSTRAP_NAME, readNativeAcpxDistributionEntries, type NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
+export type { NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 import { createHash } from "node:crypto";
 import {
   spawn as spawnChildProcess,
@@ -405,6 +407,43 @@ export interface VerifiedAcpxInstallation {
   readonly agentServerPackageJsonPath: string | null;
   readonly agentRuntimePackageJsonPath: string | null;
   openCommand(): Promise<VerifiedAcpxCommandLease>;
+}
+
+/**
+ * Native candidate distribution primitive. This verifies bytes and lifetime
+ * ownership; it does not qualify or enable a provider profile. The caller must
+ * source every expected value from its trusted, versioned profile declaration.
+ */
+export async function verifyNativeAcpxInstallation(
+  input: NativeAcpxDistributionInput,
+): Promise<VerifiedAcpxInstallation> {
+  const declaration: NativeAcpxDistributionInput = Object.freeze({
+    ...input, fixedArguments: Object.freeze([...input.fixedArguments]),
+  });
+  const entries = await readNativeAcpxDistributionEntries(declaration);
+  return Object.freeze({
+    commandDigest: `sha256:${declaration.expectedClosureSha256}`,
+    agentServerPackageJsonPath: declaration.manifestPath,
+    agentRuntimePackageJsonPath: null,
+    async openCommand(): Promise<VerifiedAcpxCommandLease> {
+      const native = await createNativeAcpxDistributionSnapshot(declaration, entries);
+      const lease = commandLease(
+        native.snapshot.roots[0]!, NATIVE_ACPX_BOOTSTRAP_NAME, "commonjs",
+        native.bootstrap, native.commandDirectory, [], 0, "commonjs", [],
+        null, null, native.snapshot,
+      );
+      return {
+        spawn(args = [], options = {}, lifetime) {
+          if (args.length !== 0) throw new Error("Native ACPX distribution accepts only its fixed profile arguments");
+          return lease.spawn([], { ...options, env: {
+            ...(options.env ?? process.env),
+            PAPERCLIP_ACPX_NATIVE_GUARDED: lifetime === undefined ? "0" : "1",
+          } }, lifetime);
+        },
+        close: () => lease.close(),
+      };
+    },
+  });
 }
 
 export interface VerifiedAcpxCommandLease {

@@ -26,6 +26,17 @@ import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
 import { captureTurnRejection } from "../../test/capture-turn-rejection.js";
 import * as workspaceDiff from "./workspace-diff.js";
 
+it.each(["pi", "cursor", "copilot"] as const)("requires separately bound evaluation opt-in for %s", async (acpxAgent) => {
+  const service = new CapabilityLiveSessionService();
+  await expect(service.create({ provider: "acpx", acpxAgent, requestedModel: "explicit-model" }))
+    .rejects.toThrow("explicit evaluation opt-in");
+  const mismatched = new CapabilityLiveSessionService({ transportOptions: {
+    acpxCandidateProfile: acpxAgent === "pi" ? "cursor" : "pi",
+  } });
+  await expect(mismatched.create({ provider: "acpx", acpxAgent, requestedModel: "explicit-model" }))
+    .rejects.toThrow("explicit evaluation opt-in");
+});
+
 class AsyncNotifications implements AsyncIterable<CodexRpcNotification> {
   #values: CodexRpcNotification[] = [];
   #waiters: Array<(value: IteratorResult<CodexRpcNotification>) => void> = [];
@@ -65,6 +76,8 @@ interface FakeProviderState {
   holdAfterTool: boolean;
   closeError: Error | null;
   usageRunDelta: Record<string, unknown> | null;
+  omitReadUsage?: boolean;
+  assistantReply?: string;
   onTurnStart?: () => Promise<void>;
   onUsage?: (queue: AsyncNotifications, turnId: string) => void | Promise<void>;
   /** Delays the fake `turn/interrupt` reply, to model a slow transport round trip. */
@@ -106,14 +119,14 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
           id: this.state.threadId,
           sessionId: this.state.providerSessionId,
           turns: [...this.state.turns].map(([id, status]) => ({ id, status })),
-          tokenUsage: {
+          ...(this.state.omitReadUsage ? {} : { tokenUsage: {
             total: {
               inputTokens: this.state.nextTurn * 100,
               cachedInputTokens: this.state.nextTurn * 20,
               outputTokens: this.state.nextTurn * 10,
               reasoningOutputTokens: this.state.nextTurn * 2,
             },
-          },
+          } }),
         },
       };
     }
@@ -250,7 +263,7 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
       params: {
         threadId: this.state.threadId,
         turnId,
-        item: { id: `message-${turnId}`, type: "agentMessage", text: assistantText },
+        item: { id: `message-${turnId}`, type: "agentMessage", text: this.state.assistantReply ?? assistantText },
       },
     });
     this.state.turns.set(turnId, "completed");
@@ -890,6 +903,78 @@ describe("Capability live runnerd and Codex session", () => {
     await service.shutdown(session.id);
   });
 
+  it("exposes native completion consistently on fresh and resumed sessions without granting semantic mutations", async () => {
+    const state = providerState();
+    const store = new InMemoryCapabilityLiveSessionStore();
+    const authority: Array<Parameters<CapabilityLiveTransportFactory>[0]> = [];
+    const factory: CapabilityLiveTransportFactory = (options) => {
+      authority.push(options);
+      return fakeTransportFactory(state)(options);
+    };
+    const firstService = new CapabilityLiveSessionService({ store, transportFactory: factory });
+    const first = await firstService.create();
+    const opened = state.transports[0]!.requests.find((request) => request.method === "thread/start")!;
+    const names = (opened.params.dynamicTools as Array<{ name: string }>).map((tool) => tool.name);
+    expect(names.filter((name) => name === "paperclip_finish")).toHaveLength(1);
+    expect(names.filter((name) => name === "paperclip_block")).toHaveLength(1);
+    expect(names).not.toContain("create_task");
+    expect(opened.params.baseInstructions).toContain('"revision":"paperclip-capability-live-v1"');
+    expect(opened.params.baseInstructions).toContain('"criterionIds":["objective"]');
+    await first.suspend();
+    const restoredService = new CapabilityLiveSessionService({ store, transportFactory: factory });
+    const restored = await restoredService.restore(first.id);
+    // The facade appends native completion schemas to this admitted semantic list.
+    expect(authority[1]?.resumeDynamicTools?.map((tool) => tool.name)).toEqual(
+      names.filter((name) => name !== "paperclip_finish" && name !== "paperclip_block"),
+    );
+    const resumed = state.transports[1]!.requests.find((request) => request.method === "thread/resume")!;
+    expect(resumed.params.baseInstructions).toBe(opened.params.baseInstructions);
+    await restoredService.shutdown(restored.id);
+    await firstService.shutdown(first.id);
+  });
+
+  it("accepts only revision-bound advisory completion while mock mutations keep their own authority", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create();
+    const before = session.mockState();
+    const result = {
+      schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Orientation complete",
+      completionClaim: { contractRevision: "paperclip-capability-live-v1", objectiveSatisfied: true,
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+      evidence: [], verification: [],
+    };
+    const outcomes: Record<string, unknown>[] = [];
+    state.onTurnStart = async () => {
+      const transport = state.transports.at(-1)!;
+      const turnId = [...state.turns.keys()].at(-1)!;
+      const call = (tool: string, arguments_: unknown, overrideTurn = turnId) => transport.invokeServerRequest({
+        id: `call-${outcomes.length}`, method: "item/tool/call",
+        params: { threadId: state.threadId, turnId: overrideTurn, callId: `call-${outcomes.length}`, tool, arguments: arguments_ },
+      });
+      outcomes.push(await call("paperclip_finish", { ...result, completionClaim: { ...result.completionClaim, contractRevision: "stale" } }));
+      outcomes.push(await call("paperclip_finish", result, "wrong-turn"));
+      outcomes.push(await call("paperclip_block", result));
+      outcomes.push(await call("paperclip_finish", result));
+      outcomes.push(await call("paperclip_finish", { ...result, summary: "Conflicting report" }));
+      outcomes.push(await call("create_task", { title: "Unauthorized task", idempotencyKey: "unauthorized-task" }));
+      expect(session.snapshot().terminalTurns).toHaveLength(0);
+    };
+    await session.sendMessage("Orient to the assigned task.");
+    expect(outcomes.map((outcome) => outcome.success)).toEqual([false, false, false, true, false, false]);
+    expect(session.snapshot().semanticResult).toMatchObject(result);
+    const completionEvidence = session.snapshot().evidence.filter((entry) => entry.data.operationId === "paperclip_finish");
+    expect(completionEvidence.map((entry) => entry.kind)).toEqual(["tool_call", "tool_result"]);
+    expect(completionEvidence[1]?.data.beforeRevision).toBe(completionEvidence[1]?.data.afterRevision);
+    expect(session.mockState().tasks).toEqual(before.tasks);
+    expect(session.snapshot().terminalTurns).toHaveLength(1);
+    expect(session.snapshot().authorizationRecords).toContainEqual(expect.objectContaining({ operationId: "create_task", allowed: false }));
+    state.onTurnStart = undefined;
+    await session.sendMessage("Read the task again without reporting completion.");
+    expect(session.snapshot().semanticResult).toBeNull();
+    await service.shutdown(session.id);
+  });
+
   it("passes caller-supplied native system instructions to the provider", async () => {
     const state = providerState();
     const service = new CapabilityLiveSessionService({
@@ -905,9 +990,11 @@ describe("Capability live runnerd and Codex session", () => {
       state.transports[0]?.requests.find(
         (request) => request.method === "thread/start",
       )?.params.baseInstructions,
-    ).toBe(
-      'Native instructions\n\nRead-only instruction sibling root: /runtime/instructions\nFor native paperclip_finish/paperclip_block reports, completionContract={"revision":"paperclip-capability-live-v1","criterionIds":["objective"]}. This report does not change mock task state; use the exposed semantic tools for task changes.',
+    ).toContain(
+      "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
     );
+    expect(state.transports[0]?.requests.find((request) => request.method === "thread/start")?.params.baseInstructions)
+      .toContain('Native completion report contract: {"revision":"paperclip-capability-live-v1","criterionIds":["objective"]}');
     await service.shutdown(session.id);
   });
 
@@ -1074,6 +1161,58 @@ describe("Capability live runnerd and Codex session", () => {
     });
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+    await service.shutdown(session.id);
+  });
+
+  it.each(["pi", "cursor", "copilot"] as const)("retains a completed %s result with explicit unavailable usage and no fabricated receipt", async (acpxAgent) => {
+    const state = providerState();
+    state.omitReadUsage = true;
+    state.assistantReply = "Upgrade your plan to continue";
+    state.onUsage = (queue, turnId) => queue.push({
+      method: "turn/completed",
+      params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+    });
+    const store = new InMemoryCapabilityLiveSessionStore();
+    const service = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+      transportOptions: { acpxCandidateProfile: acpxAgent },
+    });
+    const session = await service.create({
+      provider: "acpx", acpxAgent,
+      requestedModel: acpxAgent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "exact-model",
+    });
+    const result = await session.sendMessage("Orient to this task.");
+    expect(result.status).toBe("completed");
+    expect(result.assistantText).toBe(state.assistantReply);
+    expect(result.snapshot.usageLedger).toEqual([]);
+    expect(result.snapshot.usageUnavailable).toEqual([{
+      turnId: result.turnId,
+      attemptId: result.snapshot.currentAttemptId,
+      agent: acpxAgent,
+      reason: "provider_did_not_report_usage",
+      tokenUsage: null,
+      costNanodollars: null,
+      observedAt: expect.any(String),
+    }]);
+    expect(result.snapshot.authorizationRecords.filter((entry) => entry.phase !== "exposure")).toEqual([]);
+    await service.shutdown(session.id);
+    expect((await store.load(session.id))?.usageUnavailable).toEqual(result.snapshot.usageUnavailable);
+    expect((await store.load(session.id))?.process?.runnerExited).toBe(true);
+  });
+
+  it("still rejects missing usage for a qualified provider", async () => {
+    const state = providerState();
+    state.omitReadUsage = true;
+    state.onUsage = (queue, turnId) => queue.push({
+      method: "turn/completed",
+      params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+    });
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create();
+    await expect(session.sendMessage("Orient to this task.")).rejects.toThrow("capability_live_usage_missing");
+    expect(session.snapshot().usageLedger).toEqual([]);
+    expect(session.snapshot().usageUnavailable).toBeUndefined();
     await service.shutdown(session.id);
   });
 

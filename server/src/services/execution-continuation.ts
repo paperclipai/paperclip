@@ -15,6 +15,7 @@ import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
+import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
 
 export class StaleExecutionContinuationError extends Error {
   constructor(readonly code: "continuation_task_ownership_changed") {
@@ -160,7 +161,11 @@ export async function buildExecutionContinuation(input: {
   if (
     !issue ||
     issue.assigneeAgentId !== input.agentId ||
-    ["done", "cancelled"].includes(issue.status)
+    issue.status === "cancelled" ||
+    (issue.status === "done" && !await isCompletedOnboardingHandoffWake(db, {
+      companyId, issueId, agentId: input.agentId,
+      reason: string(input.context.wakeReason), contextSnapshot: input.context,
+    }))
   )
     throw new StaleExecutionContinuationError("continuation_task_ownership_changed");
   const rows = await db

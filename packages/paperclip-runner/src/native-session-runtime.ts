@@ -220,6 +220,9 @@ export interface ExecuteNativeSessionOptions {
    * carries required persistence (for example, a remote runner checkpoint).
    */
   requireSessionCloseBeforeReturn?: boolean;
+  /** Trusted cleanup observer, called only after the owned close completes.
+   * Requires requireSessionCloseBeforeReturn; never called for a live warm session. */
+  onSessionClosed?: () => Promise<void>;
   onCheckpoint?: (
     snapshot: PersistedNativeSession,
     options?: CheckpointControlPlaneSessionOptions,
@@ -2756,6 +2759,7 @@ export async function executeNativeSession(
           // generic retryable transport failure at the control-plane boundary.
           throw protocolIntegrityFailure ?? closeError;
         }
+        await options.onSessionClosed?.();
       }
     } else if (shouldClose && !failedCleanupDeferred) {
       // A provider that ignores close must not keep execution pending forever.

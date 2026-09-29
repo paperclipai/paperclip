@@ -154,6 +154,7 @@ export interface NativeSession {
     effectiveCollaborationMode?: "default" | "plan";
   }>;
   steer?(input: {
+    mode?: "steer" | "follow_up";
     turnId: string;
     message: NativeUserMessage;
     correlationId?: string;

@@ -1,5 +1,5 @@
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
-index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e160b2d1a3 100644
+index 243c9d13bcba520923b63adfddad75cf2d94362d..e2a254d4e57fb2e246ccb742f2e9de5a8a461d20 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
 @@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
@@ -124,19 +124,20 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e1
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt);
-@@ -6079,6 +6120,19 @@ async function runPromptTurn(params) {
+@@ -6079,6 +6120,20 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
 +		const terminalFailureCategory = typedTerminalSessionFailureCategory(response);
 +		if (terminalFailureCategory !== null) {
-+			// Inspect provider text only in memory, before emitting the safe category.
++			// Pass complete provider text to the diagnostic callback. Consumers redact
++			// before bounding it; truncating here can split and expose a credential.
 +			const failure = response._meta.jetbrains.air.sessionFailure;
 +			try {
 +				params.onTerminalSessionFailure?.({
 +					category: terminalFailureCategory,
-+					...(typeof failure.title === "string" ? { title: failure.title.slice(0, 4096) } : {}),
-+					...(typeof failure.details === "string" ? { details: failure.details.slice(0, 4096) } : {})
++					...(typeof failure.title === "string" ? { title: failure.title } : {}),
++					...(typeof failure.details === "string" ? { details: failure.details } : {})
 +				});
 +			} catch {}
 +			throw new Error(`ACP agent reported a terminal ${terminalFailureCategory} failure.`);

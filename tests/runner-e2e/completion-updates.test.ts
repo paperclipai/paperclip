@@ -7,7 +7,7 @@ const example: CompletionObservation = {
   sourceId: "source", marker: "GARDEN123",
   worker: { id: "worker", identifier: "FIR-2", status: "done", completedAt: "2026-09-24T10:01:00Z" },
   documents: [{ id: "doc", issueId: "worker", key: "welcome-note", body: output }],
-  runs: [{ id: "reply-run", agentId: "lead", status: "succeeded", contextSnapshot: { issueId: "source" } }],
+  runs: [{ id: "reply-run", agentId: "lead", status: "succeeded", contextSnapshot: { issueId: "source", chatCompletionUpdates: [{ id: "worker", status: "done" }] } }],
   comments: [{ id: "reply", issueId: "source", authorAgentId: "lead", createdByRunId: "reply-run", createdAt: "2026-09-24T10:02:00Z", body: `The note is ready: ${output}` }],
 };
 const failures = (e: CompletionObservation) => completionDelivery(e).checks.filter(c => !c.passed).map(c => c.id);
@@ -35,6 +35,8 @@ describe("completion-update delivery oracle", () => {
     ["worker thread reply", { comments: [{ ...example.comments[0], issueId: "worker" }] }, "completion-source-response"],
     ["wrong run", { runs: [{ ...example.runs[0], contextSnapshot: { issueId: "worker" } }] }, "completion-source-response"],
     ["failed reply run", { runs: [{ ...example.runs[0], status: "failed" }] }, "completion-source-response"],
+    ["late handoff reply", { runs: [{ ...example.runs[0], contextSnapshot: { issueId: "source" } }] }, "completion-source-correlated"],
+    ["other task's callback", { runs: [{ ...example.runs[0], contextSnapshot: { issueId: "source", chatCompletionUpdates: [{ id: "other", status: "done" }] } }] }, "completion-source-correlated"],
     ["handoff promise", { comments: [{ ...example.comments[0], body: "FIR-2 is running. I'll post back when it finishes. GARDEN123" }] }, "completion-result-access"],
     ["unrelated link", { comments: [{ ...example.comments[0], body: "Done! [Output](/FIR/issues/FIR-3) GARDEN123" }] }, "completion-result-access"],
     ["identifier substring", { comments: [{ ...example.comments[0], body: "Done! [Output](/FIR/issues/FIR-20)" }] }, "completion-result-access"],
@@ -69,10 +71,10 @@ describe("completion-update delivery oracle", () => {
     expect(failures({ ...e, renderedLinks: [{ commentId: "earlier", href: "/FIR/issues/FIR-2" }] })).toContain("completion-result-access");
     expect(failures({ ...e, renderedLinks: [{ commentId: "reply", href: "/FIR/issues/FIR-20" }] })).toContain("completion-result-access");
   });
-  it("registers four explicit-only local native cells without adding scheduled work", () => {
+  it("registers ten explicit-only local native cells without adding scheduled work", () => {
     const cells = runnerMatrix.filter(c => c.suite.id === "completion-updates");
-    expect(cells).toHaveLength(4);
-    expect(new Set(cells.map(c => c.task.id))).toEqual(new Set(["interview-plan-accept", "handoff-completion-idle"]));
+    expect(cells).toHaveLength(10);
+    expect(new Set(cells.map(c => c.task.id))).toEqual(new Set(["interview-plan-accept", "handoff-completion-idle", "handoff-completion-busy", "handoff-completion-multiple", "handoff-completion-restart"]));
     for (const cell of cells) {
       expect(cell.suite.manualOnly).toBe(true);
       expect(cell.profile.generation).toBe("native");

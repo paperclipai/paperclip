@@ -62,6 +62,7 @@ export type AuthorizationAction =
   | PermissionKey
   | "agent_config:read"
   | "agent_config:update"
+  | "agent_instructions:update"
   | "skill_config:update"
   | "agent:read"
   | "agent:wake"
@@ -148,7 +149,7 @@ function companyIdForResource(resource: AuthorizationResource) {
 }
 
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
-  if (action === "agent_config:read" || action === "agent_config:update" || action === "skill_config:update") {
+  if (action === "agent_config:read" || action === "agent_config:update" || action === "agent_instructions:update" || action === "skill_config:update") {
     return null;
   }
   if (
@@ -998,6 +999,7 @@ export function authorizationService(db: Db | DbTransaction) {
       input.action === "decision_triage:manage" ||
       input.action === "agent_config:read" ||
       input.action === "agent_config:update" ||
+      input.action === "agent_instructions:update" ||
       input.action === "skill_config:update" ||
       input.action === "inbox:manage" ||
       input.action === "runtime:manage" ||
@@ -1734,7 +1736,7 @@ export function authorizationService(db: Db | DbTransaction) {
       if (input.action === "agent_config:read") {
         return decideWithAgentConfigReadGrant("user", input.actor.userId);
       }
-      if (input.action === "agent_config:update") {
+      if (input.action === "agent_config:update" || input.action === "agent_instructions:update") {
         return decideWithProtectedChangeGrants("user", input.actor.userId, {
           direct: "agents:configure",
           suggest: "agents:suggest-changes",
@@ -2227,6 +2229,19 @@ export function authorizationService(db: Db | DbTransaction) {
       return decideWithAgentConfigReadGrant("agent", actorAgentId);
     }
 
+    if (input.action === "agent_instructions:update") {
+      if (!isSimpleAssignableAgentStatus(actorAgent.status) || !input.actor.onBehalfOfUserId) {
+        return deny({ action: input.action, reason: "deny_missing_membership", explanation: "Instruction edits require an active agent and a responsible user." });
+      }
+      // Explicit configure/suggest restrictions still govern content changes.
+      // Only self edits may fall back to the responsible user's target access.
+      const restricted = await decideWithProtectedChangeGrants("agent", actorAgentId, {
+        direct: "agents:configure", suggest: "agents:suggest-changes",
+      });
+      if (restricted.reason !== "deny_no_grant" || input.resource.type !== "agent" || input.resource.agentId !== actorAgentId) return restricted;
+      return allow({ action: input.action, reason: "allow_self", explanation: "Own instruction content edit, subject to the responsible user's target edit access." });
+    }
+
     if (input.action === "agent_config:update") {
       return decideWithProtectedChangeGrants("agent", actorAgentId, {
         direct: "agents:configure",
@@ -2391,7 +2406,7 @@ export function authorizationService(db: Db | DbTransaction) {
       responsibleUserId,
     }, "responsible-user authorization intersection denied");
 
-    return responsibleUserAuthzShadowMode() ? agentDecision : denied;
+    return input.action !== "agent_instructions:update" && responsibleUserAuthzShadowMode() ? agentDecision : denied;
   }
 
   async function decide(input: {
