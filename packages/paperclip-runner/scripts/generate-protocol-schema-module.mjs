@@ -13,6 +13,7 @@ const validatorsOutputPath = resolve(
   "src/protocol/generated/standalone-validators.ts",
 );
 const schemaNames = [
+  "output-body-reference",
   "identity",
   "capabilities",
   "capabilities-v2",

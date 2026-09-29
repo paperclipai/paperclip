@@ -8,6 +8,7 @@ use crate::acpx_provider_state::{
     is_reserved_terminal_operation, AcpxProviderState, AcpxProviderStateEvent, PRP_BLOCK_TOOL_NAME,
     PRP_COMPLETION_TOOL_NAME,
 };
+use crate::acpx_receipt_ledger::AcpxReceiptLedger;
 use crate::acpx_sidecar_transport::{AcpxSidecarTransport, AcpxSidecarTransportConfig};
 use crate::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
@@ -219,10 +220,29 @@ pub struct AcpxProviderSession {
     working_directory: PathBuf,
     closed: bool,
     transport_terminated: bool,
+    receipt_ledger: Option<AcpxReceiptLedger>,
 }
 
 impl AcpxProviderSession {
     pub fn start(config: &AcpxProviderSessionConfig) -> Result<Self, LocalRunnerError> {
+        Self::start_inner(config, None)
+    }
+
+    /// Indexed sessions retain exact receipts on disk and require their caller
+    /// to acknowledge each event batch after its own durable handoff.
+    pub fn start_with_indexed_receipts(
+        config: &AcpxProviderSessionConfig,
+        path: &Path,
+    ) -> Result<Self, LocalRunnerError> {
+        config.validate()?;
+        let ledger = AcpxReceiptLedger::open(path, config)?;
+        Self::start_inner(config, Some(ledger))
+    }
+
+    fn start_inner(
+        config: &AcpxProviderSessionConfig,
+        mut receipt_ledger: Option<AcpxReceiptLedger>,
+    ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
         let mut tool_bridge = ProviderToolBridge::default();
         tool_bridge
@@ -230,7 +250,7 @@ impl AcpxProviderSession {
             .map_err(|error| {
                 LocalRunnerError::invalid(format!("ACPX authorized tools are invalid: {error}"))
             })?;
-        let reserved_tool_bridge = reserved_terminal_tool_bridge()?;
+        let mut reserved_tool_bridge = reserved_terminal_tool_bridge()?;
         let mut transport =
             AcpxSidecarTransport::start_for_agent(&config.transport, &config.agent)?;
         let bootstrap = bootstrap(&mut transport, config);
@@ -241,6 +261,19 @@ impl AcpxProviderSession {
                 return Err(with_cleanup_error(error, cleanup));
             }
         };
+        if let Some(ledger) = &mut receipt_ledger {
+            if let Err(error) = ledger.checkpoint(
+                &identity,
+                &state,
+                &mut tool_bridge,
+                &mut reserved_tool_bridge,
+                vec![],
+                None,
+            ) {
+                let cleanup = transport.shutdown();
+                return Err(with_cleanup_error(error, cleanup));
+            }
+        }
         Ok(Self {
             transport,
             config: config.clone(),
@@ -252,6 +285,7 @@ impl AcpxProviderSession {
             working_directory: config.working_directory.clone(),
             closed: false,
             transport_terminated: false,
+            receipt_ledger,
         })
     }
 
@@ -265,6 +299,20 @@ impl AcpxProviderSession {
 
     pub fn state(&self) -> &AcpxProviderState {
         &self.state
+    }
+
+    pub fn pending_event_batch(&self) -> Option<String> {
+        self.receipt_ledger
+            .as_ref()
+            .and_then(AcpxReceiptLedger::pending_batch)
+    }
+
+    /// The executor must save its projected event outbox before calling this.
+    pub fn acknowledge_event_batch(&mut self) -> Result<(), LocalRunnerError> {
+        if let Some(ledger) = &mut self.receipt_ledger {
+            ledger.acknowledge()?;
+        }
+        Ok(())
     }
 
     pub fn catalog_revision(&self) -> u64 {
@@ -307,6 +355,14 @@ impl AcpxProviderSession {
             return Err(LocalRunnerError::invalid(
                 "ACPX provider session already has an active turn",
             ));
+        }
+        if let Some(ledger) = &self.receipt_ledger {
+            if ledger.pending_batch().is_some() {
+                return Err(LocalRunnerError::invalid(
+                    "ACPX previous event batch has not been durably acknowledged",
+                ));
+            }
+            ledger.validate_turn(turn_id)?;
         }
         let rotate_turn_identity_ledger = self.state.settled_turn_identity_capacity_reached();
         let identity_validation = if rotate_turn_identity_ledger {
@@ -365,6 +421,28 @@ impl AcpxProviderSession {
                 "ACPX reserved tool receipt rotation failed: {error}"
             ))));
         }
+        let mut next_state = self.state.clone();
+        next_state.begin_turn(turn_id)?;
+        if let Some(ledger) = &mut self.receipt_ledger {
+            next_tool_bridge = ProviderToolBridge::default();
+            next_tool_bridge
+                .prepare(self.config.tool_set.clone())
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+            next_reserved_tool_bridge = reserved_terminal_tool_bridge()?;
+            ledger.bind(
+                turn_id,
+                &mut next_tool_bridge,
+                &mut next_reserved_tool_bridge,
+            )?;
+            ledger.checkpoint(
+                &self.identity,
+                &next_state,
+                &mut next_tool_bridge,
+                &mut next_reserved_tool_bridge,
+                vec![],
+                None,
+            )?;
+        }
         let response = match self.transport.request(
             GeneratedAcpxSidecarCommand::TurnStart,
             json!({"turnId":turn_id,"message":message}),
@@ -377,9 +455,7 @@ impl AcpxProviderSession {
                 "ACPX sidecar did not confirm the requested turn",
             )));
         }
-        if let Err(error) = self.state.begin_turn(turn_id) {
-            return Err(self.fail_closed(error));
-        }
+        self.state = next_state;
         self.tool_bridge = next_tool_bridge;
         self.reserved_tool_bridge = next_reserved_tool_bridge;
         Ok(response)
@@ -417,6 +493,13 @@ impl AcpxProviderSession {
         timeout: Duration,
     ) -> Result<Option<Vec<AcpxProviderStateEvent>>, LocalRunnerError> {
         self.ensure_open()?;
+        if let Some(events) = self
+            .receipt_ledger
+            .as_ref()
+            .and_then(AcpxReceiptLedger::events)
+        {
+            return Ok(Some(events.to_vec()));
+        }
         let event = match self.transport.poll_event(timeout) {
             Ok(event) => event,
             Err(error) => return Err(self.fail_closed(error)),
@@ -450,14 +533,21 @@ impl AcpxProviderSession {
                         // the server for completion feedback before resolving
                         // the provider call. The result is still reconciled
                         // by the reserved receipt ledger below.
-                        if next_bridge.has_call_receipt(call_id) {
+                        if next_bridge.has_call_receipt(call_id).map_err(|error| {
+                            self.fail_closed(LocalRunnerError::invalid(error.to_string()))
+                        })? {
                             return Err(self.fail_closed(LocalRunnerError::invalid(
                                 "ACPX reused a dynamic call id for a reserved terminal invocation",
                             )));
                         }
                         &mut next_reserved_bridge
                     } else {
-                        if next_reserved_bridge.has_call_receipt(call_id) {
+                        if next_reserved_bridge
+                            .has_call_receipt(call_id)
+                            .map_err(|error| {
+                                self.fail_closed(LocalRunnerError::invalid(error.to_string()))
+                            })?
+                        {
                             return Err(self.fail_closed(LocalRunnerError::invalid(
                                 "ACPX reused a reserved call id for a dynamic tool invocation",
                             )));
@@ -490,7 +580,12 @@ impl AcpxProviderSession {
                             ))));
                         }
                     } else {
-                        let replayed = next_bridge.has_completed_call(&result.call_id);
+                        let replayed =
+                            next_bridge
+                                .has_completed_call(&result.call_id)
+                                .map_err(|error| {
+                                    self.fail_closed(LocalRunnerError::invalid(error.to_string()))
+                                })?;
                         if let Err(error) =
                             next_bridge.apply_result(crate::provider_bridge::ToolResult {
                                 call_id: result.call_id.clone(),
@@ -571,6 +666,18 @@ impl AcpxProviderSession {
                 reconciled_events.push(event);
             }
         }
+        if let Some(ledger) = &mut self.receipt_ledger {
+            if let Err(error) = ledger.checkpoint(
+                &self.identity,
+                &next_state,
+                &mut next_bridge,
+                &mut next_reserved_bridge,
+                reconciled_events.clone(),
+                None,
+            ) {
+                return Err(self.fail_closed(error));
+            }
+        }
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
@@ -614,6 +721,18 @@ impl AcpxProviderSession {
                 "error":Value::Null,
             })
         };
+        if let Some(ledger) = &mut self.receipt_ledger {
+            if let Err(error) = ledger.checkpoint(
+                &self.identity,
+                &next_state,
+                &mut next_bridge,
+                &mut next_reserved_bridge,
+                vec![],
+                Some(result.clone()),
+            ) {
+                return Err(self.fail_closed(error));
+            }
+        }
         let response = match self
             .transport
             .request(GeneratedAcpxSidecarCommand::ToolResolve, resolution)
@@ -622,6 +741,18 @@ impl AcpxProviderSession {
             Err(error) => return Err(self.fail_closed(error)),
         };
         self.verify_resolution(&response, "tool")?;
+        if let Some(ledger) = &mut self.receipt_ledger {
+            if let Err(error) = ledger.checkpoint(
+                &self.identity,
+                &next_state,
+                &mut next_bridge,
+                &mut next_reserved_bridge,
+                vec![],
+                None,
+            ) {
+                return Err(self.fail_closed(error));
+            }
+        }
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
@@ -661,6 +792,18 @@ impl AcpxProviderSession {
             Err(error) => return Err(self.fail_closed(error)),
         };
         self.verify_resolution(&response, "input")?;
+        if let Some(ledger) = &mut self.receipt_ledger {
+            if let Err(error) = ledger.checkpoint(
+                &self.identity,
+                &next_state,
+                &mut self.tool_bridge,
+                &mut self.reserved_tool_bridge,
+                vec![],
+                None,
+            ) {
+                return Err(self.fail_closed(error));
+            }
+        }
         self.state = next_state;
         Ok(())
     }

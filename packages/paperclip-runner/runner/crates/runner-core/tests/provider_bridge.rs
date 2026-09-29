@@ -758,8 +758,8 @@ fn exact_identity_overflow_saturates_the_durable_run() {
         .settle_turn("provider_turn_terminated")
         .expect("the controlled turn stop retains replay protection");
     assert!(recovered.durable_run_receipt_limit_reached());
-    assert!(recovered.has_completed_call("settled-0"));
-    assert!(recovered.has_completed_call("last-call"));
+    assert!(recovered.has_completed_call("settled-0").unwrap());
+    assert!(recovered.has_completed_call("last-call").unwrap());
     let stopped_turn_receipt = recovered
         .replay_result("last-call", "get_task_context", &json!({}))
         .unwrap()
@@ -780,8 +780,8 @@ fn exact_identity_overflow_saturates_the_durable_run() {
         .replay_result("last-call", "get_task_context", &json!({}))
         .unwrap()
         .is_none());
-    assert!(recovered.has_completed_call("last-call"));
-    assert!(recovered.has_completed_call("settled-0"));
+    assert!(recovered.has_completed_call("last-call").unwrap());
+    assert!(recovered.has_completed_call("settled-0").unwrap());
     assert!(recovered.durable_run_receipt_limit_reached());
     let saturation = recovered
         .begin_call("next-call".into(), "get_task_context".into(), json!({}))
@@ -791,8 +791,8 @@ fn exact_identity_overflow_saturates_the_durable_run() {
     let encoded = serde_json::to_string(&recovered).unwrap();
     let mut recovered: ProviderToolBridge = serde_json::from_str(&encoded).unwrap();
     recovered.attach_existing_run().unwrap();
-    assert!(recovered.has_completed_call("settled-0"));
-    assert!(recovered.has_completed_call("last-call"));
+    assert!(recovered.has_completed_call("settled-0").unwrap());
+    assert!(recovered.has_completed_call("last-call").unwrap());
     assert!(recovered.durable_run_receipt_limit_reached());
 
     recovered.attach_run(tools("computed")).unwrap();
@@ -857,7 +857,7 @@ fn settled_result_byte_exhaustion_recovers_after_turn_cleanup() {
         .replay_result("large-settled-0", "get_task_context", &json!({}))
         .unwrap()
         .is_none());
-    assert!(recovered.has_completed_call("large-settled-0"));
+    assert!(recovered.has_completed_call("large-settled-0").unwrap());
     assert!(!recovered.durable_run_receipt_limit_reached());
     recovered
         .begin_call(
@@ -1034,9 +1034,9 @@ fn full_identity_ledger_fails_closed_across_turn_and_recovery() {
         .expect_err("a full exact ledger must stop fresh work");
     assert!(saturation.is_active_turn_receipt_limit());
     assert!(recovered.durable_run_receipt_limit_reached());
-    assert!(recovered.has_completed_call("settled-65535"));
-    assert!(recovered.has_completed_call("settled-00000"));
-    assert!(!recovered.has_completed_call("current-call"));
+    assert!(recovered.has_completed_call("settled-65535").unwrap());
+    assert!(recovered.has_completed_call("settled-00000").unwrap());
+    assert!(!recovered.has_completed_call("current-call").unwrap());
     assert!(recovered
         .begin_call("settled-00000".into(), "get_task_context".into(), json!({}))
         .is_err());
@@ -1054,7 +1054,7 @@ fn full_identity_ledger_fails_closed_across_turn_and_recovery() {
     let mut recovered_again: ProviderToolBridge = serde_json::from_value(round_trip).unwrap();
     recovered_again.attach_existing_run().unwrap();
     assert!(recovered_again.durable_run_receipt_limit_reached());
-    assert!(recovered_again.has_completed_call("settled-00000"));
+    assert!(recovered_again.has_completed_call("settled-00000").unwrap());
 
     recovered_again.attach_run(tools("computed")).unwrap();
     assert!(!recovered_again.durable_run_receipt_limit_reached());

@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -12,7 +13,7 @@ use crate::stable_identity::{
 
 const MAX_TEXT_CHARS: usize = 4_000;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct NormalizedProviderEvent {
     pub event_type: String,
     pub priority: EventPriority,
@@ -741,15 +742,15 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 ),
             }),
         ),
-        "item/agentMessage/delta" => push(
+        "item/agentMessage/delta" | "item/commandExecution/outputDelta" => push(
             &mut events,
             "item.delta",
             EventPriority::P2,
             json!({
                 "provider": "codex",
                 "itemId": stable_id(string(params.get("itemId")), "codex-message"),
-                "kind": "agentMessage",
-                "channel": "progress",
+                "kind": if method == "item/commandExecution/outputDelta" { "commandExecution" } else { "agentMessage" },
+                "channel": if method == "item/commandExecution/outputDelta" { "detail" } else { "progress" },
                 "providerMethod": method,
                 "text": bounded_text(string(params.get("delta")), MAX_TEXT_CHARS),
             }),
@@ -1467,6 +1468,31 @@ mod tests {
         );
         assert_eq!(events[0].event_type, "plan.updated");
         assert_eq!(events[0].payload["steps"][0]["status"], "in_progress");
+        assert!(!events[0].payload.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn preserves_command_output_deltas_as_tool_output() {
+        // A provider completion snapshot can retain only part of its output.
+        // Preserve every admitted delta independently; never relabel it as prose.
+        let events = normalize_codex_notification(
+            "item/commandExecution/outputDelta",
+            &json!({"threadId":"thread", "turnId":"turn", "itemId":"exec-1",
+                "delta":"tool output Authorization: Bearer secret-value"}),
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "item.delta");
+        assert_eq!(events[0].payload["kind"], "commandExecution");
+        assert_eq!(events[0].payload["channel"], "detail");
+        assert_eq!(events[0].payload["itemId"], "exec-1");
+        assert_eq!(
+            events[0].payload["providerMethod"],
+            "item/commandExecution/outputDelta"
+        );
+        assert!(events[0].payload["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("tool output"));
         assert!(!events[0].payload.to_string().contains("secret-value"));
     }
 

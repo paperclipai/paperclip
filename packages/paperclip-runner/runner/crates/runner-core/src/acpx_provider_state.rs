@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use serde_json::Value;
@@ -24,7 +25,7 @@ pub(crate) fn is_reserved_terminal_operation(operation_id: &str) -> bool {
     matches!(operation_id, PRP_COMPLETION_TOOL_NAME | PRP_BLOCK_TOOL_NAME)
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct AcpxPendingTool {
     pub operation_id: String,
     pub input: Value,
@@ -32,7 +33,7 @@ pub struct AcpxPendingTool {
     input_bytes: usize,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct AcpxSemanticResult {
     pub call_id: String,
     pub operation_id: String,
@@ -41,7 +42,7 @@ pub struct AcpxSemanticResult {
     pub(crate) result_digest: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum AcpxProviderStateEvent {
     Activity(NormalizedProviderEvent),
     ToolCall {
@@ -79,7 +80,7 @@ pub enum AcpxProviderStateEvent {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 struct PendingInput {
     runtime_request_id: String,
     value_bytes: usize,
@@ -92,7 +93,7 @@ struct PendingInput {
 /// turn authority before payload decoding. Transport commands remain outside
 /// this reducer so callers can commit a pending resolution only after the
 /// corresponding sidecar request succeeds.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct AcpxProviderState {
     scope: AcpxEventScope,
     provider_requests: u64,

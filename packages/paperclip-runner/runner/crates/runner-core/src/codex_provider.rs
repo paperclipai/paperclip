@@ -1,3 +1,6 @@
+use crate::indexed_revision::Revision;
+use crate::indexed_store::{ExactReceipt, IndexedStore};
+use crate::process_generation::ProcessGeneration;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -514,14 +517,14 @@ pub enum CodexProviderEvent {
         completed_turn_authoritative: bool,
         completed_turn_observed_by_process: bool,
         completion_reconciles_exit: bool,
-        process_generation: u64,
-        completed_turn_process_generation: Option<u64>,
+        process_generation: ProcessGeneration,
+        completed_turn_process_generation: Option<ProcessGeneration>,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CompletedTurnAuthority {
-    process_generation: u64,
+    process_generation: ProcessGeneration,
     provider_turn_id: String,
 }
 
@@ -529,29 +532,72 @@ struct CompletedTurnAuthority {
 struct SettledProviderTurnIds {
     ids: BTreeSet<String>,
     filter: DurableReplayFilter,
+    index: Option<(IndexedStore, String, Revision)>,
 }
 
 impl SettledProviderTurnIds {
-    fn insert(&mut self, provider_turn_id: String) -> bool {
-        if self.contains(&provider_turn_id) {
-            return true;
+    fn bind(&mut self, store: IndexedStore, namespace: String) -> Result<(), LocalRunnerError> {
+        if !self.filter.is_empty() {
+            return Err(LocalRunnerError::invalid(
+                "legacy turn filter requires fenced migration",
+            ));
         }
-        if self.ids.len() >= MAX_SETTLED_PROVIDER_TURN_IDS {
-            return false;
+        let generation = store
+            .read_state(&format!("identities/{namespace}"))
+            .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
+            .map_or(Revision::Absent, |state| state.generation);
+        self.index = Some((store, namespace, generation));
+        for id in std::mem::take(&mut self.ids) {
+            self.insert(id)?;
         }
-        self.ids.insert(provider_turn_id)
+        Ok(())
     }
 
-    fn contains(&self, provider_turn_id: &str) -> bool {
-        self.ids.contains(provider_turn_id)
+    fn insert(&mut self, provider_turn_id: String) -> Result<bool, LocalRunnerError> {
+        if self.contains(&provider_turn_id)? {
+            return Ok(true);
+        }
+        if let Some((store, namespace, generation)) = self.index.as_mut() {
+            *generation = store
+                .commit(
+                    &format!("identities/{namespace}"),
+                    *generation,
+                    b"{}".to_vec(),
+                    vec![ExactReceipt {
+                        namespace: namespace.clone(),
+                        key: provider_turn_id,
+                        bytes: b"settled".to_vec(),
+                    }],
+                )
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+            return Ok(true);
+        }
+        if self.ids.len() >= MAX_SETTLED_PROVIDER_TURN_IDS {
+            return Ok(false);
+        }
+        Ok(self.ids.insert(provider_turn_id))
+    }
+
+    fn contains(&self, provider_turn_id: &str) -> Result<bool, LocalRunnerError> {
+        if self.ids.contains(provider_turn_id) {
+            return Ok(true);
+        }
+        if let Some((store, namespace, _)) = &self.index {
+            return store
+                .receipt(namespace, provider_turn_id)
+                .map(|record| record.is_some())
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()));
+        }
+        Ok(false)
     }
 
     fn at_capacity(&self) -> bool {
-        self.ids.len() >= MAX_SETTLED_PROVIDER_TURN_IDS || !self.filter.is_empty()
+        self.index.is_none()
+            && (self.ids.len() >= MAX_SETTLED_PROVIDER_TURN_IDS || !self.filter.is_empty())
     }
 
     fn restore(&mut self, provider_turn_id: String) -> Result<(), LocalRunnerError> {
-        if !self.insert(provider_turn_id) {
+        if !self.insert(provider_turn_id)? {
             return Err(LocalRunnerError::invalid(
                 "Codex restored provider turn identity epoch exceeded its exact capacity",
             ));
@@ -569,7 +615,7 @@ impl SettledProviderTurnIds {
             .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
         self.filter = replay_filter;
         for provider_turn_id in provider_turn_ids {
-            if !self.insert(provider_turn_id) {
+            if !self.insert(provider_turn_id)? {
                 return Err(LocalRunnerError::invalid(
                     "Codex restored provider turn identity epoch exceeded its exact capacity",
                 ));
@@ -634,7 +680,6 @@ pub struct CodexProvider {
     stderr_tail: BoundedLogBuffer,
     config: CodexProviderConfig,
     authorized_tools: Vec<AuthorizedTool>,
-    next_request_id: u64,
     thread_id: String,
     provider_session_id: Option<String>,
     active_provider_turn_id: Option<String>,
@@ -645,20 +690,20 @@ pub struct CodexProvider {
     pending_tool_requests: BTreeMap<String, PendingToolRequest>,
     completed_tool_call_ids: BTreeSet<String>,
     durable_tool_call_replays: bool,
+    require_paginated_history: bool,
     pending_tool_request_bytes: usize,
     pending_runtime_requests: BTreeMap<String, PendingRuntimeRequest>,
     pending_runtime_request_bytes: usize,
     runtime_request_scope: [u8; 16],
-    next_runtime_request_sequence: u64,
     expected_shutdown: bool,
-    process_generation: u64,
+    process_generation: ProcessGeneration,
     completed_turn_authority: Option<CompletedTurnAuthority>,
     active_turn_result_authoritative: bool,
     completion_reconciliation_pending: bool,
     goal_allows_autonomous_turns: bool,
     ambiguous_turn_start_pending: bool,
     settled_provider_turn_ids: SettledProviderTurnIds,
-    descendant_thread_ids: BTreeSet<String>,
+    descendant_thread_ids: SettledProviderTurnIds,
     notification_identity_diagnostics: usize,
     rejected_accepted_turn: Option<RejectedAcceptedTurn>,
     quarantined: bool,
@@ -671,7 +716,7 @@ pub struct CodexProvider {
 }
 
 struct ProviderExitDrain {
-    process_generation: u64,
+    process_generation: ProcessGeneration,
     deadline: std::time::Instant,
     timed_out: bool,
     warning_emitted: bool,
@@ -804,7 +849,7 @@ impl CodexProvider {
             config,
             std::iter::empty(),
             resume_thread_id,
-            1,
+            1.into(),
             None,
             None,
         )
@@ -819,7 +864,7 @@ impl CodexProvider {
             config,
             authorized_tools,
             resume_thread_id,
-            1,
+            1.into(),
             None,
             None,
         )
@@ -829,7 +874,7 @@ impl CodexProvider {
         config: &CodexProviderConfig,
         authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
         resume_thread_id: Option<&str>,
-        process_generation: u64,
+        process_generation: ProcessGeneration,
         opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
         completion_contract: Option<(&str, &[String])>,
     ) -> Result<Self, LocalRunnerError> {
@@ -840,6 +885,7 @@ impl CodexProvider {
             process_generation,
             opencode_launch_profile,
             completion_contract,
+            false,
             &mut |_| Ok(()),
         )
     }
@@ -848,9 +894,10 @@ impl CodexProvider {
         config: &CodexProviderConfig,
         authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
         resume_thread_id: Option<&str>,
-        process_generation: u64,
+        process_generation: ProcessGeneration,
         opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
         completion_contract: Option<(&str, &[String])>,
+        require_paginated_history: bool,
         observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
     ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
@@ -964,7 +1011,6 @@ impl CodexProvider {
             ),
             config: config.clone(),
             authorized_tools,
-            next_request_id: 1,
             thread_id: String::new(),
             provider_session_id: None,
             active_provider_turn_id: None,
@@ -975,11 +1021,11 @@ impl CodexProvider {
             pending_tool_requests: BTreeMap::new(),
             completed_tool_call_ids: BTreeSet::new(),
             durable_tool_call_replays: false,
+            require_paginated_history: require_paginated_history && config.provider == "codex",
             pending_tool_request_bytes: 0,
             pending_runtime_requests: BTreeMap::new(),
             pending_runtime_request_bytes: 0,
             runtime_request_scope,
-            next_runtime_request_sequence: 1,
             expected_shutdown: false,
             process_generation,
             completed_turn_authority: None,
@@ -988,7 +1034,7 @@ impl CodexProvider {
             goal_allows_autonomous_turns: false,
             ambiguous_turn_start_pending: false,
             settled_provider_turn_ids: SettledProviderTurnIds::default(),
-            descendant_thread_ids: BTreeSet::new(),
+            descendant_thread_ids: SettledProviderTurnIds::default(),
             notification_identity_diagnostics: 0,
             rejected_accepted_turn: None,
             quarantined: false,
@@ -1063,10 +1109,27 @@ impl CodexProvider {
                 "thread/resume"
             } else {
                 params_object.insert("experimentalRawEvents".to_owned(), json!(false));
+                if provider.require_paginated_history {
+                    params_object.insert("historyMode".to_owned(), json!("paginated"));
+                }
                 "thread/start"
             };
             stage = ProviderStartupStage::ThreadOpen;
             let opened = provider.request(method, params)?;
+            // Indexed Paperclip storage must not silently create or resume a
+            // legacy provider history. This verifies only the history API;
+            // paginated history alone does not prove bounded model-context
+            // reconstruction inside the provider on a cold resume.
+            if provider.require_paginated_history
+                && opened
+                    .pointer("/thread/historyMode")
+                    .and_then(Value::as_str)
+                    != Some("paginated")
+            {
+                return Err(LocalRunnerError::invalid(
+                    "codex_history_mode_unsupported: indexed sessions require paginated provider history",
+                ));
+            }
             provider.thread_id = opened
                 .pointer("/thread/id")
                 .or_else(|| opened.get("threadId"))
@@ -1117,7 +1180,7 @@ impl CodexProvider {
         self.process.id()
     }
 
-    pub(crate) fn process_generation(&self) -> u64 {
+    pub(crate) fn process_generation(&self) -> ProcessGeneration {
         self.process_generation
     }
 
@@ -1363,13 +1426,13 @@ impl CodexProvider {
     pub(crate) fn restore_completed_turn_authority(
         &mut self,
         authoritative: bool,
-        process_generation: Option<u64>,
+        process_generation: Option<ProcessGeneration>,
         provider_turn_id: Option<&str>,
     ) -> Result<(), LocalRunnerError> {
         self.completed_turn_authority = authoritative.then(|| CompletedTurnAuthority {
             // Legacy state did not record the generation. Generation zero is
             // deliberately older than every supervised process generation.
-            process_generation: process_generation.unwrap_or(0),
+            process_generation: process_generation.unwrap_or_default(),
             provider_turn_id: provider_turn_id
                 .unwrap_or("durable-completed-turn")
                 .to_owned(),
@@ -1391,11 +1454,54 @@ impl CodexProvider {
         Ok(())
     }
 
-    pub(crate) fn restore_descendant_thread_identities(&mut self, identities: &BTreeSet<String>) {
-        // Exact provider-confirmed lineage lives as long as the root session.
-        // Evicting it would turn later child progress into a root integrity fault.
+    pub(crate) fn restore_descendant_thread_identities(
+        &mut self,
+        identities: &BTreeSet<String>,
+    ) -> Result<(), LocalRunnerError> {
+        for id in identities {
+            self.descendant_thread_ids.restore(id.clone())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn bind_indexed_turn_receipts(
+        &mut self,
+        store: IndexedStore,
+        binding: String,
+    ) -> Result<(), LocalRunnerError> {
+        self.settled_provider_turn_ids
+            .bind(store.clone(), format!("turns/{binding}"))?;
         self.descendant_thread_ids
-            .extend(identities.iter().cloned());
+            .bind(store, format!("descendants/{binding}"))
+    }
+
+    // Resolve only identities carried by this frame. Restoring lineage never
+    // enumerates all children, and a failed storage read is not an unknown child.
+    fn notification_descendants(
+        &self,
+        params: &Value,
+    ) -> Result<BTreeSet<String>, LocalRunnerError> {
+        let mut known = BTreeSet::new();
+        for path in [
+            "/threadId",
+            "/thread/id",
+            "/turn/threadId",
+            "/thread/parentThreadId",
+            "/thread/source/subAgent/thread_spawn/parent_thread_id",
+            "/thread/source/subAgent/threadSpawn/parentThreadId",
+            "/thread/source/subagent/thread_spawn/parent_thread_id",
+        ] {
+            if let Some(id) = params
+                .pointer(path)
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 240)
+            {
+                if self.descendant_thread_ids.contains(id)? {
+                    known.insert(id.to_owned());
+                }
+            }
+        }
+        Ok(known)
     }
 
     pub(crate) fn restore_settled_turn_identities(
@@ -1407,7 +1513,7 @@ impl CodexProvider {
             .restore_all(provider_turn_ids, replay_filter)
     }
 
-    pub(crate) fn completed_turn_authority(&self) -> Option<(u64, &str)> {
+    pub(crate) fn completed_turn_authority(&self) -> Option<(ProcessGeneration, &str)> {
         self.completed_turn_authority.as_ref().map(|authority| {
             (
                 authority.process_generation,
@@ -1436,11 +1542,16 @@ impl CodexProvider {
                 "durable provider rollover requires its startup ownership observer",
             ));
         }
-        self.restart_idle_identity_epoch_observed(&mut |_| Ok(()))
+        let next = self
+            .process_generation
+            .next()
+            .ok_or_else(|| LocalRunnerError::invalid("fresh provider lifetime unavailable"))?;
+        self.restart_idle_identity_epoch_observed(next, &mut |_| Ok(()))
     }
 
     pub(crate) fn restart_idle_identity_epoch_observed(
         &mut self,
+        next_generation: ProcessGeneration,
         observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
     ) -> Result<(), LocalRunnerError> {
         if self.active_provider_turn_id.is_some() || self.ambiguous_turn_start_pending {
@@ -1449,9 +1560,11 @@ impl CodexProvider {
             ));
         }
 
-        let next_generation = self.process_generation.checked_add(1).ok_or_else(|| {
-            LocalRunnerError::invalid("Codex process generation exhausted during epoch rollover")
-        })?;
+        if !next_generation.is_successor_of(self.process_generation) {
+            return Err(LocalRunnerError::invalid(
+                "provider rollover differs from its prepared lifetime",
+            ));
+        }
         let config = self.config.clone();
         let authorized_tools = self.authorized_tools.clone();
         let thread_id = self.thread_id.clone();
@@ -1477,6 +1590,7 @@ impl CodexProvider {
                     contract.criterion_ids.as_slice(),
                 )
             }),
+            self.require_paginated_history,
             observe,
         )?;
         replacement.durable_tool_call_replays = durable_tool_call_replays;
@@ -1737,7 +1851,7 @@ impl CodexProvider {
                 return Err(error);
             }
         };
-        if self.settled_provider_turn_ids.contains(&provider_turn_id) {
+        if self.settled_provider_turn_ids.contains(&provider_turn_id)? {
             return Err(self.reject_accepted_reused_turn_identity(provider_turn_id));
         }
         // Only a validated provider turn identity proves that replacement
@@ -1771,7 +1885,7 @@ impl CodexProvider {
                 ))
             })?;
 
-        if self.settled_provider_turn_ids.contains(&provider_turn_id) {
+        if self.settled_provider_turn_ids.contains(&provider_turn_id)? {
             return Err(self.reject_accepted_reused_turn_identity(provider_turn_id));
         }
 
@@ -1893,7 +2007,10 @@ impl CodexProvider {
         let mut cursor = Value::Null;
         let mut cursors = BTreeSet::new();
         let mut turns = BTreeMap::new();
-        for _ in 0..10_000 {
+        // An active turn belongs to the newest metadata window. If it settles
+        // between the status read and paging, reread status rather than walking
+        // arbitrarily old completed turns looking for work that no longer exists.
+        for _ in 0..4 {
             let page = self
                 .request(
                     "thread/turns/list",
@@ -1910,6 +2027,11 @@ impl CodexProvider {
             let data = page.get("data").and_then(Value::as_array).ok_or_else(|| {
                 LocalRunnerError::invalid("codex_history_incomplete: turn page omitted data")
             })?;
+            if data.len() > 100 {
+                return Err(LocalRunnerError::invalid(
+                    "codex_history_incomplete: oversized turn metadata page",
+                ));
+            }
             for turn in data {
                 let id = bounded_provider_turn_id(turn.get("id").and_then(Value::as_str))?;
                 if !matches!(
@@ -1928,9 +2050,7 @@ impl CodexProvider {
             let next = page.get("nextCursor").cloned().unwrap_or(Value::Null);
             if next.is_null() || found_active {
                 if !found_active {
-                    return Err(LocalRunnerError::invalid(
-                        "codex_history_incomplete: active thread has no active turn",
-                    ));
+                    break;
                 }
                 snapshot["thread"]["turns"] = Value::Array(turns.into_values().collect());
                 return Ok(snapshot);
@@ -1948,8 +2068,25 @@ impl CodexProvider {
             }
             cursor = next;
         }
+        let mut current = self.request(
+            "thread/read",
+            json!({"threadId": self.thread_id, "includeTurns": false}),
+        )?;
+        if current.pointer("/thread/id").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
+            return Err(LocalRunnerError::invalid(
+                "Codex thread/read returned a different thread",
+            ));
+        }
+        if current
+            .pointer("/thread/status/type")
+            .and_then(Value::as_str)
+            == Some("idle")
+        {
+            current["thread"]["turns"] = json!([]);
+            return Ok(current);
+        }
         Err(LocalRunnerError::invalid(
-            "codex_history_incomplete: turn page limit exceeded",
+            "codex_history_incomplete: active turn absent from current history window",
         ))
     }
 
@@ -2306,7 +2443,9 @@ impl CodexProvider {
                     if params
                         .get("threadId")
                         .and_then(Value::as_str)
-                        .is_some_and(|id| self.descendant_thread_ids.contains(id))
+                        .map(|id| self.descendant_thread_ids.contains(id))
+                        .transpose()?
+                        .unwrap_or(false)
                     {
                         return self.reject_descendant_request(rpc_id, method);
                     }
@@ -2320,7 +2459,7 @@ impl CodexProvider {
                     self.active_provider_turn_id.as_deref(),
                     &self.settled_provider_turn_ids,
                     &params,
-                ) {
+                )? {
                     return self.reject_post_terminal_request(rpc_id, method);
                 }
                 let active_turn_id = self.active_provider_turn_id.as_deref().ok_or_else(|| {
@@ -2406,7 +2545,8 @@ impl CodexProvider {
                         "Codex emitted too many pending tool calls",
                     ));
                 }
-                if !completed_replay
+                if !self.durable_tool_call_replays
+                    && !completed_replay
                     && self.completed_tool_call_ids.len() >= MAX_COMPLETED_TOOL_CALL_IDS
                 {
                     return Err(LocalRunnerError::invalid(
@@ -2437,7 +2577,9 @@ impl CodexProvider {
                     if params
                         .get("threadId")
                         .and_then(Value::as_str)
-                        .is_some_and(|id| self.descendant_thread_ids.contains(id))
+                        .map(|id| self.descendant_thread_ids.contains(id))
+                        .transpose()?
+                        .unwrap_or(false)
                     {
                         return self.reject_descendant_request(rpc_id, method);
                     }
@@ -2451,7 +2593,7 @@ impl CodexProvider {
                     self.active_provider_turn_id.as_deref(),
                     &self.settled_provider_turn_ids,
                     &params,
-                ) {
+                )? {
                     return self.reject_post_terminal_request(rpc_id, method);
                 }
                 let active_turn_id = self.active_provider_turn_id.clone().ok_or_else(|| {
@@ -2521,18 +2663,14 @@ impl CodexProvider {
                         }),
                     }));
                 }
-                let request_sequence = self.next_runtime_request_sequence;
-                self.next_runtime_request_sequence = self
-                    .next_runtime_request_sequence
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        LocalRunnerError::invalid("Codex runtime request sequence overflowed")
-                    })?;
+                // This is an identity, not event order. Pending duplicate RPCs
+                // returned above keep their original durable request identity.
+                let request_nonce = new_runtime_request_scope()?;
                 let request_id = scoped_runtime_request_id(
                     &self.runtime_request_scope,
                     &active_turn_id,
                     &provider_request_id,
-                    request_sequence,
+                    &request_nonce,
                 );
                 self.pending_runtime_requests
                     .insert(request_id.clone(), pending);
@@ -2558,7 +2696,7 @@ impl CodexProvider {
             let identity = match classify_notification_thread(
                 method,
                 &self.thread_id,
-                &self.descendant_thread_ids,
+                &self.notification_descendants(&params)?,
                 &params,
             ) {
                 Ok(identity) => identity,
@@ -2569,28 +2707,31 @@ impl CodexProvider {
                     let candidate = notification_thread_id(&params)
                         .filter(|id| !id.is_empty() && id.len() <= 240 && *id != self.thread_id)
                         .map(str::to_owned);
-                    let verified = candidate.as_ref().is_some_and(|candidate| {
-                        self.request(
+                    let verified = if let Some(candidate) = candidate.as_ref() {
+                        if let Ok(metadata) = self.request(
                             "thread/read",
                             json!({"threadId": candidate, "includeTurns": false}),
-                        )
-                        .ok()
-                        .is_some_and(|metadata| {
+                        ) {
+                            let known = self.notification_descendants(&metadata)?;
                             metadata.pointer("/thread/id").and_then(Value::as_str)
                                 == Some(candidate.as_str())
                                 && matches!(
                                     classify_notification_thread(
                                         "thread/started",
                                         &self.thread_id,
-                                        &self.descendant_thread_ids,
+                                        &known,
                                         &metadata
                                     ),
                                     Ok(NotificationThread::Descendant)
                                 )
-                        })
-                    });
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
                     if verified {
-                        let mut known = self.descendant_thread_ids.clone();
+                        let mut known = self.notification_descendants(&params)?;
                         known.insert(candidate.expect("verified candidate"));
                         match classify_notification_thread(method, &self.thread_id, &known, &params)
                         {
@@ -2615,22 +2756,14 @@ impl CodexProvider {
             if identity == NotificationThread::Descendant {
                 let id =
                     notification_thread_id(&params).expect("classified descendant has an identity");
-                let newly_known = match remember_descendant_thread(
-                    &mut self.descendant_thread_ids,
-                    id,
-                ) {
-                    Ok(newly_known) => newly_known,
-                    Err(code) => {
-                        return Ok(Some(CodexProviderEvent::ResourceLimit {
-                            diagnostic: json!({
-                                "code": code, "recoverable": false, "classification": "resource_capacity",
-                                "message": "Codex reached the child-thread inventory limit. Reconcile child work before continuing in a fresh provider session.",
-                                "method": bounded_method(method), "limit": MAX_DESCENDANT_THREAD_IDS,
-                                "expectedThreadId": self.thread_id, "receivedThreadId": id,
-                            }),
-                        }))
-                    }
-                };
+                let newly_known = !self.descendant_thread_ids.contains(id)?;
+                if !self.descendant_thread_ids.insert(id.to_owned())? {
+                    return Ok(Some(CodexProviderEvent::ResourceLimit {
+                        diagnostic: json!({"code": "provider_descendant_capacity_exhausted", "recoverable": false,
+                            "classification": "resource_capacity", "limit": MAX_DESCENDANT_THREAD_IDS,
+                            "message": "Codex reached the legacy child-thread inventory limit."}),
+                    }));
+                }
                 // Retain each discovered child's effect inventory independently of
                 // the informational diagnostic budget, then bound repeated progress.
                 if !newly_known && self.notification_identity_diagnostics >= 32 {
@@ -2670,7 +2803,9 @@ impl CodexProvider {
             if notification_turn_id.is_some()
                 && notification_turn_id != self.active_provider_turn_id.as_deref()
                 && notification_turn_id
-                    .is_some_and(|turn_id| self.settled_provider_turn_ids.contains(turn_id))
+                    .map(|turn_id| self.settled_provider_turn_ids.contains(turn_id))
+                    .transpose()?
+                    .unwrap_or(false)
             {
                 self.notification_identity_diagnostics += 1;
                 if self.notification_identity_diagnostics > 32 {
@@ -2716,12 +2851,10 @@ impl CodexProvider {
                     "turn_binding_mismatch",
                 )));
             }
-            if let Err(code) = remember_spawned_descendants(
-                &mut self.descendant_thread_ids,
-                &self.thread_id,
-                method,
-                &params,
-            ) {
+            let mut spawned = BTreeSet::new();
+            if let Err(code) =
+                remember_spawned_descendants(&mut spawned, &self.thread_id, method, &params)
+            {
                 if code == "provider_descendant_capacity_exhausted" {
                     return Ok(Some(CodexProviderEvent::ResourceLimit {
                         diagnostic: json!({"code": code, "recoverable": false,
@@ -2731,6 +2864,9 @@ impl CodexProvider {
                     }));
                 }
                 return Ok(Some(self.identity_failure(method, &params, code)));
+            }
+            for id in spawned {
+                self.descendant_thread_ids.restore(id)?;
             }
             if let Some(terminal_event_type) = terminal_event_type {
                 if self.active_provider_turn_id.is_none() {
@@ -2754,7 +2890,7 @@ impl CodexProvider {
                     };
                 if !self
                     .settled_provider_turn_ids
-                    .insert(provider_turn_id.clone())
+                    .insert(provider_turn_id.clone())?
                 {
                     return Err(LocalRunnerError::invalid(
                         "Codex provider turn identity epoch reached its exact capacity",
@@ -2815,7 +2951,11 @@ impl CodexProvider {
             self.pending_tool_request_bytes = self
                 .pending_tool_request_bytes
                 .saturating_sub(completed.retained_bytes);
-            self.completed_tool_call_ids.insert(result.call_id.clone());
+            // Durable backends own exact replay authority. Retaining a second
+            // per-turn set here would reintroduce a lifetime call allowance.
+            if !self.durable_tool_call_replays {
+                self.completed_tool_call_ids.insert(result.call_id.clone());
+            }
         }
         Ok(())
     }
@@ -2919,10 +3059,7 @@ impl CodexProvider {
         method: &str,
         params: Value,
     ) -> Result<Value, ProviderRequestError> {
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.checked_add(1).ok_or_else(|| {
-            ProviderRequestError::Rejected(LocalRunnerError::invalid("Codex request id exhausted"))
-        })?;
+        let request_id = format!("paperclip-rpc-{}", uuid::Uuid::new_v4());
         self.send_frame(&json!({"id": request_id, "method": method, "params": params}))
             .map_err(ProviderRequestError::Ambiguous)?;
         loop {
@@ -2964,7 +3101,7 @@ impl CodexProvider {
                 }
                 ProviderRequestError::Ambiguous(error)
             })?;
-            if message.get("id").and_then(Value::as_u64) == Some(request_id)
+            if message.get("id").and_then(Value::as_str) == Some(request_id.as_str())
                 && message.get("method").is_none()
             {
                 if let (Some(trace), Some(frame_id)) = (self.trace.as_mut(), trace_frame_id) {
@@ -3507,11 +3644,11 @@ fn request_targets_non_active_turn(
     active_turn_id: Option<&str>,
     settled_turn_ids: &SettledProviderTurnIds,
     params: &Value,
-) -> bool {
-    let requested_turn_id = runtime_request_turn_id(params);
-    requested_turn_id.is_some_and(|requested| {
-        settled_turn_ids.contains(requested) || active_turn_id != Some(requested)
-    })
+) -> Result<bool, LocalRunnerError> {
+    let Some(requested) = runtime_request_turn_id(params) else {
+        return Ok(false);
+    };
+    Ok(active_turn_id != Some(requested) || settled_turn_ids.contains(requested)?)
 }
 
 fn runtime_request_turn_id(params: &Value) -> Option<&str> {
@@ -3835,7 +3972,7 @@ fn scoped_runtime_request_id(
     scope: &[u8; 16],
     turn_id: &str,
     provider_request_id: &str,
-    request_sequence: u64,
+    request_nonce: &[u8; 16],
 ) -> String {
     let mut digest = Sha256::new();
     digest.update(scope);
@@ -3844,7 +3981,7 @@ fn scoped_runtime_request_id(
     digest.update([0]);
     digest.update(provider_request_id.as_bytes());
     digest.update([0]);
-    digest.update(request_sequence.to_be_bytes());
+    digest.update(request_nonce);
     format!("runtime-request-{:x}", digest.finalize())
 }
 
@@ -3990,16 +4127,18 @@ mod tests {
         let script = r#"
 turn=0
 while IFS= read -r line; do
+  request_id="${line#*\"id\":\"}"
+  request_id="${request_id%%\"*}"
   case "$line" in
-    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
-    *'"method":"thread/start"'*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"reader-tail-thread"}}}' ;;
+    *'"method":"initialize"'*) printf '{"id":"%s","result":{}}\n' "$request_id" ;;
+    *'"method":"thread/start"'*) printf '{"id":"%s","result":{"thread":{"id":"reader-tail-thread"}}}\n' "$request_id" ;;
     *'"method":"turn/start"'*)
       turn=$((turn + 1))
       if [ "$turn" = 1 ]; then
-        printf '%s\n' '{"id":3,"result":{"turn":{"id":"reader-tail-1"}}}'
+        printf '{"id":"%s","result":{"turn":{"id":"reader-tail-1"}}}\n' "$request_id"
         printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"reader-tail-1","status":"completed"}}}'
       else
-        printf '%s\n' '{"id":4,"error":{}}'
+        printf '{"id":"%s","error":{}}\n' "$request_id"
         printf '%s\n' '{"method":"turn/started","params":{"turn":{"id":"reader-tail-2"}}}'
         printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"reader-tail-2","status":"completed"}}}'
         if __FLOOD_STDOUT__; then
@@ -4048,7 +4187,7 @@ done
     fn warm_attachment_accepts_normalized_usage_for_the_completed_turn() {
         let mut provider = completion_tail_provider();
         provider
-            .restore_completed_turn_authority(true, Some(1), Some("reader-tail-1"))
+            .restore_completed_turn_authority(true, Some(1.into()), Some("reader-tail-1"))
             .unwrap();
         provider.active_provider_turn_id = None;
         provider
@@ -4250,7 +4389,7 @@ done
                         assert_eq!(process_generation, 1);
                         assert_eq!(
                             completed_turn_process_generation,
-                            (boundary != "turn/completed").then_some(1)
+                            (boundary != "turn/completed").then_some(1.into())
                         );
                         break;
                     }
@@ -4319,7 +4458,7 @@ done
             matches!(provider.poll().unwrap(), Some(CodexProviderEvent::Notification { method, params }) if method == "configWarning" && params["code"] == "provider_stdout_drain_timeout")
         );
         // A stale generation's timeout is not inherited by a new owned epoch.
-        provider.exit_drain.as_mut().unwrap().process_generation = 0;
+        provider.exit_drain.as_mut().unwrap().process_generation = 0.into();
         assert!(
             matches!(provider.poll().unwrap(), Some(CodexProviderEvent::Notification { method, .. }) if method == "turn/started")
         );
@@ -4422,9 +4561,10 @@ done
             &config,
             [],
             None,
-            1,
+            1.into(),
             None,
             None,
+            false,
             &mut |observation| match observation {
                 ProviderStartupObservation::Spawned {
                     process_id,
@@ -4641,20 +4781,20 @@ done
         .is_err());
         let scope = [7u8; 16];
         assert_eq!(
-            scoped_runtime_request_id(&scope, "turn-1", "41", 1),
-            scoped_runtime_request_id(&scope, "turn-1", "41", 1),
+            scoped_runtime_request_id(&scope, "turn-1", "41", &[1; 16]),
+            scoped_runtime_request_id(&scope, "turn-1", "41", &[1; 16]),
         );
         assert_ne!(
-            scoped_runtime_request_id(&scope, "turn-1", "41", 1),
-            scoped_runtime_request_id(&scope, "turn-2", "41", 1),
+            scoped_runtime_request_id(&scope, "turn-1", "41", &[1; 16]),
+            scoped_runtime_request_id(&scope, "turn-2", "41", &[1; 16]),
         );
         assert_ne!(
-            scoped_runtime_request_id(&scope, "turn-1", "41", 1),
-            scoped_runtime_request_id(&[8u8; 16], "turn-1", "41", 1),
+            scoped_runtime_request_id(&scope, "turn-1", "41", &[1; 16]),
+            scoped_runtime_request_id(&[8u8; 16], "turn-1", "41", &[1; 16]),
         );
         assert_ne!(
-            scoped_runtime_request_id(&scope, "turn-1", "41", 1),
-            scoped_runtime_request_id(&scope, "turn-1", "41", 2),
+            scoped_runtime_request_id(&scope, "turn-1", "41", &[1; 16]),
+            scoped_runtime_request_id(&scope, "turn-1", "41", &[2; 16]),
         );
         assert!(codex_question_response(
             &pending,
@@ -4781,6 +4921,68 @@ done
     }
 
     #[test]
+    fn indexed_turn_and_descendant_identities_outlive_the_memory_epoch() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-identities-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("provider.sqlite");
+        {
+            let store = IndexedStore::open(&path, "session", true).unwrap();
+            let mut turns = SettledProviderTurnIds::default();
+            let mut children = SettledProviderTurnIds::default();
+            turns.bind(store.clone(), "turns/session".into()).unwrap();
+            children.bind(store, "descendants/session".into()).unwrap();
+            for index in 0..5_000 {
+                assert!(turns.insert(format!("turn-{index}")).unwrap());
+                assert!(children.insert(format!("child-{index}")).unwrap());
+            }
+            assert!(turns.ids.is_empty() && children.ids.is_empty());
+            assert!(!turns.at_capacity() && !children.at_capacity());
+        }
+        let store = IndexedStore::open(&path, "session", false).unwrap();
+        let mut turns = SettledProviderTurnIds::default();
+        let mut children = SettledProviderTurnIds::default();
+        turns.bind(store.clone(), "turns/session".into()).unwrap();
+        children
+            .bind(store.clone(), "descendants/session".into())
+            .unwrap();
+        assert!(turns.contains("turn-0").unwrap());
+        assert!(children.contains("child-0").unwrap());
+        assert!(!children.contains("turn-0").unwrap());
+        // Damaged storage must never turn an ancient identity into a new one.
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let target = "descendants/session\0child-0";
+        let mut cursor: Option<String> = None;
+        let mut partition = None;
+        loop {
+            let page = crate::indexed_partitions::partitions(&db, cursor.as_deref(), 128).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            for route in &page {
+                if route.lower_key.as_str() <= target {
+                    partition = Some(route.file.clone());
+                } else {
+                    break;
+                }
+            }
+            let passed_target = page
+                .last()
+                .is_some_and(|route| route.lower_key.as_str() > target);
+            cursor = page.last().map(|route| route.lower_key.clone());
+            if passed_target {
+                break;
+            }
+        }
+        let partition = partition.expect("routing page covers the descendant receipt key");
+        let shard = rusqlite::Connection::open(directory.join(partition)).unwrap();
+        shard.execute("UPDATE receipt_rows SET digest=zeroblob(32) WHERE namespace='descendants/session' AND receipt_key='child-0'", []).unwrap();
+        drop(shard);
+        assert!(children.contains("child-0").is_err());
+        drop((db, children, turns, store));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn finds_only_active_turns_during_resume() {
         let snapshot = json!({"thread": {"turns": [
             {"id": "done", "status": "completed"},
@@ -4814,67 +5016,74 @@ done
     #[test]
     fn rejects_requests_bound_to_any_non_active_turn_nonfatally() {
         let mut turn_one_settled = SettledProviderTurnIds::default();
-        turn_one_settled.insert("turn-1".to_owned());
+        turn_one_settled.insert("turn-1".to_owned()).unwrap();
         let mut turn_two_settled = SettledProviderTurnIds::default();
-        turn_two_settled.insert("turn-2".to_owned());
+        turn_two_settled.insert("turn-2".to_owned()).unwrap();
         let no_settled_turns = SettledProviderTurnIds::default();
         assert!(request_targets_non_active_turn(
             Some("turn-2"),
             &turn_one_settled,
             &json!({"turnId": "turn-1"}),
-        ));
+        )
+        .unwrap());
         assert!(request_targets_non_active_turn(
             Some("turn-2"),
             &turn_one_settled,
             &json!({"turnId": "turn-0"}),
-        ));
+        )
+        .unwrap());
         assert!(request_targets_non_active_turn(
             None,
             &turn_two_settled,
             &json!({"turnId": "turn-1"}),
-        ));
+        )
+        .unwrap());
         assert!(request_targets_non_active_turn(
             Some("turn-1"),
             &turn_one_settled,
             &json!({"turnId": "turn-1"}),
-        ));
+        )
+        .unwrap());
         assert!(!request_targets_non_active_turn(
             Some("turn-2"),
             &turn_one_settled,
             &json!({"turnId": "turn-2"}),
-        ));
-        assert!(!request_targets_non_active_turn(
-            None,
-            &no_settled_turns,
-            &json!({}),
-        ));
+        )
+        .unwrap());
+        assert!(!request_targets_non_active_turn(None, &no_settled_turns, &json!({}),).unwrap());
         assert!(request_targets_non_active_turn(
             Some("turn-2"),
             &turn_one_settled,
             &json!({"request": {"turnId": "turn-1"}}),
-        ));
+        )
+        .unwrap());
         assert!(!request_targets_non_active_turn(
             Some("turn-2"),
             &turn_one_settled,
             &json!({"request": {"turnId": "turn-2"}}),
-        ));
+        )
+        .unwrap());
     }
 
     #[test]
     fn settled_provider_turn_history_never_evicts_exact_identities() {
         let mut settled = SettledProviderTurnIds::default();
         for index in 0..MAX_SETTLED_PROVIDER_TURN_IDS {
-            assert!(settled.insert(format!("turn-{index}")));
+            assert!(settled.insert(format!("turn-{index}")).unwrap());
         }
 
         assert_eq!(settled.ids.len(), MAX_SETTLED_PROVIDER_TURN_IDS);
-        assert!(settled.contains("turn-0"));
-        assert!(settled.contains("turn-1"));
+        assert!(settled.contains("turn-0").unwrap());
+        assert!(settled.contains("turn-1").unwrap());
         assert!(settled.at_capacity());
-        assert!(!settled.insert(format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}")));
-        assert!(!settled.contains(&format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}")));
+        assert!(!settled
+            .insert(format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}"))
+            .unwrap());
+        assert!(!settled
+            .contains(&format!("turn-{MAX_SETTLED_PROVIDER_TURN_IDS}"))
+            .unwrap());
         assert_eq!(settled.ids.len(), MAX_SETTLED_PROVIDER_TURN_IDS);
-        assert!(settled.contains("turn-0"));
+        assert!(settled.contains("turn-0").unwrap());
         assert!(settled.filter.is_empty());
     }
 
@@ -4884,7 +5093,7 @@ done
 
         settled.restore("turn-restored".to_owned()).unwrap();
 
-        assert!(settled.contains("turn-restored"));
+        assert!(settled.contains("turn-restored").unwrap());
     }
 
     #[test]
@@ -4898,8 +5107,8 @@ done
             )
             .unwrap();
 
-        assert!(settled.contains("turn-older"));
-        assert!(settled.contains("turn-latest"));
+        assert!(settled.contains("turn-older").unwrap());
+        assert!(settled.contains("turn-latest").unwrap());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 use serde_json::Value;
@@ -30,7 +31,7 @@ pub enum AcpxRuntimeEventKind {
     Done,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum AcpxTurnStatus {
     Completed,
     Failed,

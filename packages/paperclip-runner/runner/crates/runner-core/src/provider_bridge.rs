@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
+use crate::indexed_store::{ExactReceipt, IndexedStore};
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -84,6 +85,15 @@ pub struct ToolResult {
 struct CompletedToolCall {
     call: PendingToolCall,
     result: ToolResult,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum IndexedToolReceipt {
+    Completed { receipt: CompletedToolCall },
+    // Legacy checkpoints sometimes retained only an identity. Preserve that
+    // denial; absence of an old result must never authorize executing it again.
+    LegacyTombstone { call_id: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -187,6 +197,10 @@ impl DurableReplayFilter {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderToolBridge {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    indexed_receipt_namespace: Option<String>,
+    #[serde(skip)]
+    receipt_store: Option<IndexedStore>,
     authorized: BTreeMap<String, AuthorizedTool>,
     #[serde(default)]
     catalog_operations: Vec<AuthorizedTool>,
@@ -310,6 +324,98 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl ProviderToolBridge {
+    pub(crate) fn require_exact_migration_source(&self) -> Result<(), ProviderBridgeError> {
+        if !self.settled_call_filter.is_empty() {
+            return Err(ProviderBridgeError::invalid(
+                "legacy provider has probabilistic receipts; migration requires reconciliation",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn bind_indexed_receipts(
+        &mut self,
+        store: IndexedStore,
+        namespace: String,
+    ) -> Result<(), ProviderBridgeError> {
+        if self
+            .indexed_receipt_namespace
+            .as_ref()
+            .is_some_and(|current| current != &namespace)
+        {
+            return Err(ProviderBridgeError::invalid(
+                "provider receipt namespace changed",
+            ));
+        }
+        self.indexed_receipt_namespace = Some(namespace);
+        self.receipt_store = Some(store);
+        Ok(())
+    }
+
+    fn indexed_receipt(
+        &self,
+        call_id: &str,
+    ) -> Result<Option<IndexedToolReceipt>, ProviderBridgeError> {
+        let Some(namespace) = &self.indexed_receipt_namespace else {
+            return Ok(None);
+        };
+        let store = self
+            .receipt_store
+            .as_ref()
+            .ok_or_else(|| ProviderBridgeError::invalid("provider receipt store is unavailable"))?;
+        store
+            .receipt(namespace, call_id)
+            .map_err(|error| ProviderBridgeError::invalid(error.to_string()))?
+            .map(|bytes| {
+                serde_json::from_slice(&bytes).map_err(|_| {
+                    ProviderBridgeError::invalid("provider indexed receipt is malformed")
+                })
+            })
+            .transpose()
+    }
+
+    /// Build a bounded checkpoint candidate. The caller must commit these
+    /// receipts and the candidate state in ONE store transaction before using
+    /// the candidate or releasing a provider result. This function does no I/O.
+    pub(crate) fn checkpoint_indexed_receipts(
+        &mut self,
+    ) -> Result<Vec<ExactReceipt>, ProviderBridgeError> {
+        let Some(namespace) = &self.indexed_receipt_namespace else {
+            return Ok(vec![]);
+        };
+        let mut receipts = Vec::new();
+        for (key, receipt) in self.completed.iter().chain(self.settled_results.iter()) {
+            receipts.push(ExactReceipt {
+                namespace: namespace.clone(),
+                key: key.clone(),
+                bytes: serde_json::to_vec(&IndexedToolReceipt::Completed {
+                    receipt: receipt.clone(),
+                })
+                .map_err(|_| ProviderBridgeError::invalid("cannot encode provider receipt"))?,
+            });
+        }
+        for key in self.settled_call_ids.iter() {
+            if !self.completed.contains_key(key) && !self.settled_results.contains_key(key) {
+                receipts.push(ExactReceipt {
+                    namespace: namespace.clone(),
+                    key: key.clone(),
+                    bytes: serde_json::to_vec(&IndexedToolReceipt::LegacyTombstone {
+                        call_id: key.clone(),
+                    })
+                    .map_err(|_| {
+                        ProviderBridgeError::invalid("cannot encode provider tombstone")
+                    })?,
+                });
+            }
+        }
+        self.completed.clear();
+        self.settled_results.clear();
+        self.settled_call_ids.clear();
+        self.retained_result_bytes = 0;
+        self.durable_run_receipt_limit_reached = !self.settled_call_filter.is_empty();
+        Ok(receipts)
+    }
+
     pub fn prepare(&mut self, tool_set: AuthorizedToolSet) -> Result<(), ProviderBridgeError> {
         self.prepare_internal(tool_set, false)
     }
@@ -620,15 +726,33 @@ impl ProviderToolBridge {
             }
             return Ok(Some(completed.result.clone()));
         }
-        Ok(None)
+        match self.indexed_receipt(call_id)? {
+            Some(IndexedToolReceipt::Completed { receipt }) => {
+                if receipt.call.call_id != call_id
+                    || receipt.call.operation_id != operation_id
+                    || &receipt.call.input != input
+                {
+                    return Err(ProviderBridgeError::invalid(
+                        "provider replayed an indexed tool call with different input",
+                    ));
+                }
+                Ok(Some(receipt.result))
+            }
+            Some(IndexedToolReceipt::LegacyTombstone { .. }) => Err(ProviderBridgeError::invalid(
+                "legacy settled tool result cannot be replayed",
+            )),
+            None => Ok(None),
+        }
     }
 
-    pub fn has_completed_call(&self, call_id: &str) -> bool {
-        self.completed.contains_key(call_id) || self.has_settled_call_id(call_id)
+    pub fn has_completed_call(&self, call_id: &str) -> Result<bool, ProviderBridgeError> {
+        Ok(self.completed.contains_key(call_id)
+            || self.has_settled_call_id(call_id)
+            || self.indexed_receipt(call_id)?.is_some())
     }
 
-    pub(crate) fn has_call_receipt(&self, call_id: &str) -> bool {
-        self.pending.contains_key(call_id) || self.has_completed_call(call_id)
+    pub(crate) fn has_call_receipt(&self, call_id: &str) -> Result<bool, ProviderBridgeError> {
+        Ok(self.pending.contains_key(call_id) || self.has_completed_call(call_id)?)
     }
 
     pub fn begin_call(
@@ -682,6 +806,7 @@ impl ProviderToolBridge {
         if self.completed.contains_key(&call_id)
             || self.settled_results.contains_key(&call_id)
             || self.has_settled_call_id(&call_id)
+            || self.indexed_receipt(&call_id)?.is_some()
         {
             return Err(ProviderBridgeError::invalid(
                 "provider reused a completed tool call id",
@@ -781,6 +906,16 @@ impl ProviderToolBridge {
                 Err(ProviderBridgeError::invalid(
                     "conflicting duplicate settled tool result",
                 ))
+            };
+        }
+        if let Some(receipt) = self.indexed_receipt(&result.call_id)? {
+            return match receipt {
+                IndexedToolReceipt::Completed { receipt } if receipt.result == result => {
+                    Ok(result.result)
+                }
+                _ => Err(ProviderBridgeError::invalid(
+                    "conflicting or incomplete indexed tool result",
+                )),
             };
         }
         if self.has_settled_call_id(&result.call_id) {
@@ -1510,6 +1645,100 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    #[ignore = "explicit 100,000-call storage qualification"]
+    fn indexed_receipts_allow_one_hundred_thousand_calls_without_a_turn_reset() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-bridge-indexed-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("state.sqlite");
+        let store = IndexedStore::open(&path, "provider-session", true).unwrap();
+        let operation = AuthorizedTool {
+            operation_id: "get_task_context".into(),
+            version: 1,
+            description: "Read task context".into(),
+            input_schema: json!({"type":"object"}),
+            response_schema: json!({"type":"object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.into(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        bridge
+            .bind_indexed_receipts(store.clone(), "semantic/session-1".into())
+            .unwrap();
+        for index in 0..100_000u64 {
+            let id = format!("call-{index}");
+            bridge
+                .begin_call(
+                    id.clone(),
+                    "get_task_context".into(),
+                    json!({"index":index}),
+                )
+                .unwrap();
+            bridge
+                .apply_result(ToolResult {
+                    call_id: id,
+                    operation_id: "get_task_context".into(),
+                    result: json!({"index":index}),
+                    is_error: false,
+                })
+                .unwrap();
+            let mut candidate = bridge.clone();
+            let receipts = candidate.checkpoint_indexed_receipts().unwrap();
+            let bytes = serde_json::to_vec(&candidate).unwrap();
+            assert!(bytes.len() < 2_048);
+            store.commit("bridge", index, bytes, receipts).unwrap();
+            bridge = candidate;
+            assert!(!bridge.durable_run_receipt_limit_reached());
+        }
+        assert!(
+            bridge.pending.is_empty()
+                && bridge.completed.is_empty()
+                && bridge.settled_call_ids.is_empty()
+        );
+        drop(bridge);
+        drop(store);
+        let store = IndexedStore::open(&path, "provider-session", false).unwrap();
+        let snapshot = store.read_state("bridge").unwrap().unwrap();
+        assert_eq!(snapshot.generation, 100_000);
+        let mut recovered: ProviderToolBridge = serde_json::from_slice(&snapshot.bytes).unwrap();
+        // Missing storage is an error even when the in-memory cache is empty.
+        assert!(recovered
+            .replay_result("call-0", "get_task_context", &json!({"index":0}))
+            .is_err());
+        recovered
+            .bind_indexed_receipts(store.clone(), "semantic/session-1".into())
+            .unwrap();
+        recovered.attach_existing_run().unwrap();
+        assert_eq!(
+            recovered
+                .replay_result("call-0", "get_task_context", &json!({"index":0}))
+                .unwrap()
+                .unwrap()
+                .result,
+            json!({"index":0})
+        );
+        assert!(recovered
+            .replay_result("call-0", "get_task_context", &json!({"index":1}))
+            .is_err());
+        assert!(recovered
+            .begin_call(
+                "call-0".into(),
+                "get_task_context".into(),
+                json!({"index":0})
+            )
+            .is_err());
+        drop(recovered);
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn completion_bridge() -> ProviderToolBridge {
         let operation = AuthorizedTool {
             operation_id: "paperclip_finish".to_owned(),
@@ -1558,7 +1787,7 @@ mod tests {
             error.safe_provider_message(),
             Some(COMPLETION_INPUT_SCHEMA_HINT)
         );
-        assert!(!over_limit.has_call_receipt("call-over-limit"));
+        assert!(!over_limit.has_call_receipt("call-over-limit").unwrap());
     }
 
     #[test]
@@ -1575,7 +1804,7 @@ mod tests {
         assert!(message.contains("/properties/summary/type"), "{message}");
         assert!(!message.contains("PRIVATE_FIELD"));
         assert!(!message.contains("PRIVATE_VALUE"));
-        assert!(!bridge.has_call_receipt("bad-summary"));
+        assert!(!bridge.has_call_receipt("bad-summary").unwrap());
         bridge
             .begin_call(
                 "corrected-summary".to_owned(),
@@ -1684,7 +1913,7 @@ mod tests {
             })
             .unwrap();
 
-        assert!(!bridge.has_call_receipt("shared-call"));
+        assert!(!bridge.has_call_receipt("shared-call").unwrap());
         bridge
             .begin_call(
                 "shared-call".to_owned(),
@@ -1692,7 +1921,7 @@ mod tests {
                 json!({}),
             )
             .unwrap();
-        assert!(bridge.has_call_receipt("shared-call"));
+        assert!(bridge.has_call_receipt("shared-call").unwrap());
     }
 
     #[test]
@@ -1826,7 +2055,7 @@ mod tests {
         let recovered: ProviderToolBridge =
             serde_json::from_str(&serde_json::to_string(&bridge).unwrap()).unwrap();
         recovered.validate_recovered().unwrap();
-        assert!(recovered.has_completed_call("call-0"));
+        assert!(recovered.has_completed_call("call-0").unwrap());
     }
 
     #[test]

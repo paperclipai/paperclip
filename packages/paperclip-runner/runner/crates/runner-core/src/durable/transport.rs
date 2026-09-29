@@ -25,6 +25,9 @@ use super::{
 };
 
 const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
+// Reconnect with fresh challenge-derived keys before a connection-local nonce
+// counter can become a lifetime limit or exceed the exact JSON representation.
+const MAX_SECURE_CHANNEL_FRAMES: u64 = 1_048_576;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_READ_TIMEOUT: Duration = Duration::from_millis(250);
@@ -735,6 +738,9 @@ pub(crate) struct Welcome {
     pub(crate) acked_source_seq: Option<u64>,
     pub(crate) pending_commands: Vec<Command>,
     pub(crate) warm_transition_version: Option<u64>,
+    pub(crate) command_epochs: bool,
+    pub(crate) event_epoch_limit: Option<u64>,
+    pub(crate) source_epoch: Option<String>,
     pub(crate) lease_renewal_version: Option<u64>,
     pub(crate) warm_transition: Option<Value>,
     pub(crate) warm_transition_phase: Option<String>,
@@ -826,6 +832,9 @@ impl SecureChannel {
         server_direction: bool,
     ) -> Result<Value, DurableRunnerError> {
         let counter = self.send_counter;
+        if counter >= MAX_SECURE_CHANNEL_FRAMES {
+            return Err(DurableRunnerError::invalid("secure channel rekey required"));
+        }
         let direction = if server_direction { b"P3S1" } else { b"P3C1" };
         let label = if server_direction {
             "core_to_client"
@@ -860,6 +869,9 @@ impl SecureChannel {
         frame: &Value,
         server_direction: bool,
     ) -> Result<Value, DurableRunnerError> {
+        if self.receive_counter >= MAX_SECURE_CHANNEL_FRAMES {
+            return Err(DurableRunnerError::invalid("secure channel rekey required"));
+        }
         if frame.get("schema").and_then(Value::as_str) != Some(SECURE_FRAME_SCHEMA) {
             return Err(DurableRunnerError::invalid(
                 "unauthenticated plaintext control frame was rejected",
@@ -911,6 +923,8 @@ pub(crate) struct AuthenticatedTransport {
     socket: RunnerSocket,
     secure_channel: SecureChannel,
     max_frame_bytes: usize,
+    deferred: std::collections::VecDeque<(Value, usize)>,
+    deferred_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -998,6 +1012,8 @@ impl AuthenticatedTransport {
                     "protocolMin": PROTOCOL_MIN_VERSION,
                     "protocolMax": PROTOCOL_VERSION,
                     "warmTransitionVersion": 1,
+                    "durability": "durability.indexed_state.v1",
+                    "outputBodies": crate::output_body::CAPABILITY,
                     "runnerInstanceId": state.runner_instance_id,
                     "environmentLeaseId": state.environment_lease_id,
                     "runId": state.run_id,
@@ -1013,6 +1029,14 @@ impl AuthenticatedTransport {
                     },
                 },
             });
+            if state.indexed_durability() {
+                hello["payload"]["commandEpochs"] = json!(super::command_epochs::CAPABILITY);
+                hello["payload"]["eventEpochs"] = json!(super::event_epochs::CAPABILITY);
+                hello["payload"]["eventResume"] = state.event_resume();
+            }
+            if let Some(epoch) = &state.controller_epoch {
+                hello["payload"]["resume"]["controllerEpoch"] = json!(epoch);
+            }
             if let Some(transition) = &state.warm_transition {
                 hello["payload"]["warmTransitionId"] = json!(transition.receipt.transition_id);
             }
@@ -1088,6 +1112,8 @@ impl AuthenticatedTransport {
                 socket,
                 secure_channel,
                 max_frame_bytes: config.max_frame_bytes,
+                deferred: Default::default(),
+                deferred_bytes: 0,
             };
             // Ticket validation and lease persistence happen before the server
             // emits welcome. Keep that work bounded without assuming a loaded
@@ -1113,6 +1139,20 @@ impl AuthenticatedTransport {
                 expected_lease,
                 challenge.selected_version,
             )?;
+            if welcome.command_epochs
+                != (challenge.command_epochs.as_deref() == Some(super::command_epochs::CAPABILITY))
+            {
+                return Err(DurableRunnerError::invalid(
+                    "welcome changed the command epoch capability",
+                ));
+            }
+            if welcome.event_epoch_limit != challenge.event_epoch_limit
+                || welcome.source_epoch != state.source_epoch
+            {
+                return Err(DurableRunnerError::invalid(
+                    "welcome changed the event epoch contract",
+                ));
+            }
             // Authentication can wait longer for control-plane validation, but
             // the steady-state runner loop must return to provider polling
             // promptly when no control message is available.
@@ -1142,7 +1182,97 @@ impl AuthenticatedTransport {
     }
 
     pub(crate) fn receive_json(&mut self) -> Result<Option<Value>, DurableRunnerError> {
+        if let Some((value, bytes)) = self.deferred.pop_front() {
+            self.deferred_bytes -= bytes;
+            return Ok(Some(value));
+        }
+        self.receive_control_during_storage_wait()
+    }
+
+    pub(crate) fn receive_control_during_storage_wait(
+        &mut self,
+    ) -> Result<Option<Value>, DurableRunnerError> {
         self.receive_json_until(None)
+    }
+
+    pub(crate) fn receive_control_during_epoch(
+        &mut self,
+    ) -> Result<Option<Value>, DurableRunnerError> {
+        if let Some(index) = self.deferred.iter().position(|(value, _)| {
+            !matches!(
+                value.get("kind").and_then(Value::as_str),
+                Some("command" | "command_epoch_rotate")
+            )
+        }) {
+            let (value, bytes) = self
+                .deferred
+                .remove(index)
+                .expect("located deferred epoch control");
+            self.deferred_bytes -= bytes;
+            return Ok(Some(value));
+        }
+        self.receive_json_until(None)
+    }
+
+    pub(crate) fn defer_control(&mut self, value: Value) -> Result<(), DurableRunnerError> {
+        let bytes = serde_json::to_vec(&value)
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))?
+            .len();
+        // Authenticated cumulative ACKs with no intervening command can be
+        // collapsed. A large sent prefix must not fill the control backlog
+        // simply because its receipts arrive while local storage is full.
+        if value.get("kind").and_then(Value::as_str) == Some("ack") {
+            let next = value
+                .pointer("/payload/ackedSourceSeq")
+                .and_then(Value::as_u64);
+            let previous = self.deferred.iter().rev().find_map(|(previous, _)| {
+                (previous.get("kind").and_then(Value::as_str) == Some("ack")
+                    && previous.pointer("/payload/sourceEpoch")
+                        == value.pointer("/payload/sourceEpoch"))
+                .then(|| {
+                    previous
+                        .pointer("/payload/ackedSourceSeq")
+                        .and_then(Value::as_u64)
+                })
+                .flatten()
+            });
+            if next.is_none() || previous.zip(next).is_some_and(|(old, new)| new < old) {
+                return Err(DurableRunnerError::invalid(
+                    "cumulative ACK regressed in storage control backlog",
+                ));
+            }
+            if let Some((previous, previous_bytes)) = self.deferred.back_mut() {
+                if previous.get("kind").and_then(Value::as_str) == Some("ack")
+                    && previous.pointer("/payload/sourceEpoch")
+                        == value.pointer("/payload/sourceEpoch")
+                    && value
+                        .pointer("/payload/ackedSourceSeq")
+                        .and_then(Value::as_u64)
+                        .zip(
+                            previous
+                                .pointer("/payload/ackedSourceSeq")
+                                .and_then(Value::as_u64),
+                        )
+                        .is_some_and(|(new, old)| new >= old)
+                    && self.deferred_bytes - *previous_bytes + bytes <= 32 * 1024 * 1024
+                {
+                    self.deferred_bytes = self.deferred_bytes - *previous_bytes + bytes;
+                    *previous = value;
+                    *previous_bytes = bytes;
+                    return Ok(());
+                }
+            }
+        }
+        if self.deferred.len() >= 128
+            || self.deferred_bytes.saturating_add(bytes) > 32 * 1024 * 1024
+        {
+            return Err(DurableRunnerError::invalid(
+                "storage pressure control backlog is full",
+            ));
+        }
+        self.deferred.push_back((value, bytes));
+        self.deferred_bytes += bytes;
+        Ok(())
     }
 
     fn receive_json_until(
@@ -1181,6 +1311,20 @@ struct AuthChallenge {
     server_proof: String,
     #[serde(default)]
     warm_transition_version: Option<u64>,
+    #[serde(default)]
+    durability: Option<String>,
+    #[serde(default)]
+    output_bodies: Option<String>,
+    #[serde(default)]
+    command_epochs: Option<String>,
+    #[serde(default)]
+    event_epochs: Option<String>,
+    #[serde(default)]
+    event_resume: Option<Value>,
+    #[serde(default)]
+    event_epoch_limit: Option<u64>,
+    #[serde(default)]
+    command_resume: Option<Value>,
     #[serde(default)]
     warm_transition_id: Option<String>,
 }
@@ -1249,6 +1393,55 @@ fn validate_challenge(
             "authentication challenge is expired or selected an unsupported protocol",
         ));
     }
+    if state.indexed_durability()
+        && (challenge.durability.as_deref() != Some("durability.indexed_state.v1")
+            || challenge.output_bodies.as_deref() != Some(crate::output_body::CAPABILITY))
+    {
+        return Err(DurableRunnerError::invalid(
+            "indexed durability capability was not authenticated",
+        ));
+    }
+    if challenge
+        .command_epochs
+        .as_deref()
+        .is_some_and(|v| v != super::command_epochs::CAPABILITY)
+        || (state.controller_epoch.is_some()
+            && challenge.command_epochs.as_deref() != Some(super::command_epochs::CAPABILITY))
+    {
+        return Err(DurableRunnerError::invalid(
+            "command epoch capability was not authenticated",
+        ));
+    }
+    if challenge.command_epochs.is_some()
+        && challenge.command_resume
+            != Some(json!({
+                "controllerEpoch": state.controller_epoch, "lastControllerCommandSeq": state.last_controller_command_seq,
+            }))
+    {
+        return Err(DurableRunnerError::invalid(
+            "authentication challenge changed the command resume cursor",
+        ));
+    }
+    if challenge
+        .event_epochs
+        .as_deref()
+        .is_some_and(|v| v != super::event_epochs::CAPABILITY)
+        || ((state.source_epoch.is_some() || state.event_epoch_transition.is_some())
+            && challenge.event_epochs.is_none())
+        || (challenge.event_epochs.is_some()
+            && (challenge.selected_version < 2
+                || !state.indexed_durability()
+                || challenge.event_resume != Some(state.event_resume())
+                || challenge.event_epoch_limit.is_none_or(|limit| {
+                    !(4..=super::event_epochs::DEFAULT_LIMIT).contains(&limit)
+                })))
+        || (challenge.event_epochs.is_none()
+            && (challenge.event_resume.is_some() || challenge.event_epoch_limit.is_some()))
+    {
+        return Err(DurableRunnerError::invalid(
+            "event epoch contract was not authenticated exactly",
+        ));
+    }
     if state.warm_transition.as_ref().is_some_and(|transition| {
         challenge.warm_transition_version != Some(1)
             || challenge.warm_transition_id.as_deref()
@@ -1296,6 +1489,27 @@ fn challenge_signing_bytes(challenge: &AuthChallenge) -> Vec<u8> {
         "credentialExpiresAtUnixMs": challenge.credential_expires_at_unix_ms,
         "revocationEpoch": challenge.revocation_epoch,
     });
+    if let Some(capability) = &challenge.event_epochs {
+        body["eventEpochs"] = json!(capability);
+    }
+    if let Some(resume) = &challenge.event_resume {
+        body["eventResume"] = resume.clone();
+    }
+    if let Some(limit) = challenge.event_epoch_limit {
+        body["eventEpochLimit"] = json!(limit);
+    }
+    if let Some(resume) = &challenge.command_resume {
+        body["commandResume"] = resume.clone();
+    }
+    if let Some(capability) = &challenge.command_epochs {
+        body["commandEpochs"] = json!(capability);
+    }
+    if let Some(durability) = &challenge.durability {
+        body["durability"] = json!(durability);
+    }
+    if let Some(capability) = &challenge.output_bodies {
+        body["outputBodies"] = json!(capability);
+    }
     if let Some(version) = challenge.warm_transition_version {
         body["warmTransitionVersion"] = json!(version);
     }
@@ -1429,8 +1643,21 @@ fn validate_welcome(
         },
         lease,
         acked_source_seq: payload.get("ackedSourceSeq").and_then(Value::as_u64),
+        source_epoch: payload
+            .get("sourceEpoch")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        event_epoch_limit: if payload.get("eventEpochs").and_then(Value::as_str)
+            == Some(super::event_epochs::CAPABILITY)
+        {
+            payload.get("eventEpochLimit").and_then(Value::as_u64)
+        } else {
+            None
+        },
         pending_commands,
         warm_transition_version: payload.get("warmTransitionVersion").and_then(Value::as_u64),
+        command_epochs: payload.get("commandEpochs").and_then(Value::as_str)
+            == Some(super::command_epochs::CAPABILITY),
         lease_renewal_version: payload
             .get("connectionLeaseRenewalVersion")
             .and_then(Value::as_u64),
@@ -1594,7 +1821,7 @@ fn receive_plain_optional_until(
                 .map_err(map_websocket_error)?,
             Ok(Message::Pong(_)) => {}
             Ok(Message::Close(_)) => {
-                return Err(DurableRunnerError::invalid(
+                return Err(DurableRunnerError::transport_unavailable(
                     "WebSocket peer closed the connection",
                 ))
             }
@@ -1617,7 +1844,28 @@ fn receive_plain_optional_until(
 }
 
 fn map_websocket_error(error: tungstenite::Error) -> DurableRunnerError {
-    DurableRunnerError::invalid(format!("WebSocket transport failed: {error}"))
+    let disconnected = match &error {
+        tungstenite::Error::ConnectionClosed
+        | tungstenite::Error::AlreadyClosed
+        | tungstenite::Error::Protocol(
+            tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+        ) => true,
+        tungstenite::Error::Io(error) => matches!(
+            error.kind(),
+            io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::NotConnected
+        ),
+        _ => false,
+    };
+    let message = format!("WebSocket transport failed: {error}");
+    if disconnected {
+        DurableRunnerError::transport_unavailable(message)
+    } else {
+        DurableRunnerError::invalid(message)
+    }
 }
 
 fn random_nonce() -> Result<String, DurableRunnerError> {
@@ -1710,6 +1958,7 @@ fn hex_nibble(byte: u8) -> Result<u8, DurableRunnerError> {
 
 #[cfg(test)]
 mod tests {
+    include!("storage_pressure_tests.rs");
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1788,6 +2037,13 @@ mod tests {
             revocation_epoch: server_credential.revocation_epoch,
             server_proof: String::new(),
             warm_transition_version: None,
+            command_epochs: None,
+            event_epochs: None,
+            event_resume: None,
+            event_epoch_limit: None,
+            command_resume: None,
+            durability: Some("durability.indexed_state.v1".into()),
+            output_bodies: Some(crate::output_body::CAPABILITY.into()),
             warm_transition_id: None,
         };
         let signing = challenge_signing_bytes(&challenge);
@@ -1821,6 +2077,8 @@ mod tests {
                     "credentialLeaseId": &challenge.credential_lease_id,
                     "revocationEpoch": challenge.revocation_epoch,
                     "serverProof": &challenge.server_proof,
+                    "durability": &challenge.durability,
+                    "outputBodies": &challenge.output_bodies,
                 },
             }),
             config.max_frame_bytes,
@@ -2266,6 +2524,36 @@ mod tests {
     }
 
     #[test]
+    fn secure_channel_rekeys_before_counter_exhaustion_and_rejects_old_ciphertext() {
+        let key = [7_u8; 32];
+        let mut client = SecureChannel::client(&key, b"challenge", b"server", b"client").unwrap();
+        let mut server = SecureChannel::server(&key, b"challenge", b"server", b"client").unwrap();
+        let old_frame = client.encrypt(br#"{"old":true}"#, false).unwrap();
+        client.send_counter = MAX_SECURE_CHANNEL_FRAMES - 1;
+        server.receive_counter = MAX_SECURE_CHANNEL_FRAMES - 1;
+        let last = client.encrypt(br#"{"last":true}"#, false).unwrap();
+        assert_eq!(server.decrypt(&last, true).unwrap(), json!({"last": true}));
+        assert!(client
+            .encrypt(br#"{}"#, false)
+            .unwrap_err()
+            .to_string()
+            .contains("rekey required"));
+        assert!(server
+            .decrypt(&last, true)
+            .unwrap_err()
+            .to_string()
+            .contains("rekey required"));
+        let mut client =
+            SecureChannel::client(&key, b"new-challenge", b"new-server", b"client").unwrap();
+        let mut server =
+            SecureChannel::server(&key, b"new-challenge", b"new-server", b"client").unwrap();
+        assert!(server.decrypt(&old_frame, true).is_err());
+        let new = client.encrypt(br#"{"new":true}"#, false).unwrap();
+        assert_eq!(new["counter"], 0);
+        assert_eq!(server.decrypt(&new, true).unwrap(), json!({"new": true}));
+    }
+
+    #[test]
     fn control_identity_mismatch_fails_closed() {
         let config = config(3000);
         let state = test_state(&config);
@@ -2318,6 +2606,13 @@ mod tests {
                 revocation_epoch: 0,
                 server_proof: String::new(),
                 warm_transition_version: None,
+                command_epochs: None,
+                event_epochs: None,
+                event_resume: None,
+                event_epoch_limit: None,
+                command_resume: None,
+                durability: None,
+                output_bodies: None,
                 warm_transition_id: None,
             };
             let signing = challenge_signing_bytes(&challenge);

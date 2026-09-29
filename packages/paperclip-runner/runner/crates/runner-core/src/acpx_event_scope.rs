@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
@@ -12,7 +13,7 @@ const MAX_SETTLED_TURN_IDS: usize = 4_096;
 /// The sidecar transport validates framing and sequence identity. This scope
 /// validates that a well-formed event still belongs to the run and turn that
 /// runnerd is currently executing.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AcpxEventScope {
     run_id: String,
     active_turn_id: Option<String>,

@@ -36,6 +36,7 @@ fn config(state_dir: PathBuf) -> DurableRunnerConfig {
 
 fn command() -> Command {
     Command {
+        controller_epoch: None,
         schema: "paperclip.prp.command.v1".to_owned(),
         command_id: "command_1".to_owned(),
         controller_seq: 1,

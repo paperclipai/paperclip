@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/output-body-reference.schema.json",
+  "title": "Immutable output body reference",
+  "type": "object",
+  "required": ["schema", "bodyId", "sha256", "byteLength", "mediaType"],
+  "properties": {
+    "schema": { "const": "paperclip.output.body.v1" },
+    "bodyId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "byteLength": { "type": "string", "pattern": "^[1-9][0-9]{0,6}$" },
+    "mediaType": { "const": "text/plain; charset=utf-8" }
+  },
+  "additionalProperties": false
+}

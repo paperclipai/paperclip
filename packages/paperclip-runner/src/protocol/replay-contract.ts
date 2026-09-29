@@ -1,3 +1,4 @@
+import type { EventEpochTransition } from "../control-plane/event-epochs.js";
 import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import type { FromSchema } from "json-schema-to-ts";
 
@@ -70,6 +71,8 @@ export interface PrpEvent {
   schema: PrpEventV1["schema"] | PrpEventV2["schema"];
   sourceEventId: string;
   sourceSeq: number;
+  sourceEpoch?: string;
+  sourceEpochTransition?: EventEpochTransition;
   sourceInstanceId: string;
   sourceKind: PrpEventV1["sourceKind"] | PrpEventV2["sourceKind"];
   runId: string;

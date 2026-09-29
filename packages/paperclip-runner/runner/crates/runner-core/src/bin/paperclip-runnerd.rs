@@ -8,8 +8,9 @@ use std::time::Duration;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use paperclip_runner_core::durable::{
-    capture_bootstrap_ticket, redact_diagnostic_text, run_durable_runner, AcpxLaunchProfile,
-    DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
+    capture_bootstrap_ticket, redact_diagnostic_text, run_durable_runner,
+    run_indexed_durable_runner, AcpxLaunchProfile, DurableRunnerConfig, OpenCodeLaunchProfile,
+    QualifiedLaunchArtifact,
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
@@ -261,14 +262,7 @@ fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, Loc
     })
 }
 
-fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
-    let ticket = capture_bootstrap_ticket()
-        .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
-        .ok_or_else(|| {
-            LocalRunnerError::invalid(
-                "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET is required for durable mode",
-            )
-        })?;
+fn durable_config(args: &[String]) -> Result<DurableRunnerConfig, LocalRunnerError> {
     let duration = |name: &str, default: u64| {
         optional_u64(args, name).map(|value| Duration::from_millis(value.unwrap_or(default)))
     };
@@ -312,7 +306,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
             "--ca-bundle-path is accepted only with wss://",
         ));
     }
-    let config = DurableRunnerConfig {
+    Ok(DurableRunnerConfig {
         connect_url,
         ca_bundle_path,
         state_dir: state_dir.clone(),
@@ -332,16 +326,35 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_delay: duration("--reconnect-delay-ms", 250)?,
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
-    };
+    })
+}
+
+fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
+    let ticket = capture_bootstrap_ticket()
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
+        .ok_or_else(|| {
+            LocalRunnerError::invalid(
+                "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET is required for durable mode",
+            )
+        })?;
+    let config = durable_config(args)?;
+    let state_dir = config.state_dir.clone();
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
-    run_durable_runner(config, ticket, executor)
-        .map_err(|error| LocalRunnerError::invalid(error.to_string()))
+    (if args.iter().any(|argument| argument == "--indexed-state") {
+        run_indexed_durable_runner(config, ticket, executor)
+    } else {
+        run_durable_runner(config, ticket, executor)
+    })
+    .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }
 
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     if args == ["--build-metadata"] {
         println!("{}", build_metadata());
         return Ok(());
+    }
+    if args.first().is_some_and(|argument| argument == "storage") {
+        return run_storage(args);
     }
     if args.iter().any(|argument| argument == "--connect-url")
         || args.iter().any(|argument| argument == "--listen-address")
@@ -366,6 +379,208 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
             optional_u64(args, "--shutdown-grace-ms")?.unwrap_or(100),
         ),
     })
+}
+
+fn run_storage(args: &[String]) -> Result<(), LocalRunnerError> {
+    use base64::Engine;
+    use paperclip_runner_core::indexed_store::IndexedStore;
+    let operation = args.get(1).map(String::as_str).unwrap_or("");
+    if operation == "snapshot-session" {
+        use paperclip_runner_core::indexed_session_snapshot::{snapshot_session, ExpectedState};
+        let states = [
+            ExpectedState {
+                generation: value(args, "--runner-generation")?,
+                sha256: value(args, "--runner-sha256")?,
+            },
+            ExpectedState {
+                generation: value(args, "--provider-generation")?,
+                sha256: value(args, "--provider-sha256")?,
+            },
+        ];
+        let result = snapshot_session(
+            &PathBuf::from(value(args, "--directory")?),
+            &PathBuf::from(value(args, "--destination")?),
+            states,
+        )
+        .map_err(|e| LocalRunnerError::invalid(e.to_string()))?;
+        println!("{result}");
+        return Ok(());
+    }
+    if operation == "inspect-state" {
+        return paperclip_runner_core::indexed_inspection::stream(
+            &PathBuf::from(value(args, "--path")?),
+            std::io::stdout().lock(),
+        )
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()));
+    }
+    if operation == "read-receipt" {
+        let bytes = paperclip_runner_core::indexed_store::read_only_receipt(
+            &PathBuf::from(value(args, "--path")?),
+            &value(args, "--binding")?,
+            value(args, "--generation")?
+                .parse::<paperclip_runner_core::indexed_revision::Revision>()
+                .map_err(|_| LocalRunnerError::invalid("invalid proof generation"))?,
+            &value(args, "--namespace")?,
+            &value(args, "--key")?,
+        )
+        .map_err(|e| LocalRunnerError::invalid(e.to_string()))?;
+        println!(
+            "{}",
+            json!(bytes.map(|b| base64::engine::general_purpose::STANDARD.encode(b)))
+        );
+        return Ok(());
+    }
+    if operation == "rpc" {
+        let store = IndexedStore::open(
+            &PathBuf::from(value(args, "--path")?),
+            &value(args, "--binding")?,
+            optional_value(args, "--create")?.as_deref() == Some("true"),
+        )
+        .map_err(|e| LocalRunnerError::invalid(e.to_string()))?;
+        return paperclip_runner_core::indexed_rpc::serve(
+            store,
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+        )
+        .map_err(|e| LocalRunnerError::invalid(e.to_string()));
+    }
+    if operation == "archive-controller" {
+        paperclip_runner_core::indexed_archive::controller(
+            &PathBuf::from(value(args, "--directory")?),
+            &PathBuf::from(value(args, "--destination")?),
+            &value(args, "--digest")?,
+        )
+        .map_err(|e| LocalRunnerError::invalid(e.to_string()))?;
+        println!("{}", json!({"archive":"complete"}));
+        return Ok(());
+    }
+    if operation == "seal" {
+        paperclip_runner_core::indexed_archive::seal(
+            &PathBuf::from(value(args, "--directory")?),
+            &value(args, "--generation")?,
+        )
+        .map_err(|e| LocalRunnerError::invalid(e.to_string()))?;
+        println!("{}", json!({"seal":"complete"}));
+        return Ok(());
+    }
+    if operation == "archive-prepare" || operation == "archive-finish" {
+        let runner = PathBuf::from(value(args, "--directory")?);
+        let archive = PathBuf::from(value(args, "--destination")?);
+        let map = |e: paperclip_runner_core::durable::DurableRunnerError| {
+            LocalRunnerError::invalid(e.to_string())
+        };
+        if operation == "archive-prepare" {
+            paperclip_runner_core::indexed_archive::prepare(
+                &runner,
+                &archive,
+                &value(args, "--generation")?,
+                &value(args, "--digest")?,
+            )
+            .map_err(map)?;
+            println!("{}", json!({"archive":"prepared"}));
+        } else {
+            let finished =
+                paperclip_runner_core::indexed_archive::finish(&runner, &archive).map_err(map)?;
+            println!(
+                "{}",
+                json!({"archive":if finished {"complete"} else {"absent"}})
+            );
+        }
+        return Ok(());
+    }
+    if operation == "stage-legacy" {
+        let config = durable_config(args)?;
+        let destination = PathBuf::from(value(args, "--destination")?);
+        let fence_id = value(args, "--fence-id")?;
+        let map = |e: paperclip_runner_core::durable::DurableRunnerError| {
+            LocalRunnerError::invalid(e.to_string())
+        };
+        let runner = paperclip_runner_core::durable::DurableStateStore::stage_legacy(
+            &config,
+            &destination,
+            &fence_id,
+        )
+        .map_err(map)?;
+        let provider =
+            paperclip_runner_core::provider_backend::CodexCommandExecutor::with_runner_config(
+                &config.state_dir,
+                &config,
+            )
+            .stage_legacy(&destination, &fence_id)
+            .map_err(map)?;
+        println!(
+            "{}",
+            json!({"schema":"paperclip.runner.prepared-legacy-session.v1","runner":runner,"provider":provider})
+        );
+        return Ok(());
+    }
+    if !["partitions", "maintain", "relocate", "backup"].contains(&operation) {
+        return Err(LocalRunnerError::invalid(
+            "storage requires partitions, maintain, relocate, or backup",
+        ));
+    }
+    let path = PathBuf::from(value(args, "--path")?);
+    let binding = value(args, "--binding")?;
+    let store = IndexedStore::open(&path, &binding, false)
+        .map_err(|e| LocalRunnerError::invalid(e.to_string()))?;
+    let decode = |value: String| -> Result<String, LocalRunnerError> {
+        if value.len() > 2800 {
+            return Err(LocalRunnerError::invalid(
+                "partition cursor exceeds capacity",
+            ));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .map_err(|_| LocalRunnerError::invalid("invalid base64 partition cursor"))?;
+        String::from_utf8(bytes)
+            .map_err(|_| LocalRunnerError::invalid("invalid partition cursor UTF-8"))
+    };
+    let mapped = |error: paperclip_runner_core::durable::DurableRunnerError| {
+        LocalRunnerError::invalid(error.to_string())
+    };
+    match operation {
+        "partitions" => {
+            let after = optional_value(args, "--after")?.map(decode).transpose()?;
+            let entries = store
+                .partitions(after.as_deref(), usize_value(args, "--limit", 32)?)
+                .map_err(mapped)?;
+            let rows:Vec<_>=entries.iter().map(|entry|json!({"start":base64::engine::general_purpose::STANDARD.encode(&entry.lower_key),"file":entry.file,"records":entry.records.to_string(),"bytes":entry.bytes.to_string()})).collect();
+            println!(
+                "{}",
+                json!({"schema":"paperclip.receipt-partitions.v1","partitions":rows,"nextAfter":entries.last().map(|entry|base64::engine::general_purpose::STANDARD.encode(&entry.lower_key))})
+            );
+        }
+        "maintain" => {
+            let steps = usize_value(args, "--steps", 1)?;
+            if !(1..=1000).contains(&steps) {
+                return Err(LocalRunnerError::invalid(
+                    "maintenance steps must be 1 through 1000",
+                ));
+            }
+            for _ in 0..steps {
+                store.maintain().map_err(mapped)?;
+                std::thread::yield_now();
+            }
+            println!("{}", json!({"maintenanceSteps":steps}));
+        }
+        "relocate" => {
+            let lower = decode(value(args, "--partition-start")?)?;
+            store
+                .relocate_partition(&lower, &PathBuf::from(value(args, "--destination")?))
+                .map_err(mapped)?;
+            println!("{}", json!({"relocation":"started"}));
+        }
+        "backup" => {
+            let destination = PathBuf::from(value(args, "--destination")?);
+            store.begin_backup(&destination).map_err(mapped)?;
+            while !store.backup_step().map_err(mapped)? {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            println!("{}", json!({"backup":"complete","destination":destination}));
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
 }
 
 fn run_main(args: Vec<String>) -> ExitCode {
@@ -393,6 +608,70 @@ fn run_main(args: Vec<String>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_commands_back_up_and_inspect_an_existing_private_store() {
+        use paperclip_runner_core::indexed_store::{ExactReceipt, IndexedStore};
+        let directory =
+            std::env::temp_dir().join(format!("runner-storage-cli-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("state.sqlite");
+        let store = IndexedStore::open(&path, "operator-test", true).unwrap();
+        store
+            .commit(
+                "current",
+                0,
+                b"checkpoint".to_vec(),
+                vec![ExactReceipt {
+                    namespace: "effects".into(),
+                    key: "ancient".into(),
+                    bytes: b"receipt".to_vec(),
+                }],
+            )
+            .unwrap();
+        drop(store);
+        let args = |operation: &str, extra: Vec<String>| {
+            let mut arguments = vec![
+                "storage".into(),
+                operation.into(),
+                "--path".into(),
+                path.to_str().unwrap().into(),
+                "--binding".into(),
+                "operator-test".into(),
+            ];
+            arguments.extend(extra);
+            arguments
+        };
+        run(&args("partitions", vec![])).unwrap();
+        run(&args("maintain", vec!["--steps".into(), "2".into()])).unwrap();
+        let destination = directory.join("backup");
+        run(&args(
+            "backup",
+            vec!["--destination".into(), destination.to_str().unwrap().into()],
+        ))
+        .unwrap();
+        let restored = IndexedStore::open(
+            &destination.join("authority.sqlite"),
+            "operator-test",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            restored.read_state("current").unwrap().unwrap().bytes,
+            b"checkpoint"
+        );
+        assert_eq!(
+            restored.receipt("effects", "ancient").unwrap(),
+            Some(b"receipt".to_vec())
+        );
+        drop(restored);
+        assert!(run(&args("maintain", vec!["--steps".into(), "1001".into()])).is_err());
+        assert!(run(&args(
+            "backup",
+            vec!["--destination".into(), destination.to_str().unwrap().into()]
+        ))
+        .is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn build_metadata_advertises_the_remote_transport_contract() {

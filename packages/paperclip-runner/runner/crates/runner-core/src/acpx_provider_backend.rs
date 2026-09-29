@@ -378,6 +378,10 @@ impl AcpxProviderDescriptor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AcpxDurableState {
     schema: String,
+    #[serde(default)]
+    indexed_receipts: bool,
+    #[serde(default)]
+    last_receipt_batch: Option<String>,
     launch_profile_digest: String,
     lifecycle: String,
     descriptor: AcpxProviderDescriptor,
@@ -410,6 +414,8 @@ impl AcpxDurableState {
     ) -> Self {
         Self {
             schema: ACPX_PROVIDER_STATE_SCHEMA.to_owned(),
+            indexed_receipts: false,
+            last_receipt_batch: None,
             launch_profile_digest,
             lifecycle: "prepared".to_owned(),
             descriptor,
@@ -455,6 +461,12 @@ impl AcpxDurableState {
                     | "suspended"
                     | "closed"
             )
+            || self.last_receipt_batch.as_ref().is_some_and(|batch| {
+                !self.indexed_receipts
+                    || batch.parse::<u64>().ok().is_none_or(|value| {
+                        value == 0 || value > i64::MAX as u64 || value.to_string() != *batch
+                    })
+            })
             || self.next_event_sequence == 0
             || self.pending_events.len() > MAX_PENDING_EVENTS
             || self.pending_events.iter().any(|event| {
@@ -520,6 +532,7 @@ pub struct AcpxCommandExecutor {
     session: Option<AcpxProviderSession>,
     restore_checked: bool,
     restore_error: Option<DurableRunnerError>,
+    persistence_error: Option<DurableRunnerError>,
     launch_profile: Option<AcpxLaunchProfile>,
 }
 
@@ -538,6 +551,7 @@ impl AcpxCommandExecutor {
             session: None,
             restore_checked: false,
             restore_error: None,
+            persistence_error: None,
             launch_profile: config.acpx_launch_profile.clone(),
         }
     }
@@ -558,6 +572,7 @@ impl AcpxCommandExecutor {
     }
 
     fn restore(&mut self) -> Result<(), DurableRunnerError> {
+        self.assert_persistence_known()?;
         if self.restore_checked {
             return Ok(());
         }
@@ -698,7 +713,15 @@ impl AcpxCommandExecutor {
             expected,
             self.launch_profile.as_ref(),
         )?;
-        let mut session = AcpxProviderSession::start(&config).map_err(|error| {
+        let started = if state.indexed_receipts {
+            AcpxProviderSession::start_with_indexed_receipts(
+                &config,
+                &self.state_dir.join("acpx-provider-receipts.sqlite"),
+            )
+        } else {
+            AcpxProviderSession::start(&config)
+        };
+        let mut session = started.map_err(|error| {
             DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
         })?;
         if session.identity().profile_digest != state.descriptor.command_digest {
@@ -710,7 +733,32 @@ impl AcpxCommandExecutor {
         Ok(session)
     }
 
-    fn save_state(&self) -> Result<(), DurableRunnerError> {
+    fn assert_persistence_known(&self) -> Result<(), DurableRunnerError> {
+        match &self.persistence_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn save_state(&mut self) -> Result<(), DurableRunnerError> {
+        self.assert_persistence_known()?;
+        let result = self.persist_state();
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.indexed_receipts)
+        {
+            if let Err(error) = &result {
+                // The in-memory batch ID is not evidence of a durable outbox.
+                // A failed rename/fsync may be ambiguous. No later poll, drain
+                // or ACK may publish that candidate without recovery.
+                self.persistence_error = Some(error.clone());
+            }
+        }
+        result
+    }
+
+    fn persist_state(&self) -> Result<(), DurableRunnerError> {
         let state = self
             .state
             .as_ref()
@@ -764,6 +812,14 @@ impl AcpxCommandExecutor {
         let tool_set = authorized_tool_set(payload)?;
         let launch_profile_digest = self.launch_profile_digest()?;
         if let Some(state) = self.state.as_ref() {
+            if state.indexed_receipts
+                != (payload.get("durability").and_then(Value::as_str)
+                    == Some("durability.indexed_state.v1"))
+            {
+                return Err(DurableRunnerError::invalid(
+                    "ACPX receipt format cannot change across a retained run",
+                ));
+            }
             if state.descriptor != descriptor || state.tool_set != tool_set {
                 return Err(DurableRunnerError::invalid(
                     "ACPX provider or authorized tool contract changed across the durable run",
@@ -780,6 +836,11 @@ impl AcpxCommandExecutor {
                 tool_set,
                 launch_profile_digest,
             ));
+            self.state
+                .as_mut()
+                .expect("prepared ACPX state exists")
+                .indexed_receipts = payload.get("durability").and_then(Value::as_str)
+                == Some("durability.indexed_state.v1");
             self.save_state()?;
         }
         Ok(CommandExecution::result(json!({
@@ -1406,6 +1467,24 @@ impl AcpxCommandExecutor {
                     DurableRunnerError::invalid(format!("ACPX provider failed: {error}"))
                 })?;
             let Some(events) = events else { break };
+            let batch = self
+                .session
+                .as_ref()
+                .and_then(AcpxProviderSession::pending_event_batch);
+            if batch.is_some()
+                && self
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.last_receipt_batch.as_ref())
+                    == batch.as_ref()
+            {
+                self.session
+                    .as_mut()
+                    .expect("polled session exists")
+                    .acknowledge_event_batch()
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                continue;
+            }
             let mut provider_turn_settled = false;
             for event in events {
                 let normalized = project_acpx_state_event(&self.context, &event)
@@ -1505,7 +1584,19 @@ impl AcpxCommandExecutor {
             if provider_turn_settled {
                 self.context.provider_turn_id = None;
             }
+            self.state
+                .as_mut()
+                .expect("polled ACPX state exists")
+                .last_receipt_batch = batch;
             self.save_state()?;
+            // The bounded provider batch and receipts survive until the outer
+            // provider outbox is durable. A lost acknowledgement replays the
+            // same batch ID rather than allocating a second event prefix.
+            self.session
+                .as_mut()
+                .expect("polled session exists")
+                .acknowledge_event_batch()
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
         }
         Ok(())
     }
@@ -1610,6 +1701,7 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.assert_persistence_known()?;
         // Explicit drain runs while control traffic suppresses provider polling.
         // Expose the already-retained suffix so runnerd can commit and ACK it
         // before suspension, without restoring or advancing the provider.
@@ -1623,6 +1715,7 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
+        self.assert_persistence_known()?;
         if count == 0 {
             return Ok(());
         }
@@ -1640,6 +1733,19 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+        if let Some(error) = self.persistence_error.clone() {
+            // Still reap our own live child, but never publish successful
+            // retirement after an uncertain durability boundary.
+            if let Some(session) = self.session.as_mut() {
+                session
+                    .shutdown("ACPX persistence failed")
+                    .map_err(|cleanup| {
+                        DurableRunnerError::invalid(format!("{error}; cleanup failed: {cleanup}"))
+                    })?;
+            }
+            self.session = None;
+            return Err(error);
+        }
         // A replacement durable runner may reach terminal reconciliation
         // before any provider command or event poll. Restore the persisted
         // session first so cleanup cannot succeed merely because this process
@@ -1943,6 +2049,59 @@ mod tests {
     }
 
     #[test]
+    fn failed_indexed_outbox_publication_cannot_be_drained_or_acknowledged() {
+        let directory = temporary_directory("indexed-outbox-failure");
+        let profile = AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: directory.join("sidecar"),
+            args: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        let config = test_config(&directory, Some(profile.clone()));
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        let operations = Vec::new();
+        let mut state = AcpxDurableState::new(
+            serde_json::from_value(descriptor("codex")).unwrap(),
+            AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            },
+            profile.canonical_digest().unwrap(),
+        );
+        state.indexed_receipts = true;
+        executor.state = Some(state);
+        executor.restore_checked = true;
+        executor.save_state().unwrap();
+        let original = fs::read(executor.state_path()).unwrap();
+        let state = executor.state.as_mut().unwrap();
+        state.last_receipt_batch = Some("17".to_owned());
+        state
+            .push(NormalizedProviderEvent {
+                event_type: "harness.diagnostic".to_owned(),
+                priority: EventPriority::P0,
+                payload: json!({"code":"unpublished"}),
+            })
+            .unwrap();
+        // A real publication error after writing and syncing the candidate.
+        let previous = directory.join("previous.json");
+        fs::rename(executor.state_path(), &previous).unwrap();
+        fs::create_dir(executor.state_path()).unwrap();
+        let error = executor.save_state().unwrap_err().to_string();
+        assert!(error.contains("failed to atomically replace"), "{error}");
+        fs::remove_dir(executor.state_path()).unwrap();
+        fs::rename(previous, executor.state_path()).unwrap();
+        assert!(executor.poll_events().is_err());
+        assert!(executor.retained_events().is_err());
+        assert!(executor.acknowledge_events(1).is_err());
+        assert!(executor.save_state().is_err());
+        assert_eq!(executor.state.as_ref().unwrap().pending_events.len(), 1);
+        assert_eq!(fs::read(executor.state_path()).unwrap(), original);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn admits_only_exact_qualified_claude_and_codex_descriptors() {
         for agent in ["claude", "codex"] {
             let descriptor: AcpxProviderDescriptor =
@@ -2218,6 +2377,7 @@ mod tests {
         assert!(!marker.exists());
         let non_attach_error = attached
             .execute(&Command {
+                controller_epoch: None,
                 schema: "paperclip.prp.command.v1".to_owned(),
                 command_id: "command-before-attach".to_owned(),
                 controller_seq: 1,
@@ -2349,6 +2509,7 @@ mod tests {
         let mut drifted = AcpxCommandExecutor::with_runner_config(&directory, &drifted_config);
         let drift_error = drifted
             .execute(&Command {
+                controller_epoch: None,
                 schema: "paperclip.prp.command.v1".to_owned(),
                 command_id: "command-drift".to_owned(),
                 controller_seq: 1,
@@ -2364,6 +2525,7 @@ mod tests {
             .contains("launch profile digest does not match runner startup"));
         let retry_error = drifted
             .execute(&Command {
+                controller_epoch: None,
                 schema: "paperclip.prp.command.v1".to_owned(),
                 command_id: "command-drift-retry".to_owned(),
                 controller_seq: 2,
@@ -2382,6 +2544,7 @@ mod tests {
         let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
         let snapshot = recovered
             .execute(&Command {
+                controller_epoch: None,
                 schema: "paperclip.prp.command.v1".to_owned(),
                 command_id: "command-1".to_owned(),
                 controller_seq: 1,

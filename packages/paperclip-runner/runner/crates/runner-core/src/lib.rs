@@ -6,6 +6,7 @@ pub mod acpx_provider_backend;
 pub mod acpx_provider_checkpoint;
 pub mod acpx_provider_session;
 pub mod acpx_provider_state;
+mod acpx_receipt_ledger;
 pub mod acpx_sidecar_transport;
 pub mod aws_agentcore_provider;
 pub mod claude_managed_provider;
@@ -14,6 +15,17 @@ mod codex_startup_trust;
 pub mod durable;
 pub mod fake_harness;
 pub mod generated_acpx_sidecar_contract;
+pub mod indexed_archive;
+mod indexed_commit;
+pub mod indexed_inspection;
+mod indexed_lifetime;
+mod indexed_partitions;
+pub mod indexed_revision;
+pub mod indexed_rpc;
+pub mod indexed_session_snapshot;
+pub mod indexed_store;
+pub mod indexed_work;
+pub mod legacy_indexed_import;
 pub mod local_runner;
 pub mod managed_provider;
 pub mod managed_provider_backend;
@@ -26,6 +38,7 @@ pub mod qualified_launch;
 pub mod question_response;
 pub mod replay;
 mod stable_identity;
+mod storage_capacity;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -362,3 +375,7 @@ mod tests {
         );
     }
 }
+
+mod output_body;
+
+mod process_generation;

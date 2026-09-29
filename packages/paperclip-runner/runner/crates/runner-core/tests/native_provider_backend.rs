@@ -150,6 +150,7 @@ fn assert_valid_terminal(payload: &Value) {
 
 fn command(sequence: u64, command_type: &str, payload: Value) -> Command {
     Command {
+        controller_epoch: None,
         schema: "paperclip.prp.command.v1".to_owned(),
         command_id: format!("command-{sequence}"),
         controller_seq: sequence,

@@ -27,7 +27,7 @@ async function fixture(relativePath) {
 
 test("all schema IDs are unique and all external references resolve", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
-  assert.equal(schemas.length, 25);
+  assert.equal(schemas.length, 26);
   assert.doesNotThrow(() => compileProtocolValidators(schemas));
 });
 

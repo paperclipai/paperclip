@@ -1,3 +1,8 @@
+use super::command_epochs::{valid_epoch, CommandEpochTransition};
+use super::event_epochs::EventEpochTransition;
+use crate::indexed_revision::Revision;
+use crate::indexed_store::{ExactReceipt, IndexedStore};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -58,6 +63,8 @@ fn v2_replay_key(event_type: &str) -> Option<&'static str> {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Command {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_epoch: Option<String>,
     pub schema: String,
     pub command_id: String,
     pub controller_seq: u64,
@@ -105,6 +112,15 @@ impl Command {
         {
             return Err(DurableRunnerError::invalid(
                 "command timestamps are empty, oversized, or contain control characters",
+            ));
+        }
+        if self
+            .controller_epoch
+            .as_deref()
+            .is_some_and(|id| !valid_epoch(id))
+        {
+            return Err(DurableRunnerError::invalid(
+                "invalid command sequence epoch",
             ));
         }
         if self.controller_seq == 0 {
@@ -232,6 +248,8 @@ pub(crate) struct WarmRunTransition {
     pub command_fingerprint: String,
     pub result_digest: String,
     pub old_acked_source_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_source_epoch: Option<String>,
     pub connection: Value,
     pub runner_version: String,
     pub runner_digest: String,
@@ -250,6 +268,7 @@ impl WarmRunTransition {
         lease_id: String,
         lease_expires_at_unix_ms: u64,
         lease_revocation_epoch: u64,
+        old_source_epoch: Option<String>,
     ) -> Result<Self, DurableRunnerError> {
         let mut receipt = Self {
             schema: "paperclip.runner.warm-transition.v1".to_owned(),
@@ -264,6 +283,7 @@ impl WarmRunTransition {
                     .map_err(|error| DurableRunnerError::invalid(error.to_string()))?,
             ),
             old_acked_source_seq: ack,
+            old_source_epoch,
             connection: command
                 .payload
                 .pointer("/paperclipNextAuthority/connection")
@@ -297,6 +317,8 @@ pub(crate) struct PendingWarmRunTransition {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExecutorEventReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_epoch: Option<String>,
     fingerprint: String,
     source_seq: u64,
 }
@@ -319,15 +341,28 @@ pub struct DurableState {
     pub turn_id: String,
     pub item_id: String,
     pub lifecycle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_epoch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) event_epoch_transition: Option<EventEpochTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_event_epoch_transition: Option<EventEpochTransition>,
     pub next_source_seq: u64,
     pub acked_source_seq: u64,
     pub last_controller_command_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_epoch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_command_epoch_transition: Option<CommandEpochTransition>,
     pub compacted_through_controller_seq: u64,
     pub reconnect_count: u64,
     pub max_outbox_bytes: usize,
     pub p0_reserve_bytes: usize,
     pub peak_outbox_bytes: usize,
+    #[serde(default)]
     pub outbox: Vec<StoredOutboxEvent>,
+    #[serde(skip)]
+    indexed_receipts: Option<IndexedStore>,
     pub processed_commands: BTreeMap<String, StoredCommandResult>,
     #[serde(default)]
     pub processed_command_fingerprints: BTreeMap<String, String>,
@@ -349,6 +384,9 @@ pub struct DurableState {
 }
 
 impl DurableState {
+    pub(crate) fn indexed_durability(&self) -> bool {
+        self.indexed_receipts.is_some()
+    }
     pub(crate) fn new(config: &DurableRunnerConfig) -> Self {
         Self {
             schema: STATE_SCHEMA.to_owned(),
@@ -359,15 +397,21 @@ impl DurableState {
             turn_id: config.turn_id.clone(),
             item_id: config.item_id.clone(),
             lifecycle: "connecting".to_owned(),
+            source_epoch: None,
+            event_epoch_transition: None,
+            last_event_epoch_transition: None,
             next_source_seq: 1,
             acked_source_seq: 0,
             last_controller_command_seq: 0,
+            controller_epoch: None,
+            last_command_epoch_transition: None,
             compacted_through_controller_seq: 0,
             reconnect_count: 0,
             max_outbox_bytes: config.max_outbox_bytes,
             p0_reserve_bytes: config.p0_reserve_bytes,
             peak_outbox_bytes: 0,
             outbox: Vec::new(),
+            indexed_receipts: None,
             processed_commands: BTreeMap::new(),
             processed_command_fingerprints: BTreeMap::new(),
             pending_terminal_delivery: None,
@@ -386,6 +430,60 @@ impl DurableState {
         self.outbox.iter().map(|event| event.byte_size).sum()
     }
 
+    fn outbox_namespace(&self) -> String {
+        match &self.source_epoch {
+            Some(epoch) => format!("outbox/{}/{epoch}", self.run_id),
+            None => format!("outbox/{}", self.run_id),
+        }
+    }
+
+    pub(crate) fn retain_indexed_authority(&self, target: &mut DurableState) {
+        target.indexed_receipts.clone_from(&self.indexed_receipts);
+    }
+
+    pub(crate) fn copy_event_ack_authority(&self, target: &mut DurableState) {
+        target.source_epoch.clone_from(&self.source_epoch);
+        target.indexed_receipts.clone_from(&self.indexed_receipts);
+    }
+
+    pub(crate) fn event_resume(&self) -> Value {
+        json!({"sourceEpoch": self.source_epoch, "nextSourceEventSeq": self.next_source_seq,
+            "ackedSourceSeq": self.acked_source_seq, "transition": self.event_epoch_transition})
+    }
+
+    /// An old authenticated ACK is accepted only as evidence about its exact
+    /// closed namespace. It never advances this namespace's current cursor.
+    pub(crate) fn ack_is_current(&self, payload: &Value) -> Result<bool, DurableRunnerError> {
+        let epoch = match payload.get("sourceEpoch") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(epoch)) if valid_epoch(epoch) => Some(epoch.as_str()),
+            _ => return Err(DurableRunnerError::invalid("invalid ACK epoch")),
+        };
+        let ack = payload
+            .get("ackedSourceSeq")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
+        if epoch == self.source_epoch.as_deref() {
+            return Ok(true);
+        }
+        let receipt = self
+            .indexed_receipts
+            .as_ref()
+            .ok_or_else(|| DurableRunnerError::invalid("ACK epoch is not current"))?
+            .receipt(
+                &format!("event-epochs/{}", self.run_id),
+                epoch.unwrap_or("legacy"),
+            )?
+            .ok_or_else(|| DurableRunnerError::invalid("ACK has no closed epoch receipt"))?;
+        let transition: EventEpochTransition = serde_json::from_slice(&receipt)
+            .map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+        transition.validate(&self.run_id)?;
+        if transition.from_epoch.as_deref() != epoch || ack > transition.final_ordinal {
+            return Err(DurableRunnerError::invalid("ACK exceeds its closed epoch"));
+        }
+        Ok(false)
+    }
+
     pub fn highest_source_seq(&self) -> u64 {
         self.next_source_seq.saturating_sub(1)
     }
@@ -397,10 +495,14 @@ impl DurableState {
         priority: EventPriority,
         payload: Value,
     ) -> Result<u64, DurableRunnerError> {
-        let source_event_id = format!(
-            "event_{}_{:016}",
-            self.runner_instance_id, self.next_source_seq
-        );
+        let source_event_id = if self.source_epoch.is_some() {
+            format!("event_{}", uuid::Uuid::new_v4())
+        } else {
+            format!(
+                "event_{}_{:016}",
+                self.runner_instance_id, self.next_source_seq
+            )
+        };
         self.enqueue_event_with_source_event_id(
             config,
             source_event_id,
@@ -449,7 +551,23 @@ impl DurableState {
     ) -> Result<bool, DurableRunnerError> {
         self.source_event_id_for_executor(executor_event_id)?;
         validate_semantic_tool_input_digest(event_type, payload)?;
-        let Some(existing) = self.executor_event_receipts.get(executor_event_id) else {
+        let existing = if let Some(existing) = self.executor_event_receipts.get(executor_event_id) {
+            Some(existing.clone())
+        } else if let Some(store) = &self.indexed_receipts {
+            store
+                .receipt(
+                    &format!("executor-events/{}", self.run_id),
+                    executor_event_id,
+                )?
+                .map(|bytes| {
+                    serde_json::from_slice::<ExecutorEventReceipt>(&bytes)
+                        .map_err(|error| DurableRunnerError::invalid(error.to_string()))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let Some(existing) = existing else {
             return Ok(false);
         };
         if existing.fingerprint != executor_event_fingerprint(event_type, priority, payload) {
@@ -485,6 +603,7 @@ impl DurableState {
         self.executor_event_receipts.insert(
             executor_event_id,
             ExecutorEventReceipt {
+                source_epoch: self.source_epoch.clone(),
                 fingerprint,
                 source_seq,
             },
@@ -526,7 +645,11 @@ impl DurableState {
         }
         validate_semantic_tool_input_digest(event_type.as_str(), &payload)?;
 
-        let sanitized_payload = sanitize_value(&payload);
+        let sanitized_payload = if event_type == "output.body.chunk" {
+            crate::output_body::sanitize_chunk(&payload)?
+        } else {
+            sanitize_value(&payload)
+        };
         if durable_semantics_changed_by_sanitization(&payload, &sanitized_payload) {
             return Err(DurableRunnerError::invalid(
                 "durable identity or validation semantics contain credential-shaped material",
@@ -535,6 +658,13 @@ impl DurableState {
         let sanitized_payload =
             finalize_semantic_tool_input_payload(event_type.as_str(), &payload, sanitized_payload)?;
 
+        if self.event_epoch_transition.is_some()
+            || self.next_source_seq >= super::event_epochs::MAX_ORDINAL
+        {
+            return Err(DurableRunnerError::invalid(
+                "event admission requires a completed epoch rotation",
+            ));
+        }
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
         let schema_version = if matches!(
@@ -548,7 +678,7 @@ impl DurableState {
         } else {
             1
         };
-        let envelope = json!({
+        let mut envelope = json!({
             "protocol": PROTOCOL,
             "version": PROTOCOL_VERSION,
             "kind": "event",
@@ -575,6 +705,9 @@ impl DurableState {
                 "payload": sanitized_payload,
             },
         });
+        if let Some(epoch) = &self.source_epoch {
+            envelope["payload"]["sourceEpoch"] = json!(epoch);
+        }
         let byte_size = serde_json::to_vec(&envelope)
             .map_err(|error| DurableRunnerError::invalid(error.to_string()))?
             .len();
@@ -714,6 +847,26 @@ impl DurableState {
                 ));
             }
             return Ok(CommandDisposition::Replay(previous.clone()));
+        }
+        if let Some(store) = &self.indexed_receipts {
+            if let Some(bytes) =
+                store.receipt(&format!("commands/{}", self.run_id), &command.command_id)?
+            {
+                let (previous_fingerprint, result): (String, StoredCommandResult) =
+                    serde_json::from_slice(&bytes)
+                        .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                if previous_fingerprint != fingerprint {
+                    return Err(DurableRunnerError::invalid(
+                        "commandId was reused with different command data",
+                    ));
+                }
+                return Ok(CommandDisposition::Replay(result));
+            }
+        }
+        if command.controller_epoch != self.controller_epoch {
+            return Err(DurableRunnerError::invalid(
+                "command sequence epoch differs from durable head",
+            ));
         }
         if command.controller_seq <= self.compacted_through_controller_seq {
             return Ok(CommandDisposition::Reject(command_result(
@@ -978,6 +1131,89 @@ fn canonical_json(value: &Value) -> String {
 #[derive(Clone, Debug)]
 pub struct DurableStateStore {
     path: PathBuf,
+    indexed: bool,
+    index: RefCell<Option<RunnerIndex>>,
+}
+
+#[derive(Clone, Debug)]
+struct RunnerIndex {
+    store: IndexedStore,
+    generation: Revision,
+    epoch: String,
+    next_source_seq: u64,
+    source_epoch: Option<String>,
+    completed_commands: HashSet<String>,
+}
+
+/// Excludes payloads without cloning or serializing the pending backlog.
+struct RunnerMetadata<'a>(&'a DurableState);
+impl Serialize for RunnerMetadata<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let state = self.0;
+        let mut map = serializer.serialize_map(None)?;
+        macro_rules! field {
+            ($key:literal, $value:ident) => {
+                map.serialize_entry($key, &state.$value)?;
+            };
+        }
+        field!("schema", schema);
+        field!("runnerInstanceId", runner_instance_id);
+        field!("environmentLeaseId", environment_lease_id);
+        field!("runId", run_id);
+        field!("normalizedSessionId", normalized_session_id);
+        field!("turnId", turn_id);
+        field!("itemId", item_id);
+        field!("lifecycle", lifecycle);
+        field!("nextSourceSeq", next_source_seq);
+        if state.source_epoch.is_some() {
+            field!("sourceEpoch", source_epoch);
+        }
+        if state.event_epoch_transition.is_some() {
+            field!("eventEpochTransition", event_epoch_transition);
+        }
+        if state.last_event_epoch_transition.is_some() {
+            field!("lastEventEpochTransition", last_event_epoch_transition);
+        }
+        field!("ackedSourceSeq", acked_source_seq);
+        field!("lastControllerCommandSeq", last_controller_command_seq);
+        if state.controller_epoch.is_some() {
+            field!("controllerEpoch", controller_epoch);
+        }
+        if state.last_command_epoch_transition.is_some() {
+            field!("lastCommandEpochTransition", last_command_epoch_transition);
+        }
+        field!(
+            "compactedThroughControllerSeq",
+            compacted_through_controller_seq
+        );
+        field!("reconnectCount", reconnect_count);
+        field!("maxOutboxBytes", max_outbox_bytes);
+        field!("p0ReserveBytes", p0_reserve_bytes);
+        field!("peakOutboxBytes", peak_outbox_bytes);
+        field!("processedCommands", processed_commands);
+        field!(
+            "processedCommandFingerprints",
+            processed_command_fingerprints
+        );
+        field!("pendingTerminalDelivery", pending_terminal_delivery);
+        if state.pending_provider_cleanup.is_some() {
+            field!("pendingProviderCleanup", pending_provider_cleanup);
+        }
+        if state.warm_transition.is_some() {
+            field!("warmTransition", warm_transition);
+        }
+        field!("executorEventReceipts", executor_event_receipts);
+        field!("v2ReplayEvents", v2_replay_events);
+        field!(
+            "lastConnectionProtocolVersion",
+            last_connection_protocol_version
+        );
+        field!("diagnostics", diagnostics);
+        field!("backpressure", backpressure);
+        field!("recoverableFailure", recoverable_failure);
+        map.end()
+    }
 }
 
 impl DurableStateStore {
@@ -1006,7 +1242,556 @@ impl DurableStateStore {
         verify_private_directory(state_dir)?;
         Ok(Self {
             path: state_dir.join(STATE_FILE),
+            indexed: false,
+            index: RefCell::new(None),
         })
+    }
+
+    /// Explicit format choice; an activated missing database is never recreated.
+    pub fn new_indexed(state_dir: &Path) -> Result<Self, DurableRunnerError> {
+        let mut store = Self::new(state_dir)?;
+        store.indexed = true;
+        Ok(store)
+    }
+
+    /// Prepare under an externally-held session fence. Does not modify the
+    /// source, start a peer, or activate the staged directory.
+    pub fn stage_legacy(
+        config: &DurableRunnerConfig,
+        destination: &Path,
+        fence_id: &str,
+    ) -> Result<crate::legacy_indexed_import::PreparedLegacyAuthority, DurableRunnerError> {
+        use crate::legacy_indexed_import::{publish_staged_locator, read_legacy, ImportWriter};
+        verify_private_directory(&config.state_dir)?;
+        if destination == config.state_dir
+            || (destination.exists()
+                && destination.canonicalize().ok() == config.state_dir.canonicalize().ok())
+        {
+            return Err(DurableRunnerError::invalid(
+                "legacy source cannot be the import destination",
+            ));
+        }
+        let (state, source): (DurableState, _) = read_legacy(
+            &config.state_dir.join(STATE_FILE),
+            config.max_outbox_bytes.saturating_add(STATE_OVERHEAD_BYTES) as u64,
+        )?;
+        if state.has_legacy_command_journal() {
+            return Err(DurableRunnerError::invalid(
+                "legacy command fingerprints are unavailable; migration requires reconciliation",
+            ));
+        }
+        validate_binding(&state, config, false)?;
+        let binding = format!(
+            "runner/{}/{}",
+            config.runner_instance_id, config.normalized_session_id
+        );
+        let mut writer = ImportWriter::open(
+            &destination.join("runner-state.sqlite"),
+            &binding,
+            fence_id,
+            &source.digest,
+        )?;
+        for event in &state.outbox {
+            writer.add(ExactReceipt {
+                namespace: format!("outbox/{}", state.run_id),
+                key: format!("{:020}", event.source_seq),
+                bytes: serde_json::to_vec(event)
+                    .map_err(|e| DurableRunnerError::invalid(e.to_string()))?,
+            })?;
+        }
+        for result in state
+            .processed_commands
+            .values()
+            .filter(|entry| entry.status != "pending")
+        {
+            let fingerprint = state
+                .processed_command_fingerprints
+                .get(&result.command_id)
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid("legacy exact command fingerprint is missing")
+                })?;
+            writer.add(ExactReceipt {
+                namespace: format!("commands/{}", state.run_id),
+                key: result.command_id.clone(),
+                bytes: serde_json::to_vec(&(fingerprint, result))
+                    .map_err(|e| DurableRunnerError::invalid(e.to_string()))?,
+            })?;
+        }
+        for (id, receipt) in &state.executor_event_receipts {
+            writer.add(ExactReceipt {
+                namespace: format!("executor-events/{}", state.run_id),
+                key: id.clone(),
+                bytes: serde_json::to_vec(receipt)
+                    .map_err(|e| DurableRunnerError::invalid(e.to_string()))?,
+            })?;
+        }
+        source.verify()?;
+        let proof = writer.finish(
+            "runner",
+            serde_json::to_vec(&RunnerMetadata(&state))
+                .map_err(|e| DurableRunnerError::invalid(e.to_string()))?,
+        )?;
+        publish_staged_locator(
+            &destination.join(STATE_FILE),
+            &serde_json::to_vec(&json!({
+                "schema": "paperclip.runner.durable.state.indexed.v1", "binding": binding
+            }))
+            .map_err(|e| DurableRunnerError::invalid(e.to_string()))?,
+        )?;
+        Ok(proof)
+    }
+
+    fn load_indexed(
+        &self,
+        config: &DurableRunnerConfig,
+    ) -> Result<(DurableState, bool), DurableRunnerError> {
+        let binding = format!(
+            "runner/{}/{}",
+            config.runner_instance_id, config.normalized_session_id
+        );
+        let locator =
+            json!({"schema":"paperclip.runner.durable.state.indexed.v1", "binding":binding});
+        let existing = match open_private_regular_file(&self.path) {
+            Ok(mut file) => {
+                let mut bytes = Vec::new();
+                std::io::Read::by_ref(&mut file)
+                    .take(4097)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                if bytes.len() > 4096
+                    || serde_json::from_slice::<Value>(&bytes).ok() != Some(locator.clone())
+                {
+                    return Err(DurableRunnerError::invalid(
+                        "indexed runner activation requires a fenced legacy migration",
+                    ));
+                }
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(DurableRunnerError::invalid(error.to_string())),
+        };
+        let store = IndexedStore::open(&self.path.with_extension("sqlite"), &binding, !existing)?;
+        crate::legacy_indexed_import::require_prepared(&store)?;
+        let snapshot = store.read_state("runner")?;
+        if existing && snapshot.is_none() {
+            return Err(DurableRunnerError::invalid(
+                "activated runner authority is missing",
+            ));
+        }
+        let recovered = snapshot.is_some();
+        let generation = snapshot
+            .as_ref()
+            .map_or(Revision::Absent, |snapshot| snapshot.generation);
+        let mut state = match snapshot {
+            Some(snapshot) => serde_json::from_slice::<DurableState>(&snapshot.bytes)
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?,
+            None => DurableState::new(config),
+        };
+        let namespace = state.outbox_namespace();
+        let mut after = format!("{:020}", state.acked_source_seq);
+        let mut pending_bytes = 0usize;
+        loop {
+            let page = store.receipt_page(&namespace, &after, 128, 32 * 1024 * 1024)?;
+            if page.is_empty() {
+                break;
+            }
+            for receipt in page {
+                after = receipt.key;
+                let event: StoredOutboxEvent = serde_json::from_slice(&receipt.bytes)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                if event.source_seq >= state.next_source_seq {
+                    return Err(DurableRunnerError::invalid(
+                        "outbox exceeds committed cursor",
+                    ));
+                }
+                pending_bytes = pending_bytes
+                    .checked_add(event.byte_size)
+                    .ok_or_else(|| DurableRunnerError::invalid("outbox size overflow"))?;
+                if pending_bytes > state.max_outbox_bytes {
+                    return Err(DurableRunnerError::invalid(
+                        "pending outbox exceeds its admission bound",
+                    ));
+                }
+                state.outbox.push(event);
+            }
+        }
+        validate_binding(&state, config, false)?;
+        if let Some(transition) = &state.last_command_epoch_transition {
+            let expected = serde_json::to_vec(transition)
+                .map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+            if store
+                .receipt(
+                    &format!("command-epoch-transitions/{}", state.run_id),
+                    &transition.transition_id,
+                )?
+                .as_ref()
+                != Some(&expected)
+                || store
+                    .receipt(
+                        &format!("command-epochs/{}", state.run_id),
+                        transition.from_epoch.as_deref().unwrap_or("legacy"),
+                    )?
+                    .as_ref()
+                    != Some(&expected)
+            {
+                return Err(DurableRunnerError::invalid(
+                    "command epoch head has no exact committed transition",
+                ));
+            }
+        }
+        if let Some(t) = &state.last_event_epoch_transition {
+            let expected =
+                serde_json::to_vec(t).map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+            for (namespace, key) in [
+                (
+                    format!("event-epoch-transitions/{}", state.run_id),
+                    t.transition_id.as_str(),
+                ),
+                (
+                    format!("event-epochs/{}", state.run_id),
+                    t.from_epoch.as_deref().unwrap_or("legacy"),
+                ),
+            ] {
+                if store.receipt(&namespace, key)?.as_ref() != Some(&expected) {
+                    return Err(DurableRunnerError::invalid(
+                        "event epoch head has no exact committed transition",
+                    ));
+                }
+            }
+        }
+        state.indexed_receipts = Some(store.clone());
+        *self.index.borrow_mut() = Some(RunnerIndex {
+            store,
+            generation,
+            epoch: state.run_id.clone(),
+            next_source_seq: state.next_source_seq,
+            source_epoch: state.source_epoch.clone(),
+            completed_commands: state
+                .processed_commands
+                .values()
+                .filter(|entry| entry.status != "pending")
+                .map(|entry| entry.command_id.clone())
+                .collect(),
+        });
+        if state.reconcile_pending_commands() || !recovered {
+            self.save(&state)?;
+        }
+        if !existing {
+            let (temporary, mut file) = create_private_temporary_file(&self.path)?;
+            file.write_all(
+                &serde_json::to_vec(&locator)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?,
+            )
+            .and_then(|_| file.sync_all())
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            drop(file);
+            fs::rename(temporary, &self.path)
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            #[cfg(unix)]
+            File::open(self.path.parent().unwrap())
+                .and_then(|file| file.sync_all())
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        }
+        Ok((state, recovered))
+    }
+
+    pub(crate) fn prepare_event_epoch(
+        &self,
+        state: &mut DurableState,
+    ) -> Result<EventEpochTransition, DurableRunnerError> {
+        if let Some(pending) = &state.event_epoch_transition {
+            return Ok(pending.clone());
+        }
+        let receipts = state.indexed_receipts.as_ref().ok_or_else(|| {
+            DurableRunnerError::invalid("event epochs require indexed durability")
+        })?;
+        if state.highest_source_seq() == 0
+            || state.pending_terminal_delivery.is_some()
+            || state.pending_provider_cleanup.is_some()
+            || state.warm_transition.is_some()
+        {
+            return Err(DurableRunnerError::invalid(
+                "event epoch cannot rotate this lifecycle",
+            ));
+        }
+        let mut next_epoch = None;
+        for _ in 0..32 {
+            let id = uuid::Uuid::new_v4().to_string();
+            if state.source_epoch.as_ref() != Some(&id)
+                && receipts
+                    .receipt(&format!("event-epochs/{}", state.run_id), &id)?
+                    .is_none()
+            {
+                next_epoch = Some(id);
+                break;
+            }
+        }
+        let transition = EventEpochTransition {
+            schema: "paperclip.prp.event-epoch.v1".into(),
+            run_id: state.run_id.clone(),
+            transition_id: uuid::Uuid::new_v4().to_string(),
+            from_epoch: state.source_epoch.clone(),
+            next_epoch: next_epoch
+                .ok_or_else(|| DurableRunnerError::invalid("event epoch allocation collision"))?,
+            final_ordinal: state.highest_source_seq(),
+        };
+        let mut candidate = state.clone();
+        candidate.event_epoch_transition = Some(transition.clone());
+        self.save(&candidate)?;
+        *state = candidate;
+        Ok(transition)
+    }
+
+    pub(crate) fn commit_event_epoch(
+        &self,
+        state: &mut DurableState,
+        transition: &EventEpochTransition,
+    ) -> Result<(), DurableRunnerError> {
+        transition.validate(&state.run_id)?;
+        let receipts = state.indexed_receipts.as_ref().ok_or_else(|| {
+            DurableRunnerError::invalid("event epochs require indexed durability")
+        })?;
+        if let Some(bytes) = receipts.receipt(
+            &format!("event-epoch-transitions/{}", state.run_id),
+            &transition.transition_id,
+        )? {
+            if serde_json::from_slice::<EventEpochTransition>(&bytes)
+                .ok()
+                .as_ref()
+                != Some(transition)
+            {
+                return Err(DurableRunnerError::invalid(
+                    "event transition identity was reused",
+                ));
+            }
+            return Ok(());
+        }
+        if state.event_epoch_transition.as_ref() != Some(transition)
+            || transition.from_epoch != state.source_epoch
+            || transition.final_ordinal != state.acked_source_seq
+            || !state.outbox.is_empty()
+            || !state.v2_replay_events.is_empty()
+            || state.last_connection_protocol_version != Some(2)
+        {
+            return Err(DurableRunnerError::invalid(
+                "event epoch requires its exactly acknowledged outbox",
+            ));
+        }
+        // The immutable receipts survive this bounded cache retirement.
+        for (id, receipt) in &state.executor_event_receipts {
+            let expected = serde_json::to_vec(receipt)
+                .map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+            if receipts
+                .receipt(&format!("executor-events/{}", state.run_id), id)?
+                .as_ref()
+                != Some(&expected)
+            {
+                return Err(DurableRunnerError::invalid(
+                    "event epoch cannot retire uncommitted executor evidence",
+                ));
+            }
+        }
+        let mut candidate = state.clone();
+        candidate.source_epoch = Some(transition.next_epoch.clone());
+        candidate.last_event_epoch_transition = Some(transition.clone());
+        candidate.event_epoch_transition = None;
+        candidate.next_source_seq = 1;
+        candidate.acked_source_seq = 0;
+        candidate.executor_event_receipts.clear();
+        self.save(&candidate)?;
+        *state = candidate;
+        Ok(())
+    }
+
+    /// Persist the exact close receipt and successor head atomically. No provider
+    /// callback, event cursor, semantic identity or run lifecycle changes here.
+    pub(crate) fn rotate_command_epoch(
+        &self,
+        state: &mut DurableState,
+        transition: &CommandEpochTransition,
+    ) -> Result<(), DurableRunnerError> {
+        transition.validate(&state.run_id)?;
+        let receipts = state.indexed_receipts.as_ref().ok_or_else(|| {
+            DurableRunnerError::invalid("command epochs require indexed durability")
+        })?;
+        if let Some(bytes) = receipts.receipt(
+            &format!("command-epoch-transitions/{}", state.run_id),
+            &transition.transition_id,
+        )? {
+            let previous: CommandEpochTransition = serde_json::from_slice(&bytes)
+                .map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+            if previous != *transition {
+                return Err(DurableRunnerError::invalid(
+                    "command epoch transition identity was reused",
+                ));
+            }
+            return Ok(());
+        }
+        if transition.from_epoch != state.controller_epoch
+            || transition.final_ordinal != state.last_controller_command_seq
+            || state
+                .processed_commands
+                .values()
+                .any(|c| c.status == "pending")
+            || state.pending_terminal_delivery.is_some()
+            || state.pending_provider_cleanup.is_some()
+            || state.warm_transition.is_some()
+        {
+            return Err(DurableRunnerError::invalid(
+                "command epoch transition does not match the settled current namespace",
+            ));
+        }
+        if receipts
+            .receipt(
+                &format!("command-epochs/{}", state.run_id),
+                &transition.next_epoch,
+            )?
+            .is_some()
+        {
+            return Err(DurableRunnerError::invalid(
+                "command epoch successor was already closed",
+            ));
+        }
+        for result in state.processed_commands.values() {
+            let fingerprint = state
+                .processed_command_fingerprints
+                .get(&result.command_id)
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid("command fingerprint missing during epoch rotation")
+                })?;
+            let expected = serde_json::to_vec(&(fingerprint, result))
+                .map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+            if receipts
+                .receipt(&format!("commands/{}", state.run_id), &result.command_id)?
+                .as_ref()
+                != Some(&expected)
+            {
+                return Err(DurableRunnerError::invalid(
+                    "command epoch cannot retire an uncommitted receipt",
+                ));
+            }
+        }
+        // Every removed command is already an immutable exact receipt. This is
+        // independent of outstanding provider/semantic work, which remains live.
+        let mut candidate = state.clone();
+        candidate.controller_epoch = Some(transition.next_epoch.clone());
+        candidate.last_command_epoch_transition = Some(transition.clone());
+        candidate.last_controller_command_seq = 0;
+        candidate.compacted_through_controller_seq = 0;
+        candidate.processed_commands.clear();
+        candidate.processed_command_fingerprints.clear();
+        self.save(&candidate)?;
+        *state = candidate;
+        Ok(())
+    }
+
+    fn save_indexed(&self, state: &DurableState) -> Result<(), DurableRunnerError> {
+        let mut index = self.index.borrow_mut();
+        let index = index.as_mut().ok_or_else(|| {
+            DurableRunnerError::invalid("indexed runner must be opened before saving")
+        })?;
+        let same_epoch = state.run_id == index.epoch;
+        let mut receipts = Vec::new();
+        if let Some(transition) = &state.last_command_epoch_transition {
+            let bytes = serde_json::to_vec(transition)
+                .map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+            receipts.push(ExactReceipt {
+                namespace: format!("command-epoch-transitions/{}", state.run_id),
+                key: transition.transition_id.clone(),
+                bytes: bytes.clone(),
+            });
+            receipts.push(ExactReceipt {
+                namespace: format!("command-epochs/{}", state.run_id),
+                key: transition
+                    .from_epoch
+                    .clone()
+                    .unwrap_or_else(|| "legacy".into()),
+                bytes,
+            });
+        }
+        if let Some(t) = &state.last_event_epoch_transition {
+            let bytes =
+                serde_json::to_vec(t).map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+            receipts.push(ExactReceipt {
+                namespace: format!("event-epoch-transitions/{}", state.run_id),
+                key: t.transition_id.clone(),
+                bytes: bytes.clone(),
+            });
+            receipts.push(ExactReceipt {
+                namespace: format!("event-epochs/{}", state.run_id),
+                key: t.from_epoch.clone().unwrap_or_else(|| "legacy".into()),
+                bytes,
+            });
+        }
+        for event in &state.outbox {
+            if same_epoch
+                && state.source_epoch == index.source_epoch
+                && event.source_seq < index.next_source_seq
+            {
+                continue;
+            }
+            receipts.push(ExactReceipt {
+                namespace: state.outbox_namespace(),
+                key: format!("{:020}", event.source_seq),
+                bytes: serde_json::to_vec(event)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?,
+            });
+        }
+        for result in state.processed_commands.values() {
+            if result.status == "pending"
+                || (same_epoch && index.completed_commands.contains(&result.command_id))
+            {
+                continue;
+            }
+            let fingerprint = state
+                .processed_command_fingerprints
+                .get(&result.command_id)
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid("exact command fingerprint is missing")
+                })?;
+            receipts.push(ExactReceipt {
+                namespace: format!("commands/{}", state.run_id),
+                key: result.command_id.clone(),
+                bytes: serde_json::to_vec(&(fingerprint, result))
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?,
+            });
+        }
+        for (id, receipt) in &state.executor_event_receipts {
+            if same_epoch
+                && state.source_epoch == index.source_epoch
+                && receipt.source_seq < index.next_source_seq
+            {
+                continue;
+            }
+            receipts.push(ExactReceipt {
+                namespace: format!("executor-events/{}", state.run_id),
+                key: id.clone(),
+                bytes: serde_json::to_vec(receipt)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?,
+            });
+        }
+        let bytes = serde_json::to_vec(&RunnerMetadata(state))
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        match index
+            .store
+            .commit("runner", index.generation, bytes, receipts)
+        {
+            Ok(generation) => index.generation = generation,
+            Err(error) => {
+                index.generation = Revision::Fenced;
+                return Err(error);
+            }
+        }
+        index.epoch = state.run_id.clone();
+        index.next_source_seq = state.next_source_seq;
+        index.source_epoch.clone_from(&state.source_epoch);
+        index.completed_commands = state
+            .processed_commands
+            .values()
+            .filter(|entry| entry.status != "pending")
+            .map(|entry| entry.command_id.clone())
+            .collect();
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -1017,6 +1802,15 @@ impl DurableStateStore {
         &self,
         config: &DurableRunnerConfig,
     ) -> Result<(DurableState, bool), DurableRunnerError> {
+        crate::legacy_indexed_import::require_active_directory(&config.state_dir)?;
+        if self.indexed {
+            return self.load_indexed(config);
+        }
+        if fs::symlink_metadata(self.path.with_extension("sqlite")).is_ok() {
+            return Err(DurableRunnerError::invalid(
+                "indexed runner storage requires indexed invocation; legacy fallback is forbidden",
+            ));
+        }
         let mut bytes = Vec::new();
         match open_private_regular_file(&self.path) {
             Ok(mut file) => {
@@ -1075,6 +1869,10 @@ impl DurableStateStore {
     }
 
     pub fn save(&self, state: &DurableState) -> Result<(), DurableRunnerError> {
+        crate::legacy_indexed_import::require_active_directory(self.path.parent().unwrap())?;
+        if self.indexed {
+            return self.save_indexed(state);
+        }
         let bytes = serde_json::to_vec_pretty(state).map_err(|error| {
             DurableRunnerError::invalid(format!("failed to serialize durable state: {error}"))
         })?;
@@ -1171,6 +1969,7 @@ fn validate_binding(
                 transition.receipt.lease_id.clone(),
                 transition.receipt.lease_expires_at_unix_ms,
                 transition.receipt.lease_revocation_epoch,
+                transition.receipt.old_source_epoch.clone(),
             )?;
             if expected != transition.receipt
                 || WarmRunIdentity::from_config(config)
@@ -1180,7 +1979,8 @@ fn validate_binding(
                         expected.new_identity
                     }
                 || (transition.phase == "prepared"
-                    && (state.acked_source_seq != expected.old_acked_source_seq
+                    && (state.source_epoch != expected.old_source_epoch
+                        || state.acked_source_seq != expected.old_acked_source_seq
                         || state.processed_commands.get(&transition.command.command_id)
                             != Some(&transition.result)))
             {
@@ -1204,6 +2004,11 @@ fn validate_binding(
                 .pointer("/payload/sourceSeq")
                 .and_then(Value::as_u64)
                 != Some(event.source_seq)
+            || event
+                .envelope
+                .pointer("/payload/sourceEpoch")
+                .and_then(Value::as_str)
+                != state.source_epoch.as_deref()
             || event.priority > 2
         {
             return Err(DurableRunnerError::invalid(
@@ -1267,6 +2072,7 @@ fn validate_binding(
                         .fingerprint
                         .bytes()
                         .all(|byte| byte.is_ascii_hexdigit())
+                    && receipt.source_epoch == state.source_epoch
                     && receipt.source_seq > 0
                     && receipt.source_seq <= state.highest_source_seq()
                     && executor_receipt_sequences.insert(receipt.source_seq)
@@ -1344,7 +2150,36 @@ fn validate_binding(
         _ => false,
     };
 
-    if state.next_source_seq == 0
+    if state
+        .controller_epoch
+        .as_deref()
+        .is_some_and(|id| !valid_epoch(id))
+        || match (
+            &state.controller_epoch,
+            &state.last_command_epoch_transition,
+        ) {
+            (None, None) => false,
+            (Some(epoch), Some(transition)) => {
+                transition.validate(&state.run_id).is_err() || *epoch != transition.next_epoch
+            }
+            _ => true,
+        }
+        || state
+            .source_epoch
+            .as_deref()
+            .is_some_and(|id| !valid_epoch(id))
+        || match (&state.source_epoch, &state.last_event_epoch_transition) {
+            (None, None) => false,
+            (Some(epoch), Some(t)) => t.validate(&state.run_id).is_err() || *epoch != t.next_epoch,
+            _ => true,
+        }
+        || state.event_epoch_transition.as_ref().is_some_and(|t| {
+            t.validate(&state.run_id).is_err()
+                || t.from_epoch != state.source_epoch
+                || t.final_ordinal != state.highest_source_seq()
+        })
+        || state.next_source_seq == 0
+        || state.next_source_seq > super::event_epochs::MAX_ORDINAL
         || state.acked_source_seq > state.highest_source_seq()
         || !outbox_cursors_are_valid
         || state
@@ -1451,6 +2286,14 @@ pub(crate) fn create_private_temporary_file(
         match options.open(&temporary) {
             Ok(file) => return Ok((temporary, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+                ) =>
+            {
+                return Err(crate::indexed_store::storage_error(error));
+            }
             Err(error) => {
                 return Err(DurableRunnerError::invalid(format!(
                     "failed to create private durable state temporary file: {error}"
@@ -1739,6 +2582,10 @@ pub(crate) fn redact_text(input: &str) -> String {
         redacted.push_str("…[truncated]");
     }
     redacted
+}
+
+pub(crate) fn redact_output_text(input: &str) -> String {
+    redact_sensitive_text_values(input)
 }
 
 fn redact_sensitive_text_values(input: &str) -> String {
@@ -2356,6 +3203,7 @@ mod tests {
 
     fn command(id: &str, sequence: u64) -> Command {
         Command {
+            controller_epoch: None,
             schema: "paperclip.prp.command.v1".to_owned(),
             command_id: id.to_owned(),
             controller_seq: sequence,
@@ -2365,6 +3213,345 @@ mod tests {
             precondition: None,
             payload: json!({}),
         }
+    }
+
+    #[test]
+    fn legacy_runner_staging_preserves_pending_and_exact_replay() {
+        let root =
+            std::env::temp_dir().join(format!("legacy-runner-import-{}", uuid::Uuid::new_v4()));
+        let source = root.join("source");
+        let destination = root.join("prepared");
+        let original_config = config(source.clone());
+        let legacy = DurableStateStore::new(&source).unwrap();
+        let (mut state, _) = legacy.load_or_create(&original_config).unwrap();
+        let cmd = command("completed", 1);
+        state.begin_command(&cmd).unwrap();
+        state
+            .complete_command(&cmd, json!({"original":true}))
+            .unwrap();
+        state
+            .enqueue_executor_event(
+                &original_config,
+                "executor-first".into(),
+                "runner.test".into(),
+                EventPriority::P1,
+                json!({"n":1}),
+            )
+            .unwrap();
+        state.begin_command(&command("unfinished", 2)).unwrap();
+        legacy.save(&state).unwrap();
+        let original = fs::read(legacy.path()).unwrap();
+        let proof =
+            DurableStateStore::stage_legacy(&original_config, &destination, "migration-1").unwrap();
+        assert_eq!(proof.receipts, 3);
+        assert_eq!(
+            DurableStateStore::stage_legacy(&original_config, &destination, "migration-1").unwrap(),
+            proof
+        );
+        assert_eq!(fs::read(legacy.path()).unwrap(), original);
+        assert!(DurableStateStore::stage_legacy(&original_config, &source, "migration-1").is_err());
+        let recovered_store = DurableStateStore::new_indexed(&destination).unwrap();
+        let (mut recovered, _) = recovered_store
+            .load_or_create(&config(destination.clone()))
+            .unwrap();
+        assert_eq!(recovered.outbox, state.outbox);
+        assert_eq!(
+            recovered.processed_commands["unfinished"].status,
+            "indeterminate"
+        );
+        assert!(matches!(
+            recovered.begin_command(&cmd).unwrap(),
+            CommandDisposition::Replay(_)
+        ));
+        let mut conflict = cmd;
+        conflict.payload = json!({"changed":true});
+        assert!(recovered.begin_command(&conflict).is_err());
+        drop(recovered);
+        drop(recovered_store);
+        drop(legacy);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn event_epochs_rotate_with_exact_replay_and_crashes_at_the_old_numeric_boundary() {
+        let directory = std::env::temp_dir().join(format!("event-epochs-{}", uuid::Uuid::new_v4()));
+        let config = config(directory.clone());
+        let mut store = DurableStateStore::new_indexed(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let boundary = super::super::event_epochs::MAX_ORDINAL - 1;
+        state.next_source_seq = boundary;
+        state.acked_source_seq = boundary - 1;
+        state.last_connection_protocol_version = Some(2);
+        store.save(&state).unwrap();
+        let mut first_transition = None;
+        let mut original_event = None;
+        for round in 0..4 {
+            let payload = json!({"round":round});
+            let ordinal = state
+                .enqueue_executor_event(
+                    &config,
+                    format!("executor-{round}"),
+                    "harness.diagnostic".into(),
+                    EventPriority::P1,
+                    payload.clone(),
+                )
+                .unwrap();
+            store.save(&state).unwrap();
+            if round == 0 {
+                original_event = Some(state.outbox[0].clone());
+                assert_eq!(ordinal, boundary);
+            }
+            let transition = store.prepare_event_epoch(&mut state).unwrap();
+            if round == 0 {
+                first_transition = Some(transition.clone());
+            }
+            assert!(state
+                .enqueue_event(&config, "harness.diagnostic", EventPriority::P1, json!({}))
+                .is_err());
+            assert!(store.commit_event_epoch(&mut state, &transition).is_err()); // outstanding ACK
+            drop(state);
+            drop(store);
+            store = DurableStateStore::new_indexed(&directory).unwrap();
+            state = store.load_or_create(&config).unwrap().0;
+            assert_eq!(store.prepare_event_epoch(&mut state).unwrap(), transition);
+            state.apply_ack(transition.final_ordinal, 2).unwrap();
+            let mut changed = transition.clone();
+            changed.next_epoch = uuid::Uuid::new_v4().to_string();
+            assert!(store.commit_event_epoch(&mut state, &changed).is_err());
+            store.commit_event_epoch(&mut state, &transition).unwrap();
+            drop(state);
+            drop(store);
+            store = DurableStateStore::new_indexed(&directory).unwrap();
+            state = store.load_or_create(&config).unwrap().0;
+            store.commit_event_epoch(&mut state, &transition).unwrap();
+            assert_eq!(state.next_source_seq, 1);
+            assert_eq!(state.acked_source_seq, 0);
+            assert!(state
+                .has_executor_event_receipt(
+                    &format!("executor-{round}"),
+                    "harness.diagnostic",
+                    EventPriority::P1,
+                    &payload
+                )
+                .unwrap());
+            assert!(!state.ack_is_current(&json!({"sourceEpoch":transition.from_epoch,"ackedSourceSeq":transition.final_ordinal})).unwrap());
+            assert!(state
+                .ack_is_current(&json!({"sourceEpoch":transition.next_epoch,"ackedSourceSeq":0}))
+                .unwrap());
+        }
+        let head = state.source_epoch.clone();
+        store
+            .commit_event_epoch(&mut state, &first_transition.unwrap())
+            .unwrap();
+        assert_eq!(state.source_epoch, head);
+        let bytes = state
+            .indexed_receipts
+            .as_ref()
+            .unwrap()
+            .receipt(
+                &format!("outbox/{}", config.run_id),
+                &format!("{boundary:020}"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<StoredOutboxEvent>(&bytes).unwrap(),
+            original_event.unwrap()
+        );
+        drop(state);
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn command_epochs_rotate_at_the_old_boundary_with_exact_replay_and_reopen() {
+        let directory =
+            std::env::temp_dir().join(format!("command-epochs-{}", uuid::Uuid::new_v4()));
+        let config = config(directory.clone());
+        let mut store = DurableStateStore::new_indexed(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let boundary = 9_007_199_254_740_990;
+        state.last_controller_command_seq = boundary - 1;
+        state.compacted_through_controller_seq = boundary - 1;
+        store.save(&state).unwrap();
+        let first = command("earliest-command", boundary);
+        state.begin_command(&first).unwrap();
+        store.save(&state).unwrap();
+        let original = state
+            .complete_command(&first, json!({"original": true}))
+            .unwrap();
+        store.save(&state).unwrap();
+        let mut first_transition = None;
+        for index in 0..4 {
+            let transition = CommandEpochTransition {
+                schema: "paperclip.prp.command-epoch.v1".into(),
+                run_id: state.run_id.clone(),
+                transition_id: uuid::Uuid::new_v4().to_string(),
+                from_epoch: state.controller_epoch.clone(),
+                next_epoch: uuid::Uuid::new_v4().to_string(),
+                final_ordinal: state.last_controller_command_seq,
+            };
+            if index == 0 {
+                first_transition = Some(transition.clone());
+            }
+            let mut wrong = transition.clone();
+            wrong.final_ordinal += 1;
+            assert!(store.rotate_command_epoch(&mut state, &wrong).is_err());
+            let outbox = state.outbox.clone();
+            let lifecycle = state.lifecycle.clone();
+            store.rotate_command_epoch(&mut state, &transition).unwrap();
+            assert_eq!(state.outbox, outbox);
+            assert_eq!(state.lifecycle, lifecycle);
+            assert_eq!(state.last_controller_command_seq, 0);
+            // Receiver crash after commit and before its reply: reopen and retry
+            // the identical intent, without creating another namespace.
+            drop(state);
+            drop(store);
+            store = DurableStateStore::new_indexed(&directory).unwrap();
+            state = store.load_or_create(&config).unwrap().0;
+            store.rotate_command_epoch(&mut state, &transition).unwrap();
+            assert_eq!(
+                state.controller_epoch.as_ref(),
+                Some(&transition.next_epoch)
+            );
+            let mut fork = transition.clone();
+            fork.next_epoch = uuid::Uuid::new_v4().to_string();
+            assert!(store.rotate_command_epoch(&mut state, &fork).is_err());
+            assert!(
+                matches!(state.begin_command(&first).unwrap(), CommandDisposition::Replay(ref value) if value == &original)
+            );
+            let mut changed = first.clone();
+            changed.payload = json!({"changed": true});
+            assert!(state.begin_command(&changed).is_err());
+            let mut next = command(&format!("fresh-{index}"), 1);
+            assert!(state.begin_command(&next).is_err()); // old namespace cannot execute a fresh ID
+            next.controller_epoch = state.controller_epoch.clone();
+            assert!(matches!(
+                state.begin_command(&next).unwrap(),
+                CommandDisposition::Execute
+            ));
+            store.save(&state).unwrap();
+            let blocked = CommandEpochTransition {
+                transition_id: uuid::Uuid::new_v4().to_string(),
+                from_epoch: state.controller_epoch.clone(),
+                next_epoch: uuid::Uuid::new_v4().to_string(),
+                final_ordinal: 1,
+                ..transition.clone()
+            };
+            assert!(store.rotate_command_epoch(&mut state, &blocked).is_err());
+            state
+                .complete_command(&next, json!({"index": index}))
+                .unwrap();
+            assert!(store.rotate_command_epoch(&mut state, &blocked).is_err()); // no durable result yet
+            store.save(&state).unwrap();
+        }
+        let current = state.controller_epoch.clone();
+        let first_transition = first_transition.unwrap();
+        let reused = CommandEpochTransition {
+            transition_id: uuid::Uuid::new_v4().to_string(),
+            from_epoch: current.clone(),
+            next_epoch: first_transition.next_epoch.clone(),
+            final_ordinal: state.last_controller_command_seq,
+            ..first_transition.clone()
+        };
+        assert!(store.rotate_command_epoch(&mut state, &reused).is_err());
+        store
+            .rotate_command_epoch(&mut state, &first_transition)
+            .unwrap();
+        assert_eq!(state.controller_epoch, current); // ancient retry cannot move the head backwards
+        drop(state);
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn indexed_runner_reopens_only_pending_outbox_and_replays_ancient_commands() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-indexed-runner-{}", uuid::Uuid::new_v4()));
+        let config = config(directory.clone());
+        {
+            let store = DurableStateStore::new_indexed(&directory).unwrap();
+            let (mut state, recovered) = store.load_or_create(&config).unwrap();
+            assert!(!recovered);
+            for sequence in 1..=1_000 {
+                let cmd = command(&format!("command-{sequence}"), sequence);
+                assert!(matches!(
+                    state.begin_command(&cmd).unwrap(),
+                    CommandDisposition::Execute
+                ));
+                store.save(&state).unwrap();
+                state
+                    .complete_command(&cmd, json!({"original":sequence}))
+                    .unwrap();
+                state
+                    .enqueue_executor_event(
+                        &config,
+                        format!("executor-{sequence}"),
+                        "runner.test".into(),
+                        EventPriority::P1,
+                        json!({"n":sequence}),
+                    )
+                    .unwrap();
+                store.save(&state).unwrap();
+                if sequence < 1_000 {
+                    state.apply_ack(sequence, PROTOCOL_VERSION).unwrap();
+                    store.save(&state).unwrap();
+                }
+            }
+            assert!(state.processed_commands.len() <= MAX_RECENT_COMMANDS);
+            let snapshot = store
+                .index
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .store
+                .read_state("runner")
+                .unwrap()
+                .unwrap();
+            let metadata: Value = serde_json::from_slice(&snapshot.bytes).unwrap();
+            assert!(metadata.get("outbox").is_none());
+            assert!(snapshot.bytes.len() < 128 * 1024);
+        }
+        let store = DurableStateStore::new_indexed(&directory).unwrap();
+        let (mut state, recovered) = store.load_or_create(&config).unwrap();
+        assert!(recovered);
+        assert_eq!(state.outbox.len(), 1);
+        assert_eq!(state.outbox[0].source_seq, 1_000);
+        assert!(state
+            .has_executor_event_receipt(
+                "executor-1",
+                "runner.test",
+                EventPriority::P1,
+                &json!({"n":1})
+            )
+            .unwrap());
+        assert!(state
+            .has_executor_event_receipt(
+                "executor-1",
+                "runner.test",
+                EventPriority::P1,
+                &json!({"n":2})
+            )
+            .is_err());
+        match state.begin_command(&command("command-1", 1)).unwrap() {
+            CommandDisposition::Replay(result) => assert_eq!(result.result, json!({"original":1})),
+            _ => panic!("ancient exact receipt must replay"),
+        }
+        let mut changed = command("command-1", 1);
+        changed.payload = json!({"changed":true});
+        assert!(state.begin_command(&changed).is_err());
+        assert!(DurableStateStore::new(&directory)
+            .unwrap()
+            .load_or_create(&config)
+            .is_err());
+        drop(state);
+        drop(store);
+        fs::remove_file(directory.join("runner-state.sqlite")).unwrap();
+        assert!(DurableStateStore::new_indexed(&directory)
+            .unwrap()
+            .load_or_create(&config)
+            .is_err());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2413,6 +3600,7 @@ mod tests {
             "lease_exact".to_owned(),
             1_800_000_000_000,
             0,
+            None,
         )
         .unwrap();
         state.schema = TRANSITION_STATE_SCHEMA.to_owned();

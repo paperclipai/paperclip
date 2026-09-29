@@ -110,7 +110,9 @@ fn verified_launch_uses_open_command_and_script_after_atomic_path_replacement() 
     .unwrap();
     assert_eq!(
         process
-            .receive_stdout_line(Duration::from_secs(1))
+            // This checks the authenticated artifact, not a one-second process
+            // startup SLA. Loaded hosts can delay the first scheduled output.
+            .receive_stdout_line(Duration::from_secs(5))
             .unwrap()
             .as_deref(),
         Some("old-command")

@@ -20,12 +20,12 @@
     {
       "path": "schemas/command-v2.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v2/command.schema.json",
-      "sha256": "06bb3b3b0b420119007494c64e64a736fd5d58cb68d04ced843ada00c54668be"
+      "sha256": "7de0dd11ff77ae2bb39b048875dd44349946a0be47039382b12d81e95c9fbfed"
     },
     {
       "path": "schemas/command.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/command.schema.json",
-      "sha256": "fc813e6b4d5b7e6890b496bd69848ada25dba58adbf7cf04163ca9e9bf2bcb79"
+      "sha256": "a35f8eddf3f0d36f01acac5023b848fc3feff1bfd45d2bb02c395d778e496bc9"
     },
     {
       "path": "schemas/conformance-fixture.schema.json",
@@ -40,12 +40,12 @@
     {
       "path": "schemas/event-v2.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v2/event.schema.json",
-      "sha256": "d7528ee2a46ad20de831fd4ee4a0a51e8325a9855fed5a9b8c428dcebc39cc11"
+      "sha256": "5e60de9761dfc5568a331fd5de0190929c0be3a025c64486d296b6041a4cec64"
     },
     {
       "path": "schemas/event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
-      "sha256": "d48916630976ff7e850b6e2d7d94131761fda322f5d8a05212651ec46b0db19d"
+      "sha256": "40ecafed388a65d116e988251dc809768a3f8e39c3db122f2b0072f33871c61d"
     },
     {
       "path": "schemas/fixture.schema.json",
@@ -63,6 +63,11 @@
       "sha256": "7894a809005354c5abdf81d5333a094750c8267473cd426a2c1bcccda41e0214"
     },
     {
+      "path": "schemas/output-body-reference.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/output-body-reference.schema.json",
+      "sha256": "40b5fdec157b3dfe8e49e280cbd7204e6f5f66e333bdaf536876ba7c81e95c19"
+    },
+    {
       "path": "schemas/provider-descriptor.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json",
       "sha256": "a56c0c8501171c34bb72f6fba08d3872839a8b45bbc10daa93620afc9dc2b669"
@@ -70,7 +75,7 @@
     {
       "path": "schemas/provider-event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json",
-      "sha256": "0b138a41bd3bd0b1a115f5536a2d7349537e79e36ede3b51d003f9f21ce73b50"
+      "sha256": "70f45e12b9fc893c4cd8e82d74865a1f1a4fff7e3563d59b0dc14cf11b4c6ae9"
     },
     {
       "path": "schemas/question-adapter-fixture.schema.json",

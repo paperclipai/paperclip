@@ -26,6 +26,25 @@ fn argument(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
+fn opened_thread(state: &FakeState, args: &[String]) -> Value {
+    let mut thread = json!({
+        "id": state.thread_id,
+        "sessionId": "codex-account-session",
+        "historyMode": if args.iter().any(|arg| arg == "--legacy-history-mode")
+            || argument(args, "--state-file").is_some_and(|path| {
+                Path::new(&path).with_file_name("legacy-history-mode").exists()
+            }) {
+            "legacy"
+        } else {
+            "paginated"
+        },
+    });
+    if args.iter().any(|arg| arg == "--missing-history-mode") {
+        thread.as_object_mut().unwrap().remove("historyMode");
+    }
+    thread
+}
+
 fn send(value: Value) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &value)?;
@@ -563,6 +582,25 @@ fn send_structured_activity(state: &FakeState) -> io::Result<()> {
     }))
 }
 
+// Explicit credential-free history qualification. Keep each provider frame
+// bounded and emit ordinary completed message items on one active turn.
+fn send_history_growth(state: &FakeState, mib: u64) -> io::Result<()> {
+    for index in 0..mib * 4 {
+        let prefix = format!("history-{index}: ");
+        let text = format!("{prefix}{}", "h".repeat(256 * 1024 - prefix.len()));
+        let item = if index % 2 == 0 {
+            json!({"id":format!("history-{index}"),"type":"agentMessage","status":"completed","text":text})
+        } else {
+            json!({"id":format!("history-{index}"),"type":"commandExecution","status":"completed","command":"qualification-output","aggregatedOutput":text,"exitCode":0})
+        };
+        send(json!({"method":"item/completed", "params":{
+            "threadId":state.thread_id,"turnId":state.active_turn_id,
+            "item":item
+        }}))?;
+    }
+    Ok(())
+}
+
 fn send_runtime_request_flood(
     state: &FakeState,
     interrupt_count: u64,
@@ -617,6 +655,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--opencode-proxy-runtime-question");
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
+    let history_growth_mib = argument(&args, "--history-growth-mib")
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or(0);
+    let soak_output_on_steer = args.iter().any(|value| value == "--soak-output-on-steer");
+    let mut soak_output_sequence = 0_u64;
+    if history_growth_mib > 1024 * 1024 {
+        return Err("qualification size exceeds 1 TiB".into());
+    }
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
     let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
     let split_event_suffix_count = argument(&args, "--split-event-suffix-count")
@@ -1024,6 +1071,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "initialized" => {}
             "thread/start" => {
+                if args.iter().any(|arg| arg == "--require-paginated-history")
+                    && message.pointer("/params/historyMode") != Some(&json!("paginated"))
+                {
+                    return Err("thread/start must explicitly select paginated history".into());
+                }
                 if require_external_sandbox
                     && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
                         || message.pointer("/params/permissions").is_some())
@@ -1066,7 +1118,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 send(json!({
                     "id": id,
-                    "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
+                    "result": {"thread": opened_thread(&state, &args)}
                 }))?;
                 if agent_created_goal {
                     send(json!({
@@ -1116,7 +1168,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 send(json!({
                     "id": id,
-                    "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
+                    "result": {"thread": opened_thread(&state, &args)}
                 }))?;
                 if args.iter().any(|arg| arg == "--resume-usage-snapshot")
                     && state.active_turn_id.is_none()
@@ -1152,6 +1204,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "thread/turns/list" => {
+                if args
+                    .iter()
+                    .any(|arg| arg == "--unbounded-completed-history")
+                {
+                    if args.iter().any(|arg| arg == "--settle-during-history") {
+                        state.active_turn_id = None;
+                        save_state(&state_path, &state)?;
+                    }
+                    let page = message
+                        .pointer("/params/cursor")
+                        .and_then(Value::as_str)
+                        .and_then(|cursor| cursor.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    send(json!({"id": id, "result": {
+                        "data": [{"id": format!("old-turn-{page}"), "status": "completed", "items": [], "itemsView": "notLoaded"}],
+                        "nextCursor": (page + 1).to_string(),
+                    }}))?;
+                    continue;
+                }
                 if args
                     .iter()
                     .any(|arg| arg == "--require-lightweight-history")
@@ -1665,6 +1736,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     send_opencode_proxy_runtime_question(&state)?;
                 } else if emit_runtime_elicitation {
                     send_runtime_elicitation(&state)?;
+                } else if history_growth_mib > 0 {
+                    if turn_start_count == 1 {
+                        send_history_growth(&state, history_growth_mib)?;
+                    }
+                    finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_structured_activity {
                     send_structured_activity(&state)?;
                     finish_turn(&state_path, &mut state, "completed")?;
@@ -1788,6 +1864,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "turn/steer" => {
                 send(json!({"id": id, "result": {"accepted": true}}))?;
+                if soak_output_on_steer && state.active_turn_id.is_some() {
+                    soak_output_sequence += 1;
+                    let text = format!("soak-output-{soak_output_sequence}: {}", "s".repeat(8192));
+                    send(json!({"method":"item/completed", "params": {
+                        "threadId": state.thread_id, "turnId": state.active_turn_id,
+                        "item": {"id": format!("soak-output-{soak_output_sequence}"),
+                            "type":"agentMessage", "text":text}
+                    }}))?;
+                }
                 if linger_after_turn_start {
                     send(json!({
                         "method": "item/completed",

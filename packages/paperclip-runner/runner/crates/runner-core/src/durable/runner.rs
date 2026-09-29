@@ -228,6 +228,7 @@ fn apply_authority_rotation(
     let reconnect_count = state.reconnect_count.saturating_add(1);
     let mut diagnostics = state.diagnostics.clone();
     let mut rotated = DurableState::new(&next);
+    state.retain_indexed_authority(&mut rotated);
     if let Some(mut transition) = state.warm_transition.clone() {
         transition.phase = "activating".to_owned();
         rotated.warm_transition = Some(transition);
@@ -362,12 +363,33 @@ impl CumulativeAckPersistence {
 }
 
 pub fn run_durable_runner<E: CommandExecutor>(
+    config: DurableRunnerConfig,
+    bootstrap_ticket: BootstrapTicket,
+    executor: E,
+) -> Result<(), DurableRunnerError> {
+    run_durable_runner_with_storage(config, bootstrap_ticket, executor, false)
+}
+
+pub fn run_indexed_durable_runner<E: CommandExecutor>(
+    config: DurableRunnerConfig,
+    bootstrap_ticket: BootstrapTicket,
+    executor: E,
+) -> Result<(), DurableRunnerError> {
+    run_durable_runner_with_storage(config, bootstrap_ticket, executor, true)
+}
+
+fn run_durable_runner_with_storage<E: CommandExecutor>(
     mut config: DurableRunnerConfig,
     bootstrap_ticket: BootstrapTicket,
     mut executor: E,
+    indexed: bool,
 ) -> Result<(), DurableRunnerError> {
     config.validate()?;
-    let store = DurableStateStore::new(&config.state_dir)?;
+    let store = if indexed {
+        DurableStateStore::new_indexed(&config.state_dir)?
+    } else {
+        DurableStateStore::new(&config.state_dir)?
+    };
     let (mut state, recovered) = store.load_or_create(&config)?;
     if state.lifecycle == "revoked"
         || (state.lifecycle == "stopped"
@@ -376,7 +398,11 @@ pub fn run_durable_runner<E: CommandExecutor>(
     {
         return Ok(());
     }
-    if recovered && state.warm_transition.is_none() {
+    if recovered
+        && state.warm_transition.is_none()
+        && state.event_epoch_transition.is_none()
+        && state.next_source_seq < super::event_epochs::MAX_ORDINAL - 32_768
+    {
         state.reconnect_count = state.reconnect_count.saturating_add(1);
         state.record_diagnostic("runner restored its durable identity after process recovery");
         state.enqueue_event(
@@ -392,6 +418,11 @@ pub fn run_durable_runner<E: CommandExecutor>(
     // retry after the trust decision.
     let mut endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id)?;
     let started = Instant::now();
+    let runtime_deadline = if config.max_runtime.is_zero() {
+        None
+    } else {
+        started.checked_add(config.max_runtime)
+    };
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut lease: Option<LeaseCredential> = None;
     let mut authenticated_once = false;
@@ -620,7 +651,39 @@ pub fn run_durable_runner<E: CommandExecutor>(
         }
         state.lifecycle = "ready".to_owned();
         state.recoverable_failure = None;
-        store.save(&state)?;
+        let (saved, lane) = super::storage_control::run(
+            (transport, connection, lease, next_lease_renewal),
+            pressure_control_identity(&state, &config),
+            welcome.lease_renewal_version == Some(1),
+            runtime_deadline,
+            || store.save(&state),
+        );
+        (transport, connection, lease, next_lease_renewal) = lane;
+        if let Err(error) = saved {
+            if error.is_storage_wait_cancelled() {
+                let _ = shutdown_preserving_cleanup(&state, &mut executor);
+            }
+            return Err(error);
+        }
+        let (rotated, lane) = rotate_event_epoch_if_needed(
+            (transport, connection, lease, next_lease_renewal),
+            &mut state,
+            &store,
+            &config,
+            welcome.event_epoch_limit,
+            runtime_deadline,
+        );
+        (transport, connection, lease, next_lease_renewal) = lane;
+        if let Err(error) = rotated {
+            if error.is_storage_wait_cancelled() {
+                let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                return Err(error);
+            }
+            state.record_diagnostic(format!("event epoch reconnect scheduled: {error}"));
+            store.save(&state)?;
+            disconnected_since = Some(Instant::now());
+            continue;
+        }
         let mut sent_source_seq = state.acked_source_seq;
         let mut ack_persistence = CumulativeAckPersistence::default();
 
@@ -634,17 +697,19 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 welcome.warm_transition_version,
                 connection.protocol_version,
             )?;
-            let (result, lifecycle) =
-                process_command(&mut state, &store, &config, &mut executor, &command)?;
+            let (executed, lane) = execute_command_with_capacity_control(
+                (transport, connection, lease, next_lease_renewal),
+                &mut state,
+                &store,
+                &config,
+                &mut executor,
+                &command,
+                welcome.lease_renewal_version == Some(1),
+                runtime_deadline,
+            );
+            (transport, connection, lease, next_lease_renewal) = lane;
+            let (result, lifecycle) = executed?;
             let next_authority = next_authority.filter(|_| completed_attachment(&result));
-            if let Some(durable_lifecycle) = lifecycle.durable_state() {
-                persist_lifecycle_before_command_delivery(
-                    &mut state,
-                    &store,
-                    durable_lifecycle,
-                    &result,
-                )?;
-            }
             lifecycle_after_reply = lifecycle_after_reply.merge(lifecycle);
             let delivery = (|| {
                 if let Some(next) = &next_authority {
@@ -753,6 +818,32 @@ pub fn run_durable_runner<E: CommandExecutor>(
             if !config.max_runtime.is_zero() && started.elapsed() >= config.max_runtime {
                 break;
             }
+            let (rotated, lane) = rotate_event_epoch_if_needed(
+                (transport, connection, lease, next_lease_renewal),
+                &mut state,
+                &store,
+                &config,
+                welcome.event_epoch_limit,
+                runtime_deadline,
+            );
+            (transport, connection, lease, next_lease_renewal) = lane;
+            match rotated {
+                Ok(true) => {
+                    sent_source_seq = state.acked_source_seq;
+                    ack_persistence = CumulativeAckPersistence::default();
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    if error.is_storage_wait_cancelled() {
+                        let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                        return Err(error);
+                    }
+                    state.record_diagnostic(format!("event epoch reconnect scheduled: {error}"));
+                    store.save(&state)?;
+                    disconnected_since = Some(Instant::now());
+                    break;
+                }
+            }
             if let Err(error) = send_outbox(
                 &mut transport,
                 &state,
@@ -813,14 +904,29 @@ pub fn run_durable_runner<E: CommandExecutor>(
             // Consuming the last cumulative ACK must not let a new output
             // suffix overtake the stop/suspend already queued behind it.
             let control_message = transport.receive_json();
-            poll_executor_events_when_control_idle(
-                &mut state,
-                &store,
-                &config,
-                &mut executor,
-                sent_source_seq,
-                &control_message,
-            )?;
+            let (polled, lane) = super::storage_control::run(
+                (transport, connection, lease, next_lease_renewal),
+                pressure_control_identity(&state, &config),
+                welcome.lease_renewal_version == Some(1),
+                runtime_deadline,
+                || {
+                    poll_executor_events_when_control_idle(
+                        &mut state,
+                        &store,
+                        &config,
+                        &mut executor,
+                        sent_source_seq,
+                        &control_message,
+                    )
+                },
+            );
+            (transport, connection, lease, next_lease_renewal) = lane;
+            if let Err(error) = polled {
+                if error.is_storage_wait_cancelled() {
+                    let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                }
+                return Err(error);
+            }
             let message = match control_message {
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
@@ -851,16 +957,78 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         lease_renewal_deadline(current_unix_ms()?, connection.expires_at_unix_ms);
                 }
                 Some("ack") => {
+                    if !state.ack_is_current(message.get("payload").unwrap_or(&Value::Null))? {
+                        continue;
+                    }
                     let acked = message
                         .pointer("/payload/ackedSourceSeq")
                         .and_then(Value::as_u64)
                         .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
-                    ack_persistence.apply(
-                        &mut state,
-                        &store,
-                        acked,
-                        connection.protocol_version,
-                    )?;
+                    let version = connection.protocol_version;
+                    let mut pressure_identity = pressure_control_identity(&state, &config);
+                    pressure_identity.acked_source_seq = acked;
+                    let (acked, lane) = super::storage_control::run(
+                        (transport, connection, lease, next_lease_renewal),
+                        pressure_identity,
+                        welcome.lease_renewal_version == Some(1),
+                        runtime_deadline,
+                        || ack_persistence.apply(&mut state, &store, acked, version),
+                    );
+                    (transport, connection, lease, next_lease_renewal) = lane;
+                    if let Err(error) = acked {
+                        if error.is_storage_wait_cancelled() {
+                            let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                        }
+                        return Err(error);
+                    }
+                }
+                Some("event_epoch_committed") => {
+                    let transition: super::event_epochs::EventEpochTransition =
+                        serde_json::from_value(
+                            message.get("payload").cloned().unwrap_or(Value::Null),
+                        )
+                        .map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+                    if welcome.event_epoch_limit.is_none()
+                        || state.last_event_epoch_transition.as_ref() != Some(&transition)
+                    {
+                        return Err(DurableRunnerError::invalid(
+                            "unsolicited event epoch commit receipt",
+                        ));
+                    }
+                }
+                Some("command_epoch_rotate") => {
+                    if !welcome.command_epochs {
+                        return Err(DurableRunnerError::invalid(
+                            "command epoch rotation was not negotiated",
+                        ));
+                    }
+                    let transition: super::command_epochs::CommandEpochTransition =
+                        serde_json::from_value(
+                            message.get("payload").cloned().unwrap_or(Value::Null),
+                        )
+                        .map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+                    let (rotated, lane) = super::storage_control::run(
+                        (transport, connection, lease, next_lease_renewal),
+                        pressure_control_identity(&state, &config),
+                        welcome.lease_renewal_version == Some(1),
+                        runtime_deadline,
+                        || store.rotate_command_epoch(&mut state, &transition),
+                    );
+                    (transport, connection, lease, next_lease_renewal) = lane;
+                    rotated?;
+                    if let Err(error) = transport.send_json(&control_envelope(
+                        &state,
+                        &connection,
+                        "command_epoch_committed",
+                        serde_json::to_value(&transition)
+                            .map_err(|e| DurableRunnerError::invalid(e.to_string()))?,
+                    )) {
+                        disconnected_since.get_or_insert_with(Instant::now);
+                        state.record_diagnostic(error.to_string());
+                        state.reconnect_count = state.reconnect_count.saturating_add(1);
+                        store.save(&state)?;
+                        break;
+                    }
                 }
                 Some("command") => {
                     let command: Command =
@@ -876,17 +1044,19 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         welcome.warm_transition_version,
                         connection.protocol_version,
                     )?;
-                    let (result, lifecycle) =
-                        process_command(&mut state, &store, &config, &mut executor, &command)?;
+                    let (executed, lane) = execute_command_with_capacity_control(
+                        (transport, connection, lease, next_lease_renewal),
+                        &mut state,
+                        &store,
+                        &config,
+                        &mut executor,
+                        &command,
+                        welcome.lease_renewal_version == Some(1),
+                        runtime_deadline,
+                    );
+                    (transport, connection, lease, next_lease_renewal) = lane;
+                    let (result, lifecycle) = executed?;
                     let next_authority = next_authority.filter(|_| completed_attachment(&result));
-                    if let Some(durable_lifecycle) = lifecycle.durable_state() {
-                        persist_lifecycle_before_command_delivery(
-                            &mut state,
-                            &store,
-                            durable_lifecycle,
-                            &result,
-                        )?;
-                    }
                     let delivery = (|| {
                         if let Some(next) = &next_authority {
                             return deliver_warm_attachment(
@@ -1036,11 +1206,212 @@ pub fn run_durable_runner<E: CommandExecutor>(
     }
 }
 
-fn lease_renewal_deadline(now: u64, expires_at: u64) -> u64 {
+/// No provider callback runs while an event namespace is closing. Pending RPCs
+/// remain live; new commands wait in the bounded transport backlog. Reading the
+/// socket directly prevents a deferred command from hiding the commit receipt.
+fn rotate_event_epoch_if_needed(
+    mut lane: super::storage_control::Lane,
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    config: &DurableRunnerConfig,
+    limit: Option<u64>,
+    deadline: Option<Instant>,
+) -> (
+    Result<bool, DurableRunnerError>,
+    super::storage_control::Lane,
+) {
+    if state.event_epoch_transition.is_none()
+        && limit.is_none_or(|limit| state.highest_source_seq() < limit)
+    {
+        return (Ok(false), lane);
+    }
+    if limit.is_none() {
+        return (
+            Err(DurableRunnerError::invalid(
+                "pending event epoch capability was downgraded",
+            )),
+            lane,
+        );
+    }
+    let (prepared, next_lane) = super::storage_control::run(
+        lane,
+        pressure_control_identity(state, config),
+        true,
+        deadline,
+        || store.prepare_event_epoch(state),
+    );
+    lane = next_lane;
+    let transition = match prepared {
+        Ok(t) => t,
+        Err(e) => return (Err(e), lane),
+    };
+    let mut sent = state.acked_source_seq;
+    let mut announced = false;
+    let mut stop_deadline: Option<Instant> = None;
+    loop {
+        let (transport, connection, lease, renewal) = &mut lane;
+        let polled = (|| {
+            let now = current_unix_ms()?;
+            if deadline.is_some_and(|d| Instant::now() >= d)
+                || stop_deadline.is_some_and(|d| Instant::now() >= d)
+                || now >= connection.expires_at_unix_ms
+            {
+                return Err(DurableRunnerError::storage_wait_cancelled(
+                    "event epoch wait exceeded authenticated lifetime",
+                ));
+            }
+            send_outbox(transport, state, &mut sent, connection.protocol_version)?;
+            if now >= *renewal {
+                let credential = lease.as_mut().ok_or_else(|| {
+                    DurableRunnerError::invalid("event epoch requires live lease")
+                })?;
+                credential.renewal_requested = true;
+                transport.send_json(&control_envelope(
+                    state,
+                    connection,
+                    "lease_renew",
+                    json!({
+                        "connectionLeaseExpiresAtUnixMs": connection.expires_at_unix_ms,
+                        "connectionLeaseRevocationEpoch": connection.revocation_epoch,
+                    }),
+                ))?;
+                *renewal = now.saturating_add(
+                    5000.min(connection.expires_at_unix_ms.saturating_sub(now) / 2)
+                        .max(1),
+                );
+            }
+            if !announced && state.acked_source_seq == transition.final_ordinal {
+                transport.send_json(&control_envelope(
+                    state,
+                    connection,
+                    "event_epoch_rotate",
+                    serde_json::to_value(&transition)
+                        .map_err(|e| DurableRunnerError::invalid(e.to_string()))?,
+                ))?;
+                announced = true;
+            }
+            let Some(message) = transport.receive_control_during_epoch()? else {
+                return Ok(None);
+            };
+            validate_control_identity(&message, state, Some(connection))?;
+            match message.get("kind").and_then(Value::as_str) {
+                Some("ack") => {
+                    if state.ack_is_current(message.get("payload").unwrap_or(&Value::Null))? {
+                        let ack = message.pointer("/payload/ackedSourceSeq").and_then(Value::as_u64).ok_or_else(|| DurableRunnerError::invalid("ACK required"))?;
+                        state.apply_ack(ack, connection.protocol_version)?;
+                    }
+                }
+                Some("event_epoch_committed") => {
+                    let received: super::event_epochs::EventEpochTransition = serde_json::from_value(message.get("payload").cloned().unwrap_or(Value::Null)).map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+                    if !announced || received != transition { return Err(DurableRunnerError::invalid("event epoch acknowledgement changed its exact intent")); }
+                    return Ok(Some(received));
+                }
+                Some("lease_renewed") => {
+                    apply_lease_renewal(&message, connection, lease.as_mut().ok_or_else(|| DurableRunnerError::invalid("live lease required"))?)?;
+                    *renewal = lease_renewal_deadline(current_unix_ms()?, connection.expires_at_unix_ms);
+                }
+                Some("ping") => transport.send_json(&control_envelope(state, connection, "pong", json!({"lifecycle":state.lifecycle,"sourceEpoch":state.source_epoch,"ackedSourceSeq":state.acked_source_seq})))?,
+                Some("revoke") => {
+                    if message.pointer("/payload/revocationEpoch").and_then(Value::as_u64).is_none_or(|epoch| epoch <= connection.revocation_epoch) {
+                        return Err(DurableRunnerError::invalid("invalid revocation during event epoch transition"));
+                    }
+                    return Err(DurableRunnerError::storage_wait_cancelled("event epoch authority was revoked"));
+                },
+                Some("command") => {
+                    let command: Command = serde_json::from_value(message.get("payload").cloned().unwrap_or(Value::Null)).map_err(|e| DurableRunnerError::invalid(e.to_string()))?;
+                    command.validate()?;
+                    if super::storage_control::fresh_stop(&command, state.controller_epoch.as_deref(), state.last_controller_command_seq) {
+                        stop_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(10));
+                    }
+                    transport.defer_control(message)?;
+                }
+                Some("command_epoch_rotate") => transport.defer_control(message)?,
+                _ => return Err(DurableRunnerError::invalid("unexpected control during event epoch transition")),
+            }
+            Ok(None)
+        })();
+        match polled {
+            Err(error) => return (Err(error), lane),
+            Ok(Some(receipt)) => {
+                let (committed, next_lane) = super::storage_control::run(
+                    lane,
+                    pressure_control_identity(state, config),
+                    true,
+                    deadline,
+                    || store.commit_event_epoch(state, &receipt),
+                );
+                return (committed.map(|()| true), next_lane);
+            }
+            Ok(None) => {}
+        }
+    }
+}
+
+pub(super) fn lease_renewal_deadline(now: u64, expires_at: u64) -> u64 {
     now.saturating_add(expires_at.saturating_sub(now) / 2)
 }
 
-fn apply_lease_renewal(
+fn pressure_control_identity(state: &DurableState, config: &DurableRunnerConfig) -> DurableState {
+    let mut identity = DurableState::new(config);
+    identity
+        .runner_instance_id
+        .clone_from(&state.runner_instance_id);
+    identity
+        .environment_lease_id
+        .clone_from(&state.environment_lease_id);
+    identity.run_id.clone_from(&state.run_id);
+    identity
+        .normalized_session_id
+        .clone_from(&state.normalized_session_id);
+    identity.turn_id.clone_from(&state.turn_id);
+    identity.item_id.clone_from(&state.item_id);
+    state.copy_event_ack_authority(&mut identity);
+    identity.acked_source_seq = state.acked_source_seq;
+    identity.next_source_seq = state.next_source_seq;
+    identity.last_controller_command_seq = state.last_controller_command_seq;
+    identity
+        .controller_epoch
+        .clone_from(&state.controller_epoch);
+    identity.lifecycle.clone_from(&state.lifecycle);
+    identity
+}
+
+fn execute_command_with_capacity_control<E: CommandExecutor>(
+    lane: super::storage_control::Lane,
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    config: &DurableRunnerConfig,
+    executor: &mut E,
+    command: &Command,
+    renew: bool,
+    deadline: Option<Instant>,
+) -> (
+    Result<(StoredCommandResult, CommandLifecycle), DurableRunnerError>,
+    super::storage_control::Lane,
+) {
+    let mut identity = pressure_control_identity(state, config);
+    if command.controller_epoch == identity.controller_epoch {
+        identity.last_controller_command_seq = identity
+            .last_controller_command_seq
+            .max(command.controller_seq);
+    }
+    let (result, lane) = super::storage_control::run(lane, identity, renew, deadline, || {
+        let (result, lifecycle) = process_command(state, store, config, executor, command)?;
+        if let Some(durable_lifecycle) = lifecycle.durable_state() {
+            persist_lifecycle_before_command_delivery(state, store, durable_lifecycle, &result)?;
+        }
+        Ok((result, lifecycle))
+    });
+    if result
+        .as_ref()
+        .is_err_and(|error| error.is_storage_wait_cancelled())
+    {
+        let _ = shutdown_preserving_cleanup(state, executor);
+    }
+    (result, lane)
+}
+
+pub(super) fn apply_lease_renewal(
     message: &Value,
     connection: &mut ConnectionMetadata,
     credential: &mut LeaseCredential,
@@ -1204,6 +1575,9 @@ fn wait_for_terminal_result_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
+                if !state.ack_is_current(message.get("payload").unwrap_or(&Value::Null))? {
+                    continue;
+                }
                 ack_persistence.apply(state, store, acked, connection.protocol_version)?;
             }
             Some("ping") => transport.send_json(&control_envelope(
@@ -1268,6 +1642,9 @@ fn wait_for_old_authority_outbox_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
+                if !state.ack_is_current(message.get("payload").unwrap_or(&Value::Null))? {
+                    continue;
+                }
                 state.apply_ack(acked, connection.protocol_version)?;
                 store.save(state)?;
             }
@@ -1382,6 +1759,7 @@ fn deliver_warm_attachment(
         connection.lease_id.clone(),
         connection.expires_at_unix_ms,
         connection.revocation_epoch,
+        state.source_epoch.clone(),
     )?;
     if let Some(pending) = &state.warm_transition {
         if pending.phase != "prepared"
@@ -1458,7 +1836,8 @@ fn deliver_warm_attachment(
                 if message
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
-                    == Some(state.acked_source_seq) => {}
+                    == Some(state.acked_source_seq)
+                    && state.ack_is_current(message.get("payload").unwrap_or(&Value::Null))? => {}
             _ => {
                 return Err(DurableRunnerError::invalid(
                     "warm attachment result fence received unrelated control",
@@ -1725,15 +2104,17 @@ fn process_command<E: CommandExecutor>(
     }
     match state.begin_command(command)? {
         CommandDisposition::Replay(result) => {
-            let lifecycle =
-                if result.status == "pending" || state.pending_provider_cleanup.is_some() {
-                    // Its terminal delivery was already reconciled. Replaying
-                    // the old receipt must not replace the newer command cursor
-                    // with another terminal-delivery fence at an older sequence.
-                    CommandLifecycle::Continue
-                } else {
-                    CommandLifecycle::for_terminal(command)
-                };
+            let lifecycle = if result.status == "pending"
+                || state.pending_provider_cleanup.is_some()
+                || command.controller_epoch != state.controller_epoch
+            {
+                // Its terminal delivery was already reconciled. Replaying
+                // the old receipt must not replace the newer command cursor
+                // with another terminal-delivery fence at an older sequence.
+                CommandLifecycle::Continue
+            } else {
+                CommandLifecycle::for_terminal(command)
+            };
             return Ok((result, lifecycle));
         }
         CommandDisposition::Reject(result) => {
@@ -1747,6 +2128,7 @@ fn process_command<E: CommandExecutor>(
     store.save(state)?;
     let mut execution = match executor.execute(command) {
         Ok(execution) => execution,
+        Err(error) if error.is_storage_wait_cancelled() => return Err(error),
         Err(error) => {
             // Failure facts may follow a full retained provider backlog. Only
             // the non-restoring FIFO is legal here; regular poll can launch.
@@ -1909,7 +2291,7 @@ fn command_result_envelope(
     })
 }
 
-fn control_envelope(
+pub(super) fn control_envelope(
     state: &DurableState,
     connection: &ConnectionMetadata,
     kind: &str,
@@ -2214,6 +2596,7 @@ mod tests {
 
     fn command(command_type: &str) -> Command {
         Command {
+            controller_epoch: None,
             schema: "paperclip.prp.command.v1".to_owned(),
             command_id: "command_1".to_owned(),
             controller_seq: 1,
@@ -4424,6 +4807,47 @@ mod tests {
         assert_eq!(lifecycle, CommandLifecycle::Shutdown);
         assert_eq!(executor.calls, 0);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn closed_command_epoch_terminal_replay_cannot_stop_current_work() {
+        for kind in ["runner.suspend", "runner.shutdown"] {
+            let directory =
+                std::env::temp_dir().join(format!("historical-terminal-{}", uuid::Uuid::new_v4()));
+            let config = config(directory.clone());
+            let store = DurableStateStore::new_indexed(&directory).unwrap();
+            let (mut state, _) = store.load_or_create(&config).unwrap();
+            let old = command(kind);
+            state.begin_command(&old).unwrap();
+            store.save(&state).unwrap();
+            let original = state
+                .complete_command(&old, json!({"exact": "settled terminal"}))
+                .unwrap();
+            // The prior process completed terminal delivery and cleanup. New
+            // work is live under this same run, then its command lane rotates.
+            state.lifecycle = "ready".into();
+            store.save(&state).unwrap();
+            let transition = super::super::command_epochs::CommandEpochTransition {
+                schema: "paperclip.prp.command-epoch.v1".into(),
+                run_id: state.run_id.clone(),
+                transition_id: uuid::Uuid::new_v4().to_string(),
+                from_epoch: None,
+                next_epoch: uuid::Uuid::new_v4().to_string(),
+                final_ordinal: 1,
+            };
+            store.rotate_command_epoch(&mut state, &transition).unwrap();
+            let before = state.clone();
+            let mut executor = CountingExecutor { calls: 0 };
+            let (result, disposition) =
+                process_command(&mut state, &store, &config, &mut executor, &old).unwrap();
+            assert_eq!(result, original);
+            assert_eq!(disposition, CommandLifecycle::Continue);
+            assert_eq!(state, before);
+            assert_eq!(executor.calls, 0);
+            drop(state);
+            drop(store);
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]

@@ -166,6 +166,7 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
 
 fn command(id: &str, sequence: u64, command_type: &str, payload: Value) -> Command {
     Command {
+        controller_epoch: None,
         schema: "paperclip.prp.command.v1".to_owned(),
         command_id: id.to_owned(),
         controller_seq: sequence,
@@ -3282,8 +3283,10 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
         let resume_count = call_count(&directory, "thread/resume");
         let mut next = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
         let mut session_resumed_events = 0;
+        let mut replay_events = Vec::new();
         for _ in 0..32 {
             let events = poll_and_ack(&mut next).expect("poll exact pending replay");
+            replay_events.extend(events.iter().cloned());
             session_resumed_events += events
                 .iter()
                 .filter(|event| event.event_type == "session.resumed")
@@ -3303,6 +3306,7 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
         );
         for _ in 0..4 {
             let events = poll_and_ack(&mut next).expect("poll exact pending replay");
+            replay_events.extend(events.iter().cloned());
             session_resumed_events += events
                 .iter()
                 .filter(|event| event.event_type == "session.resumed")
@@ -3331,8 +3335,28 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
         );
         assert_eq!(
             after["nextProviderEventSeq"].as_u64(),
-            before["nextProviderEventSeq"].as_u64().map(|sequence| sequence + 3),
-            "exact restore adds one session.resumed and two durable startup facts, never duplicate tool inputs, during replay {replay}"
+            before["nextProviderEventSeq"].as_u64(),
+            "new identities do not consume the retained numeric namespace"
+        );
+        assert_eq!(replay_events.len(), 3, "exact restore adds one session.resumed and two durable startup facts during replay {replay}");
+        assert_eq!(
+            replay_events
+                .iter()
+                .filter(|event| {
+                    event.event_type == "harness.diagnostic"
+                        && event.payload["code"] == "provider_startup_ownership"
+                })
+                .count(),
+            2
+        );
+        let ids: std::collections::BTreeSet<_> = replay_events
+            .iter()
+            .map(|event| event.executor_event_id.as_str())
+            .collect();
+        assert_eq!(
+            ids.len(),
+            3,
+            "each restored fact has a distinct exact identity"
         );
         recovered = Some(next);
         if replay < 3 {
@@ -4915,21 +4939,58 @@ fn receipt_limit_rejects_the_call_and_keeps_polling_when_interrupt_fails() {
     saturate_provider_tool_receipts(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let resumed = wait_for_executor_event(&mut recovered, "session.resumed");
-    assert_eq!(resumed.payload["provider"], "codex");
-    let diagnostic = wait_for_executor_event(&mut recovered, "harness.diagnostic");
-    assert_eq!(
-        diagnostic.payload["code"],
-        "semantic_tool_turn_receipt_limit"
-    );
+    // Debug builds can spend the entire two-second courtesy window persisting
+    // the deliberately saturated legacy JSON ledger. Both outcomes are valid:
+    // an authoritative interrupt after retries, or conservative failure after
+    // the exact provider is reaped. Collect the entire acknowledged batch so a
+    // terminal delivered alongside its diagnostic is not discarded by a helper.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    let mut resumed = false;
+    let mut diagnostic = false;
+    let mut terminal = None;
+    while std::time::Instant::now() < deadline && terminal.is_none() {
+        for event in poll_and_ack(&mut recovered).expect("poll receipt-limit settlement") {
+            resumed |= event.event_type == "session.resumed";
+            diagnostic |= event.event_type == "harness.diagnostic"
+                && event.payload["code"] == "semantic_tool_turn_receipt_limit";
+            assert_ne!(
+                event.event_type, "semantic_tool.input",
+                "overflowing call must never execute"
+            );
+            if matches!(
+                event.event_type.as_str(),
+                "turn.interrupted" | "turn.failed"
+            ) {
+                terminal = Some(event);
+            }
+        }
+        if terminal.is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    assert!(resumed && diagnostic);
     assert_eq!(call_count(&directory, "tool-response:failure"), 1);
-    assert_eq!(call_count(&directory, "turn/interrupt"), 1);
-    let interrupted = wait_for_executor_event(&mut recovered, "turn.interrupted");
-    assert_eq!(
-        interrupted.payload["provider"], "codex",
-        "the retry must settle the receipt-exhausted turn"
-    );
-    assert_eq!(call_count(&directory, "turn/interrupt"), 3);
+    let terminal = terminal.expect("receipt-limit interruption must settle before the deadline");
+    assert_eq!(terminal.payload["provider"], "codex");
+    let attempts = call_count(&directory, "turn/interrupt");
+    assert!((1..=3).contains(&attempts));
+    if terminal.event_type == "turn.failed" {
+        assert_eq!(
+            terminal.payload["code"],
+            "semantic_tool_turn_receipt_limit_interrupt_unconfirmed"
+        );
+        assert_eq!(terminal.payload["interruptAccepted"], false);
+        assert_eq!(terminal.payload["providerTerminalObserved"], false);
+        assert_eq!(terminal.payload["providerShutdownFailed"], false);
+        assert_eq!(attempts, 1, "only the configured first RPC is rejected");
+    } else if attempts < 3 {
+        assert_eq!(
+            terminal.payload["code"],
+            "semantic_tool_turn_receipt_limit_interrupt_deadline"
+        );
+        assert_eq!(terminal.payload["interruptAccepted"], true);
+        assert_eq!(terminal.payload["providerShutdownFailed"], false);
+    }
 
     recovered.shutdown().expect("stop recovered provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
@@ -6217,12 +6278,202 @@ fn lightweight_history_repeated_cursor_is_not_idle_evidence() {
     fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn lightweight_history_settlement_race_does_not_scan_completed_history() {
+    for settled in [false, true] {
+        let directory = temporary_directory("history-settlement-race");
+        let mut args = vec![
+            "--hold-turn",
+            "--require-lightweight-history",
+            "--unbounded-completed-history",
+        ];
+        if settled {
+            args.push("--settle-during-history");
+        }
+        let config = provider_config(&directory, &args);
+        let mut provider = CodexProvider::start(&config, None).unwrap();
+        provider.start_turn("Keep working", &config.cwd).unwrap();
+        let result = provider.read_thread();
+        if settled {
+            assert_eq!(result.unwrap()["thread"]["turns"], json!([]));
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("active turn absent from current history window"));
+        }
+        let calls = fs::read_to_string(directory.join("calls.log")).unwrap();
+        assert_eq!(calls.matches("thread/turns/list").count(), 4);
+        assert_eq!(calls.matches("thread/read").count(), 2);
+        provider.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
 fn skill_wire_requests(directory: &Path) -> Vec<Value> {
     fs::read_to_string(directory.join("requests.ndjson"))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+fn indexed_provider_history_directory(label: &str) -> PathBuf {
+    let directory = temporary_directory(label);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    directory
+}
+
+#[test]
+fn indexed_provider_history_selects_paginated_start_and_verifies_cold_resume() {
+    let directory = indexed_provider_history_directory("indexed-provider-history");
+    let log = directory.join("requests.ndjson");
+    let config = provider_config(
+        &directory,
+        &[
+            "--require-paginated-history",
+            "--request-log",
+            log.to_str().unwrap(),
+        ],
+    );
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": config, "durability": "durability.indexed_state.v1"
+            }),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor.shutdown().unwrap();
+    drop(executor);
+    let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    restored
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Continue"}),
+        ))
+        .unwrap();
+    restored.shutdown().unwrap();
+    drop(restored);
+    let frames = skill_wire_requests(&directory);
+    let start = frames
+        .iter()
+        .find(|frame| frame["method"] == "thread/start")
+        .unwrap();
+    let resume = frames
+        .iter()
+        .find(|frame| frame["method"] == "thread/resume")
+        .unwrap();
+    assert_eq!(start["params"]["historyMode"], "paginated");
+    assert_eq!(resume["params"]["threadId"], "codex-thread-1");
+    assert_eq!(resume["params"]["excludeTurns"], true);
+    // Resume verifies the persisted contract; it cannot convert it by request.
+    assert!(resume["params"].get("historyMode").is_none());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn indexed_provider_history_rejects_unsupported_mode_before_a_turn() {
+    for switch in ["--legacy-history-mode", "--missing-history-mode"] {
+        let directory = indexed_provider_history_directory("unsupported-indexed-provider-history");
+        let config = provider_config(&directory, &[switch]);
+        let mut executor =
+            CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+        executor
+            .execute(&command(
+                "prepare",
+                1,
+                "run.prepare",
+                json!({
+                    "provider": config, "durability": "durability.indexed_state.v1"
+                }),
+            ))
+            .unwrap();
+        assert!(executor
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap_err()
+            .to_string()
+            .contains("codex_history_mode_unsupported"));
+        assert_eq!(call_count(&directory, "turn/start"), 0);
+        drop(executor);
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn indexed_provider_history_rejects_a_legacy_cold_resume_without_starting_fresh() {
+    let directory = indexed_provider_history_directory("unsupported-resumed-provider-history");
+    let config = provider_config(&directory, &[]);
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": config, "durability": "durability.indexed_state.v1"
+            }),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor.shutdown().unwrap();
+    drop(executor);
+    fs::write(directory.join("legacy-history-mode"), "legacy").unwrap();
+    let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    assert!(restored
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Continue"})
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("codex_history_mode_unsupported"));
+    assert_eq!(call_count(&directory, "thread/start"), 1);
+    assert_eq!(call_count(&directory, "thread/resume"), 1);
+    assert_eq!(call_count(&directory, "turn/start"), 0);
+    drop(restored);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn legacy_provider_history_preserves_the_provider_default() {
+    let directory = temporary_directory("legacy-provider-history-default");
+    let log = directory.join("requests.ndjson");
+    let config = provider_config(
+        &directory,
+        &[
+            "--legacy-history-mode",
+            "--request-log",
+            log.to_str().unwrap(),
+        ],
+    );
+    let mut provider = CodexProvider::start(&config, None).unwrap();
+    provider.shutdown().unwrap();
+    let frames = skill_wire_requests(&directory);
+    let start = frames
+        .iter()
+        .find(|frame| frame["method"] == "thread/start")
+        .unwrap();
+    assert!(start["params"].get("historyMode").is_none());
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

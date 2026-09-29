@@ -1,5 +1,8 @@
+mod command_epochs;
+mod event_epochs;
 mod runner;
 mod state;
+mod storage_control;
 mod transport;
 
 use std::error::Error;
@@ -12,11 +15,11 @@ use sha2::{Digest, Sha256};
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub use runner::{
-    run_durable_runner, CommandExecution, CommandExecutor, PolledEvent,
+    run_durable_runner, run_indexed_durable_runner, CommandExecution, CommandExecutor, PolledEvent,
     TerminalDeliveryReconciliation,
 };
 pub(crate) use state::{
-    create_private_temporary_file, open_private_regular_file, redact_text,
+    create_private_temporary_file, open_private_regular_file, redact_output_text, redact_text,
     sanitize_semantic_tool_input, sanitize_value, verify_private_directory,
 };
 pub use state::{
@@ -38,17 +41,64 @@ pub fn redact_diagnostic_text(input: &str) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DurableRunnerError(String);
+pub struct DurableRunnerError {
+    message: String,
+    storage_capacity: bool,
+    storage_wait_cancelled: bool,
+    transport_unavailable: bool,
+}
 
 impl DurableRunnerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            storage_capacity: false,
+            storage_wait_cancelled: false,
+            transport_unavailable: false,
+        }
+    }
+
+    pub(crate) fn storage_capacity(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            storage_capacity: true,
+            storage_wait_cancelled: false,
+            transport_unavailable: false,
+        }
+    }
+
+    pub(crate) fn storage_wait_cancelled(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            storage_capacity: false,
+            storage_wait_cancelled: true,
+            transport_unavailable: false,
+        }
+    }
+
+    pub(crate) fn transport_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            storage_capacity: false,
+            storage_wait_cancelled: false,
+            transport_unavailable: true,
+        }
+    }
+    pub(crate) fn is_transport_unavailable(&self) -> bool {
+        self.transport_unavailable
+    }
+
+    pub(crate) fn is_storage_capacity(&self) -> bool {
+        self.storage_capacity
+    }
+    pub(crate) fn is_storage_wait_cancelled(&self) -> bool {
+        self.storage_wait_cancelled
     }
 }
 
 impl Display for DurableRunnerError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 

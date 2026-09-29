@@ -4,60 +4,300 @@
   "title": "PRP v2 native event",
   "type": "object",
   "required": [
-    "schema", "sourceEventId", "sourceSeq", "sourceInstanceId", "sourceKind", "runId",
-    "eventType", "schemaVersion", "priority", "emittedAt", "payload"
+    "schema",
+    "sourceEventId",
+    "sourceSeq",
+    "sourceInstanceId",
+    "sourceKind",
+    "runId",
+    "eventType",
+    "schemaVersion",
+    "priority",
+    "emittedAt",
+    "payload"
   ],
   "properties": {
-    "schema": { "const": "paperclip.prp.event.v2" },
-    "sourceEventId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "sourceSeq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
-    "sourceInstanceId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "sourceKind": { "enum": ["runner", "control_plane"] },
-    "runId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "turnId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "itemId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "eventType": {
+    "schema": {
+      "const": "paperclip.prp.event.v2"
+    },
+    "sourceEventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "sourceEpoch": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+    },
+    "sourceSeq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "sourceInstanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "sourceKind": {
       "enum": [
-        "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
-        "runtime.phase.changed", "sandbox.metric", "workspace.ready", "workspace.change.updated", "workspace.diff.recorded", "workspace.file.referenced",
-        "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic", "plan.updated",
-        "tool.execution.started", "tool.execution.progressed", "tool.execution.completed", "research.started", "research.progressed", "research.completed",
-        "delegation.started", "delegation.updated", "delegation.completed", "model.route.changed", "model.verification.updated", "context.compacted",
-        "artifact.viewed", "artifact.generated", "review.mode.changed", "hook.started", "hook.completed", "memory.citation.referenced",
-        "safety.review.started", "safety.review.completed", "terminal.input.sent", "wait.started", "wait.completed", "provider.notice.recorded",
-        "session.starting", "session.started", "session.resuming", "session.resumed", "session.reconciled", "session.updated", "session.closed", "session.failed",
-        "session.capabilities.updated", "session.goal.snapshot", "session.goal.updated", "session.goal.cleared",
-        "turn.submitted", "turn.accepted", "turn.started", "turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled",
-        "item.started", "item.delta", "item.completed", "item.failed", "usage.reported", "semantic_tool.input", "semantic_tool.result",
-        "mcp_app.discovered", "mcp_app.resource.resolved", "mcp_app.initializing", "mcp_app.ready", "mcp_app.tool_input", "mcp_app.tool_result", "mcp_app.action.requested", "mcp_app.action.resolved", "mcp_app.host_context.changed", "mcp_app.failed", "mcp_app.teardown",
-        "runtime_request.created", "runtime_request.resolved", "runtime_request.expired", "runtime_request.cancelled",
-        "interaction.request.proposed", "interaction.request.materialized", "interaction.request.rejected", "interaction.response.progressed", "interaction.response.resolved", "interaction.response.delivered",
-        "run.attached", "run.detached", "run.result.proposed", "run.result.accepted", "run.result.rejected",
-        "attention.request.proposed", "attention.request.routed", "attention.request.resolved", "attention.request.expired", "attention.request.superseded",
-        "work.assessment.recorded", "issue.status.decision.recorded", "issue.status.decision.applied", "issue.status.decision.rejected", "issue.status.decision.superseded", "run.terminal"
+        "runner",
+        "control_plane"
       ]
     },
-    "schemaVersion": { "const": 2 },
-    "priority": { "enum": [0, 1, 2] },
-    "emittedAt": { "type": "string", "format": "date-time" },
-    "observedAt": { "type": "string", "format": "date-time" },
-    "payload": { "type": "object", "additionalProperties": true },
-    "debug": { "type": "object", "additionalProperties": true }
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "normalizedSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "turnId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "itemId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "eventType": {
+      "enum": [
+        "runner.connected",
+        "runner.reconnected",
+        "runner.reconciled",
+        "runner.disconnected",
+        "runner.draining",
+        "runner.suspending",
+        "runner.suspended",
+        "runner.stopped",
+        "runner.diagnostic",
+        "runtime.phase.changed",
+        "sandbox.metric",
+        "workspace.ready",
+        "workspace.change.updated",
+        "workspace.diff.recorded",
+        "workspace.file.referenced",
+        "harness.starting",
+        "harness.ready",
+        "harness.exited",
+        "harness.diagnostic",
+        "plan.updated",
+        "tool.execution.started",
+        "tool.execution.progressed",
+        "tool.execution.completed",
+        "research.started",
+        "research.progressed",
+        "research.completed",
+        "delegation.started",
+        "delegation.updated",
+        "delegation.completed",
+        "model.route.changed",
+        "model.verification.updated",
+        "context.compacted",
+        "artifact.viewed",
+        "artifact.generated",
+        "review.mode.changed",
+        "hook.started",
+        "hook.completed",
+        "memory.citation.referenced",
+        "safety.review.started",
+        "safety.review.completed",
+        "terminal.input.sent",
+        "wait.started",
+        "wait.completed",
+        "provider.notice.recorded",
+        "session.starting",
+        "session.started",
+        "session.resuming",
+        "session.resumed",
+        "session.reconciled",
+        "session.updated",
+        "session.closed",
+        "session.failed",
+        "session.capabilities.updated",
+        "session.goal.snapshot",
+        "session.goal.updated",
+        "session.goal.cleared",
+        "turn.submitted",
+        "turn.accepted",
+        "turn.started",
+        "turn.completed",
+        "turn.failed",
+        "turn.interrupted",
+        "turn.cancelled",
+        "output.body.chunk",
+        "item.started",
+        "item.delta",
+        "item.completed",
+        "item.failed",
+        "usage.reported",
+        "semantic_tool.input",
+        "semantic_tool.result",
+        "mcp_app.discovered",
+        "mcp_app.resource.resolved",
+        "mcp_app.initializing",
+        "mcp_app.ready",
+        "mcp_app.tool_input",
+        "mcp_app.tool_result",
+        "mcp_app.action.requested",
+        "mcp_app.action.resolved",
+        "mcp_app.host_context.changed",
+        "mcp_app.failed",
+        "mcp_app.teardown",
+        "runtime_request.created",
+        "runtime_request.resolved",
+        "runtime_request.expired",
+        "runtime_request.cancelled",
+        "interaction.request.proposed",
+        "interaction.request.materialized",
+        "interaction.request.rejected",
+        "interaction.response.progressed",
+        "interaction.response.resolved",
+        "interaction.response.delivered",
+        "run.attached",
+        "run.detached",
+        "run.result.proposed",
+        "run.result.accepted",
+        "run.result.rejected",
+        "attention.request.proposed",
+        "attention.request.routed",
+        "attention.request.resolved",
+        "attention.request.expired",
+        "attention.request.superseded",
+        "work.assessment.recorded",
+        "issue.status.decision.recorded",
+        "issue.status.decision.applied",
+        "issue.status.decision.rejected",
+        "issue.status.decision.superseded",
+        "run.terminal"
+      ]
+    },
+    "schemaVersion": {
+      "const": 2
+    },
+    "priority": {
+      "enum": [
+        0,
+        1,
+        2
+      ]
+    },
+    "emittedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "sourceEpochTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "runId",
+        "transitionId",
+        "fromEpoch",
+        "nextEpoch",
+        "finalOrdinal"
+      ],
+      "properties": {
+        "schema": {
+          "const": "paperclip.prp.event-epoch.v1"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "transitionId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "fromEpoch": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextEpoch": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "finalOrdinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    }
   },
   "allOf": [
     {
-      "if": { "properties": { "eventType": { "enum": ["session.goal.snapshot", "session.goal.updated"] } } },
+      "if": {
+        "properties": {
+          "eventType": {
+            "enum": [
+              "tool.execution.started",
+              "tool.execution.progressed",
+              "tool.execution.completed"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/toolExecution"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "enum": [
+              "session.goal.snapshot",
+              "session.goal.updated"
+            ]
+          }
+        }
+      },
       "then": {
         "properties": {
           "payload": {
             "type": "object",
-            "required": ["goal"],
+            "required": [
+              "goal"
+            ],
             "properties": {
               "goal": {
                 "oneOf": [
-                  { "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/snapshot" },
-                  { "type": "null" }
+                  {
+                    "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/snapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -67,16 +307,99 @@
       }
     },
     {
-      "if": { "properties": { "eventType": { "const": "session.capabilities.updated" } } },
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "session.capabilities.updated"
+          }
+        }
+      },
       "then": {
         "properties": {
           "payload": {
             "type": "object",
-            "required": ["sessionGoals"],
+            "required": [
+              "sessionGoals"
+            ],
             "properties": {
-              "sessionGoals": { "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability" }
+              "sessionGoals": {
+                "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability"
+              }
             },
             "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "output.body.chunk"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "schema",
+              "body",
+              "offset",
+              "sha256",
+              "text"
+            ],
+            "properties": {
+              "schema": {
+                "const": "paperclip.output.body.chunk.v1"
+              },
+              "body": {
+                "type": "object",
+                "required": [
+                  "schema",
+                  "bodyId",
+                  "sha256",
+                  "byteLength",
+                  "mediaType"
+                ],
+                "properties": {
+                  "schema": {
+                    "const": "paperclip.output.body.v1"
+                  },
+                  "bodyId": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "byteLength": {
+                    "type": "string",
+                    "pattern": "^[1-9][0-9]{0,6}$"
+                  },
+                  "mediaType": {
+                    "const": "text/plain; charset=utf-8"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "offset": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]{0,6})$"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32766
+              }
+            },
+            "additionalProperties": false
           }
         }
       }

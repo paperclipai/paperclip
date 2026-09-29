@@ -20,6 +20,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .find(|pair| pair[0] == "--mode")
         .map(|pair| pair[1].as_str())
         .unwrap_or("happy");
+    let history_calls: usize = args
+        .windows(2)
+        .find(|pair| pair[0] == "--calls")
+        .map(|pair| pair[1].parse())
+        .transpose()?
+        .unwrap_or(64);
     let profile_digest = args
         .windows(2)
         .find(|pair| pair[0] == "--profile-digest")
@@ -39,6 +45,82 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if mode == "indexed-many-tools" {
+            if command == "tool.resolve" {
+                if let Some(marker) = args
+                    .windows(2)
+                    .find(|pair| pair[0] == "--resolution-marker")
+                {
+                    std::fs::write(&marker[1], b"tool.resolve received")?;
+                }
+            }
+            write_json(
+                &mut stdout,
+                &bootstrap_success(id, command, &request, mode, profile_digest),
+            )?;
+            let params = request.get("params").unwrap_or(&Value::Null);
+            let turn = params
+                .get("turnId")
+                .and_then(Value::as_str)
+                .unwrap_or("turn-1");
+            let next_call = if command == "turn.start" {
+                Some(0)
+            } else if command == "tool.resolve" {
+                let call = params["callId"].as_str().ok_or("missing call identity")?;
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.event",
+                    "run-1",
+                    turn,
+                    json!({
+                        "type":"semantic_result", "callId":call, "operationId":"issues.read", "ok":true,
+                        "result": params["result"],
+                    }),
+                )?;
+                next_sequence += 1;
+                let index: usize = call
+                    .strip_prefix("history-call-")
+                    .ok_or("bad call identity")?
+                    .parse()?;
+                Some(index + 1)
+            } else {
+                None
+            };
+            if let Some(index) = next_call {
+                if index < history_calls {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.tool_called",
+                        "run-1",
+                        turn,
+                        json!({"callId":format!("history-call-{index}"),"operationId":"issues.read","input":{"index":index}}),
+                    )?;
+                } else {
+                    // Ancient exact replay after crossing the former 4096-call ceiling.
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.event",
+                        "run-1",
+                        turn,
+                        json!({"type":"semantic_result","callId":"history-call-0","operationId":"issues.read","ok":true,"result":{"index":0}}),
+                    )?;
+                    next_sequence += 1;
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn,
+                        json!({"status":"completed"}),
+                    )?;
+                }
+                next_sequence += 1;
+            }
+            continue;
+        }
         if mode == "goals" && command.starts_with("session.goal.") {
             let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
             match command {

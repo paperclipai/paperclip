@@ -62,7 +62,8 @@
         "output": { "type": ["string", "null"], "maxLength": 65536 },
         "outputBytes": { "type": "integer", "minimum": 0 },
         "outputTruncated": { "type": "boolean" },
-        "outputDigest": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" }
+        "outputDigest": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" },
+        "outputBody": { "$ref": "https://paperclip.dev/schemas/prp/v1/output-body-reference.schema.json" }
       },
       "additionalProperties": false
     },
