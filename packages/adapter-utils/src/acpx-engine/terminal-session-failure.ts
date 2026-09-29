@@ -67,14 +67,7 @@ export function sanitizeTerminalSessionFailure(
   // Replace in one pass so a short value cannot modify a redaction marker
   // inserted for a longer value or cause repeated marker expansion.
   const secretPattern = secretForms.length > 0
-    ? new RegExp(secretForms.map((value) => {
-      const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      // Short values must match complete tokens, not digits or fragments inside
-      // HTTP status codes, request IDs, paths, or ordinary diagnostic words.
-      return value.length < 8
-        ? `(?<![\\p{L}\\p{N}_./-])${escaped}(?![\\p{L}\\p{N}_./-])`
-        : escaped;
-    }).join("|"), "gu")
+    ? new RegExp(secretForms.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gu")
     : null;
   const diagnostic: AcpxTerminalSessionFailureDiagnostic = {
     category: CATEGORIES.has(failure.category) ? failure.category : "unknown",

@@ -75,12 +75,22 @@ describe("terminal session failure diagnostics", () => {
     expect(diagnostic.details).toBe("request_id=req_123 ***REDACTED*** ***REDACTED*** /workspace");
   });
 
-  it("preserves boolean settings, HTTP codes and request IDs around short unknown values", () => {
-    const details = "HTTP 401 request_id=req_123 req-1 /1/path retries=1 unknown=2";
+  it("preserves known boolean settings, HTTP codes and request IDs", () => {
+    const details = "HTTP 401 request_id=req_123 req-1 /1/path retries=1";
     const diagnostic = sanitizeTerminalSessionFailure({ category: "access", details }, {
-      OPENCODE_ALLOW_ALL_MODELS: "1", UNKNOWN_SETTING: "2",
-    }, undefined, { OPENCODE_ALLOW_ALL_MODELS: "1", UNKNOWN_SETTING: "2" });
-    expect(diagnostic.details).toBe(details.replace("unknown=2", "unknown=***REDACTED***"));
+      OPENCODE_ALLOW_ALL_MODELS: "1",
+    }, undefined, { OPENCODE_ALLOW_ALL_MODELS: "1" });
+    expect(diagnostic.details).toBe(details);
+  });
+
+  it("redacts short credentials even inside words, paths and punctuated strings", () => {
+    const diagnostic = sanitizeTerminalSessionFailure({
+      category: "access", details: "upstream abc-def /abc/path xabcx abc.value abc_other",
+    }, { CUSTOM_SETTING: "abc" }, undefined, { CUSTOM_SETTING: "abc" });
+    expect(diagnostic.details).not.toContain("abc");
+    expect(diagnostic.details).toBe(
+      "upstream ***REDACTED***-def /***REDACTED***/path x***REDACTED***x ***REDACTED***.value ***REDACTED***_other",
+    );
   });
 
   it("fits the persisted transcript chunk limit even with escaped provider text", () => {
