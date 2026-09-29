@@ -108,7 +108,6 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
-  | "issue_mention_context_only"
   | "execution_reconciliation_required"
   | "issue_dependencies_blocked"
   | "issue_not_found"
@@ -499,16 +498,6 @@ export function decideQueuedRunStaleness(
   facts: QueuedRunFacts,
   _now: Date,
 ): StalenessDecision {
-  // Queued runs can predate the context-only mention policy.
-  if (facts.wakeReason === "issue_comment_mentioned") {
-    return {
-      stale: true,
-      errorCode: "issue_mention_context_only",
-      reason: "Cancelled because agent mentions are context only",
-      details: { issueId: facts.issueId },
-    };
-  }
-
   if (!facts.issueFound) {
     return {
       stale: true,
