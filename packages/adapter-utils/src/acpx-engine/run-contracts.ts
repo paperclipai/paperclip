@@ -448,6 +448,7 @@ export interface SessionFingerprintIdentity {
   readonly requestedModel: string;
   readonly requestedThinkingEffort: string;
   readonly fastMode: boolean;
+  readonly daybreakEnabled: boolean;
   readonly remoteExecutionIdentity: Record<string, unknown> | null;
   readonly additionalSourcesIdentity: Record<string, unknown>;
   readonly skillsIdentity: Record<string, unknown>;

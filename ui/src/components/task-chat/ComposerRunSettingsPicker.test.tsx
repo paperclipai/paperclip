@@ -40,7 +40,7 @@ function render(onAssigneeChange: (value: string) => void, onSettingsChange: () 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   flushSync(() => root!.render(<QueryClientProvider client={queryClient}>
     <ComposerRunSettingsPicker companyId="company-1" assigneeValue="agent:a1" currentAssigneeValue="agent:a1"
-      options={options} agents={agents} settings={{ model: "gpt-6-sol", effort: "high", fast: true }}
+      options={options} agents={agents} settings={{ model: "gpt-6-sol", effort: "high", fast: true, daybreak: false }}
       onAssigneeChange={onAssigneeChange} onSettingsChange={onSettingsChange}
       modelOptionsOverride={useCatalog ? undefined : []} />
   </QueryClientProvider>));
@@ -90,6 +90,17 @@ describe("composer assignee picker", () => {
     expect(document.body.textContent).not.toContain("Loading models…");
   });
 
+  it("exposes the Daybreak access switch for Codex runs", async () => {
+    const onSettingsChange = vi.fn();
+    render(vi.fn(), onSettingsChange);
+    await click("Select assignee, model and effort");
+    const toggle = document.querySelector<HTMLButtonElement>('button[aria-label="Daybreak access"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+    await click("Daybreak access");
+    expect(onSettingsChange).toHaveBeenCalledWith({ model: "gpt-6-sol", effort: "high", fast: true, daybreak: true });
+  });
+
   it("shows an instance-declared Codex model list instead of bundled alternatives", async () => {
     const loadModels = vi.spyOn(agentsApi, "adapterModels").mockResolvedValueOnce([
       { id: "private-codex", label: "Private Codex" },
@@ -127,6 +138,6 @@ describe("composer assignee picker", () => {
     await click("Choose assignee");
     await click("No assignee");
     expect(onAssigneeChange).toHaveBeenCalledWith("");
-    expect(onSettingsChange).toHaveBeenCalledWith({ model: null, effort: null, fast: false });
+    expect(onSettingsChange).toHaveBeenCalledWith({ model: null, effort: null, fast: false, daybreak: false });
   });
 });

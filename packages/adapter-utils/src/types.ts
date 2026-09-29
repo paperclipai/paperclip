@@ -702,6 +702,8 @@ export interface CreateConfigValues {
   geminiAcpWarmHandleIdleMs?: number;
   search: boolean;
   fastMode: boolean;
+  /** Enable the Codex Daybreak access control for approved cybersecurity work. */
+  daybreakEnabled?: boolean;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;

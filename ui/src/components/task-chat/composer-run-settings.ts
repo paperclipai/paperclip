@@ -6,9 +6,10 @@ export interface ComposerRunSettings {
   model: string | null;
   effort: string | null;
   fast: boolean;
+  daybreak: boolean;
 }
 
-export const DEFAULT_COMPOSER_RUN_SETTINGS: ComposerRunSettings = { model: null, effort: null, fast: false };
+export const DEFAULT_COMPOSER_RUN_SETTINGS: ComposerRunSettings = { model: null, effort: null, fast: false, daybreak: false };
 export const EFFORT_LABELS: Record<string, string> = {
   off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High",
   xhigh: "Extra High", max: "Max", ultra: "Ultra",
@@ -49,6 +50,11 @@ export function composerFastAvailable(agent: Agent | undefined, model: string): 
   return Boolean(agent && agent.adapterType === "codex_local" && isCodexLocalKnownModel(model) && isCodexLocalFastModeSupported(model));
 }
 
+/** Daybreak is a Codex account/workspace capability, not a model identifier. */
+export function composerDaybreakAvailable(agent: Agent | undefined): boolean {
+  return agent?.adapterType === "codex_local";
+}
+
 export function readComposerRunSettings(overrides: IssueAssigneeAdapterOverrides | null | undefined, adapterType: string | undefined): ComposerRunSettings {
   const config = overrides?.adapterConfig ?? {};
   const effortKey = composerEffortKey(adapterType);
@@ -58,6 +64,7 @@ export function readComposerRunSettings(overrides: IssueAssigneeAdapterOverrides
     model: typeof config.model === "string" ? config.model : null,
     effort: typeof effortValue === "string" ? effortValue : null,
     fast: adapterType === "codex_local" && config.fastMode === true,
+    daybreak: adapterType === "codex_local" && config.daybreakEnabled === true,
   };
 }
 
@@ -83,10 +90,12 @@ export function mergeComposerRunSettings(
   delete config.thinking;
   delete config.variant;
   delete config.fastMode;
+  delete config.daybreakEnabled;
   if (settings.model) config.model = settings.model;
   const effortKey = composerEffortKey(adapterType);
   if (settings.effort && effortKey) config[effortKey] = settings.effort;
   if (settings.fast && adapterType === "codex_local") config.fastMode = true;
+  if (settings.daybreak && adapterType === "codex_local") config.daybreakEnabled = true;
   const useProjectWorkspace = reassigned ? undefined : previous?.useProjectWorkspace;
   return Object.keys(config).length || useProjectWorkspace !== undefined
     ? { ...(Object.keys(config).length ? { adapterConfig: config } : {}), ...(useProjectWorkspace !== undefined ? { useProjectWorkspace } : {}) }

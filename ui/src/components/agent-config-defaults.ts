@@ -11,6 +11,7 @@ export const defaultCreateValues: CreateConfigValues = {
   dangerouslySkipPermissions: true,
   search: false,
   fastMode: false,
+  daybreakEnabled: false,
   dangerouslyBypassSandbox: false,
   command: "",
   args: "",

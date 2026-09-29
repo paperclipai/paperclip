@@ -48,6 +48,7 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (Object.keys(env).length > 0) ac.env = env;
   ac.search = v.search;
   ac.fastMode = v.fastMode;
+  if (v.daybreakEnabled) ac.daybreakEnabled = true;
   ac.dangerouslyBypassApprovalsAndSandbox =
     typeof v.dangerouslyBypassSandbox === "boolean"
       ? v.dangerouslyBypassSandbox

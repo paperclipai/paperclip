@@ -48,6 +48,24 @@ describe("buildCodexExecArgs", () => {
     expect(result.fastModeIgnoredReason).toBeNull();
   });
 
+  it("forwards the Daybreak access toggle as a Codex runtime setting", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.6-sol",
+      daybreakEnabled: true,
+    });
+
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.6-sol",
+      "-c",
+      "daybreak_enabled=true",
+      "-",
+    ]);
+  });
+
   it("enables Codex fast mode overrides for GPT-5.4", () => {
     const result = buildCodexExecArgs({
       model: "gpt-5.4",

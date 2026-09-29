@@ -139,6 +139,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6 (astra/sol/luna), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- daybreakEnabled (boolean, optional): enable Codex Daybreak for approved cybersecurity work by setting daybreak_enabled=true in the Codex runtime; this does not grant access and remains off by default
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args

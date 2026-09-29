@@ -30,6 +30,7 @@ const SAMPLE_FINGERPRINT_IDENTITY: SessionFingerprintIdentity = {
   requestedModel: "",
   requestedThinkingEffort: "",
   fastMode: false,
+  daybreakEnabled: false,
   remoteExecutionIdentity: null,
   additionalSourcesIdentity: {},
   skillsIdentity: {},

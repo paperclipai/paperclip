@@ -449,6 +449,7 @@ interface AcpxPreparedRuntime {
   requestedModel: string;
   requestedThinkingEffort: string;
   fastMode: boolean;
+  daybreakEnabled: boolean;
   timeoutSec: number;
   timeoutResolution: AdapterExecutionTargetTimeoutResolution;
   sessionKey: string;
@@ -1471,9 +1472,10 @@ function buildCodexStartupConfig(input: {
   requestedModel: string;
   requestedThinkingEffort: string;
   fastMode: boolean;
+  daybreakEnabled: boolean;
 }): { value: string | null; invalidExistingConfig: boolean } {
   const hasRuntimeConfig = Boolean(
-    input.requestedModel || input.requestedThinkingEffort || input.fastMode,
+    input.requestedModel || input.requestedThinkingEffort || input.fastMode || input.daybreakEnabled,
   );
   if (!hasRuntimeConfig) return { value: null, invalidExistingConfig: false };
 
@@ -1504,6 +1506,7 @@ function buildCodexStartupConfig(input: {
             },
           }
         : {}),
+      ...(input.daybreakEnabled ? { daybreak_enabled: true } : {}),
     }),
     invalidExistingConfig,
   };
@@ -1542,6 +1545,7 @@ function buildSessionParams(input: {
     ...(prepared.requestedModel ? { model: prepared.requestedModel } : {}),
     ...(prepared.requestedThinkingEffort ? { thinkingEffort: prepared.requestedThinkingEffort } : {}),
     ...(prepared.fastMode ? { fastMode: true } : {}),
+    ...(prepared.daybreakEnabled ? { daybreakEnabled: true } : {}),
     skills: prepared.skillsIdentity,
     mcpServers: prepared.mcpIdentity,
     ...(prepared.workspaceId ? { workspaceId: prepared.workspaceId } : {}),
@@ -1914,6 +1918,7 @@ async function buildRuntime(input: {
   const requestedModel = asString(config.model, "").trim();
   const requestedThinkingEffort = normalizeRequestedThinkingEffort(config);
   const fastMode = acpxAgent === "codex" && config.fastMode === true;
+  const daybreakEnabled = acpxAgent === "codex" && config.daybreakEnabled === true;
   const runtimeMcpServers = input.ctx.runtimeMcp?.getServers() ?? [];
   const mcpIdentity = runtimeMcpServers.map(({ name, url, connectionId }) => ({
     name,
@@ -2024,6 +2029,7 @@ async function buildRuntime(input: {
       requestedModel,
       requestedThinkingEffort,
       fastMode,
+      daybreakEnabled,
     });
     if (codexStartupConfig.invalidExistingConfig) {
       await input.ctx.onLog(
@@ -2187,6 +2193,7 @@ async function buildRuntime(input: {
     requestedModel,
     requestedThinkingEffort,
     fastMode,
+    daybreakEnabled,
     remoteExecutionIdentity,
     // Referenced-project set + pinned-checkout identity. A change here (a project
     // added, removed, or re-pinned) invalidates a warm/resumable session so the
@@ -2553,6 +2560,7 @@ async function buildRuntime(input: {
     requestedModel,
     requestedThinkingEffort,
     fastMode,
+    daybreakEnabled,
     timeoutSec,
     timeoutResolution,
     sessionKey,
@@ -4744,6 +4752,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 : []),
               ...(prepared.requestedThinkingEffort ? [`Requested ACPX thinking effort: ${prepared.requestedThinkingEffort}.`] : []),
               ...(prepared.fastMode ? ["Requested ACPX Codex fast mode."] : []),
+              ...(prepared.daybreakEnabled
+                ? ["Requested Codex Daybreak access (daybreak_enabled=true)."]
+                : []),
               ...(Array.isArray(prepared.skillsIdentity.commandNotes)
                 ? prepared.skillsIdentity.commandNotes.filter((note): note is string => typeof note === "string")
                 : []),

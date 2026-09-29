@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, ShieldCheck, X, Zap } from "lucide-react";
 import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 import { agentsApi, type AdapterModel } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
@@ -10,7 +10,7 @@ import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from "
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   composerCatalogProvider, composerEfforts, composerFastAvailable, DEFAULT_COMPOSER_RUN_SETTINGS,
-  EFFORT_LABELS, readComposerRunSettings, supportsComposerModel,
+  EFFORT_LABELS, composerDaybreakAvailable, readComposerRunSettings, supportsComposerModel,
   type ComposerRunSettings,
 } from "./composer-run-settings";
 import "./composer-run-settings.css";
@@ -125,7 +125,8 @@ export function ComposerRunSettingsPicker({
   const effortIndex = effort ? choices.indexOf(effort) + 1 : 0;
   const effortLabel = effort ? EFFORT_LABELS[effort] ?? effort : "Default";
   const fastAvailable = composerFastAvailable(agent, model);
-  const changed = Boolean(selected.model || selected.effort || selected.fast);
+  const daybreakAvailable = composerDaybreakAvailable(agent);
+  const changed = Boolean(selected.model || selected.effort || selected.fast || selected.daybreak);
   const assigneeOptions = [{ id: "", label: "No assignee", searchText: "Unassigned" }, ...options.filter((item) => item.id !== "")];
   const filteredAgents = assigneeOptions.filter((item) => {
     const optionAgent = agents.get(item.id.startsWith("agent:") ? item.id.slice(6) : "");
@@ -159,7 +160,7 @@ export function ComposerRunSettingsPicker({
     setAssigneeSearch("");
   };
   const chooseModel = (value: string | null) => {
-    onSettingsChange({ model: value, effort: null, fast: false });
+    onSettingsChange({ model: value, effort: null, fast: false, daybreak: selected.daybreak });
     setView("settings");
     setModelSearch("");
   };
@@ -189,6 +190,13 @@ export function ComposerRunSettingsPicker({
       <button type="button" aria-label="Choose exact model" onClick={() => setView("models")} className="mt-3 flex w-full items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <span className="min-w-0 flex-1"><span className="block text-xs text-muted-foreground">Model</span><span className="block truncate text-sm font-medium">{modelName || "Harness default"}</span></span><ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       </button>
+      {daybreakAvailable ? <div className="mt-3 rounded-md border border-border/70 px-2.5 py-2">
+        <button type="button" aria-label="Daybreak access" aria-pressed={selected.daybreak} title="Request Codex Daybreak access for this run" onClick={() => onSettingsChange({ ...selected, daybreak: !selected.daybreak })} className="flex w-full items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <ShieldCheck className={cn("size-4 shrink-0", selected.daybreak ? "composer-run-settings-accent" : "text-muted-foreground")} aria-hidden />
+          <span className="min-w-0 flex-1"><span className="block text-sm font-medium">Daybreak</span><span className="block text-xs text-muted-foreground">Requests the approved Codex cybersecurity capability; it does not grant access.</span></span>
+          <span className={cn("relative h-5 w-9 shrink-0 rounded-full bg-muted transition-colors", selected.daybreak && "composer-run-settings-accent bg-accent")} aria-hidden><span className={cn("absolute top-0.5 size-4 rounded-full bg-background shadow-sm transition-transform", selected.daybreak ? "translate-x-4" : "translate-x-0.5")} /></span>
+        </button>
+      </div> : null}
       {choices.length ? <div className="mt-3">
         <div className="flex items-center gap-2">
           {fastAvailable ? <button type="button" aria-label="Fast mode" aria-pressed={selected.fast} title="Fast mode" onClick={() => onSettingsChange({ ...selected, fast: !selected.fast })} className={cn("grid size-8 shrink-0 place-items-center rounded-md hover:bg-accent", selected.fast ? "composer-run-settings-accent bg-accent" : "text-muted-foreground")}><Zap className="size-4" /></button> : <span className="size-8 shrink-0" aria-hidden />}

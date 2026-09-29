@@ -143,6 +143,9 @@ export function CodexLocalConfigFields({
   const fastModeEnabled = isCreate
     ? Boolean(values!.fastMode)
     : eff("adapterConfig", "fastMode", Boolean(config.fastMode));
+  const daybreakEnabled = isCreate
+    ? Boolean(values!.daybreakEnabled)
+    : eff("adapterConfig", "daybreakEnabled", Boolean(config.daybreakEnabled));
   const currentModel = isCreate
     ? String(values!.model ?? "")
     : eff("adapterConfig", "model", String(config.model ?? ""));
@@ -707,6 +710,16 @@ export function CodexLocalConfigFields({
               isCreate
                 ? set!({ fastMode: v })
                 : mark("adapterConfig", "fastMode", v)
+            }
+          />
+          <ToggleField
+            label="Daybreak"
+            hint={help.daybreak}
+            checked={daybreakEnabled}
+            onChange={(v) =>
+              isCreate
+                ? set!({ daybreakEnabled: v })
+                : mark("adapterConfig", "daybreakEnabled", v)
             }
           />
           {fastModeEnabled && (

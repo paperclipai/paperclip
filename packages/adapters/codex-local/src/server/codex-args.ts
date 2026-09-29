@@ -48,6 +48,7 @@ export function buildCodexExecArgs(
   ).trim();
   const search = asBoolean(record.search, false);
   const fastModeRequested = asBoolean(record.fastMode, false);
+  const daybreakEnabled = asBoolean(record.daybreakEnabled, false);
   const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
   const extraArgs = readExtraArgs(record);
   // Explicit CLI modes/profiles remain deliberate overrides. An omitted
@@ -85,6 +86,7 @@ export function buildCodexExecArgs(
   if (fastModeApplied) {
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
   }
+  if (daybreakEnabled) args.push("-c", "daybreak_enabled=true");
   if (extraArgs.length > 0) args.push(...extraArgs);
   if (!bypass && options.networkAccess === false) {
     args.push("-c", "sandbox_workspace_write.network_access=false");
