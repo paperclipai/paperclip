@@ -248,7 +248,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         expect(retried.status, JSON.stringify(retried.body)).toBe(200);
         expect(retried.body).toMatchObject({ status, assigneeAgentId: agentId, checkoutRunId: null, executionRunId: null });
         const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
-        expect(saved).toMatchObject({ status, assigneeAgentId: agentId });
+        expect(saved).toMatchObject(row);
       }
     },
   );
